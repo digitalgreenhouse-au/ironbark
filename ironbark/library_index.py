@@ -12,7 +12,7 @@ are listed (library.split_cue_images).
   that file; a folder with CUE sheets re-reads the whole folder (the split depends on all of it).
   It returns a `Diff` (added / changed / removed files).
 - `changes()` is the same comparison without reading anything (spotting new music).
-- `update(paths)`: these files changed under us (a tag edit was saved) — re-read them now.
+- `update(paths)`: these files changed under us (e.g. a tag edit was saved) — re-read them now.
 - `refresh(hold=…)`: files the caller says are still being written (watcher.py: a copy
   in progress) are left out this time — a new one isn't added yet, a changed one keeps its old
   entry — and listed in the diff's `waiting`, to be looked at again shortly.

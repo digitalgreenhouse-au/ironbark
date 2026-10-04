@@ -1,4 +1,4 @@
-"""(0.23.0): the app icon (drawn in code, saved in the package, on every window, the
+"""0.23.0: the app icon (drawn in code, saved in the package, on every window, the
 taskbar's AppUserModelID) and the tab strip that repaints its tabs instead of rebuilding them."""
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def root():
     yield root
     root.destroy()
     del root
-    gc.collect()  # here, on the main thread
+    gc.collect()  # here, on the main thread (Tk objects freed on another thread abort Python)
 
 
 # -- the picture ------------------------------------------------------------------------------

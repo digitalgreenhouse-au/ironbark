@@ -1,6 +1,6 @@
 """Spotting new music (0.17.0): the watcher brings the saved index up to date from a cheap folder
 walk — added / changed / removed files, files still being copied left until they've settled — and
-works out which albums are new (until opened). A tag edit  counts as changed, never new.
+works out which albums are new (until opened). A tag edit counts as changed, never new.
 All in a temp folder with temp settings."""
 import os
 import time

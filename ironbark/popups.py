@@ -143,7 +143,7 @@ class Prompt(tk.Frame):
         self._seat()
         # Kept in the window when it's resized. One binding per window, made once and never removed (a
         # box per question would otherwise pile up bindings, and unbinding one safely depends on the
-        # Python version — ).
+        # Python version).
         if not getattr(window, "_dg_prompt_bound", False):
             window._dg_prompt_bound = True
             window.bind("<Configure>", lambda e: Prompt._window_resized(e, window), add="+")

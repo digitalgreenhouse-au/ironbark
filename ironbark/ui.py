@@ -441,7 +441,7 @@ class PlayerWindow:
         """Grouped into Sound / Window / Library / Network / Experimental, every on/off choice a slider
         switch with one plain line saying what it does.
 
-        (0.21.0) It scrolls when it doesn't fit the window (~1300 px tall at 150%
+        (0.21.0) It scrolls when it doesn't fit the window (it's ~1300 px tall at 150%
         scaling) — mouse wheel anywhere over it, and a slim scrollbar that shows only then. Its
         buttons are flat pills and the volume is the same drawn slider as the seek bar."""
         pop = Popover(self.root, width=theme.px(310), scroll=True)
@@ -466,7 +466,7 @@ class PlayerWindow:
                           self.exclusive, self._toggle_exclusive)
         self._setting(b, "Clipping guard", "Lowers only tracks that would crackle, by just enough.",
                       self.clip_guard, self._guard_changed)
-        # (0.24.0) room some converters have above full scale. Off by default.
+        # (0.24.0) "My DAC has headroom": room some converters have above full scale. Off by default.
         row = ttk.Frame(b, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         ttk.Label(row, text="My DAC has headroom", style="Pop.TLabel").pack(side="left")
@@ -1690,7 +1690,7 @@ class PlayerWindow:
         self.settings_pop.toggle(self.bar.settings_btn, self.bar.height)
 
     def _open_mini_settings(self):
-        """(0.25.0, John) Settings from the mini strip, without leaving it: the window grows to hold
+        """(0.25.0) Settings from the mini strip, without leaving it: the window grows to hold
         the panel under the strip — downwards, or upwards when the strip sits low on the screen —
         and `_settings_closed` puts the strip back to its own size and place. The strip keeps its
         height meanwhile (pack_propagate off), so nothing in it moves."""
@@ -1736,7 +1736,7 @@ class PlayerWindow:
         self.mini.configure(height=0)
         self.mini.pack(fill="both", expand=True)
         placement.restore(self.root, before)
-        self._settle_size(before)   # Tk and Windows disagree by ~2 px
+        self._settle_size(before)   # Tk and Windows disagree by ~2 px without the standard caption
 
     # -- settings actions ----------------------------------------------------
     def _set_notice(self, text: str, ms: int = 5000):
@@ -2163,7 +2163,7 @@ class PlayerWindow:
                 self.open_files_tab(list(action.paths), play=play)
                 opened.append(f"{len(action.paths)} song{'' if len(action.paths) == 1 else 's'}")
             play = False
-        if plan.cues:  # see dragdrop.cue_folder
+        if plan.cues:  # CUE sheet dropped: see dragdrop.cue_folder
             opened.append("CUE sheet as its folder (track-by-track CUE playback comes later)")
         if len(opened) == 1:
             return f"Opened {opened[0]}"

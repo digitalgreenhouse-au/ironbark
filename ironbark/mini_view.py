@@ -80,7 +80,7 @@ class MiniView(tk.Frame):
                  on_details: Callable[[], None], on_quit: Callable[[], None],
                  on_settings: Callable[[], None] = lambda: None):
         super().__init__(parent, bg=theme.BG)
-        self.app_root = root   # (not _root: that name is a Tk method)
+        self.app_root = root   # (not _root: that name is a Tk method and would shadow it)
         pad = theme.px(theme.GAP)
 
         # Right-hand end: close, back to full, Settings, the status square, then the transport.

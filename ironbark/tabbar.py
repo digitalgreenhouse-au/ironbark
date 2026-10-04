@@ -1,7 +1,7 @@
 """The strip along the top of the window: tabs (one per album or library view), the
 + / home / gear buttons and, on Windows, our own minimise / close.
 
-The tabs always share the one row with the buttons (by design): as more open, or the
+The tabs always share the one row with the buttons: as more open, or the
 window narrows, they get slimmer and their names shorten, but they never drop to a row
 of their own.
 

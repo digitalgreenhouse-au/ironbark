@@ -46,7 +46,7 @@ class Palette:
     ACCENT_TEXT: str          # (0.19.0) green *text* — headings, album rows, Up next, new albums: DG
                               # green itself is too pale for small text on a light background
     ACCENT_INK: str           # (0.20.0) a near-black mark drawn on a DG-green fill: the play button's
-                              # glyph (dark in both themes, as the design has it)
+                              # glyph (dark in both themes, by design)
     SELECT: str              # selected row
     ON_ACCENT: str            # text / knob drawn on ACCENT, SELECT or CLOSE_HOVER
     GOOD: str                 # a good value ("all good" green, lighter than ACCENT)
@@ -238,7 +238,7 @@ def windows_uses_light() -> bool | None:
     CurrentVersion\\Themes\\Personalize, DWORD AppsUseLightTheme (1 = light, 0 = dark) — the same
     key mediakeys.py reads SystemUsesLightTheme from for the taskbar. Microsoft Learn doesn't
     document this value as an API (it documents UISettings' foreground colour for Win32 apps);
-    checked on a Windows 11 PC 05/10/2026 that the two agree (dark: AppsUseLightTheme 0, UISettings
+    checked on Windows 11 on 05/10/2026 that the two agree (dark: AppsUseLightTheme 0, UISettings
     foreground white)."""
     if sys.platform != "win32":
         return None
@@ -274,7 +274,7 @@ MONO = "Consolas" if sys.platform == "win32" else "Menlo" if sys.platform == "da
 # when its digits are all one width, else MONO. Tk can't ask a font for tabular figures (Tk 8.6's
 # `font` command has only -family -size -weight -slant -underline -overstrike: no OpenType
 # features; its manual, checked 05/10/2026), so `apply` *measures* — see tabular_digits(). Measured
-# 05/10/2026 on a Windows 11 PC (Tk 8.6.12): Segoe UI's ten digits are one width at 9 / 10 / 11 pt, and
+# 05/10/2026 on Windows 11 (Tk 8.6.12): Segoe UI's ten digits are one width at 9 / 10 / 11 pt, and
 # "+" is as wide as the minus sign "−" (U+2212), but the hyphen "-" is narrower — so live numbers
 # show "−" (figures()). Windows 11's "Segoe UI Variable Text" has narrow ones (a "1" 7 px against
 # 10 px at 9 pt), which is why the family is measured rather than assumed. On a Mac (its system

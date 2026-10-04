@@ -239,8 +239,9 @@ class LibraryWindow:
         self._fill()
 
     def _colour_tags(self):
-        # "hover" is configured first, so it wins over the others (the first-configured tag wins); its text turns
-        # TEXT, as green text on the hover grey would fall under AA in Dark.
+        # "hover" is configured first, so it wins over the others (when two ttk.Treeview tags set the
+        # same option, the first-configured wins); its text turns TEXT, as green text on the hover
+        # grey would fall under AA in Dark.
         self.tree.tag_configure("hover", background=theme.SURFACE_HI, foreground=theme.TEXT)
         self.tree.tag_configure("group", foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("new", foreground=theme.ACCENT_TEXT)   # a new album: green until opened

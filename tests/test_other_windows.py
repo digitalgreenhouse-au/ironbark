@@ -1,4 +1,4 @@
-"""(0.22.0): the other windows get the main window's finish — Settings' section headings,
+"""0.22.0: the other windows get the main window's finish — Settings' section headings,
 flat pill buttons (controls.FlatButton), choices as a row of words (ChoiceRow) instead of radio
 buttons, slider switches (Switch) instead of tick boxes, the shared search box, slim scrollbars, and
 live numbers in fixed-width digits with a true minus sign. Now Playing: one label column for every

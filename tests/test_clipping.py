@@ -1,4 +1,4 @@
-"""(0.24.0): inter-sample overs — finding them (clipping.py), the clipping guard at 8x
+"""0.24.0: inter-sample overs — finding them (clipping.py), the clipping guard at 8x
 with "My DAC has headroom", hearing them (Experimental clip_audition), and the Clipping window
 (smoke tests skip without a display)."""
 
@@ -248,7 +248,7 @@ def root():
     yield r
     r.destroy()
     del r
-    gc.collect()   # here, on the main thread
+    gc.collect()   # here, on the main thread (Tk objects freed on another thread abort Python)
 
 
 class FakeStream:

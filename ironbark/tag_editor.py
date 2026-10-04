@@ -637,7 +637,7 @@ def _keep_created(st, temp: Path) -> None:
         return
     import ctypes
     from ctypes import wintypes
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # private handle
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # private: its types stay ours
     kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
                                      wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)

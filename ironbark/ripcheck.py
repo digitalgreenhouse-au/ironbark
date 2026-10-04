@@ -47,8 +47,8 @@ tracks only; leadout = end of the whole disc.
   source has the extra N mod 5880 at the end — it follows the error-correction "stride" — and
   the source is what the database computes, so that's what's used.)
 - Per-track CRCs: each track whole, except the first track skips its first 5880 samples and
-  the last track its last 5880 + (N mod 5880) — the same skips as the disc CRC. (This was
-  unverified at first; now read from `CDRepairEncode.TrackCRC` → `CTDBCRC`.)
+  the last track its last 5880 + (N mod 5880) — the same skips as the disc CRC. (Read from
+  `CDRepairEncode.TrackCRC` → `CTDBCRC`.)
 - A track counts as matched for an entry when the entry's whole-disc CRC matches, or its own
   track CRC does (CUEToolsDB.cs `GetConfidence`). The CTDB wiki: "a CTDB confidence of 2/X or
   higher indicates that the rip in the database is probably undamaged".

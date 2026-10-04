@@ -1,4 +1,4 @@
-"""(0.20.0): the main window's polish — the drawn seek bar (shared with the mini strip),
+"""0.20.0: the main window's polish — the drawn seek bar (shared with the mini strip),
 the round play button and hover discs, the volume pill, rounded covers and the ♫ placeholder, the
 track list's hover row / playing mark / tidy album rows / slim scrollbar / search × , and the
 empty window's "Open your library". Pillow drawing is tested without a display; the Tk parts are

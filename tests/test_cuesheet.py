@@ -1,4 +1,4 @@
-"""0.9.0: the CUE sheet parser (shared by the pre-emphasis flag now and CUE playback later)."""
+"""0.9.0: the CUE sheet parser (shared by the pre-emphasis flag now and CUE playback)."""
 
 import numpy as np
 import pytest
