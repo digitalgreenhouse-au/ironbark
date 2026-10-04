@@ -1,0 +1,158 @@
+"""Library window (0.15.0) on the saved index: browse views, sorting by a heading, search, right-click
+Play next; the track list's optional Artist / Album columns; the Up next line. Tk smoke tests,
+skipped without a display."""
+import gc
+import time
+import tkinter as tk
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import soundfile as sf
+from ironbark.tagio.flac import FLACFile
+
+from ironbark import library_index, settings, theme
+from ironbark.engine import Player
+from ironbark.library import Track
+from ironbark.library_window import LibraryWindow, added_text
+from ironbark.playlist_view import PlaylistView
+from ironbark.tabbar import MenuRow, Popover
+from ironbark.ui import PlayerWindow
+
+
+def flac(path: Path, **tags) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(path, np.zeros((441, 2), np.int16), 44100, subtype="PCM_16", format="FLAC")
+    audio = FLACFile(path)
+    for key, value in tags.items():
+        audio[key] = value
+    audio.save()
+    return path
+
+
+@pytest.fixture
+def root():
+    try:
+        root = tk.Tk()
+    except tk.TclError as error:
+        pytest.skip(f"no display ({error})")
+    root.withdraw()
+    theme.apply(root)
+    yield root
+    root.destroy()
+    del root
+    gc.collect()  # on this thread (Tk objects freed on another thread abort Python)
+
+
+@pytest.fixture
+def music(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
+    music = tmp_path / "Music"
+    flac(music / "21" / "01.flac", title="Rolling", artist="Adele", album="21", genre="Pop", date="2011")
+    flac(music / "Tommy" / "01.flac", title="Overture", artist="The Who", album="Tommy", date="1969")
+    flac(music / "Hits" / "01.flac", title="A", artist="Alpha", album="Hits", genre="Pop", date="1999")
+    flac(music / "Hits" / "02.flac", title="B", artist="Beta", album="Hits", genre="Dance", date="1999")
+    return music
+
+
+def wait_for_index(window, root):
+    deadline = time.monotonic() + 20
+    while window._refresh is not None and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.02)
+    assert window._refresh is None
+
+
+def column(window, name, parent=""):
+    return [window.tree.set(iid, name) for iid in window.tree.get_children(parent)]
+
+
+def test_browse_views_sorting_and_search(root, music):
+    queued = []
+    w = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+                      on_load_all=lambda r, q: None, on_queue=lambda path, front: queued.append((path.name, front)))
+    wait_for_index(w, root)
+    assert column(w, "album") == ["21", "Hits", "Tommy"] and "3 albums in" in w.status.cget("text")
+    assert column(w, "artist") == ["Adele", "Various Artists", "The Who"]
+    assert column(w, "added")[0] == added_text(w.albums[0].added) and "/" in column(w, "added")[0]
+    w.sort_by("year")
+    assert column(w, "album") == ["Tommy", "Hits", "21"] and w.tree.heading("year", "text") == "Year ▲"
+    w.sort_by("year")                                       # again: reversed
+    assert column(w, "album") == ["21", "Hits", "Tommy"] and w.tree.heading("year", "text") == "Year ▼"
+    w.set_view("artists")
+    assert column(w, "album") == ["Adele", "The Who", "Various Artists"]   # groups, "The" ignored
+    groups = w.tree.get_children()
+    assert column(w, "album", groups[2]) == ["Hits"] and [str(x) for x in w.tree.cget("show")] == ["tree", "headings"]
+    w.set_view("genres")
+    assert column(w, "album") == ["Dance", "Pop", "No genre"]
+    assert column(w, "album", w.tree.get_children()[1]) == ["21", "Hits"]
+    w.search_var.set("adele")
+    assert column(w, "album") == ["Pop"] and column(w, "album", w.tree.get_children()[0]) == ["21"]
+    w.search_var.set("dance")      # Dance's own name matches (all of it); Hits is also Pop
+    assert column(w, "album") == ["Dance", "Pop"] and column(w, "album", w.tree.get_children()[1]) == ["Hits"]
+    w.search_var.set("")
+    w.set_view("recent")
+    assert w.sort == ("added", True) and w.tree.heading("added", "text") == "Added ▼"
+    # right-click an album → Play next goes to the player with the album's folder
+    first = next(iter(w._rows))
+    w._queue(w._rows[first], True)
+    assert queued and queued[0][1] is True
+    w.close()
+
+
+def test_second_open_shows_the_saved_index_at_once(root, music):
+    w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+    wait_for_index(w, root)
+    w.close()
+    library_index._shared = None                 # as after a restart: read back from the file
+    again = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+    assert column(again, "album") == ["21", "Hits", "Tommy"]   # before any refresh has finished
+    wait_for_index(again, root)
+    again.close()
+
+
+def test_track_list_artist_and_album_columns(root):
+    view = PlaylistView(root, on_play=lambda i: None)
+    track = Track(Path("C:/M/A/01.flac"), "Song", artist="Singer", album="Record", track_no=1)
+    view.set_tracks([track], flat=True)
+    assert view.tree.cget("displaycolumns") == ("no", "title", "time")       # off by default
+    assert view.tree.set("0", "title") == "Song  ·  Singer"
+    view.set_columns(["album", "artist"])
+    assert view.tree.cget("displaycolumns") == ("no", "title", "artist", "album", "time")
+    assert (view.tree.set("0", "title"), view.tree.set("0", "artist"), view.tree.set("0", "album")) == (
+        "Song", "Singer", "Record")
+
+
+def test_up_next_line_and_list(root):
+    """The Up next line appears with the first queued song, and the pop-over lists them."""
+    player = Player()
+    tracks = [Track(Path(f"C:/M/A/{n}.flac"), n, artist="X") for n in ("one", "two", "three")]
+    body = tk.Frame(root)
+    body.pack(fill="both", expand=True)
+    status = tk.Label(body)
+    status.pack(side="bottom")
+    w = SimpleNamespace(player=player, root=root, scale=1.0, _up_next_key=None, prefs={}, _notice="")
+    w.playlist = PlaylistView(body, on_play=lambda i: None)
+    w.up_next_label = tk.Label(body)
+    w.up_next_pop = Popover(root, width=300)
+    w._set_notice = lambda text, ms=0: setattr(w, "_notice", text)
+    for name in ("_paint_up_next", "_fill_up_next", "_show_up_next", "_up_next_top", "_unqueue", "_queue_tracks"):
+        setattr(w, name, getattr(PlayerWindow, name).__get__(w))
+    root.deiconify()
+    root.geometry("320x400")
+    w._queue_tracks(tracks[:2], front=False)
+    w._queue_tracks(tracks[2:], front=True)
+    root.update()
+    assert w._notice == "“three” will play next"
+    assert w.up_next_label.cget("text") == "Up next (3) · three — X" and w.up_next_label.winfo_ismapped()
+    w._show_up_next()
+    root.update()
+    rows = [c for c in w.up_next_pop.body.winfo_children() if isinstance(c, MenuRow)]
+    assert [r.label.cget("text") for r in rows] == ["three — X", "one — X", "two — X"]
+    w._unqueue(1)
+    assert player.up_next() == [tracks[2], tracks[1]]
+    player.clear_queue()
+    w._paint_up_next()
+    root.update()
+    assert not w.up_next_label.winfo_ismapped() and not w.up_next_pop.is_open

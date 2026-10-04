@@ -1,0 +1,41 @@
+name: Bug report
+description: Something doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the album …
+        2. Press …
+  - type: input
+    id: version
+    attributes:
+      label: Ironbark version
+      description: Shown at the bottom of Settings (e.g. 0.27.4).
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: e.g. Windows 11 24H2
+  - type: input
+    id: output
+    attributes:
+      label: Output device, and was Bit-perfect on?
+      placeholder: e.g. USB DAC, Bit-perfect on
+  - type: textarea
+    id: crash
+    attributes:
+      label: crash.log
+      description: If Ironbark crashed, paste the end of `%APPDATA%\Ironbark\crash.log`.
+      render: text
