@@ -14,11 +14,11 @@
 No new package: SMTC is a WinRT (Windows Runtime) API, reached here through comtypes and the
 Windows DLLs (combase, shcore, shlwapi, user32, gdi32). The one WinRT binding that was checked,
 pywinrt (MIT), has had no release since June 2025 and no Python 3.14 wheels, so it failed the
-"actively maintained" rule. Every GUID and vtable order below was read from
+project's "actively maintained" rule for new dependencies. Every GUID and vtable order below was read from
 Windows' own metadata (C:\\Windows\\System32\\WinMetadata, via PowerShell reflection, 04/10/2026)
 or published headers (Microsoft Learn, Wine's IDL files).
 
-Threads (no blocking Win32 calls inside Tk callbacks):
+Threads (no blocking Win32 calls inside Tk callbacks — a modal Win32 loop there hangs the app):
 - All SMTC and taskbar calls run on one worker thread ("media-controls"), never the Tk thread.
 - Button presses arrive on Windows' threads (SMTC), in the window procedure (taskbar buttons)
   or on the hook thread. Each only puts a word in `MediaKeys`' queue; the window drains it with

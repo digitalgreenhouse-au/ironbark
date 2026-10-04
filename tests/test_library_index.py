@@ -1,4 +1,4 @@
-"""(0.15.0): genre / composer / date / album artist read from every format; the saved
+"""0.15.0: genre / composer / date / album artist read from every format; the saved
 library index (refresh with added / changed / removed files, CUE images, atomic save); the
 browse views' grouping (artists incl. compilations, genres, years, composers) and sort order."""
 import json

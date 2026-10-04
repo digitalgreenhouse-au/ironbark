@@ -7,7 +7,7 @@ audio service directly through comtypes/pycaw (already used by devices.py), with
 interface pycaw doesn't define (IAudioCaptureClient) declared here.
 
 Everything runs on the caller's thread and blocks for the length of the recording, so
-call it from a worker thread — never from a window callback.
+call it from a worker thread — never from a window callback (a blocking call there freezes the window).
 """
 
 from __future__ import annotations

@@ -294,7 +294,8 @@ def _id3_tags(id3) -> dict[str, str]:
 
 
 def _tag_extras(tags: dict[str, str]) -> dict:
-    """The fields from a plain tag dict (ID3 / RIFF INFO / MP4, already turned into words)."""
+    """The browse fields (genre, composer, date, album artist) from a plain tag dict (ID3 / RIFF
+    INFO / MP4, already turned into words)."""
     return dict(album_artist=tags.get("albumartist", ""), genre=tags.get("genre", ""),
                 composer=tags.get("composer", ""), date=tags.get("date", ""),
                 compilation=tags.get("compilation", "").lower() in ("1", "yes", "true"))

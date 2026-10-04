@@ -4,8 +4,8 @@ cheap; tags are read only for what changed — and say what's new, changed or go
 
 - **Polling**, on a thread of its own (never the Tk thread). It works the same on Windows and Mac;
   Windows' change notifications (ReadDirectoryChangesW) could replace it later for a huge library.
-  Results go into `results` (a queue); the player's own `after` loop picks them up (
-  nothing here touches Tk).
+  Results go into `results` (a queue); the player's own `after` loop picks them up (nothing
+  here touches Tk).
 - **Files still being copied wait.** A new or changed file is left for the next look while its
   modified time is within `SETTLE_S` of now, or while it differs from how it looked last time
   (its size still growing). While anything is waiting, the next look comes after `RECHECK_S`

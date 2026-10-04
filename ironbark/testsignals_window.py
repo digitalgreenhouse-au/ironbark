@@ -241,7 +241,7 @@ class TestSignalsWindow:
         switcher = audition.Switcher([signal.stereo()], signal.rate, seamless=True)
         self.audition = audition.Audition(switcher, device=output, exclusive=self.exclusive.get(),
                                           stream_factory=self._stream_factory)
-        self.player.suspend()     # the player pauses and lets go of the device
+        self.player.suspend()     # the player pauses and lets go of the device (one sound at a time)
         try:
             self.audition.play(0)
         except Exception as exc:  # noqa: BLE001 — a device that won't open is a message, not a crash

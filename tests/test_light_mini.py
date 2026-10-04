@@ -1,4 +1,4 @@
-"""(0.19.0): the Light theme (and Follow Windows), WCAG AA contrast for both palettes,
+"""0.19.0: the Light theme (and Follow Windows), WCAG AA contrast for both palettes,
 and mini mode — switching keeps the window's places and never touches the music."""
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ def test_light_palette_keeps_dg_green():
 
 # -- which palette ----------------------------------------------------------------------------
 def test_dark_is_the_default():
-    """Dark is the default."""
+    """Dark is the default theme."""
     assert theme.DEFAULT_THEME == "dark" and settings.DEFAULTS["theme"] == "dark"
     assert [key for key, _ in theme.THEME_CHOICES] == ["dark", "light", "system"]
 
@@ -184,7 +184,7 @@ for _name in ("play", "pause", "toggle_pause", "stop", "seek", "suspend", "next"
 
 @pytest.fixture
 def make_window(tmp_path, monkeypatch):
-    """Build the real PlayerWindow on temp settings (no real settings file is read or written),
+    """Build the real PlayerWindow on temp settings (nothing of the user's is read or written),
     with a song 'playing' from a fake player. Media keys, the new-music watcher, the clipping
     guard and bit-perfect are off; the library folder is an empty temp folder."""
     tk = pytest.importorskip("tkinter")

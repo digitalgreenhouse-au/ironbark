@@ -8,7 +8,7 @@ Everything round is drawn with Pillow at SUPERSAMPLE× and scaled down, so edges
 Tk canvas draws jagged circles on Windows — the same reason tabbar.Toggle is a picture). The
 pictures take their colours from theme.py at the moment they're drawn and are drawn again on a
 palette change (`theme.on_change`), so they follow Light / Dark like everything else. Pictures
-are cached per Tk root (one root's images can't be used in another).
+are cached per Tk root (a Tk PhotoImage belongs to the root it was made in and can't be used in another).
 
 (0.21.0) Also: the Settings volume slider (a Slider on SURFACE), pill buttons that can be greyed
 out (`PillButton.set_enabled`), and `ScrollArea` — a panel that scrolls (wheel + slim scrollbar)

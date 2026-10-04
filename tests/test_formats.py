@@ -305,7 +305,7 @@ def test_hdcd_agrees_with_ffmpegs_decoder(tmp_path, packet):
 
 
 def test_check_wording_for_gain_adjust_only():
-    """Like a real live album: gain adjust, no peak extend."""
+    """Like a real album's tags: gain adjust, no peak extend."""
     flags = formats.FormatFlags(hdcd=formats.HdcdResult(detected=True, packets=10, packet_type="B",
                                                         max_gain_db=-4.0))
     text = dict(describe_flags(flags))["HDCD"]

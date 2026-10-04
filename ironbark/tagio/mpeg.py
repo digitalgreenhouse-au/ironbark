@@ -24,8 +24,8 @@ Written from published descriptions (clean-room — no other tag library's code 
 Length and bitrate: with a Xing / VBRI frame count, length = frames × samples per frame ÷ rate
 and the average bitrate = the audio bytes it reports (less the header frame itself) × 8 ÷
 length. Without one, the first frame's bitrate is taken as constant and the length worked out
-from the file's size. (The same figures the player showed before 0.27.0, checked on John's
-files.)
+from the file's size. (The same figures the player showed before 0.27.0, checked on a real
+library.)
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""(0.21.0): in-app prompts instead of Windows' boxes, right-click menus in the app's
+"""0.21.0: in-app prompts instead of Windows' boxes, right-click menus in the app's
 colours, and Settings that scroll. The prompts answer right (OK / Cancel / Enter / Esc, name
 checks), are modal, and the hearing-safety warning can't be missed; the menus run the right
 command, move with the keys, grey out what can't be done and show submenus in place; Settings
@@ -209,7 +209,7 @@ def test_the_tag_editor_and_test_signal_questions_are_in_app(root):
     seen = answer_later(root, lambda p: (seen.append((p.cover is not None, p.tone, root.grab_current() is p)),
                                          p.press_cancel()))
     signal = SimpleNamespace(name="1 kHz tone at −20 dBFS")
-    assert confirm_play(root, signal, "TEST OUTPUT") is False        # Esc = don't play
+    assert confirm_play(root, signal, "Monitor speakers") is False        # Esc = don't play
     assert seen[1] == (True, "warn", True)                              # alone, amber, modal
 
 

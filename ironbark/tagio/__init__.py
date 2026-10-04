@@ -1,8 +1,8 @@
 """Ironbark's own tag reader and writer (0.27.0). No UI.
 
 Until 0.26.0 the player read and wrote tags with mutagen, which is GPL-2.0-or-later — the one
-GPL library in the app. Ironbark is MIT-licensed (05/10/2026: so DG can sell it in app stores
-later), so mutagen had to go. This package replaces it with DG's own code, written clean-room
+GPL library in the app. Ironbark is MIT-licensed (since 0.27.0),
+so mutagen had to go. This package replaces it with Ironbark's own code, written clean-room
 from the published format specifications only (cited in each module; no other tag library's
 source code was read):
 

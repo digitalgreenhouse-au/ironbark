@@ -1,19 +1,18 @@
 """The app icon (0.23.0): drawn here in code, saved as picture files in `assets/`, and put on
 every window.
 
-The design (DG graphic design; one was picked, and it can be swapped
-later): **a dark record on a DG-green rounded tile, with a green centre label** — "music" at a
+The design: **a dark record on a DG-green rounded tile, with a green centre label** — "music" at a
 glance, in the play button's own green and dark ink. It uses no letters, so it doesn't depend on
 the product's name (still parked). At 16 px it is a green square with a dark ring and a green dot;
 the spindle hole joins from 32 px and two faint grooves from 48 px. (A first sketch — a green disc
 with three dark bars — was dropped: a green circle with dark marks is too close to another music
 app's well-known icon.)
 
-**Growth Rings (0.28.0, the chosen logo concept, 05/10/2026):** from 128 px the grooves
+**Growth Rings (0.28.0):** from 128 px the grooves
 become an ironbark log's growth rings — seven slightly uneven rings, unevenly spaced (good and dry
 years), the pith a touch off-centre — and a timber drying crack runs in from the edge. The Ironbark
-logo files (kept outside the repo) are drawn from the same `growth_rings` / `crack`, so the
-app icon and the logo always match. 16–64 px are unchanged: the detail can't be seen there.
+logo is drawn from the same `growth_rings` / `crack`, so the app icon and the logo always match.
+16–64 px are unchanged: the detail can't be seen there.
 
 Why drawn in code: the icon can be rebuilt exactly (`python -m ironbark.appicon` rewrites the
 files in `ironbark/assets/`), and each size is drawn for itself (8x bigger, then shrunk), with the

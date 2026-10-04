@@ -63,7 +63,7 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
         if lossy:
             return f"{base} · decoded MP3 sent untouched, but the source is lossy{guard}", "plain"
         if guard:
-            # (0.24.0) the guard comes before Bit-perfect, and says so.
+            # (0.24.0) The clipping guard wins over Bit-perfect (crackle-free first), and says so.
             return f"{base}{guard}, so this track isn't bit-perfect (the guard comes first)", "good"
         if output.hardware_volume is False:
             return f"{base} · bit-perfect ✓ · no device volume: use the player or headphone volume", "warn"

@@ -4,6 +4,11 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.28.4 — 05/10/2026
+
+- Code comments now explain themselves instead of pointing to notes that aren't in this
+  repository. No change to the player.
+
 ## 0.28.3 — 05/10/2026
 
 - The automatic tests can also be started by hand from GitHub's Actions tab. No change to the
