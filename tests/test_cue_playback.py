@@ -156,7 +156,7 @@ def test_read_track_and_playlists_keep_a_cue_track(tmp_path, monkeypatch):
     playlist = tmp_path / "mix.m3u8"
     playlists.write(playlist, [tracks[2], tracks[0]])
     text = playlist.read_text(encoding="utf-8")
-    assert "#DG-CUE:3" in text and text.count(str(tracks[0].path)) == 2  # other players: the whole file
+    assert "#IRONBARK-CUE:3" in text and text.count(str(tracks[0].path)) == 2  # other players: the whole file
     back = playlists.read(playlist)
     assert back == [tracks[2].path, tracks[0].path]
     assert library.cue_track_path(tracks[0].path, 99) == Path(str(tracks[0].path))

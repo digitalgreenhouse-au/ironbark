@@ -4,6 +4,11 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.28.5 — 05/10/2026
+
+- Playlists mark a track from a CUE sheet with an `#IRONBARK-CUE:<track number>` line (was
+  `#DG-CUE:`). Other players still skip the line and play the whole file.
+
 ## 0.28.4 — 05/10/2026
 
 - Code comments now explain themselves instead of pointing to notes that aren't in this
