@@ -31,6 +31,7 @@ from __future__ import annotations
 import io
 import logging
 import math
+import sys
 import tkinter as tk
 from importlib import resources
 from pathlib import Path
@@ -184,14 +185,22 @@ def load(size: int) -> Image.Image:
 # Handed to Tk's `wm iconphoto`: Windows picks the small (title bar / taskbar at 100–150%) and large
 # (Alt+Tab) icons from these. 256 is left out: Tk turns every picture into an icon in memory.
 WINDOW_SIZES = (16, 20, 24, 32, 40, 48, 64, 128)
+DOCK_SIZES = (max(SIZES),)   # a Mac shows the icon only in the Dock, and big
 
 
 def apply(root: tk.Tk) -> bool:
     """Put the icon on `root` and, as the default, on every window made after it (Tk's
     `iconphoto -default`: every Toplevel — Now Playing, Meters, Library … — takes it).
-    Never raises: a missing file or an old Tk just leaves Tk's own icon. True when set."""
+    Never raises: a missing file or an old Tk just leaves Tk's own icon. True when set.
+
+    On a Mac windows have no icon of their own; `iconphoto` replaces the Dock icon instead. The
+    packaged app's .icns is sharper than any of these pictures, so it's left alone there; run from
+    source (no app bundle) the Dock gets the largest picture."""
+    if platforms.IS_MAC and getattr(sys, "frozen", False):
+        return True
+    sizes = DOCK_SIZES if platforms.IS_MAC else WINDOW_SIZES
     try:
-        photos = [ImageTk.PhotoImage(load(size), master=root) for size in WINDOW_SIZES]
+        photos = [ImageTk.PhotoImage(load(size), master=root) for size in sizes]
         root.iconphoto(True, *photos)
     except (OSError, tk.TclError, ValueError) as error:
         log.warning("couldn't set the window icon: %s", error)

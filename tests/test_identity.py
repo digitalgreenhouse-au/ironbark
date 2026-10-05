@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image, ImageChops
 
-from ironbark import appicon, theme
+from ironbark import appicon, platforms, theme
 
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows icons / AppUserModelID")
 
@@ -169,9 +169,19 @@ def _class_icons(window) -> tuple[int, int]:
 
 
 def test_apply_puts_the_icon_on_the_window_and_keeps_the_pictures(root):
+    sizes = appicon.DOCK_SIZES if platforms.IS_MAC else appicon.WINDOW_SIZES
     assert appicon.apply(root)
-    assert len(root._dg_icon_images) == len(appicon.WINDOW_SIZES)
-    assert sorted(p.width() for p in root._dg_icon_images) == sorted(appicon.WINDOW_SIZES)
+    assert len(root._dg_icon_images) == len(sizes)
+    assert sorted(p.width() for p in root._dg_icon_images) == sorted(sizes)
+
+
+def test_the_packaged_mac_app_keeps_its_own_dock_icon(root, monkeypatch):
+    """On a Mac iconphoto replaces the Dock icon; the app bundle's .icns is sharper, so a packaged
+    app leaves it alone."""
+    monkeypatch.setattr(platforms, "IS_MAC", True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert appicon.apply(root)
+    assert not hasattr(root, "_dg_icon_images")
 
 
 def test_apply_never_raises(root, monkeypatch):
