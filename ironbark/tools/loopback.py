@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 import time
-from ctypes import HRESULT, POINTER, c_uint32, c_uint64
+from ctypes import POINTER, c_uint32, c_uint64
 from ctypes.wintypes import BYTE, DWORD, WORD
 from dataclasses import dataclass
 
@@ -54,6 +54,7 @@ class WindowsSettings:
 
 
 def _interfaces():
+    from ctypes import HRESULT  # only defined by Windows' ctypes
     from comtypes import COMMETHOD, GUID, IUnknown
 
     class IAudioCaptureClient(IUnknown):

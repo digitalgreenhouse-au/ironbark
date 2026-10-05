@@ -9,6 +9,7 @@ import threading
 import time
 import tkinter as tk
 import zlib
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -175,7 +176,7 @@ def test_hidden_gap_before_track_one(tmp_path):
         '  TRACK 02 AUDIO\n    INDEX 00 00:00:18\nFILE "02.flac" WAVE\n    INDEX 01 00:00:00\n'
         '  TRACK 03 AUDIO\nFILE "03.flac" WAVE\n    INDEX 01 00:00:00\n')
     rip = find_rip(split / "02.flac")
-    assert rip.toc.source == r"the cue sheet (Archive\disc.cue)"
+    assert rip.toc.source == f"the cue sheet ({Path('Archive', 'disc.cue')})"
     assert rip.toc.starts == [33, 53, 76] and rip.toc.leadout == 97 and rip.origin == 33
     image = tmp_path / "image"
     image.mkdir()
