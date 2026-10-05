@@ -5,7 +5,7 @@ opened. Paths are written in full so a playlist works wherever it's copied; rela
 in playlists from elsewhere are resolved against the playlist's own folder.
 
 A CUE sheet track (one track of a long file) is written as its file's path with a
-"#DG-CUE:<track number>" line before it. Other players skip the comment and play the whole
+"#IRONBARK-CUE:<track number>" line before it. Other players skip the comment and play the whole
 file; this player reads it back as that one track.
 """
 
@@ -19,7 +19,7 @@ from . import audiofile, settings
 from .library import Track, cue_track_path
 
 EXTENSIONS = {".m3u8", ".m3u"}
-CUE_MARK = "#DG-CUE:"
+CUE_MARK = "#IRONBARK-CUE:"
 _BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
