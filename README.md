@@ -26,7 +26,7 @@ source under the [MIT licence](LICENSE).
 
 ## Install and run
 
-Ironbark runs from source for now (installers are planned). You need
+Ironbark runs from source for now (ready-made downloads are planned). You need
 [uv](https://docs.astral.sh/uv/), which also fetches the right Python version for you.
 
 ```
@@ -36,7 +36,22 @@ uv run ironbark                          # opens your last album, or lets you ch
 uv run ironbark "D:\Music\Some Album"    # or open a folder directly
 ```
 
-Run the tests with `uv run pytest`.
+Run the tests with `uv run pytest`. `uv run ironbark --self-check` checks that a copy works
+(sound libraries, icons, the main window) without playing anything or saving anything.
+
+### Building the Windows installer
+
+```
+pwsh packaging\windows\build.ps1
+```
+
+This runs the tests, packages Ironbark with [PyInstaller](https://pyinstaller.org) (no Python
+needed on the PC it's installed on), runs the packaged `Ironbark.exe --self-check`, then makes
+`Ironbark-Setup-X.Y.Z.exe` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) (if installed),
+a portable zip and `SHA256SUMS.txt`, all in `dist\windows\`. The installer installs for the
+current user only (no administrator prompt), into `%LOCALAPPDATA%\Programs\Ironbark`; uninstalling
+keeps your settings unless you choose to remove them. The builds are not yet code-signed, so
+Windows SmartScreen warns about an unknown publisher.
 
 ## Features
 

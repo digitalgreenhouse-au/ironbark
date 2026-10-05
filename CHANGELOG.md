@@ -4,6 +4,14 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.29.0 — 05/10/2026
+
+- Windows build: `packaging\windows\build.ps1` makes an installer (`Ironbark-Setup-X.Y.Z.exe`,
+  current user, no administrator prompt), a portable zip and checksums. Not code-signed yet.
+- New `--self-check` option: checks the sound libraries, icons and main window work, without
+  playing or saving anything; exit code 0 = passed. The build runs it on the packaged program.
+- Fixed: closing the window could log a harmless error from the cover-art resize.
+
 ## 0.28.5 — 05/10/2026
 
 - Playlists mark a track from a CUE sheet with an `#IRONBARK-CUE:<track number>` line (was

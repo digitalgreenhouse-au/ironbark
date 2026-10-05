@@ -2342,7 +2342,10 @@ class PlayerWindow:
         # plus the gaps between them), so the sum is right even mid-resize.
         parts = (self.bar, self.head_text, self.seek_row, self.transport, self.status_label)
         gaps = theme.px(48)  # body padding and the space between rows
-        everything_else = sum(w.winfo_reqheight() for w in parts) + gaps
+        try:
+            everything_else = sum(w.winfo_reqheight() for w in parts) + gaps
+        except tk.TclError:  # the window is closing: its parts go one by one, each resizing the rest
+            return
         room = self.root.winfo_height() - everything_else - theme.px(MIN_LIST_HEIGHT)
         size = max(theme.px(64), min(width, room))
         if abs(size - self.art_size) <= 2:
