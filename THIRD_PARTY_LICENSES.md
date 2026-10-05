@@ -28,6 +28,15 @@ code (`ironbark/tagio/`, written from the published format specifications), repl
 | [pycparser](https://github.com/eliben/pycparser) | BSD-3-Clause | Used by cffi. |
 | [typing-extensions](https://github.com/python/typing_extensions) | PSF-2.0 | Used by soundfile. |
 
+## Also in the Windows installer and portable zip
+
+The packaged builds carry each component's licence text in `Ironbark\licenses\`.
+
+| Tool | Licence | Notes |
+|---|---|---|
+| [PyInstaller](https://pyinstaller.org) bootloader | GPL-2.0-or-later **with the Bootloader Exception** | The small launcher inside `Ironbark.exe`. The exception allows it in programs under any licence, including commercial ones; PyInstaller's run-time hooks are Apache-2.0. Not used when running from source. |
+| [Inno Setup](https://jrsoftware.org/isinfo.php) | Inno Setup License | Builds the installer; its setup and uninstall code is inside `Ironbark-Setup-X.Y.Z.exe` and `unins000.exe`, not in Ironbark itself. |
+
 ## Used only for development and testing (not shipped)
 
 | Tool | Licence | Notes |
