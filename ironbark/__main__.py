@@ -21,7 +21,15 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="ironbark", description=APP_NAME)
     parser.add_argument("folder", nargs="?", help="album folder to open and play")
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
+    parser.add_argument("--self-check", nargs="?", const="", metavar="REPORT",
+                        help="check this copy works (no sound, nothing saved), optionally writing "
+                             "the report to a file; exit code 0 = passed")
     args = parser.parse_args(argv)
+    if args.self_check is not None:
+        _enable_crisp_text_on_windows()
+        from . import selfcheck
+
+        sys.exit(selfcheck.run(args.self_check or None))
 
     settings.carry_over_old_folder()   # (0.26.0) renamed: bring the old settings across first
     _start_crash_log()
