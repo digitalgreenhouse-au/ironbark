@@ -497,7 +497,7 @@ def test_each_format_is_opened_as_few_times_as_it_needs(tmp_path, opens):
     write_id3(tmp_path / "e.mp3", [text("TIT2", "Song")], version=4)
     opens.clear()
     tracks = {name: library.read_track(tmp_path / name) for name in ("a.flac", "b.wav", "c.aiff", "d.ogg", "e.mp3")}
-    assert opens == {"a.flac": 2, "b.wav": 3, "c.aiff": 3, "d.ogg": 3, "e.mp3": 2}
+    assert opens == {"a.flac": 1, "b.wav": 3, "c.aiff": 3, "d.ogg": 3, "e.mp3": 2}   # (a FLAC: one open)
     assert [t.codec for t in tracks.values()] == ["FLAC", "WAV", "AIFF", "Vorbis", "MP3"]
     assert tracks["e.mp3"].title == "Song" and all(t.sample_rate == 44100 and not t.misnamed for t in tracks.values())
 

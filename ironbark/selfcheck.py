@@ -9,9 +9,11 @@ Checks: libsndfile loads and round-trips a tiny FLAC made in memory (bit for bit
 and lists the system's audio (WASAPI on Windows) — no stream is opened, so nothing is heard; on
 Windows, pycaw/comtypes read Windows' own list of outputs, and Windows' media controls and taskbar
 buttons can be reached (nothing is shown); secure connections (ssl, with root certificates) and the
-XML reader the rip check needs; the icon files are in the package; the main window opens, takes
-drag and drop, and closes. Most of these fail quietly inside the player (logged, feature off), so
-only this check catches them missing from a build.
+XML reader the rip check needs; the library database works — SQLite with its write-ahead log
+(WAL) and the song search index (FTS5), which a different Python's SQLite might lack; the icon
+files are in the package; the main window opens, takes drag and drop, and closes. Most of these
+fail quietly inside the player (logged, feature off), so only this check catches them missing
+from a build.
 
 Writes nothing of the user's: while the window is open, the settings folder (and with it playlists,
 the library index and logs) is pointed at an empty temporary folder, deleted afterwards. The packaged program has no console, so the report can
@@ -38,7 +40,8 @@ def run(report_path: str | None = None) -> int:
     failed = False
     for name, check in (("libsndfile", _check_sndfile), ("PortAudio", _check_portaudio),
                         ("Windows audio", _check_windows_audio), ("media controls", _check_media_controls),
-                        ("secure connections", _check_network), ("icon files", _check_icons),
+                        ("secure connections", _check_network), ("library database", _check_library_db),
+                        ("icon files", _check_icons),
                         ("main window", _check_window)):
         try:
             detail = check()
@@ -160,6 +163,40 @@ def _check_network() -> str:
     if ET.fromstring('<ctdb><entry confidence="2"/></ctdb>')[0].get("confidence") != "2":
         raise RuntimeError("the XML reader misread a test document")
     return f"{ssl.OPENSSL_VERSION}, {roots} root certificates; {pyexpat.EXPAT_VERSION}"
+
+
+def _check_library_db() -> str:
+    """The library database, made in an empty temporary folder: SQLite keeps it with a write-ahead
+    log (WAL, so searches never wait for the indexer), the song search index (FTS5 with the
+    unicode61 word splitter) can be made, and a song stored there is found by a search that has
+    to fold its letters ("lodz orsted" finds "Łódź" by Ørsted)."""
+    import sqlite3
+
+    from . import library_db
+    from .library import Track
+
+    problem = library_db.fts_problem()
+    if problem:
+        raise RuntimeError(problem)
+    home = Path(tempfile.mkdtemp(prefix="ironbark-selfcheck-db-"))
+    try:
+        root = home / "Music"
+        with library_db.LibraryDB.open(home / library_db.FILE_NAME, [root]) as db:
+            mode = db._con().execute("PRAGMA journal_mode").fetchone()[0]
+            if mode != "wal":
+                raise RuntimeError(f"the database's log is {mode!r}, not WAL")
+            song = Track(path=root / "Album" / "01 Song.flac", title="Łódź", artist="Ørsted")
+            db.apply(library_db.folder_result(root, root / "Album", {"01 Song.flac": (1, 1, 0.0)},
+                                              {"01 Song.flac": [song]}))
+            if [hit.track.title for hit in db.search_songs("lodz orsted").rows] != ["Łódź"]:
+                raise RuntimeError("the song search didn't find the test song (Polish and Danish letters) "
+                                   "from \"lodz orsted\"")
+            if db.quick_check() != "ok":
+                raise RuntimeError("SQLite's own check of the new database failed")
+        # (plain ASCII: the report may go to a console that can't show other letters)
+        return f"SQLite {sqlite3.sqlite_version}, WAL, song search (FTS5, unicode61) ignores accents"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def _check_icons() -> str:

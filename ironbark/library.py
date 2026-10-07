@@ -240,6 +240,16 @@ def read_track(path: Path) -> Track:
         return dataclasses.replace(whole, path=path, title=f"Track {cue.number}", duration=0.0, md5=0,
                                    missing=True, embedded_cue=None)
     by_name = _FAMILY_BY_EXT.get(path.suffix.lower(), "")
+    if by_name == "FLAC":
+        # The usual case in one open (on a network drive each open costs several round trips): a
+        # .flac that really is FLAC — FLACFile checks the "fLaC" mark itself. Anything else
+        # (damaged or misnamed) goes the long way below, which looks at the contents first.
+        try:
+            return _flac_track(path, FLACFile(path))
+        except OSError as error:   # locked, or a network drive dropping out: as _read_flac would say
+            return Track(path=path, title=title_from_filename(path), unreadable=_passing(error))
+        except _UNREADABLE:
+            pass
     head = _contents(path)
     actual, ogg_flac = head if head is not None else ("", False)
     if head is not None and not actual:  # the first bytes don't say: ask libsndfile
@@ -309,6 +319,10 @@ def _read_flac(path: Path) -> Track:
         audio = FLACFile(path)
     except _UNREADABLE as error:
         return Track(path=path, title=title_from_filename(path), unreadable=_passing(error))
+    return _flac_track(path, audio)
+
+
+def _flac_track(path: Path, audio: FLACFile) -> Track:
     tags = audio.tags
     info = audio.info
     return Track(
@@ -327,7 +341,7 @@ def _read_flac(path: Path) -> Track:
         bitrate=info.bitrate or 0,
         encoder=describe_encoder(tags.vendor if tags is not None else ""),
         md5=info.md5_signature,
-        size=path.stat().st_size,
+        size=audio.size,   # (measured on the file FLACFile had open: no second look at it)
     )
 
 
@@ -659,8 +673,21 @@ def _in_play_order(folder: Path, paths: list[Path]) -> list[Track]:
 
 def play_order(folder: Path, tracks: list[Track]) -> list[Track]:
     """Tracks under `folder` in play order (see scan_folder)."""
+    top = os.fspath(folder)
+    top = top if top.endswith(os.sep) else top + os.sep
+
+    def subfolder_of(track: Track) -> str:
+        # The track's folder below `folder`, as Path.relative_to(...).as_posix() would give it, worked
+        # out on the text (making Path objects was most of the time a big library took to sort).
+        here = os.path.dirname(os.fspath(track.path))
+        if here == top or here + os.sep == top:
+            return "."
+        if here.startswith(top):
+            return here[len(top):].replace(os.sep, "/")
+        return track.path.parent.relative_to(folder).as_posix()   # (other spellings of the same folder)
+
     def sort_key(track: Track):
-        subfolder = track.path.parent.relative_to(folder).as_posix()
+        subfolder = subfolder_of(track)
         return (
             natural_key(subfolder),
             natural_key(track.album),
@@ -892,6 +919,15 @@ def album_folder(track_path: Path) -> Path:
     """The album a track belongs to: its folder, or the parent of a "CD1"/"Disc 2" folder."""
     folder = track_path.parent
     return folder.parent if _DISC_FOLDER.match(folder.name) else folder
+
+
+def album_folder_text(folder: str) -> str:
+    """album_folder for a file's folder given as text: the folder, or the parent of a "CD1" /
+    "Disc 2" folder (no Path objects made: for working through a whole library)."""
+    parent, name = os.path.split(folder)
+    if not name:   # a drive or the top of a share: no parent to go to
+        return folder
+    return parent if _DISC_FOLDER.match(name) else folder
 
 
 def group_by_album(tracks: list[Track]) -> list[tuple[Path, int, int]]:

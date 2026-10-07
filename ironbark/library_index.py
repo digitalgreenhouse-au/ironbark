@@ -414,7 +414,9 @@ class LibraryIndex:
 
     def albums(self) -> list[Album]:
         """Every album in the index, with the details the browse views need (browse.py)."""
-        return albums_from(self.tracks(), self.added_times(), self.root)
+        with self._lock:
+            added = {name: e.added for name, e in self.entries.items()}   # (keyed by text: no Path per file)
+        return albums_from(self.tracks(), added, self.root)
 
     def album_tracks(self, folder: Path, whole_tree: bool = False) -> list[Track] | None:
         """The tracks library.scan_album (or scan_folder, `whole_tree`) would give for `folder`,

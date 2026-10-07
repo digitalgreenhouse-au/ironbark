@@ -15,6 +15,11 @@ def test_sound_file_check_round_trips_flac_bit_for_bit():
     assert "bit for bit" in selfcheck._check_sndfile()
 
 
+def test_library_database_check_makes_a_database_and_searches_it():
+    detail = selfcheck._check_library_db()
+    assert "WAL" in detail and "FTS5" in detail
+
+
 def test_icon_check_finds_every_size():
     assert "ironbark.ico" in selfcheck._check_icons()
 

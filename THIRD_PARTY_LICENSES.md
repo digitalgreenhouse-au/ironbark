@@ -20,6 +20,7 @@ listed and matched to their licences on 07/10/2026; the build now stops if one h
 | ↳ libmpdec ([mpdecimal](https://www.bytereef.org/mpdecimal/)) 2.5 | BSD-2-Clause | Inside the Python runtime (the decimal module). |
 | ↳ liblzma ([XZ Utils](https://tukaani.org/xz/)) 5.8 | 0BSD | Inside the Python runtime (the lzma module). |
 | ↳ [zlib](https://zlib.net) 1.3 | Zlib | Inside the Python runtime (the zlib module). |
+| ↳ [SQLite](https://www.sqlite.org) 3.53 | Public domain (no licence needed; checked at sqlite.org/copyright.html on 07/10/2026) | Inside the Python runtime (the sqlite3 module): the library database and its song search. |
 | Tcl/Tk 8.6 (with CPython's tkinter) | BSD-style (Tcl/Tk licence) | The windows and controls. |
 | Microsoft Visual C++ runtime (`VCRUNTIME140*.dll`, `msvcp140*.dll`) | Microsoft's redistributable-code terms | The C/C++ run-time library the Python runtime and NumPy are built with; Microsoft allows it to be shipped with programs. |
 | [NumPy](https://numpy.org) | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | Audio maths. Its licence file also covers the OpenBLAS, LAPACK and GCC run-time code it bundles. |

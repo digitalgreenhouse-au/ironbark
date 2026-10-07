@@ -23,6 +23,8 @@ COVERED_BY: list[tuple[str, list[str]]] = [
     (r"pyexpat\.pyd|_elementtree\.pyd", ["Python-LICENSE.txt", "expat-COPYING.txt"]),
     (r"_decimal\.pyd", ["Python-LICENSE.txt", "mpdecimal-LICENSE.txt"]),
     (r"_lzma\.pyd", ["Python-LICENSE.txt", "xz-liblzma-COPYING.0BSD.txt"]),
+    (r"sqlite3\.dll", ["SQLite-public-domain.txt"]),
+    (r"_sqlite3\.pyd", ["Python-LICENSE.txt", "SQLite-public-domain.txt"]),
     (r"tcl86t\.dll", ["Tcl-license.terms.txt"]),
     (r"tk86t\.dll", ["tk8.6-license.terms.txt"]),
     (r"_tkinter\.pyd", ["Python-LICENSE.txt", "Tcl-license.terms.txt", "tk8.6-license.terms.txt"]),

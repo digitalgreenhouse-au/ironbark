@@ -3,8 +3,9 @@
 One album: a plain numbered list. Several albums (e.g. the whole library): each album
 gets a header row above its tracks. A playlist: a flat list in its own order, with artists.
 Right-click a song (or an album header) for Play / Add to playlist / Remove, etc. Typing in the search box narrows the list to the
-songs whose title, artist, album or file name match every word typed; double-clicking a
-result plays it in place, and the album carries on from there.
+songs whose title, artist, album, album artist, composer, genre, year or file name hold every word
+typed (accents and case ignored: searchfold.py); double-clicking a result plays it in place, and the
+album carries on from there.
 
 Songs (or an album, by its header) can be dragged: onto a tab to add them there, or up and down
 a playlist to reorder it. The view only reports the drag (`on_drag`); the window decides what
@@ -22,12 +23,11 @@ is longer than the window, and the search box has a magnifier and a × to clear 
 from __future__ import annotations
 
 import tkinter as tk
-import unicodedata
 from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import controls, popups, theme
+from . import controls, popups, searchfold, theme
 from .library import Track, group_by_album
 
 SEARCH_DELAY_MS = 150
@@ -41,15 +41,9 @@ def _clock(seconds: float) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def _fold(text: str) -> str:
-    """Lower-case and strip accents, so "live" finds "Lïve"."""
-    decomposed = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
-
-
-def _haystack(track: Track) -> str:
-    """What a search looks through for a song: title, artist, album and file name, folded."""
-    return _fold(" ".join((track.title, track.artist, track.album, track.path.stem)))
+# The search's folding and the text it looks through (kept under their old names here too).
+_fold = searchfold.fold
+_haystack = searchfold.haystack
 
 
 def matches(track: Track, words: list[str]) -> bool:

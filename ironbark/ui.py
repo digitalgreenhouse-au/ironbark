@@ -1747,6 +1747,7 @@ class PlayerWindow:
 
     def _set_library_folder(self, path: Path):
         self.prefs["library_folder"] = str(path)
+        self.prefs["library_folders"] = [str(path)]   # (the list several folders will use; one for now)
         self._update_library_text()
         self._update_new_albums()
         if self.watcher.running:

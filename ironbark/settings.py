@@ -4,6 +4,10 @@ The file is never left half-written (see `write_file`), and a bad one never stop
 starting: a value of the wrong kind is dropped on its own (its default stands); a file that can't
 be understood at all is set aside as `settings.json.damaged-<date-time>` and the last good copy,
 `settings.json.bak` (taken each time the settings load cleanly), is used instead.
+
+What the player can always make again (the library database) lives apart from the settings, in
+`cache_folder()`: on Windows that's the local, non-roaming AppData folder, so it never travels
+with a roaming profile or sits on a network share.
 """
 
 from __future__ import annotations
@@ -29,7 +33,8 @@ DEFAULTS = {
     "mini_on_top": True,         # (0.25.0) the mini strip's own Keep on top (on by default)
     "exclusive": False,
     "output_device": "",  # "" = system default
-    "library_folder": "",  # "" = Windows' own Music folder (ui.default_music_folder)
+    "library_folders": [],       # the folders the Library looks in ([] = Windows' own Music folder)
+    "library_folder": "",        # (before library_folders) the one library folder: read into library_folders
     "now_playing_geometry": "",  # where the Now Playing window was last left
     "library_geometry": "",      # where (and how big) the Library window was last left
     "tabs": None,                # open tabs: [{"kind": "album"|"folder"|"library", "path", "query", "title"}]
@@ -90,7 +95,30 @@ def _base() -> Path:
 
 
 def settings_path() -> Path:
+    return _standard_settings_path()
+
+
+def _standard_settings_path() -> Path:
     return _base() / APP_NAME / "settings.json"
+
+
+def _cache_base() -> Path:
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+
+
+def cache_folder() -> Path:
+    """Where the player keeps what it can always make again (the library database): Windows'
+    local AppData folder (%LOCALAPPDATA%\\Ironbark), ~/Library/Caches/Ironbark on a Mac. When
+    the settings have been pointed somewhere else (the self-check's empty folder, a test's), the
+    cache goes with them, so nothing of the user's is touched."""
+    here = settings_path()
+    if here != _standard_settings_path():
+        return here.parent
+    return _cache_base() / APP_NAME
 
 
 # What went wrong with the settings file this session ("" = nothing): set when a damaged file
@@ -177,6 +205,8 @@ def load() -> dict:
         _keep_backup(path, text)
     if saved is not None:
         data.update(_checked(saved))
+    if not data["library_folders"] and data["library_folder"]:
+        data["library_folders"] = [data["library_folder"]]   # (saved before there could be several)
     return data
 
 
@@ -316,6 +346,8 @@ _CHECKS = {
     "vu_auto": _dict_or_none,
     "vu_auto_loudness": _dict_or_none,
     "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
+    "library_folders": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
+                                      else _BAD),
 }
 
 
