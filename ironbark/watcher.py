@@ -25,6 +25,7 @@ changed or gone.
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -46,8 +47,11 @@ QUICK_LOOKS = 6    # quick looks every RECHECK_S for a copy in progress; after t
 class Report:
     """One look at the library folders."""
     diff: Diff = field(default_factory=Diff)
+    # A library folder couldn't be looked at (said; nothing stored for it changed). What the others
+    # brought is still news.
     error: str = ""
-    first_build: bool = False   # a library folder's first look: everything "added", nothing new
+    # Music came from a library folder's first look: everything there is "added", nothing new.
+    first_build: bool = False
     # When watching (Watcher.since) and something changed: (album folder, when its newest music
     # was first seen) for the albums with music new since watching began, newest first — whether
     # each was opened since is the player's to say — and every album folder in the library (for
@@ -127,7 +131,7 @@ class Watcher:
                 self.settling = Settling(self.settling.settle_s, self.settling.clock)
             if not any(root.is_dir() for root in index.roots):
                 return Report(error=f"Can't see the library folder {index.root}")
-            first_build = not index.built
+            unbuilt = _unbuilt(index)
             self.settling.begin()
             if folders is None:
                 diff = index.refresh(hold=self.settling)
@@ -135,7 +139,8 @@ class Watcher:
                 diff = index.refresh(hold=self.settling, folders=folders)
             self.settling.end()
             # A drive that went mid-look, or an empty mount point: said so, what's stored left as it was.
-            report = Report(diff, error=diff.error, first_build=first_build)
+            # (A library folder that's never been reachable doesn't stop the others' news.)
+            report = Report(diff, error=diff.error, first_build=_inside_any(diff.added, unbuilt))
             if self.since is not None and (new_albums or not diff.nothing):
                 report.new = index.new_album_times(self.since)
                 report.album_folders = frozenset(index.album_folders())
@@ -217,6 +222,20 @@ def new_albums(index: LibraryIndex, since: float, opened: dict[str, float]) -> l
     return still_new(index.new_album_times(since), opened)
 
 
+def _unbuilt(index) -> list[Path]:
+    """The library folders whose first look hasn't finished (all of them while `built` is 0 for
+    an index that can't say which)."""
+    if hasattr(index, "unbuilt"):
+        return index.unbuilt()
+    return [] if index.built else list(index.roots)
+
+
+def _inside_any(paths: list[Path], folders: list[Path]) -> bool:
+    """Is any of these files in one of these folders?"""
+    tops = tuple(os.path.join(os.path.normcase(str(folder)), "") for folder in folders)
+    return bool(tops) and any(os.path.normcase(str(path)).startswith(tops) for path in paths)
+
+
 def still_new(found: list[tuple[Path, float]], opened: dict[str, float]) -> list[Path]:
     """The albums among `found` ((folder, newest first seen), newest first) not opened since."""
     return [folder for folder, seen in found if seen > opened.get(str(folder), 0.0)]
@@ -242,7 +261,7 @@ def note(report: Report, new_count: int) -> str:
     """The one line for the status line, e.g. "New music: 3 new albums in the Library · 2 songs
     gone from the Library" ("" when there's nothing worth saying). `new_count`: the new albums
     this look brought (`arrived`)."""
-    if report.error or not report.news:
+    if not report.news:   # (an unreachable library folder changes nothing: what's here is what the others brought)
         return ""
     parts = []
     if report.diff.added:

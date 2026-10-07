@@ -150,7 +150,27 @@ def test_several_library_folders_and_add_folder(root, music, tmp_path, monkeypat
     w.set_roots([more])                                      # (Settings → Library → Remove)
     wait_for_index(w, root)
     assert column(w, "album") == ["Blue"] and library_index.shared([more]).db.roots() == [str(more)]
+    told.clear()
+    monkeypatch.setattr(filedialog, "askdirectory", lambda **kwargs: str(more / "Blue"))
+    w._add_folder()                                          # (a folder already in the library)
+    assert told == [] and w.roots == [more] and "already in the Library" in w.status.cget("text")
     w.close()
+
+
+def test_adding_a_folder_inside_or_around_the_library_folders():
+    """(0.31) No album is ever listed twice: a folder inside a library folder is already in the
+    library; one that holds library folders takes their place."""
+    from ironbark.library_window import adding_folder
+    from ironbark.ui import library_folders
+
+    music, jazz, other = Path("C:/Music"), Path("C:/Music/Jazz"), Path("D:/Other")
+    assert adding_folder([music], other) == ([music, other], "")
+    assert adding_folder([music], music) == ([music], f"“{music}” is already in the Library")
+    assert adding_folder([music, other], jazz) == ([music, other],
+                                                   f"“{jazz}” is already in the Library (it's inside “{music}”)")
+    roots, note = adding_folder([jazz, other], music)
+    assert roots == [other, music] and "takes in" in note and str(jazz) in note
+    assert library_folders({"library_folders": [str(jazz), str(music), str(other)]}) == [music, other]
 
 
 def test_track_list_artist_and_album_columns(root):

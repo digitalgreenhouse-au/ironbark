@@ -140,6 +140,91 @@ def test_a_folder_that_cant_be_listed_keeps_everything_and_a_vanished_one_comes_
     assert diff.nothing and reader.read == [] and rows(db) == before and len(db.albums()) == 2
 
 
+def refuse(monkeypatch, folder: Path, error: OSError):
+    """os.scandir fails for this one folder with `error` (the indexer's walk lists through it)."""
+    real = os.scandir
+
+    def scandir(path="."):
+        if os.fspath(path) == str(folder):
+            raise error
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+
+def test_an_access_denied_folder_doesnt_hold_up_the_first_look_but_a_dropped_one_does(tmp_path, db, monkeypatch):
+    """A folder nobody may list is the same on every look: the first look still counts as
+    finished, so new music can be spotted. One that failed another way (a network drive dropping
+    out) waits for a look that goes cleanly, or its music would all look new once it's read."""
+    real_scandir = os.scandir
+    root = tree(tmp_path / "Music", {"A": 2, "Private": 1})
+    refuse(monkeypatch, root / "Private", PermissionError(13, "Access is denied", str(root / "Private")))
+    look = Indexer(db, reader=Reader())
+    assert len(look.check([root]).added) == 2 and db.built(root)
+    since = time.time()
+    time.sleep(0.01)
+    tree(root, {"New": 1})
+    look.check([root])
+    assert db.new_albums(since, {}) == [root / "New"]
+
+    other = LibraryDB.open(tmp_path / "other.db")
+    refuse(monkeypatch, root / "Private", OSError(64, "The specified network name is no longer available"))
+    look = Indexer(other, reader=Reader())
+    look.check([root])
+    assert not other.built(root)
+    monkeypatch.setattr(os, "scandir", real_scandir)   # (the drive is back)
+    look.check([root])
+    assert other.built(root) and other.new_albums(since - 60, {}) == []
+    other.close()
+
+
+def test_a_library_folder_inside_another_is_looked_at_once(tmp_path, db):
+    root = tree(tmp_path / "Music", {"A": 2, "Classical/B": 2})
+    reader = Reader()
+    look = Indexer(db, reader=reader)
+    diff = look.check([root, root / "Classical"])
+    assert len(diff.added) == 4 and len(reader.read) == 4 and db.roots() == [str(root)]
+    assert sorted(a.name for a in db.albums()) == ["A", "B"]
+    assert look.update([root / "Classical", root], [root / "Classical" / "B" / "01.flac"]).changed \
+        == [root / "Classical" / "B" / "01.flac"]
+
+
+def test_no_library_folders_change_nothing(tmp_path, db):
+    root = tree(tmp_path / "Music", {"A": 2})
+    look = Indexer(db, reader=Reader())
+    look.check([root])
+    assert look.check([]).error and db.roots() == [str(root)] and db.counts()["files"] == 2
+
+
+def test_a_damaged_database_is_noted_to_be_put_right_at_the_next_start(tmp_path, db, monkeypatch):
+    root = tree(tmp_path / "Music", {"A": 2})
+    look = Indexer(db, reader=Reader())
+    events = look.listen()
+
+    def damaged(result, now=None):
+        error = sqlite3.DatabaseError("database disk image is malformed")
+        error.sqlite_errorcode = 11   # SQLITE_CORRUPT, as SQLite's own error carries it
+        raise error
+
+    monkeypatch.setattr(db, "apply", damaged)
+    diff = look.check([root])
+    assert "repaired when the player next starts" in diff.error
+    assert any(isinstance(e, Failed) and "repaired" in e.text for e in drain(events))
+    assert (tmp_path / "library.db.check").exists()
+
+
+def test_a_look_brings_search_texts_folded_another_way_up_to_date(tmp_path, db):
+    root = tree(tmp_path / "Music", {"Bjork": 2})
+    look = Indexer(db, reader=Reader())
+    look.check([root])
+    with db._writing():   # (as if folded by an older searchfold)
+        db._con().execute("UPDATE meta SET value = 0 WHERE key = 'fold_version'")
+        db._con().execute("UPDATE tracks SET haystack = ''")
+    assert db.needs_refold
+    look.check([root])
+    assert not db.needs_refold and all(row[0] for row in db._con().execute("SELECT haystack FROM tracks"))
+
+
 # -- cancel and carry on ---------------------------------------------------------------------------------
 def test_a_cancelled_first_look_carries_on_and_ends_equal_to_one_that_wasnt(tmp_path):
     root = tree(tmp_path / "Music", {f"Album {n:02d}": 3 for n in range(12)})
@@ -474,6 +559,51 @@ def test_a_search_typed_over_is_interrupted(tmp_path, db):
         time.sleep(0.005)
     assert [(a.ask, a.value) for a in found] == [(newest, "fresh")] and time.monotonic() - started < 5
     queries.stop()
+
+
+@pytest.mark.parametrize("kind", ["search", "albums"])
+def test_an_interrupt_that_lands_on_the_newest_ask_runs_it_again(tmp_path, db, kind):
+    """The search typed over finishes just as the interrupt meant for it is sent, so it lands on
+    the ask after: that one is still the newest of its kind, so it runs again rather than being
+    dropped (a search box that never shows the last search) or answered with an error."""
+    queries = Queries(db)
+    gate, started = threading.Event(), threading.Event()
+    runs = []
+
+    def newest():
+        runs.append(1)
+        if len(runs) > 1:
+            return "fresh"
+        started.set()
+        return db._con().execute("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c"
+                                 " WHERE x < 1000000000) SELECT count(*) FROM c").fetchone()
+
+    real = db.interrupt
+
+    def late(thread):   # (the one it was meant for ends first; it reaches the next ask's statement)
+        gate.set()
+        assert started.wait(10)
+        time.sleep(0.2)
+        real(thread)
+
+    db.interrupt = late
+    queries.ask("search", gate.wait, 10)
+    deadline = time.monotonic() + 10
+    while queries._running != "search" and time.monotonic() < deadline:
+        time.sleep(0.005)
+    if kind == "search":
+        number = queries.ask("search", newest, interrupt=True)
+    else:   # (another kind's ask was waiting behind the search: the interrupt reaches it instead)
+        number = queries.ask("albums", newest)
+        queries.ask("search", lambda: "typed over", interrupt=True)
+    found = []
+    while not any(a.ask == number for a in found) and time.monotonic() < deadline + 10:
+        found += queries.drain()
+        time.sleep(0.01)
+    answer = next(a for a in found if a.ask == number)
+    assert answer.value == "fresh" and answer.error is None and len(runs) == 2
+    queries.stop()
+    queries.join(5)
 
 
 # -- the watcher ----------------------------------------------------------------------------------------------

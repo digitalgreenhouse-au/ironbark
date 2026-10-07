@@ -177,6 +177,122 @@ def test_a_garbled_page_fails_the_quick_check(tmp_path):
         assert db.quick_check() != "ok"
 
 
+def sqlite_error(code: int, text: str) -> sqlite3.DatabaseError:
+    """An error as SQLite's own would carry it (its result code)."""
+    error = sqlite3.DatabaseError(text)
+    error.sqlite_errorcode = code
+    return error
+
+
+def test_a_busy_database_is_never_set_aside(tmp_path, monkeypatch):
+    """Another copy of the player is writing as this one starts: the file is busy, not damaged. It
+    stays where it is (with its plays), the error is raised, and the next use simply works."""
+    monkeypatch.setattr(library_db, "BUSY_S", 0.2)
+    path = tmp_path / "library.db"
+    with LibraryDB.open(path, [ROOT]) as db:
+        db.record_play("C:/x.flac", 300, 300)
+    other = sqlite3.connect(path, isolation_level=None)
+    other.execute("BEGIN IMMEDIATE")
+    other.execute("INSERT INTO favourites(key, added) VALUES ('C:/y.flac', 1)")
+    db = LibraryDB.open(path, lazy=True)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            db.generation
+        assert not list(tmp_path.glob("library.db.damaged-*")) and db.problem == ""
+        other.execute("COMMIT")
+        assert db.play_counts(["C:/x.flac"]) == {"C:/x.flac": 1} and db.is_favourite("C:/y.flac")
+    finally:
+        other.close()
+        db.close()
+    # A file not made yet, busy as it's first opened: the next use makes it properly (not just reconnects).
+    fresh = tmp_path / "fresh.db"
+    other = sqlite3.connect(fresh, isolation_level=None)
+    other.execute("BEGIN IMMEDIATE")
+    other.execute("CREATE TABLE elsewhere(a)")
+    db = LibraryDB.open(fresh, lazy=True)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            db.generation
+        other.execute("COMMIT")
+        assert db.generation == 0 and db.roots() == [] and db.problem == ""
+    finally:
+        other.close()
+        db.close()
+
+
+def test_what_counts_as_damage(tmp_path):
+    con = sqlite3.connect(":memory:")
+    with pytest.raises(sqlite3.OperationalError) as mistake:
+        con.execute("SELECT * FROM nothing_here")
+    assert not library_db.is_damage(mistake.value)       # (an ordinary mistake, not a damaged file)
+    con.close()
+    (tmp_path / "not.db").write_bytes(b"this is not SQLite" * 300)
+    con = sqlite3.connect(tmp_path / "not.db")
+    with pytest.raises(sqlite3.DatabaseError) as garbage:
+        con.execute("SELECT * FROM sqlite_master")
+    con.close()
+    assert library_db.is_damage(garbage.value)           # (SQLite's own "file is not a database")
+    assert library_db.is_damage(sqlite_error(11, "database disk image is malformed"))
+    assert library_db.is_damage(sqlite_error(26, "file is not a database"))
+    assert library_db.is_damage(sqlite_error(11 | (2 << 8), "corrupt index"))   # (an extended code)
+    for code in (5, 6, 10, 13, 14, 8):   # busy, locked, a disk error, full, can't open, read-only
+        assert not library_db.is_damage(sqlite_error(code, "not damage"))
+    assert not library_db.is_damage(OSError("no")) and not library_db.is_damage(ValueError())
+
+
+def test_damage_found_while_running_is_put_right_at_the_next_start(tmp_path, monkeypatch):
+    path = tmp_path / "library.db"
+    with LibraryDB.open(path, [ROOT]) as db:
+        db.apply(result(ROOT / "A", [song(ROOT / "A", 1, "One")]))
+        db.record_play("C:/a.flac", 200, 200, when=10.0)
+        assert not db.note_damage(sqlite_error(5, "database is locked"))   # busy: nothing noted
+        assert not (tmp_path / "library.db.check").exists()
+        assert db.note_damage(sqlite_error(11, "database disk image is malformed"))
+    assert (tmp_path / "library.db.check").exists()
+    with LibraryDB.open(path) as db:              # SQLite's check says it's sound: kept as it was
+        assert db.counts()["tracks"] == 1 and db.problem == ""
+    assert not (tmp_path / "library.db.check").exists() and not list(tmp_path.glob("library.db.damaged-*"))
+    with LibraryDB.open(path) as db:
+        db.note_damage(sqlite_error(11, "database disk image is malformed"))
+    monkeypatch.setattr(LibraryDB, "_check_file", lambda self: "row 3 missing from index tracks_file")
+    with LibraryDB.open(path) as db:              # really damaged: set aside, plays and folders kept
+        assert "set aside" in db.problem and db.counts()["tracks"] == 0
+        assert db.roots() == [str(ROOT)] and db.play_counts(["C:/a.flac"]) == {"C:/a.flac": 1}
+    aside = [p for p in tmp_path.glob("library.db.damaged-*") if not p.name.endswith(("-wal", "-shm"))]
+    assert len(aside) == 1 and not (tmp_path / "library.db.check").exists()
+
+
+@needs_fts
+def test_a_file_this_sqlite_cant_index_is_set_aside_keeping_plays(tmp_path, monkeypatch):
+    path = tmp_path / "library.db"
+    with LibraryDB.open(path, [ROOT]) as db:
+        db.apply(result(ROOT / "A", [song(ROOT / "A", 1, "One")]))
+        db.record_play("C:/a.flac", 200, 200, when=10.0)
+        db.set_favourite("C:/a.flac", when=11.0)
+    monkeypatch.setattr(library_db, "fts_problem", lambda: "no FTS5 here")
+    with LibraryDB.open(path) as db:
+        assert "set aside" in db.problem and not db.fts
+        assert db.roots() == [str(ROOT)] and db.recently_played() == [("C:/a.flac", 10.0)]
+        assert db.favourites() == ["C:/a.flac"]
+
+
+def test_library_folders_are_kept_outermost():
+    music, classical = ROOT, ROOT / "Classical"
+    other = Path("D:/Other") if os.name == "nt" else Path("/other")
+    assert library_db.outermost([music, classical, other]) == [music, other]
+    assert library_db.outermost([classical, other, music]) == [other, music]   # (the outer keeps its place)
+    assert library_db.outermost([music, music, Path(str(music) + "Extra")]) == [music, Path(str(music) + "Extra")]
+    if os.name == "nt":
+        assert library_db.outermost(["C:\\Music", "c:\\music\\Jazz", "C:\\MUSIC"]) == [Path("C:/Music")]
+        assert library_db.outermost(["E:\\", "E:\\Music"]) == [Path("E:/")]
+    assert library_db.outermost([]) == []
+
+
+def test_a_library_folder_inside_another_isnt_kept(db):
+    db.set_roots([ROOT, ROOT / "Classical"])
+    assert db.roots() == [str(ROOT)]
+
+
 # -- tracks stored exactly ---------------------------------------------------------------------------------
 def test_md5_keeps_all_128_bits(db):
     big = (1 << 128) - 1

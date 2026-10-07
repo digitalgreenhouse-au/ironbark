@@ -22,7 +22,9 @@ library database (library_db.py) — and the query thread that reads it for the 
    drive comes back); missing files go for good after a later look at the whole folder that went
    cleanly, or after a week (LibraryDB.purge_missing). A library folder's first look counts as
    finished (LibraryDB.mark_built: only then can anything be new music) once a look at all of it
-   has gone cleanly.
+   has gone cleanly. A folder the system won't let anyone list (access denied) doesn't hold that
+   up — it would be the same on every look — but one that failed some other way (a network drive
+   dropping out) does: its music would otherwise all look new once it could be read.
 
 Files a caller says are still being written (`hold`: watcher.Settling) are left for the next look.
 What a look finds is said on every listener's queue (`listen`): Started, Progress, AlbumsChanged,
@@ -56,7 +58,8 @@ from pathlib import Path
 
 from . import audiofile, library_db
 from .library import Track, is_music_name, skip_folder
-from .library_db import FileState, FolderResult, FolderState, LibraryDB, cue_signature_of, folder_result, read_folder
+from .library_db import (FileState, FolderResult, FolderState, LibraryDB, cue_signature_of, folder_result, outermost,
+                         read_folder)
 
 log = logging.getLogger(__name__)
 
@@ -173,7 +176,9 @@ class _Root:
     jobs: list[_Job] = field(default_factory=list)
     vanished: list[int] = field(default_factory=list)     # stored folders gone from their parent's listing
     vanished_files: list[str] = field(default_factory=list)
-    clean: bool = True       # every folder could be listed (a first look can count as finished)
+    # Every folder could be listed, or was refused for good (access denied): a first look can count
+    # as finished, and what went missing before it can go.
+    clean: bool = True
 
 
 # -- worker processes ------------------------------------------------------------------------------------
@@ -318,9 +323,13 @@ class Indexer:
         the next look (it goes in the diff's `waiting`). `folders`: look only at these folders (not
         what's below them), e.g. again soon for a copy in progress; everything else is left for the
         next whole look. `json_index`: an old library_index.json to bring across before a library
-        folder's first look. `dry`: only compare, nothing read or stored (`changes`)."""
-        roots = [str(Path(r)) for r in roots]
+        folder's first look. `dry`: only compare, nothing read or stored (`changes`). A folder
+        inside another library folder is left out (library_db.outermost); no folders at all
+        changes nothing."""
+        roots = [str(r) for r in outermost(roots)]
         only = None if folders is None else {os.fspath(f) for f in folders}
+        if not roots:
+            return Diff(error="No library folder")
         with self._lock:
             self._cancel.clear()
             started = self._now()
@@ -334,7 +343,7 @@ class Indexer:
                 diff.cancelled = True
             except Exception as error:   # (a full disk, a damaged file): said, and the next look tries again
                 log.exception("the library look failed")
-                text = f"The library database couldn't be updated: {error}"
+                text = _failed(self.db, error)
                 self._send(Failed(text))
                 diff.error = f"{diff.error}; {text}" if diff.error else text
             finally:
@@ -388,6 +397,10 @@ class Indexer:
                     db.mark_built(plan.path, self._now())
             else:
                 db.purge_missing(plan.path)
+        if only is None and db.needs_refold:
+            # The songs' search texts were folded another way (searchfold changed), or stored before
+            # this SQLite could index them: brought up to date, a batch at a time (a cancel resumes later).
+            db.refold(cancel=self._cancel.is_set)
 
     def _as_stored(self, roots: list[str]) -> list[str]:
         """Each library folder as the database spells it (asked for in other capitals, say): what's
@@ -412,8 +425,9 @@ class Indexer:
         if not dry and only is None:
             self._bring_across(root, json_index, started)
         stored = db.folders(root)
+        denied: set[str] = set()
         if only is None:
-            listed, unlisted = self._walk(root, started)
+            listed, unlisted, denied = self._walk(root, started)
             if root in unlisted:
                 return f"Can't read the library folder {root}"
         else:
@@ -431,7 +445,7 @@ class Indexer:
                 return f"The library folder {root} is empty"
         if not os.path.isdir(root):   # (a drive can go while it's being walked)
             return f"Can't see the library folder {root}"
-        plan.clean = not unlisted
+        plan.clean = all(folder in denied for folder in unlisted)
         cue_folders = db.cue_track_folders([state.id for state in stored.values()])
         for folder, (listing, cue_sig, unknown) in listed.items():
             state = stored.get(folder)
@@ -458,10 +472,11 @@ class Indexer:
 
     def _walk(self, root: str, started: float):
         """Every folder under `root` (skipping system folders): {folder: (music files {name: (size,
-        modified ns, created s)}, cue_signature, names that couldn't be looked at)}, and the folders
-        that couldn't be listed."""
+        modified ns, created s)}, cue_signature, names that couldn't be looked at)}; the folders
+        that couldn't be listed; and those among them the system refused (access denied)."""
         listed: dict[str, tuple[dict, str, set[str]]] = {}
         unlisted: list[str] = []
+        denied: set[str] = set()
         stack = [root]
         while stack:
             if self._cancel.is_set():
@@ -469,13 +484,15 @@ class Indexer:
             folder = stack.pop()
             try:
                 listing, sig, unknown, subfolders = _list(folder)
-            except OSError:
+            except OSError as error:
                 unlisted.append(folder)
+                if isinstance(error, PermissionError):
+                    denied.add(folder)
                 continue
             listed[folder] = (listing, sig, unknown)
             stack += sorted(subfolders, key=str.lower, reverse=True)
             self._set_progress(Progress("looking", len(listed), 0, folder, started))
-        return listed, unlisted
+        return listed, unlisted, denied
 
     def _compare(self, root: str, folder: str, listing: dict, cue_sig: str, unknown: set[str],
                  state: FolderState | None, files: dict[str, FileState], held_cue_tracks: bool,
@@ -640,7 +657,7 @@ class Indexer:
     def update(self, roots: Iterable[str | Path], paths: Iterable[str | Path]) -> Diff:
         """These files have just changed (a tag edit was saved): read them again now, even if
         their size and time look the same — just them (a folder with CUE sheets whole)."""
-        roots = sorted((str(Path(r)) for r in roots), key=len, reverse=True)
+        roots = [str(r) for r in outermost(roots)]
         by_folder: dict[str, set[str]] = {}
         for path in paths:
             text = os.fspath(audiofile.real_path(path))
@@ -672,7 +689,7 @@ class Indexer:
                     self._apply(_read_job(root, folder, listing, job.names, cue_sig, self.reader), job, diff)
             except Exception as error:
                 log.exception("the library update failed")
-                text = f"The library database couldn't be updated: {error}"
+                text = _failed(self.db, error)
                 self._send(Failed(text))
                 diff.error = text
             finally:
@@ -681,6 +698,14 @@ class Indexer:
             self.last_diff = diff
             self._send(Finished(diff))
             return diff
+
+
+def _failed(db: LibraryDB, error: BaseException) -> str:
+    """What to say when the database couldn't be written. A damaged file is noted, to be put right
+    at the next start (LibraryDB.note_damage)."""
+    if db.note_damage(error):
+        return f"The library database is damaged ({error}): it will be repaired when the player next starts"
+    return f"The library database couldn't be updated: {error}"
 
 
 def _note(diff: Diff, job: _Job) -> None:
@@ -797,19 +822,27 @@ class Queries:
                 if item is None:
                     return
                 kind, number, fn, args = item
-                with self._lock:
-                    if self._latest.get(kind) != number:
-                        continue   # replaced before it started
-                    self._running = kind
-                try:
-                    answer = Answer(kind, number, fn(*args))
-                except library_db.Interrupted:
-                    continue       # a newer one of its kind is on its way
-                except Exception as error:   # (handed to the window, which says so)
-                    answer = Answer(kind, number, error=error)
-                finally:
-                    with self._lock:
-                        self._running = None
-                self.answers.put(answer)
+                answer = self._answer(kind, number, fn, args)
+                if answer is not None:
+                    self.answers.put(answer)
         finally:
             self.db.release()
+
+    def _answer(self, kind: str, number: int, fn: Callable, args: tuple) -> Answer | None:
+        """Run one ask; None when a newer one of its kind replaced it (before it started, or while
+        it ran: stopped). An interrupt meant for the ask before can land on this one, if that one
+        finished just as it was sent: then this one, still the newest, simply runs again."""
+        while True:
+            with self._lock:
+                if self._latest.get(kind) != number:
+                    return None
+                self._running = kind
+            try:
+                return Answer(kind, number, fn(*args))
+            except Exception as error:   # (handed to the window, which says so)
+                if not library_db.is_interrupt(error):
+                    self.db.note_damage(error)
+                    return Answer(kind, number, error=error)
+            finally:
+                with self._lock:
+                    self._running = None

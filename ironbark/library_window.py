@@ -19,6 +19,7 @@ needed, and the row under the pointer lit up as in the track list."""
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -29,7 +30,7 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import browse, controls, indexer, library_index, placement, popups, theme
+from . import browse, controls, indexer, library_db, library_index, placement, popups, theme
 from .library import Album
 from .playlist_view import TreeDrag, _fold, fit_columns
 
@@ -38,6 +39,29 @@ SEARCH_DELAY_MS = 150   # the list follows the search box after a pause in typin
 TICK_MS = 100           # how often the window picks up the album list and the indexer's news
 HEADINGS = {"album": "Album", "artist": "Artist", "year": "Year", "quality": "Quality", "tracks": "Tracks",
             "added": "Added"}
+
+
+def adding_folder(roots: list[Path], folder: Path) -> tuple[list[Path], str]:
+    """"Add folder…": the library folders with `folder` added, and what to say about it ("" when
+    it's simply added). A folder already in the library — one of its folders, or inside one —
+    changes nothing; one that holds library folders takes their place (library_db.outermost: no
+    album is ever listed twice)."""
+    def key(path: Path) -> str:
+        return os.path.join(os.path.normcase(str(path)), "")
+
+    for root in roots:
+        if key(folder) == key(root):
+            return list(roots), f"“{folder}” is already in the Library"
+        if key(folder).startswith(key(root)):
+            return list(roots), f"“{folder}” is already in the Library (it's inside “{root}”)"
+    kept = library_db.outermost([*roots, folder])
+    taken = [root for root in roots if root not in kept]
+    if not taken:
+        return kept, ""
+    names = ", ".join(f"“{root}”" for root in taken)
+    return kept, (f"Added “{folder}”: it takes in {names}, so "
+                  + ("that folder isn't listed on its own any more" if len(taken) == 1
+                     else "those folders aren't listed on their own any more"))
 
 
 def added_text(seconds: float) -> str:
@@ -62,7 +86,8 @@ class LibraryWindow:
                  can_edit_tags: Callable[[], bool] = lambda: False,
                  new_albums: Callable[[], list[Path]] = lambda: []):
         # The library folders (one, or several); on_root_changed(folders) when "Add folder…" adds one.
-        self.roots: list[Path] = [Path(root_folder)] if isinstance(root_folder, (str, Path)) else list(root_folder)
+        self.roots: list[Path] = library_db.outermost([root_folder] if isinstance(root_folder, (str, Path))
+                                                      else root_folder)
         self.root_folder = self.roots[0]
         self.current = current
         self.on_choose = on_choose
@@ -280,6 +305,8 @@ class LibraryWindow:
                 self._problem = ""
                 self._set_albums(answer.value)
                 self._fill()
+            elif library_db.is_damage(answer.error):   # (noted by the query thread: put right at the next start)
+                self._problem = "The library database is damaged: it will be repaired when the player next starts"
             else:
                 self._problem = f"Couldn't read the library: {answer.error}"
             job = self._refresh
@@ -614,16 +641,20 @@ class LibraryWindow:
     def _add_folder(self):
         folder = filedialog.askdirectory(parent=self.win, title="Add a folder of music to the Library",
                                          initialdir=str(self.root_folder), mustexist=True)
-        if folder and Path(folder) not in self.roots:
-            roots = self.roots + [Path(folder)]
+        if not folder:
+            return
+        roots, note = adding_folder(self.roots, Path(folder))
+        if roots != self.roots:
             self.on_root_changed(roots)
             self.set_roots(roots)
+        if note:
+            self._say(note)
 
     def set_roots(self, roots: list[Path]):
         """The library folders changed (here, or in Settings): the refresh under way for the old
         ones is let go (the indexer stops its look before the new folders are stored), and the
-        list follows the new ones."""
-        roots = [Path(r) for r in roots]
+        list follows the new ones (none inside another: library_db.outermost)."""
+        roots = library_db.outermost(roots)
         if roots == self.roots or not roots:
             return
         self.roots, self.root_folder = roots, roots[0]

@@ -41,7 +41,9 @@ not by row, so they survive the track rows being rebuilt.
 **Threads**: any thread may read; each gets its own connection (SQLite's write-ahead log, WAL,
 lets readers carry on while a writer writes). Only the indexer should write. A damaged file is set
 aside as `library.db.damaged-dd-mm-yyyy` and an empty one started (`recover`), keeping the plays
-and favourites when they can still be read.
+and favourites when they can still be read. Damage found while the player runs is noted
+(`note_damage`) and seen to at the next start, before anything reads the file. A file that's only
+busy (another copy of the player writing) or can't be written (a full disk) is never set aside.
 """
 
 from __future__ import annotations
@@ -74,7 +76,11 @@ MIN_SEARCH = 2              # letters a search word needs before the index is as
 COUNT_CAP = 1000            # the slower searches stop counting here ("1,000+")
 PLAY_FRACTION = 0.5         # heard this much of a song (or PLAY_SECONDS) and it counts as played
 PLAY_SECONDS = 240.0
+BUSY_S = 5.0                # how long a connection waits for another writer (another copy of the player) to finish
 _BATCH = 500                # ids per IN (...) list
+# SQLite's own result codes for a damaged file (the low byte of an extended code): SQLITE_CORRUPT and
+# SQLITE_NOTADB. Anything else (busy, locked, a full disk, a folder that can't be written) isn't damage.
+_DAMAGE_CODES = {11, 26}
 
 # The search index's columns, and how much a match in each counts (bm25 weights).
 FTS_COLUMNS = ("title", "artist", "album", "album_artist", "composer", "genre", "year", "path")
@@ -91,6 +97,39 @@ def db_path() -> Path:
 
 class Interrupted(Exception):
     """A search was stopped part-way (`LibraryDB.interrupt`): a newer one replaced it."""
+
+
+class _NeedsFTS(sqlite3.DatabaseError):
+    """The file has a search index this Python's SQLite can't open (no FTS5): it can't be used here."""
+
+
+def is_damage(error: BaseException) -> bool:
+    """Does this error say the database file is damaged (rather than busy, locked by another copy
+    of the player, or on a full disk)?"""
+    if isinstance(error, _NeedsFTS):
+        return True
+    code = getattr(error, "sqlite_errorcode", None)
+    return isinstance(error, sqlite3.DatabaseError) and isinstance(code, int) and code & 0xFF in _DAMAGE_CODES
+
+
+def is_interrupt(error: BaseException) -> bool:
+    """Was this a read stopped by LibraryDB.interrupt?"""
+    return isinstance(error, Interrupted) or (isinstance(error, sqlite3.OperationalError)
+                                              and "interrupt" in str(error).lower())
+
+
+def outermost(folders: Iterable[str | Path]) -> list[Path]:
+    """The library folders as they should be kept: each once, and none inside another (a folder
+    inside a library folder is already in the library; keeping both would list its albums
+    twice). In the order given; a folder that takes in others keeps its own place."""
+    paths = [Path(folder) for folder in folders]
+    keys = [os.path.join(os.path.normcase(str(path)), "") for path in paths]
+    kept = []
+    for i, (path, key) in enumerate(zip(paths, keys)):
+        if any(other != key and key.startswith(other) for other in keys) or key in keys[:i]:
+            continue   # (inside another one, or listed already)
+        kept.append(path)
+    return kept
 
 
 def fts_problem() -> str:
@@ -444,9 +483,9 @@ class LibraryDB:
     # -- connections --
     def _connect(self) -> sqlite3.Connection:
         # isolation_level None: no hidden transactions; reads and writes say where theirs begin.
-        con = sqlite3.connect(self.path, timeout=5.0, isolation_level=None, check_same_thread=False)
+        con = sqlite3.connect(self.path, timeout=BUSY_S, isolation_level=None, check_same_thread=False)
         try:
-            con.execute("PRAGMA busy_timeout = 5000")
+            con.execute(f"PRAGMA busy_timeout = {int(BUSY_S * 1000)}")
             con.execute("PRAGMA foreign_keys = ON")
             con.execute("PRAGMA synchronous = NORMAL")   # with WAL: safe against crashes, quick to commit
             con.execute("PRAGMA cache_size = -32000")     # 32 MB
@@ -548,18 +587,66 @@ class LibraryDB:
             try:
                 self._prepare()
                 self._ready.set()
+            except BaseException:
+                self.release()   # (so this thread's next use prepares the file again, not just reconnects)
+                raise
             finally:
                 self._preparing = False
 
     def _prepare(self) -> None:
+        """Make or upgrade the file. A file that's damaged (or not a database at all) is set aside
+        and an empty one started, keeping the library folders, plays and favourites that can
+        still be read; so is one found damaged while the player last ran (note_damage), once
+        SQLite's own check agrees. Anything else that stops it opening — another copy of the
+        player writing, a full disk, a folder that can't be written — is raised as it is, and the
+        next use tries again: the file is never set aside for that."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._prepare_file()
-        except sqlite3.DatabaseError as error:   # not a database, or damaged past opening
-            self.problem = (f"The library database couldn't be read ({error}): it was set aside, and the "
-                            "library is being looked through again.")
-            self._set_aside()
-            self._prepare_file()
+        except sqlite3.DatabaseError as error:
+            if not is_damage(error):
+                raise
+            self._start_again(f"The library database couldn't be read ({error}): it was set aside")
+            return
+        mark = self._damage_mark()
+        if mark.exists():
+            found = self._check_file()   # (busy or locked: raised, and the mark stays for the next start)
+            if found != "ok":
+                self._start_again(f"The library database was damaged ({found}): it was set aside")
+            try:
+                mark.unlink()
+            except OSError:
+                pass
+
+    def _damage_mark(self) -> Path:
+        return self.path.with_name(self.path.name + ".check")
+
+    def note_damage(self, error: BaseException) -> bool:
+        """`error` came from this database: when it says the file is damaged, that's noted (a small
+        file beside it), so the next start checks the file and, if SQLite agrees, sets it aside
+        and starts again (keeping plays and favourites) — before anything is reading it, which
+        can't be done safely while the player runs. Returns whether it was damage."""
+        if not is_damage(error):
+            return False
+        try:
+            self._damage_mark().touch()
+        except OSError:
+            pass
+        return True
+
+    def _start_again(self, why: str) -> Path | None:
+        """Set the file aside (library.db.damaged-dd-mm-yyyy) and start an empty one, keeping the
+        library folders, plays and favourites that can still be read."""
+        roots, plays, favourites = self._salvage()
+        aside = self._set_aside()
+        self._prepare_file()
+        with self._writing() as con:
+            con.executemany("INSERT OR IGNORE INTO roots(path) VALUES (?)", [(r,) for r in roots])
+            con.executemany("INSERT INTO plays(key, played_at, seconds_heard, completed) VALUES (?, ?, ?, ?)", plays)
+            con.executemany("INSERT OR IGNORE INTO favourites(key, added) VALUES (?, ?)", favourites)
+        self.problem = (why + (f" as {aside.name}" if aside else "")
+                        + ", and the library is being looked through again.")
+        return aside
 
     def _prepare_file(self) -> None:
         con = self._con()
@@ -570,7 +657,7 @@ class LibraryDB:
         fts_ok = not fts_problem()
         if "song_fts" in tables and not fts_ok:
             # Made where SQLite had FTS5; without it here even deleting a track would fail.
-            raise sqlite3.DatabaseError("its search index needs FTS5, which this SQLite doesn't have")
+            raise _NeedsFTS("its search index needs FTS5, which this SQLite doesn't have")
         con.execute("BEGIN IMMEDIATE")
         try:
             if version != SCHEMA_VERSION and (version or tables):
@@ -609,8 +696,17 @@ class LibraryDB:
         """SQLite's own check of the file ("ok" when it's sound). Takes a while on a big library:
         run it on a worker thread."""
         try:
+            return self._check_file()
+        except sqlite3.DatabaseError as error:
+            return str(error) or "damaged"
+
+    def _check_file(self) -> str:
+        """quick_check, except that an error that isn't damage (busy, locked) is raised."""
+        try:
             rows = self._con().execute("PRAGMA quick_check").fetchall()
         except sqlite3.DatabaseError as error:
+            if not is_damage(error):
+                raise
             return str(error) or "damaged"
         found = "; ".join(str(row[0]) for row in rows)
         return "ok" if found == "ok" else found
@@ -620,16 +716,7 @@ class LibraryDB:
         place, keeping the library folders, plays and favourites that can still be read. Every
         thread's connection is closed: no other thread may be using it. Returns where the damaged
         file went (None if there was no file)."""
-        roots, plays, favourites = self._salvage()
-        aside = self._set_aside()
-        self._prepare_file()
-        with self._writing() as con:
-            con.executemany("INSERT OR IGNORE INTO roots(path) VALUES (?)", [(r,) for r in roots])
-            con.executemany("INSERT INTO plays(key, played_at, seconds_heard, completed) VALUES (?, ?, ?, ?)", plays)
-            con.executemany("INSERT OR IGNORE INTO favourites(key, added) VALUES (?, ?)", favourites)
-        self.problem = ("The library database was damaged: it was set aside"
-                        + (f" as {aside.name}" if aside else "") + ", and the library is being looked through again.")
-        return aside
+        return self._start_again("The library database was damaged: it was set aside")
 
     def _salvage(self) -> tuple[list, list, list]:
         found = []
@@ -695,12 +782,9 @@ class LibraryDB:
 
     def set_roots(self, paths: Iterable[str | Path]) -> None:
         """The library folders are now these: new ones are added (empty until looked at), ones no
-        longer listed are removed with everything stored for them (plays and favourites stay)."""
-        wanted: list[str] = []
-        for path in paths:
-            text = str(Path(path))
-            if not any(Path(text) == Path(w) for w in wanted):
-                wanted.append(text)
+        longer listed are removed with everything stored for them (plays and favourites stay).
+        A folder inside another one is left out (outermost)."""
+        wanted = [str(path) for path in outermost(paths)]
         with self._writing() as con:
             have = [(root_id, _from_db(path)) for root_id, path in con.execute("SELECT id, path FROM roots")]
             for text in wanted:

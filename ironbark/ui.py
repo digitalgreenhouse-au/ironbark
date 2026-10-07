@@ -63,7 +63,7 @@ from .details import NowPlayingWindow, output_line
 from .engine import Player, State
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
-from .library_window import LibraryWindow
+from .library_window import LibraryWindow, adding_folder
 from .meter_window import MeterWindow
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
 from .pcm_window import PcmWindow
@@ -136,12 +136,10 @@ def default_music_folder() -> Path:
 
 def library_folders(prefs: dict) -> list[Path]:
     """The library folders in the settings (`library_folders`; before there could be several,
-    `library_folder`), else the system's Music folder."""
+    `library_folder`), else the system's Music folder. Each once, and none inside another
+    (library_db.outermost: its albums would be listed twice)."""
     folders = prefs.get("library_folders") or ([prefs["library_folder"]] if prefs.get("library_folder") else [])
-    found: list[Path] = []
-    for folder in folders:
-        if isinstance(folder, str) and folder and Path(folder) not in found:
-            found.append(Path(folder))
+    found = library_db.outermost(folder for folder in folders if isinstance(folder, str) and folder)
     return found or [default_music_folder()]
 
 
@@ -160,7 +158,8 @@ def _find_new_albums(index: library_index.LibraryIndex, since: float, results: q
     _watch_reports as a report with nothing changed."""
     try:
         results.put(watcher.Report(new=index.new_album_times(since), album_folders=frozenset(index.album_folders())))
-    except Exception:
+    except Exception as error:
+        index.db.note_damage(error)   # (a damaged file is put right at the next start)
         log.exception("couldn't work out the new albums")
     finally:
         index.db.release()
@@ -170,7 +169,8 @@ def _store_play(index: library_index.LibraryIndex, key: str, heard: float, durat
     """Count a play (LibraryDB.record_play) on a worker thread."""
     try:
         index.db.record_play(key, heard, duration)
-    except Exception:
+    except Exception as error:
+        index.db.note_damage(error)
         log.exception("couldn't count a play of %s", key)
     finally:
         index.db.release()
@@ -1828,8 +1828,13 @@ class PlayerWindow:
     def _add_library_folder(self):
         folder = filedialog.askdirectory(title="Add a folder of music to the Library",
                                          initialdir=str(self._library_root()), mustexist=True)
-        if folder and Path(folder) not in self._library_roots():
-            self._set_library_folders(self._library_roots() + [Path(folder)])
+        if not folder:
+            return
+        roots, note = adding_folder(self._library_roots(), Path(folder))
+        if roots != self._library_roots():
+            self._set_library_folders(roots)
+        if note:
+            self._set_notice(note, 8000)
 
     def _remove_library_folder(self, folder: Path):
         folders = [f for f in self._library_roots() if f != folder]
@@ -1840,7 +1845,7 @@ class PlayerWindow:
     def _set_library_folders(self, folders: list[Path]):
         """The library folders are now these. The look under way for the old ones is stopped first
         (library_index.LibraryIndex.set_roots), then the library is looked through again on a worker."""
-        folders = [Path(f) for f in folders]
+        folders = library_db.outermost(folders)
         self.prefs["library_folders"] = [str(f) for f in folders]
         self.prefs["library_folder"] = str(folders[0])   # (what a version before several folders reads)
         index = self._index()   # (takes the new folders on: a look still under way for the old ones stops)

@@ -105,15 +105,11 @@ def _read(path: Path) -> Track:
 
 
 def _folders(value) -> list[Path]:
-    """One library folder or several, as a list of Paths (each once, in order)."""
+    """One library folder or several, as a list of Paths (each once, in order, none inside
+    another: library_db.outermost)."""
     if isinstance(value, (str, os.PathLike)):
         return [Path(value)]
-    found: list[Path] = []
-    for item in value:
-        path = Path(item)
-        if path not in found:
-            found.append(path)
-    return found
+    return library_db.outermost(value)
 
 
 # -- the one database and indexer per settings folder ------------------------------------------------
@@ -179,6 +175,11 @@ class LibraryIndex:
         """When the library folders' first look finished (0 while any of them hasn't yet)."""
         times = [self.db.built(root) for root in self.roots]
         return max(times) if times and all(times) else 0.0
+
+    def unbuilt(self) -> list[Path]:
+        """The library folders whose first look hasn't finished yet (one on a drive that's never
+        been plugged in stays here; the others carry on regardless)."""
+        return [root for root in self.roots if not self.db.built(root)]
 
     @property
     def progress(self) -> tuple[int, int]:
