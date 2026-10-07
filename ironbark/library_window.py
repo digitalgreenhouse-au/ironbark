@@ -15,9 +15,11 @@ played** (from the plays the database counts); **Favourites** (♥: right-click 
 tab or in the search panel — and choose Add to favourites). A song plays in its album (Enter or a
 double-click: the album opens in a tab and plays from that song); right-click for the rest. Several
 songs can be selected (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A): Play next, Add to queue, Add
-to playlist, the favourites, Add to the tab and dragging take them all — a selection running past
-the rows read so far is read on the query thread first. Plays and Last played can be added as
-columns (right-click the headings); they're read for the rows on show only, on the query thread.
+to playlist, the favourites and Add to the tab take them all — a selection running past the rows
+of the Songs view read so far is read on the query thread first — and a drag carries those read.
+Plays and Last played can be added as columns (right-click the headings); they're read for the
+rows on show only, on the query thread.
+
 
 **Needs a look** (the last song view): what the whole-library quality check (library_check.py) found —
 damaged files and MD5 mismatches, clues to a lossy or upsampled source or a padded bit depth,
@@ -69,7 +71,7 @@ from .favourites import HEART
 from .library import Album, Track, sort_name
 from .library_db import SongHit
 from .playlist_view import TreeDrag, _fold, fit_columns
-from .quick_search import Actions, add_song_items, count_text, song_name, song_values
+from .quick_search import Actions, add_song_items, album_text, count_text, shared_catalogue, song_name, song_values
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
 
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)
@@ -100,6 +102,8 @@ PLAYED_LIMIT = 500       # songs Most played / Recently played list
 PAGE = 200               # the Songs view's rows are read this many at a time
 PAGES_KEPT = 25          # …and this many pages kept (others are read again when scrolled back to)
 LOAD_ALL_WARN = 10_000   # songs: opening more than this in one tab asks first
+ALBUM_THREAD_AT = 5_000  # albums: a library this big is grouped, searched and sorted on the query thread
+
 COUNTS_KEPT = 20_000     # play counts / last-played times remembered (the rows shown lately)
 _NUMERIC = {"year", "tracks", "time", "plays"}
 
@@ -210,6 +214,79 @@ def song_text(pair: tuple) -> str:
 def _plays_and_last(db, keys: list[str]) -> tuple[dict[str, int], dict[str, float]]:
     """(The query thread.) How often each song was played, and when last."""
     return db.play_counts(keys), db.last_played(keys)
+
+
+def _library_albums(index) -> tuple[list[Album], dict[int, str]]:
+    """(The query thread.) The library folders' albums, and each one's folded search text by the
+    album's id() — from the album list the search panel shares (read again first if the library has
+    changed since: quick_search.Catalogue), so the two windows hold one copy."""
+    catalogue = shared_catalogue(index.db)
+    catalogue.update(index.db, max_age=0)
+    albums, texts = catalogue.snapshot()
+    kept = [(album, text) for album, text in zip(albums, texts) if index.holds(album.path)]
+    return [album for album, _text in kept], {id(album): text for album, text in kept}
+
+
+@dataclass(frozen=True)
+class AlbumRows:
+    """An album view's list as `_album_rows` works it out: the rows, what each stands for, the albums
+    listed (each once) and the row keys of albums and groups."""
+    rows: list[tuple]
+    items: list[tuple[str, object]]
+    shown: list[Album]
+    rows_map: dict[str, Album]
+    groups: dict[str, str]
+    searched: bool
+
+
+def _album_values(album: Album, new) -> tuple:
+    name = album_label(album)
+    name = NEW_DOT + name if album.path in new else name
+    return (name, album.artist, album.year or "", album.quality, album.track_count, added_text(album.added),
+            "", "", "", "", "")
+
+
+def _album_rows(albums: list[Album], texts: dict[int, str], view: str, words: list[str], column: str,
+                reverse: bool, closed: frozenset[str], new: frozenset) -> AlbumRows:
+    """(The query thread for a big library, else Tk's.) A browse view's rows: its groups (artists,
+    genres, …) with their albums, those the search words find (an album by its folded text; a whole
+    group when its own name holds them), sorted; a folded group shows just its heading. Nothing here
+    touches Tk."""
+    grouped = view not in ("albums", "recent")
+    rows: list[tuple] = []
+    items: list[tuple[str, object]] = []
+    shown: dict[Path, Album] = {}
+    rows_map: dict[str, Album] = {}
+    groups: dict[str, str] = {}
+    for g, group in enumerate(browse.group_albums(albums, view)):
+        if words and grouped and all(w in _fold(group.name) for w in words):
+            listed = group.albums  # the artist / genre / year itself matches: all of it
+        elif words:
+            listed = [a for a in group.albums if all(w in (texts.get(id(a)) or album_text(a)) for w in words)]
+        else:
+            listed = group.albums
+        if not listed:
+            continue
+        listed = browse.sort_albums(listed, column if column in ALBUM_COLUMNS else "album", reverse)
+        for album in listed:
+            shown.setdefault(album.path, album)
+        parent = ""
+        if grouped:
+            parent = f"g{g}"
+            folded = not words and group.name in closed
+            songs = sum(a.track_count for a in listed)
+            rows.append((parent, (group.name, count_text(len(listed), "album"), "", "", songs, "", "", "", "", "", ""),
+                         ("group",), CLOSED_MARK if folded else OPEN_MARK))
+            items.append(("group", group.name))
+            groups[parent] = group.name
+            if folded:
+                continue
+        for n, album in enumerate(listed):
+            iid = f"{parent}a{n}"
+            rows.append((iid, _album_values(album, new), ("new",) if album.path in new else ()))
+            items.append(("album", album))
+            rows_map[iid] = album
+    return AlbumRows(rows, items, list(shown.values()), rows_map, groups, bool(words))
 
 
 def _read_page(db, pages: SongPages, page: int, ids: list[int]) -> list[SongHit] | None:
@@ -381,7 +458,9 @@ class LibraryWindow:
         # A refresh running in the background: a dict until the album list it brought is on show.
         self._refresh: dict | None = None
         self._fill_job = None                  # a search waiting for a pause in typing
-        self._folds: dict[str, str] = {}       # text -> folded, for searching (cleared with each new album list)
+        self._album_texts: dict[int, str] = {}   # id(album) -> its folded search text (with each album list)
+        self._album_rows_asked: int | None = None   # the album list being worked out on the query thread…
+        self._album_rows_keep: bool | None = None   # …and whether the list stays where it was when it's here
         self._queries = indexer.Queries(self.index.db)   # the album list is read here, off Tk's thread
         self._events: queue.SimpleQueue = self.index.listen()
         self._asked: int | None = None         # the album list asked for and not yet here
@@ -541,7 +620,7 @@ class LibraryWindow:
         self.albums, self._shown, self._items = [], [], []
         self._songs = self._pages = None
         self._rows.clear()
-        self._folds.clear()
+        self._album_texts = {}
 
     # -- the index -------------------------------------------------------------------------------
     def _load(self):
@@ -563,7 +642,7 @@ class LibraryWindow:
 
     def _ask_albums(self) -> int:
         """Ask the query thread for the album list (the newest ask is the one shown)."""
-        self._asked = self._queries.ask("albums", self.index.albums)
+        self._asked = self._queries.ask("albums", _library_albums, self.index)
         self._again = False
         return self._asked
 
@@ -606,6 +685,9 @@ class LibraryWindow:
                 continue
             if answer.kind == "selection":
                 self._take_selection(answer)
+                continue
+            if answer.kind == "album_rows":
+                news = self._take_album_rows(answer) or news
                 continue
             if answer.kind != "albums" or answer.ask != self._asked:
                 continue   # one replaced by a newer ask
@@ -685,16 +767,10 @@ class LibraryWindow:
         else:
             self._fill_songs(keep=True)
 
-    def _set_albums(self, albums: list[Album]):
-        self.albums = albums
-        self._folds.clear()   # (the search's folded texts were for the albums before)
-
-    def _fold_text(self, text: str) -> str:
-        """`_fold`, remembered: a search pause would otherwise fold every album's text again."""
-        folded = self._folds.get(text)
-        if folded is None:
-            folded = self._folds[text] = _fold(text)
-        return folded
+    def _set_albums(self, found: tuple[list[Album], dict[int, str]]):
+        """The album list (shared with the search panel: quick_search.shared_catalogue) and each
+        album's folded search text, by the album's id()."""
+        self.albums, self._album_texts = found
 
     # -- views and sorting ---------------------------------------------------------------------------
     def set_view(self, view: str):
@@ -752,9 +828,14 @@ class LibraryWindow:
         self._fill()
 
     def _flush_search(self):
-        """Words typed but not yet searched for: search now, so a quick Enter or Down acts on them."""
-        if self._fill_job is not None:
-            self._fill()
+        """Words typed but not yet searched for (or the search still on its way from the query
+        thread): search now, so a quick Enter or Down acts on them."""
+        if self._fill_job is not None or self._album_rows_asked is not None:
+            if len(self.albums) >= ALBUM_THREAD_AT:
+                self._fill(now=True)
+            else:
+                self._fill()
+
 
     def _clear_search(self):
         """The search box's × or Esc: empty it (Esc in an empty box closes the window, as before)."""
@@ -788,12 +869,9 @@ class LibraryWindow:
 
     # -- list ----------------------------------------------------------------
     def _values(self, album: Album) -> tuple:
-        name = album_label(album)
-        name = NEW_DOT + name if album.path in self._new else name
-        return (name, album.artist, album.year or "", album.quality, album.track_count, added_text(album.added),
-                "", "", "", "")
+        return _album_values(album, self._new)
 
-    def _fill(self):
+    def _fill(self, now: bool = False):
         if self._fill_job is not None:   # (this shows the search as it stands: a pending one would only repeat it)
             self.win.after_cancel(self._fill_job)
             self._fill_job = None
@@ -814,63 +892,53 @@ class LibraryWindow:
         if not self.load_all_button.winfo_manager():
             self.load_all_button.pack(side="right", before=self.status)
         self.open_button.configure(text="Open in new tab")
-        self._fill_albums()
+        self._fill_albums(now=now)
 
-    def _fill_albums(self, keep: bool = False):
+    def _fill_albums(self, keep: bool = False, now: bool = False):
+        """List the albums of the view on show, as searched for and sorted. A big library (from
+        ALBUM_THREAD_AT albums) is grouped, searched and sorted on the query thread, the list on show
+        staying until the new one is here — unless `now` (Enter or ↓ straight after typing, Show in
+        Library: they act on the list at once)."""
         self._songs_listed = None   # (the list holds albums now)
         words = [_fold(w) for w in self.search_var.get().split()]
         column, reverse = self.sort
         grouped = self.view not in ("albums", "recent")
         self.tree.configure(show="tree headings" if grouped else "headings")
         self._fit()
-        self._rows.clear()
-        self._groups.clear()
-        rows: list[tuple] = []
-        items: list[tuple[str, object]] = []
-        shown: dict[Path, Album] = {}
-        closed = self._closed.setdefault(self.view, set())
-        for g, group in enumerate(browse.group_albums(self.albums, self.view)):
-            if words and grouped and all(w in self._fold_text(group.name) for w in words):
-                albums = group.albums  # the artist / genre / year itself matches: all of it
-            else:
-                albums = [a for a in group.albums if not words or browse.matches(a, words, self._fold_text)]
-            if not albums:
-                continue
-            albums = browse.sort_albums(albums, column if column in ALBUM_COLUMNS else "album", reverse)
-            for album in albums:
-                shown.setdefault(album.path, album)
-            parent = ""
-            if grouped:
-                parent = f"g{g}"
-                count = len(albums)
-                folded = not words and group.name in closed
-                songs = sum(a.track_count for a in albums)
-                rows.append((parent, (group.name, count_text(count, "album"), "", "", songs, "", "", "", "", ""),
-                             ("group",), CLOSED_MARK if folded else OPEN_MARK))
-                items.append(("group", group.name))
-                self._groups[parent] = group.name
-                if folded:
-                    continue
-            for n, album in enumerate(albums):
-                iid = f"{parent}a{n}"
-                rows.append((iid, self._values(album), ("new",) if album.path in self._new else ()))
-                items.append(("album", album))
-                self._rows[iid] = album
-        self._shown = list(shown.values())
-        self._items = items
-        source = ListSource(rows)
+        args = (self.albums, self._album_texts, self.view, words, column, reverse,
+                frozenset(self._closed.setdefault(self.view, set())), frozenset(self._new))
+        if len(self.albums) >= ALBUM_THREAD_AT and not now:
+            self._album_rows_asked = self._queries.ask("album_rows", _album_rows, *args)
+            self._album_rows_keep = keep if self._album_rows_keep is None else self._album_rows_keep and keep
+            return
+        self._album_rows_asked = self._album_rows_keep = None
+        self._show_albums(_album_rows(*args), keep)
+
+    def _show_albums(self, listed: AlbumRows, keep: bool):
+        self._rows, self._groups = listed.rows_map, listed.groups
+        self._shown, self._items = listed.shown, listed.items
         select = None
         if not keep and self.current is not None:
-            select = next((i for i, (kind, album) in enumerate(items)
+            select = next((i for i, (kind, album) in enumerate(listed.items)
                            if kind == "album" and album.path == self.current), None)
         self.list.on_jump = self._jump
-        self.list.set_source(source, keep=keep, select=select)
+        self.list.set_source(ListSource(listed.rows), keep=keep, select=select)
         count = len(self._shown)
         self.load_all_button.configure(
-            text=f"Open {'these' if words else 'all'} {count:,} album{'' if count == 1 else 's'} in a tab",
+            text=f"Open {'these' if listed.searched else 'all'} {count:,} album{'' if count == 1 else 's'} in a tab",
             state="normal" if count else "disabled")
         self._paint_status()
         self._paint_buttons()
+
+    def _take_album_rows(self, answer) -> bool:
+        """The album list worked out on the query thread came in (True: it's on show now)."""
+        if answer.ask != self._album_rows_asked:
+            return False
+        keep, self._album_rows_asked, self._album_rows_keep = self._album_rows_keep, None, None
+        if answer.error is not None or self.view in SONG_VIEWS:
+            return False
+        self._show_albums(answer.value, bool(keep))
+        return True
 
     # -- the song views ---------------------------------------------------------------------------------
     def _query(self) -> str:
@@ -1665,6 +1733,8 @@ class LibraryWindow:
             self.current = Path(album)
             if self.view in SONG_VIEWS:
                 self.set_view("albums")
+            if self._album_rows_asked is not None:   # (on its way: list the albums here and now)
+                self._fill(now=True)
             index = self._album_index(self.current)
             if index is None and self.search_var.get():
                 self.search_var.set("")   # (not among the results on show: list them all)
@@ -1672,7 +1742,7 @@ class LibraryWindow:
                 index = self._album_index(self.current)
             if index is None and self.view not in ("albums", "recent"):
                 self._closed.setdefault(self.view, set()).clear()   # (in a folded group: open them)
-                self._fill_albums(keep=True)
+                self._fill_albums(keep=True, now=True)
                 index = self._album_index(self.current)
             if index is not None:
                 self.list.select(index)

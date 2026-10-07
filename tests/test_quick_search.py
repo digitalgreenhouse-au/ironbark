@@ -370,7 +370,9 @@ def test_track_list_offers_the_whole_library_when_nothing_matches(root):
     view.query.set("rumour")
     view._render()
     assert view.tree.get_children() == ("none", "library")
-    assert view.tree.set("library", "title") == SEARCH_LIBRARY
+    shown = view.tree.set("library", "title")              # (in a narrow column: ending with "…")
+    assert shown == SEARCH_LIBRARY or (shown.endswith("…") and SEARCH_LIBRARY.startswith(shown[:-1]))
+
     view.tree.selection_set("library")
     assert view.activate() and asked == ["rumour"]
     view._play_first_result()                            # Enter in the box with no matches: the same

@@ -256,3 +256,198 @@ def test_library_song_views_select_several_and_act_on_them_all(root, tmp_path, m
     assert not w.list.multiple and not w.select_all()      # albums: one at a time
     w.close()
     library_index.close_shared()
+
+
+# -- a whole-library tab without a Track held for every song --------------------------------------------
+LIB_ROOT = Path("C:/Music")
+
+
+@pytest.fixture(scope="module")
+def synth_db(tmp_path_factory):
+    import synthlib
+
+    folder = tmp_path_factory.mktemp("bigtab")
+    files = synthlib.make_library(3_000, LIB_ROOT, seed=7)
+    with LibraryDB.open(folder / "library.db", [LIB_ROOT]) as db:
+        synthlib.load(db, LIB_ROOT, files)
+    return folder / "library.db", files
+
+
+def test_album_orders_list_songs_as_the_full_read_does(synth_db):
+    from ironbark import library_tracks
+
+    path, _files = synth_db
+    with LibraryDB.open(path) as db:
+        albums = db.albums()
+        full = db.albums_tracks([a.path for a in albums])
+        light = library_tracks.build(db, albums)
+        expected = [t for a in albums for t in full.get(a.path, [])]
+        assert len(light) == len(expected) and len(light.groups) == len(albums)
+        assert [t.path for t in light] == [t.path for t in expected]            # play order, CUE images too
+        assert light.seconds == pytest.approx(sum(t.duration for t in expected))
+        assert light.varies == {"artist", "album", "quality"}
+
+
+def test_a_light_tab_reads_albums_as_they_show_and_holds_the_playing_window(synth_db, monkeypatch):
+    from ironbark import library_tracks, searchfold
+
+    path, _files = synth_db
+    monkeypatch.setattr(library_tracks, "KEEP", 200)
+    with LibraryDB.open(path) as db:
+        tracks = library_tracks.build(db, db.albums())
+        assert tracks.peek(100) is None and tracks.misses == 0
+        tracks.want(100)
+        deadline = time.monotonic() + 10
+        while tracks.peek(100) is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        start = tracks.groups[tracks._group_of(100)][1]
+        assert tracks.peek(100) is not None and tracks.peek(start) is not None and tracks.serial >= 1
+        tracks.ready(2_000, [1_999, 2_001, 2_002])                    # the song to play, read at once
+        assert tracks.peek(2_000) is not None and tracks.misses == 0
+        for index in range(0, len(tracks), 97):                        # read far and wide: the LRU lets go…
+            tracks[index]
+        assert tracks.misses > 0 and len(tracks._shared.cache) <= library_tracks.KEEP + 60
+        assert all(tracks.peek(i) is not None for i in (1_999, 2_000, 2_001, 2_002))   # …never of the held
+        song = tracks[2_000]
+        assert tracks.index_of_path(song.path) == 2_000
+        assert tracks.index_of_key(str(song.path) if song.cue is None else f"{song.path}#{song.cue.number}") == 2_000
+        words = searchfold.words("love ni")
+        everything = list(tracks)
+        assert tracks.matching(words) == [i for i, t in enumerate(everything)
+                                          if all(w in searchfold.haystack(t) for w in words)]
+        assert [t.path for t in tracks.many([5, 2_999, 7])] == [everything[5].path, everything[2_999].path,
+                                                                 everything[7].path]
+        extra = Track(Path("D:/Elsewhere/x.flac"), "Extra")
+        more = tracks + [extra]
+        assert len(more) == len(tracks) + 1 and more[len(tracks)] is extra
+        assert more.index_of_path(extra.path) == len(tracks)
+
+        assert more.keys_in([str(extra.path), "D:/nowhere.flac"]) == {str(extra.path)}
+        assert len(more.groups) == len(tracks.groups) + 1
+
+
+def test_the_engine_neither_copies_nor_reads_a_light_tab(synth_db):
+    from ironbark import library_tracks
+    from ironbark.engine import Player
+
+    path, _files = synth_db
+    with LibraryDB.open(path) as db:
+        tracks = library_tracks.build(db, db.albums())
+        player = Player()
+        player.set_tracks(tracks)
+        assert player.tracks is tracks and isinstance(player._order, range)   # no copy, no per-song order
+        tracks.ready(500, player.order_around(500))
+        player.index = 500
+        before = tracks.misses
+        for _ in range(8):                                     # the next songs, as the decoder lines them up
+            following = player._next_after(player.index)
+            assert player._track_at(following) is not None
+            player.index = following
+            tracks.hold(player.order_around(player.index))   # (the window's poll)
+            tracks.ready(player.index)
+        assert tracks.misses == before                         # every song the engine asked for was read
+        song = tracks[player.index]
+        assert player._find(tracks, song.path) == player.index
+        player.shuffle = True
+        player._rebuild_order(first=player.index)              # (as a song picked by hand starts a shuffle)
+        assert sorted(player._order) == list(range(len(tracks))) and player._order[0] == player.index
+
+        assert player.order_around(player.index, before=0, after=2)[0] == player.index
+        plain = list(tracks)[:50]
+        player.set_tracks(plain)
+        assert player.tracks is plain and player._find(plain, plain[30].path) == 30
+
+
+def test_the_track_list_shows_a_light_tab_and_searches_it_in_the_database(root, synth_db):
+    from ironbark import library_tracks
+
+    path, _files = synth_db
+    with LibraryDB.open(path) as db:
+        tracks = library_tracks.build(db, db.albums())
+        view = playlist_view.PlaylistView(root, on_play=lambda i: None)
+        view.set_tracks(tracks)
+        root.update()
+        assert _wait(root, lambda: all(not view.tree.set(iid, "title").startswith("…")
+                                       for iid in view.tree.get_children()))
+        assert view.tree.get_children()[0] == "a0" and "artist" in view.varies
+        view.query.set("love")
+        view._render()
+        everything = list(tracks)
+        expected = [str(i) for i, t in enumerate(everything) if "love" in playlist_view._haystack(t)]
+        assert view._songs == expected
+        view.tree.destroy()
+        view._worker.join(5)
+        assert not tracks.waiting() or _wait(root, lambda: not tracks.waiting())
+
+
+def test_open_all_albums_makes_a_light_tab_the_window_plays_and_counts(make_window, tmp_path):
+    from ironbark import library_index, library_tracks
+
+    from test_library_window import flac
+
+    window, root, player, errors = make_window()
+    music = tmp_path / "Music"
+    for a in ("Bees", "Cats"):
+        for n in (1, 2, 3):
+            flac(music / a / f"0{n}.flac", title=f"{a} {n}", artist=a, album=a, tracknumber=str(n))
+    index = window._index()
+    index.refresh()
+    window.open_tab("library", music)
+    tab = window.tabs[-1]
+    assert _wait(root, lambda: tab.tracks is not None and not tab.loading)
+    assert isinstance(tab.tracks, library_tracks.LibraryTrackList) and len(tab.tracks) == 7   # (and the test song)
+    assert window.playlist._tracks is tab.tracks
+    window.playlist.select(1)                             # (Bees 1, the second song: scrolled into view)
+    assert _wait(root, lambda: "Bees 1" in {window.playlist.tree.set(i, "title")
+                                            for i in window.playlist.tree.get_children()})
+
+
+
+    assert library_tracks_count_text(window, tab) == "Library · 7 songs · 3 albums"
+    window._play_tab(len(window.tabs) - 1, 2)
+    assert player.tracks is tab.tracks                     # handed to the engine as it is, not copied
+    window._hold_playing()
+    assert tab.tracks._shared.held and tab.tracks.peek(2) is not None
+    assert window.playlist.select_all() and window._queue_selected(front=False)
+    assert [t.title for t in player.up_next()][-6:] == ["Bees 1", "Bees 2", "Bees 3", "Cats 1", "Cats 2", "Cats 3"]
+    assert not errors
+
+    library_index.close_shared()
+
+
+def library_tracks_count_text(window, tab) -> str:
+    from ironbark.ui import tab_numbers
+
+    songs, albums, _seconds = tab_numbers(tab)
+    return f"Library · {songs} songs · {albums} albums"
+
+
+# -- the album list shared with the search panel, searched off Tk's thread when big ------------------------
+def test_library_albums_are_the_search_panels_and_a_big_list_is_searched_off_tk(root, tmp_path, monkeypatch,
+                                                                                 tk_thread_rule):
+    from ironbark import library_index, library_window, quick_search, settings
+    from ironbark.library_window import LibraryWindow
+
+    from test_library_window import flac, wait_for_index
+
+    monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
+    monkeypatch.setattr(library_window, "ALBUM_THREAD_AT", 1)      # (as a library of 25,000 albums would)
+    music = tmp_path / "Music"
+    for name, artist in (("Tommy", "The Who"), ("21", "Adele"), ("25", "Adele")):
+        flac(music / name / "01.flac", title=f"{name} one", artist=artist, album=name)
+    chosen = []
+    w = LibraryWindow(root, music, None, on_choose=chosen.append, on_root_changed=lambda p: None,
+                      on_load_all=lambda r, q: None)
+    wait_for_index(w, root)
+    assert _wait(root, lambda: len(w._items) == 3 and w._album_rows_asked is None)
+    shared = quick_search.shared_catalogue(w.index.db)
+    assert {id(a) for a in w.albums} <= {id(a) for a in shared.albums}   # one copy of the albums
+    w.search_var.set("adele")
+    w._search_now()                                       # (the pause in typing came: off Tk's thread)
+    assert w._album_rows_asked is not None and len(w._items) == 3        # the old list stays meanwhile
+    assert _wait(root, lambda: w._album_rows_asked is None)
+    assert sorted(a.title for k, a in w._items if k == "album") == ["21", "25"]
+    w.search_var.set("tommy")
+    w._choose_first()                                     # Enter straight away: searched here and now
+    assert [p.name for p in chosen] == ["Tommy"]
+    library_index.close_shared()

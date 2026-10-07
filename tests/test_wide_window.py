@@ -268,13 +268,14 @@ def test_search_selection_scroll_and_keyboard_survive_a_switch(make_window):
     _pump(root, 0.1)
     focus = root.focus_get()
     _resize(root, 1920, 1080)
-    assert view.tree.selection() == ("40",)
+    assert view.selected_track() == 40                   # (Tk holds only the rows on show: the list knows)
     assert root.focus_get() is focus
     view.query.set("Song 4")
     view._search_now()
     _resize(root, 1300, 900)
     _resize(root, 420, 900)
-    assert view.query.get() == "Song 4" and view.tree.selection() == ("40",)
+    assert view.query.get() == "Song 4" and view.selected_track() == 40
+
     view.query.set("")
     view._search_now()
     view.list.scroll_to(top)

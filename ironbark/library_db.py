@@ -303,6 +303,18 @@ class SongHit:
 
 
 @dataclass(frozen=True)
+class AlbumOrder:
+    """An album's songs as a tab of many albums lists them, without a Track made for each: their ids
+    in play order, how long they last, and the artists, album names and qualities among them (for
+    the columns that show only where a value varies)."""
+    ids: list[int]
+    seconds: float
+    artists: frozenset[str]
+    names: frozenset[str]
+    qualities: frozenset[tuple]
+
+
+@dataclass(frozen=True)
 class SongHits:
     rows: list[SongHit]  # the best matches first, at most the limit asked for
     total: int           # how many songs match
@@ -396,7 +408,43 @@ def _join(root, rel, name="") -> str:
     return os.path.join(folder, name) if name else folder
 
 
+def _play_ordered(folder: str, rows: list[tuple]) -> list[int]:
+    """album_orders' rows (track id, root, folder below it, file name, album tag, disc, track, …) of
+    one album: the ids in play order — library.play_order's sort (subfolder, album tag, disc, track
+    number, file name, natural order) worked out from the rows. The names are only compared when
+    the numbers leave a tie, so mostly they aren't made into sort keys at all."""
+    top = folder if folder.endswith(os.sep) else folder + os.sep
+    subs: dict[tuple, str] = {}
+
+    def sub_of(root, rel) -> str:
+        found = subs.get((root, rel))
+        if found is None:
+            here = _join(root, rel)
+            if here == top or here + os.sep == top:
+                found = "."
+            elif here.startswith(top):
+                found = here[len(top):].replace(os.sep, "/")
+            else:
+                found = Path(here).relative_to(folder).as_posix()
+            subs[(root, rel)] = found
+        return found
+
+    numbers = [(sub_of(row[1], row[2]), row[4], row[5] or 0, row[6] if row[6] is not None else 10_000)
+               for row in rows]
+    if len({(sub, album) for sub, album, _disc, _track in numbers}) == 1:   # (one folder, one album tag)
+        keys = [(disc, track) for _sub, _album, disc, track in numbers]
+    else:
+        keys = [(tuple(natural_key(sub)), tuple(natural_key(album)), disc, track)
+                for sub, album, disc, track in numbers]
+
+    if len(set(keys)) != len(keys):   # (a tie: the file names decide)
+        keys = [key + (tuple(natural_key(_from_db(row[3]))),) for key, row in zip(keys, rows)]
+    order = sorted(range(len(rows)), key=keys.__getitem__)
+    return [rows[i][0] for i in order]
+
+
 def _track_path(root, rel, name, cue_sheet, cue_number, cue_start, cue_end) -> Path:
+
     """A song's path from its stored parts: a CuePath (its stretch of the file) for a CUE track."""
     text = _join(root, rel, name)
     return (Path(text) if cue_number is None
@@ -1153,7 +1201,18 @@ class LibraryDB:
                     found[row[3]] = _track(row)
         return [found[i] for i in ids if i in found]
 
+    def tracks_by_id(self, ids: Iterable[int]) -> dict[int, Track]:
+        """These tracks (by tracks.id), keyed by id; unknown ids left out."""
+        ids = list(ids)
+        found: dict[int, Track] = {}
+        with self._reading() as con:
+            for chunk in _chunks(ids):
+                for row in con.execute(_TRACK_SELECT + f" WHERE t.id IN ({', '.join('?' * len(chunk))})", chunk):
+                    found[row[3]] = _track(row)
+        return found
+
     def new_albums(self, since: float, opened: dict[str, float]) -> list[Path]:
+
         """The album folders with music first seen after `since` (and after their library folder's
         first look) that haven't been opened since it arrived; newest first. `opened`: {album
         folder: when opened}. (watcher.new_albums's rule, from the database.)"""
@@ -1192,7 +1251,43 @@ class LibraryDB:
                     by_album.setdefault(row[0], []).append(_track(row[1:]))
         return {Path(ids[album_id]): play_order(Path(ids[album_id]), tracks) for album_id, tracks in by_album.items()}
 
+    def album_orders(self, folders: Iterable[str | Path]) -> dict[str, AlbumOrder]:
+        """Each album's song ids in play order (as albums_tracks lists them, by play_order's rule)
+        and a little about them, from a light read of the database: no Track is made, so a tab of a
+        whole library can be listed without holding every song. {album folder (as os.fspath gives
+        it): AlbumOrder}; a folder that isn't an album in the library is left out."""
+        wanted = {os.fspath(folder) for folder in folders}
+        rows_of: dict[int, list[tuple]] = {}
+        with self._reading() as con:
+            ids = {album_id: folder for album_id, folder in _folder_paths(con, [row[0] for row in con.execute(
+                "SELECT id FROM albums")]).items() if folder in wanted}
+            for chunk in _chunks(list(ids)):
+                for row in con.execute(
+                        "SELECT t.album_id, t.id, r.path, d.rel, f.name, t.album, t.disc_no, t.track_no, t.duration,"
+                        " t.artist, t.codec, t.bits, t.sample_rate FROM tracks t JOIN files f ON f.id = t.file_id"
+                        " JOIN folders d ON d.id = f.folder_id JOIN roots r ON r.id = d.root_id"
+                        f" WHERE t.album_id IN ({', '.join('?' * len(chunk))}) AND f.missing_since IS NULL"
+                        " ORDER BY t.id", chunk):
+                    rows_of.setdefault(row[0], []).append(row[1:])
+        found: dict[str, AlbumOrder] = {}
+        for album_id, rows in rows_of.items():
+            folder = ids[album_id]
+            found[folder] = AlbumOrder(_play_ordered(folder, rows), sum(row[7] for row in rows),
+                                       frozenset(row[8] for row in rows),
+                                       frozenset(row[4] or os.path.basename(folder.rstrip(os.sep)) for row in rows),
+                                       frozenset((row[9], row[10], row[11]) for row in rows))
+        return found
+
+    def ids_matching(self, words: list[str]) -> set[int]:
+        """The ids of the songs whose folded search text holds every one of these words (folded,
+        searchfold.words) anywhere in it — the in-tab filter's rule, run by the database."""
+        if not words:
+            return set()
+        where = " AND ".join("instr(haystack, ?) > 0" for _word in words)
+        return {row[0] for row in self._con().execute(f"SELECT id FROM tracks WHERE {where}", list(words))}
+
     def file_times(self) -> dict[str, tuple[float, float]]:
+
         """{music file: (when it arrived, when the database first saw it)} for every file in the
         library (not those missing)."""
         return {_join(root, rel, name): (added, seen) for root, rel, name, added, seen in self._con().execute(

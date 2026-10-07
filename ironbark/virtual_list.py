@@ -221,9 +221,12 @@ class VirtualTree:
         self.hovered: int | None = None
         self.playing: int | None = None
         self._shown: dict[str, int] = {}     # key on show -> its source index
+        self._drawn: list[tuple] = []        # the rows the Treeview holds, as last put there
+
         self._render_job = None
         self._metrics: tuple[int, int] | None = None   # (the first row's top, a row's height), measured
         self._widths: dict[str, dict[str, int]] = {}   # font -> {character: its width}
+        self._style_fonts: dict[str, tkfont.Font] = {}  # a style's font (as Tk names it) -> it, for measuring
         self._typed, self._typed_at = "", 0.0
         self._held: tuple[int, int, int] | None = None   # (row, x, y): pressed on a selection of several
 
@@ -274,7 +277,10 @@ class VirtualTree:
             self.on_select = self.on_activate = self.on_toggle = self.on_jump = self.on_top_edge = None
             self.source = ListSource()
             self.fonts = {}
+            self._style_fonts = {}
+            self._drawn = []
             self._widths.clear()
+
             self._render_job = None
 
     # -- the source ------------------------------------------------------------------------------
@@ -317,6 +323,37 @@ class VirtualTree:
     def refresh(self):
         """The rows on show again (their text or tags changed, or a page of them has arrived)."""
         self.render()
+
+    def fonts_changed(self):
+        """The list's style (its font, its rows' height) or a font of `fonts` changed size: measured
+        afresh, and the rows on show drawn again once Tk is idle."""
+        self._widths.clear()
+        self._metrics = None
+        self._schedule()
+
+    def _row_font(self):
+        """The font the rows are drawn in: the list's style's own (a larger one in a roomy style), else
+        Tk's default."""
+        try:
+            name = str(ttk.Style(self.tree).lookup(str(self.tree.cget("style")) or "Treeview", "font"))
+        except tk.TclError:
+            name = ""
+        if not name:
+            return self._font
+        found = self._style_fonts.get(name)
+        if found is None:
+            try:
+                if name == "TkDefaultFont":
+                    found = self._font
+                elif name in tkfont.names(self.tree._root()):   # (a named font: itself, as it changes)
+                    found = tkfont.nametofont(name, root=self.tree._root())
+                else:
+                    found = tkfont.Font(root=self.tree._root(), font=name)
+            except tk.TclError:
+                found = self._font
+            self._style_fonts[name] = found
+        return found
+
 
     def _key_of(self, index: int | None) -> str | None:
         if index is None or not 0 <= index < len(self.source):
@@ -389,6 +426,7 @@ class VirtualTree:
         rooms = {c: max(0, int(tree.column(c, "width")) - theme.px(CELL_ROOM)) for c in columns}
         positions = {c: i for i, c in enumerate(tree.cget("columns"))}
         playing_at = positions.get(self.playing_column) if self.playing_column else None
+        plain = self._row_font()
         rows = []
         for index in range(self.top, end):
             key, values, tags, *text = self.source.row(index)
@@ -399,18 +437,15 @@ class VirtualTree:
                     values[playing_at] = self.playing_mark
             if index == self.hovered:
                 tags.insert(0, "hover")
-            font = next((self.fonts[t] for t in tags if t in self.fonts), self._font)
+            font = next((self.fonts[t] for t in tags if t in self.fonts), plain)
+
             for column in columns:
                 at = positions[column]
                 if at < len(values) and isinstance(values[at], str):
                     values[at] = self.fit(values[at], rooms[column], font)
             rows.append((key, values, tags, text[0] if text else ""))
-        if tree.get_children():
-            tree.delete(*tree.get_children())
-        self._shown = {}
-        for index, (key, values, tags, text) in zip(range(self.top, end), rows):
-            tree.insert("", "end", iid=key, values=values, tags=tags, text=text)
-            self._shown[key] = index
+        self._put(rows)
+        self._shown = {row[0]: index for index, row in zip(range(self.top, end), rows)}
         if rows and self._metrics is None and tree.winfo_height() > 1:
             self._measure()
             if self.page() != page:   # (the page was an estimate until a row could be measured)
@@ -418,6 +453,27 @@ class VirtualTree:
                 return
         self._paint_selection()
         self._paint_scrollbar()
+
+    def _put(self, rows: list[tuple]):
+        """Make the Treeview hold these rows (key, values, tags, text), top to bottom. Rows already
+        there in the same places are only changed where they differ (a window being resized draws the
+        same rows again and again); otherwise they're all made afresh."""
+        tree, drawn = self.tree, self._drawn
+        common = min(len(rows), len(drawn))
+        if not drawn or [row[0] for row in rows[:common]] != [row[0] for row in drawn[:common]]:
+            if drawn:
+                tree.delete(*[row[0] for row in drawn])
+            for key, values, tags, text in rows:
+                tree.insert("", "end", iid=key, values=values, tags=tags, text=text)
+        else:
+            for row, old in zip(rows[:common], drawn[:common]):
+                if row[1:] != old[1:]:
+                    tree.item(row[0], values=row[1], tags=row[2], text=row[3])
+            if len(drawn) > common:
+                tree.delete(*[row[0] for row in drawn[common:]])
+            for key, values, tags, text in rows[common:]:
+                tree.insert("", "end", iid=key, values=values, tags=tags, text=text)
+        self._drawn = rows
 
     def _displayed(self) -> list[str]:
         shown = [str(c) for c in self.tree.cget("displaycolumns")]

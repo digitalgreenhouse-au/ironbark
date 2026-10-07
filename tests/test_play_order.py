@@ -39,7 +39,7 @@ def test_shuffle_off_restores_list_order():
     p = player_with(5)
     p.set_shuffle(True)
     p.set_shuffle(False)
-    assert p._order == [0, 1, 2, 3, 4]
+    assert list(p._order) == [0, 1, 2, 3, 4]
 
 
 def test_bad_repeat_mode_is_ignored():

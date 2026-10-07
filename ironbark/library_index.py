@@ -160,7 +160,12 @@ class LibraryIndex:
             self.refreshed = 0.0
             self.indexer.cancel()
 
+    def holds(self, path) -> bool:
+        """Is this file or folder in one of the library folders?"""
+        return self._mine(os.fspath(path))
+
     def _mine(self, path: str) -> bool:
+
         """Is this file or folder in one of the library folders?"""
         path = os.path.normcase(path)
         for root in self.roots:

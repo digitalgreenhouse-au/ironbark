@@ -10,7 +10,7 @@ album carries on from there.
 The list is a virtual_list.VirtualTree: only the rows on show are in the Treeview, worked out as
 they're drawn, so a tab of a whole library (200,000 songs) opens, scrolls and searches as quickly as
 an album. A search of a list that long runs on the list's own thread (`_Worker`), off Tk's; a tab
-whose songs come from the library database a page at a time (indexer.LibraryTrackList: it has
+whose songs come from the library database a page at a time (library_tracks.LibraryTrackList: it has
 `peek`, `want`, `matching` and `groups`) is searched there by the database, and a row whose song
 hasn't been read yet shows "…" until it has.
 
@@ -386,6 +386,8 @@ class PlaylistView:
         self._listing = _Listing(self, (), [])
         self._worker = _Worker()
         self._asked: dict[str, int | None] = {"search": None, "plays": None}
+        self._asking: list[str] = []            # the words of the search on its way from the list's thread
+
         self._plays: OrderedDict[str, int] = OrderedDict()   # song key -> times played (the rows shown lately)
         self._plays_wanted: list[str] = []
         self._plays_job = None
@@ -525,7 +527,6 @@ class PlaylistView:
         wide, was_wide = tier != layout.COLUMN, self.tier != layout.COLUMN
         self.tier = tier
         self.tree.configure(style=TREE_STYLES[tier])
-        self.list._metrics = None   # (the rows' height goes with the style)
         self._weights.clear()
         self._weights.update(WIDE_WEIGHTS if wide else NARROW_WEIGHTS)
         self._caps.clear()
@@ -534,7 +535,9 @@ class PlaylistView:
         self._bold.configure(size=theme.SIZE_LARGE if tier == layout.SPLIT_L else theme.SIZE_BODY)
         if wide != was_wide:
             self._pack_header(wide)
-        self._update_shown()
+        self._show_columns(draw=False)
+        self.list.fonts_changed()   # (the rows' font and height go with the style: drawn again once Tk is idle)
+
 
     def _update_shown(self):
         """Show the optional columns the setting, the tier and the rows call for."""
@@ -610,7 +613,7 @@ class PlaylistView:
     def set_tracks(self, tracks: Sequence[Track], flat: bool = False):
         """flat: a playlist, shown in its own order without album headers. (The playing mark is
         dropped: the window marks the playing song again if this list has it.) `tracks` may be a
-        list from the library database (indexer.LibraryTrackList): read a page at a time."""
+        list from the library database (library_tracks.LibraryTrackList): read a page at a time."""
         if self._search_job:
             self.tree.after_cancel(self._search_job)
             self._search_job = None
@@ -819,11 +822,12 @@ class PlaylistView:
         key = audiofile.key(track.path)
         count = self._plays.get(key)
         if count is None:
-            if self.plays_db() is not None and key not in self._plays_wanted:
+            if key not in self._plays_wanted:
                 self._plays_wanted.append(key)
                 if self._plays_job is None:
                     self._plays_job = self.tree.after_idle(self._ask_plays)
             return ""
+
         self._plays.move_to_end(key)
         return f"{count:,}" if count else ""
 
@@ -900,15 +904,19 @@ class PlaylistView:
 
     def _search_now(self):
         """The pause in typing came: search (a big list on the list's own thread)."""
+        if self._search_job:   # (called before the pause: the search waiting for it isn't needed)
+            self.tree.after_cancel(self._search_job)
         self._search_job = None
         words = self._typed()
         if words and len(self._tracks) >= SEARCH_THREAD_AT:
-            self._ask_search(words)
+            if self._asked["search"] is None or words != self._asking:   # (the same search on its way: wait for it)
+                self._ask_search(words)
         else:
             self._render()
 
     def _ask_search(self, words: list[str]):
         serial = self._list_serial
+        self._asking = words
         self._asked["search"] = self._worker.ask("search", lambda *args: (serial, words, *_search(*args)),
                                                  self._tracks, self._haystacks, words, self._last_search)
         self._start_poll()

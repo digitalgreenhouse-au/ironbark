@@ -88,9 +88,9 @@ from typing import Callable
 from PIL import Image, ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
-               dragdrop, experiments, keys, layout, levelling, library_check, library_db, library_index, logs,
-               loudness, mediakeys, placement, playlists, popups, quick_search, recycle, settings, shapes, sleep,
-               tag_editor, theme, tkgc, updates, watcher)
+               dragdrop, experiments, keys, layout, levelling, library_check, library_db, library_index,
+               library_tracks, logs, loudness, mediakeys, placement, playlists, popups, quick_search, recycle,
+               settings, shapes, sleep, tag_editor, theme, tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -273,6 +273,30 @@ def _find_new_albums(index: library_index.LibraryIndex, since: float, results: q
 _plays_stored = [0]   # plays stored this session (bumped by the worker that stores one)
 
 
+def _keys_held(tracks, keys: list[str]) -> set[str]:
+    """Which of these songs (play keys: audiofile.key) a tab's list holds. A list read from the
+    library database a page at a time asks the database rather than reading every song."""
+    finder = getattr(tracks, "keys_in", None)
+    if finder is not None:
+        return finder(keys)
+    have = {audiofile.key(t.path) for t in tracks}
+    return {key for key in keys if key in have}
+
+
+def _index_of_key(tracks, key: str) -> int:
+    """Where the song with this play key is in a tab's list (-1: not there)."""
+    finder = getattr(tracks, "index_of_key", None)
+    if finder is not None:
+        return finder(key)
+    return next((i for i, t in enumerate(tracks) if audiofile.key(t.path) == key), -1)
+
+
+def _held_in_memory(tracks) -> list[Track]:
+    """A tab's songs as Track objects held now (a list read a page at a time: the songs read)."""
+    loaded = getattr(tracks, "loaded", None)
+    return loaded() if loaded is not None else list(tracks or [])
+
+
 def _tracks_at(tracks, rows: list[int]) -> list[Track]:
     """These songs of a tab's list (a list from the library database reads them in one go)."""
     many = getattr(tracks, "many", None)
@@ -375,11 +399,15 @@ class Tab:
 
 
 def tab_numbers(tab: Tab) -> tuple[int, int, float]:
-    """(songs, albums, seconds) in a tab — worked out once per change of its list."""
+    """(songs, albums, seconds) in a tab — worked out once per change of its list (a list read from the
+    library database a page at a time knows them already)."""
     tracks = tab.tracks or []
     if tab.numbers is not None and tab.numbers[0] is tab.tracks and tab.numbers[1] == len(tracks):
         return tab.numbers[2]
-    numbers = (len(tracks), len({album_folder(t.path) for t in tracks}), sum(t.duration for t in tracks))
+    if isinstance(tracks, library_tracks.LibraryTrackList):
+        numbers = (len(tracks), len(tracks.groups), tracks.seconds)
+    else:
+        numbers = (len(tracks), len({album_folder(t.path) for t in tracks}), sum(t.duration for t in tracks))
     tab.numbers = (tab.tracks, len(tracks), numbers)
     return numbers
 
@@ -478,6 +506,8 @@ class PlayerWindow:
         self._new_albums: list[Path] = []        # the new albums, newest first (watcher.new_albums)
         self._listening: _Listening | None = None   # the song being heard, for its play count
         self._plays_seen = 0   # plays stored (_plays_stored) when the Plays columns last read their counts
+        self._held_key = None    # what the songs held round the one playing were worked out for
+
         self._opened_key = None                  # the song last marked as opening its album
         self.media = mediakeys.MediaKeys()        # presses from media keys / Windows arrive here
         self._windows_media = None                # mediakeys.WindowsMedia while switched on
@@ -1776,12 +1806,17 @@ class PlayerWindow:
                 if not progress["unavailable"]:
                     # Albums / songs added later (a drive may be unplugged). Each song once: one
                     # added from an album the tab already holds isn't listed twice.
-                    have = {audiofile.key(t.path) for t in tracks}
-                    for extra in list(tab.extras):
-                        for track in self._extra_tracks(extra):
-                            if audiofile.key(track.path) not in have:
-                                have.add(audiofile.key(track.path))
-                                tracks.append(track)
+                    extra_tracks = [track for extra in list(tab.extras) for track in self._extra_tracks(extra)]
+                    have = _keys_held(tracks, [audiofile.key(t.path) for t in extra_tracks]) if extra_tracks else set()
+                    added = []
+                    for track in extra_tracks:
+                        if audiofile.key(track.path) not in have:
+                            have.add(audiofile.key(track.path))
+                            added.append(track)
+                    if added:
+                        tracks = tracks + added
+                if tab.resume_path and tab.last_index < 0 and tracks:
+                    progress["resume"] = _index_of_key(tracks, tab.resume_path)   # (here: it may ask the database)
             except OSError:
                 log.warning("couldn't read the tab %s", tab.path, exc_info=True)
                 tracks = []
@@ -1844,7 +1879,7 @@ class PlayerWindow:
             return
         tab.tracks = progress["tracks"]
         if tab.resume_path and tab.last_index < 0:  # where it got to last time
-            tab.last_index = next((i for i, t in enumerate(tab.tracks) if audiofile.key(t.path) == tab.resume_path), -1)
+            tab.last_index = progress["resume"] if "resume" in progress else _index_of_key(tab.tracks, tab.resume_path)
             if tab.last_index < 0:
                 tab.resume_at = 0.0
         if tab.kind == "playlist" and not tab.tracks:
@@ -1927,7 +1962,11 @@ class PlayerWindow:
             self.player.set_tracks(tab.tracks)
             self.playing_tab = index
         tab.last_index, tab.resume_at = track, start_at
+        ready = getattr(tab.tracks, "ready", None)
+        if ready is not None:   # (a list read a page at a time: the song to start, and the ones round it)
+            ready(track, self.player.order_around(track))
         self.player.play(track, start_at=start_at)
+
         self._shown_key = None
         self._refresh_tabs()
 
@@ -2729,7 +2768,7 @@ class PlayerWindow:
             return
         tracks = result["tracks"]
         name = tracks[0].album if tracks and tracks[0].album else album.name
-        have = {audiofile.key(t.path) for t in tab.tracks} if tab.tracks else set()
+        have = _keys_held(tab.tracks, [audiofile.key(t.path) for t in tracks]) if tab.tracks else set()
         if not tracks:
             message = f"No FLAC, WAV or MP3 files in “{album.name}”"
         elif tab.kind != "playlist" and (Path(tab.path) == album or str(album) in tab.extras
@@ -2818,8 +2857,15 @@ class PlayerWindow:
 
     def _library_tracks(self, albums: list) -> list[Track]:
         """Every song of these albums, in this order: from the database (nothing on disk is looked at
-        again, so a whole library loads quickly), else read from the files. (A worker thread's work.)"""
-        stored = self._index().albums_tracks([album.path for album in albums])
+        again, so a whole library loads quickly), else read from the files. (A worker thread's work.)
+        When the database holds every one of the albums, the list holds just the songs' ids and reads
+        Tracks a page at a time (library_tracks.LibraryTrackList): a whole library opens without a
+        Track held for every song."""
+        index = self._index()
+        light = library_tracks.build(index.db, albums)
+        if len(light.groups) == len(albums):
+            return light
+        stored = index.albums_tracks([album.path for album in albums])
         tracks: list[Track] = []
         for album in albums:
             found = stored.get(album.path)
@@ -2955,7 +3001,10 @@ class PlayerWindow:
                 self._netcache.invalidate(path)
         fresh: dict[Path, Track] = {}
         touched = []
-        tracks = [t for tab in self.tabs for t in (tab.tracks or [])] + self.player.up_next()
+        # (A list read a page at a time: the songs it holds now. The rest are read from the library
+        # database when next needed, by then up to date.)
+        tracks = [t for tab in self.tabs for t in _held_in_memory(tab.tracks)] + self.player.up_next()
+
         for track in tracks:
             real = Path(audiofile.real_path(track.path))
             if real not in changed or audiofile.cue_of(track.path) is not None:
@@ -2971,7 +3020,10 @@ class PlayerWindow:
             touched.append(track)
         touched_ids = {id(t) for t in touched}   # (by identity: comparing Tracks field by field is slow)
         for tab in self.tabs:
-            if tab.kind not in ("library", "playlist") and any(id(t) in touched_ids for t in (tab.tracks or [])):
+            if tab.kind not in ("library", "playlist") and any(id(t) in touched_ids
+                                                               for t in _held_in_memory(tab.tracks)):
+
+
                 tab.info_requested = False  # the tab's name comes from the album tag: look it up again
         if touched:
             self._show_current_tab()
@@ -4081,7 +4133,7 @@ class PlayerWindow:
             count = len(tracks)
             return f"Added {count} song{'' if count == 1 else 's'} to “{tab.title}”"
         # Songs are told apart by audiofile.key: a CUE track's path is its whole image file.
-        have = {audiofile.key(t.path) for t in tab.tracks} if tab.tracks else set()
+        have = _keys_held(tab.tracks, [audiofile.key(t.path) for t in tracks]) if tab.tracks else set()
         new = [t for t in tracks if audiofile.key(t.path) not in have]
         if not new:
             return f"Already in “{tab.title}”"
@@ -4124,7 +4176,8 @@ class PlayerWindow:
         if reorder:
             self._reorder_playlist(rows[0], self.playlist.drop_index(y_root))
         elif target is not None:
-            tracks = [tab.tracks[r] for r in rows if not tab.tracks[r].missing]
+            tracks = [track for track in _tracks_at(tab.tracks, rows) if not track.missing]
+
             self._set_notice(self._add_tracks_to_tab(self.tabs[target[1]], tracks,
                                                      [audiofile.key(t.path) for t in tracks]))
 
@@ -4710,6 +4763,7 @@ class PlayerWindow:
             self._guarded(self._refresh_view)
             self._guarded(self._count_listening)
             self._guarded(self._follow_plays)
+            self._guarded(self._hold_playing)
             self._polls += 1
             if self._polls % AUTOSAVE_EVERY == 0:
                 self._guarded(self._save_if_changed)
@@ -4758,6 +4812,19 @@ class PlayerWindow:
                                                             listening.duration), name="library-play", daemon=True)
         thread.start()
         return thread
+
+    def _hold_playing(self):
+        """(The poll.) A list read a page at a time keeps the songs round the one playing read — the
+        one before it and the next few in play order — so the engine never waits for the database."""
+        player = self.player
+        tracks = getattr(player, "tracks", None)
+        hold = getattr(tracks, "hold", None)
+        if hold is None:
+            return
+        key = (id(tracks), player.index, player.shuffle, player.repeat, id(player._order))
+        if key != self._held_key:
+            self._held_key = key
+            hold(player.order_around(player.index))
 
     def _follow_plays(self):
         """(The poll.) A play has been stored since: the Plays columns read their counts again."""
