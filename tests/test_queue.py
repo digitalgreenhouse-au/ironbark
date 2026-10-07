@@ -181,8 +181,11 @@ def test_next_and_previous_with_up_next(tmp_path, fake_card):
     p.previous()                               # from a queued song: back to the list's song it interrupted
     assert p.queued_now is None and p.index == 0
     p.play_next([tq])
-    p.play_queued(0)                           # picked from the Up next list: plays now
+    picked = p.queue[0]
+    p.play_queued(picked)                      # picked from the Up next list: plays now
     assert p.status().track is tq and p.up_next() == []
+    p.play_queued(picked)                      # (picked again from a list not yet redrawn: it has played)
+    assert p.status().track is tq and p.queued_now is picked
     p.set_exclusive(False)
     p.set_output_device("elsewhere")           # reopening the device keeps the queued song
     assert p.status().track is tq

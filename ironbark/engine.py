@@ -95,6 +95,7 @@ _READING, _ENDED, _IDLE = "reading", "ended", "idle"   # the decoder's state (se
 _WAITING, _AWAIT_NEXT = "waiting", "await-next"        # ... for the network: this song's bytes, the next song's
 _NOT_YET = object()   # _Source.lined_up before the decoder has read to the file's end
 _AWAIT = object()     # _next_source: the next song is still downloading (the decoder waits for it)
+_UNCHECKED = object()  # Player._checked_default before the system default's volume control was checked
 
 
 class State(Enum):
@@ -187,6 +188,7 @@ class WaitInfo:
     committed: bool = False    # the pause will be heard: the stall marker is queued
     silent_since: float | None = None   # the first request answered with silence (perf_counter)
     seek: bool = False         # it began at a seek (the bytes there haven't come yet)
+    source: object = field(default=None, repr=False, compare=False)   # the song it waits in (_Source)
 
 
 class _Stall:
@@ -836,6 +838,13 @@ class _Session:
         self._queue.discard(lambda item: item[3] is None or item[1].dropped)
         for source in stale:
             self._drop(source)
+        wait = self._wait
+        if wait is not None and wait.source in stale:
+            # It was waiting for the network in a song that won't play now: that wait is over (a stall
+            # marker of it has gone with the song's blocks), and the next song's waits are its own.
+            if wait.committed:
+                self._resumed_serial = max(self._resumed_serial, wait.serial)
+            self.waiting = None
         after.lined_up, after.next_source = _NOT_YET, None
         with self._lock:
             self._reading = after
@@ -887,7 +896,7 @@ class _Session:
             return
         # A new wait (the decoder may already have carried on from the last pause, its marker still
         # queued: that one is played past, and this one has its own spot to carry on from).
-        self.waiting = WaitInfo(time.perf_counter(), wait.frame, wait.reason, seek=seek)
+        self.waiting = WaitInfo(time.perf_counter(), wait.frame, wait.reason, seek=seek, source=source)
 
     def _wait_step(self, source: _Source, generation: int):
         """One look, every 50 ms, while `source` waits for the network. Before the pause is
@@ -1098,7 +1107,7 @@ class _Session:
                     continue  # from before a seek
             _, source, start, block = item
             if isinstance(block, _Stall):   # paused for the network here
-                if self._past_stall(block):
+                if self._past_stall(block, source):
                     continue
                 self._pending = item   # stays on the marker: exact zeros until the music is back
                 outdata[filled:] = 0
@@ -1157,14 +1166,17 @@ class _Session:
                 cause = "the player's decoding fell behind: the computer was busy"
             self._event("dropout", cause)
 
-    def _past_stall(self, stall: _Stall) -> bool:
-        """At a stall marker: may the music carry on past it? Once the decoder has carried on from
-        the cut — straight away if nothing has been silent yet (seamless: the same samples as with
-        no stall), else once the buffer has filled again (or the rest of the chain is queued)."""
+    def _past_stall(self, stall: _Stall, source: _Source) -> bool:
+        """At a stall marker in `source`: may the music carry on past it? Once the decoder has
+        carried on from the cut — straight away if nothing has been silent yet (seamless: the same
+        samples as with no stall), else once the buffer has filled again, or the rest of the song
+        is queued (the decoder has read on into the next one, or to its end and waits for the next
+        one: nothing more of this song will come) or the rest of the chain is."""
         if self._resumed_serial < stall.serial:
             return False
         silent = stall.silent_since is not None
-        if silent and not (self._draining or self._queue.qsize() >= self._queue_blocks - 1):
+        read_past = not source.dropped and (self._reading is not source or self._awaiting is not None)
+        if silent and not (self._draining or read_past or self._queue.qsize() >= self._queue_blocks - 1):
             return False   # (even if it ran out again meanwhile: one pause, not a stop-start)
         if silent:
             for event in reversed(self._events):
@@ -1417,6 +1429,12 @@ class Player:
         self._exclusive = False
         self._device: str | None = None  # output device name; None = system default
         self.hardware_volume: bool | None = None  # see refresh_hardware_volume()
+        # Bit-perfect on the system default plays only on the device whose volume control was checked
+        # (its name, from refresh_hardware_volume). When Windows makes another device the default,
+        # nothing plays in bit-perfect until that one has been checked too: `volume_check_due` asks
+        # the window to (see check_default).
+        self._checked_default = _UNCHECKED
+        self.volume_check_due = False
         self._session: _Session | None = None
         self._lock = threading.RLock()
         self._message = ""
@@ -1452,16 +1470,17 @@ class Player:
     # -- loading -------------------------------------------------------------
     def set_tracks(self, tracks: list[Track], keep_playing: bool = False):
         """Replace the playlist. keep_playing: if the current song is in the new list,
-        it carries on uninterrupted and the album continues from there."""
+        it carries on uninterrupted and the album continues from there. The same goes for a
+        player paused with the device let go (suspend: the sleep timer's end, a lost device…) or
+        stopped after a song: play carries on from the same spot, or with the song lined up."""
         with self._lock:
             current = None
-            active = self._session is not None or self._preparing is not None   # (preparing counts as playing)
-            if keep_playing and active and 0 <= self.index < len(self.tracks):
+            if keep_playing and 0 <= self.index < len(self.tracks):
                 path = self.tracks[self.index].path
                 current = self._find(tracks, path)
-            if keep_playing and active and self.queued_now is not None:
-                # A queued song is playing: it carries on; the list carries on after it from the
-                # same song as before (if it's still there).
+            if keep_playing and self.queued_now is not None:
+                # A queued song is playing (or paused at a spot): it carries on; the list carries on
+                # after it from the same song as before (if it's still there).
                 path = self.tracks[self.index].path if 0 <= self.index < len(self.tracks) else None
                 self.tracks = tracks
                 self._let_go_of_paths()
@@ -1474,8 +1493,10 @@ class Player:
                 self._close_session()
             elif self._session is not None:
                 self._session.renumber(current)
-            else:
+            elif self._preparing is not None:
                 self._preparing.at = current
+            # (else paused with the device let go, or stopped: its spot — or a queued song lined up to
+            # carry on with — stays as it is)
             self.tracks = tracks
             self._let_go_of_paths()
             self.index = current if current is not None else (0 if len(tracks) else -1)
@@ -1627,13 +1648,14 @@ class Player:
                 self.queue = queue
                 self._relineup()
 
-    def remove_queued(self, positions) -> tuple[list, list]:
-        """Take several songs out of Up next at once (positions in it as it is now). Returns the list
-        before and after, for `restore_queue`."""
-        gone = set(positions)
+    def remove_queued(self, entries) -> tuple[list, list]:
+        """Take several songs out of Up next at once: these entries (Queued), the ones still in it
+        (one that has played since is left alone, and nothing else moves into its place). Returns
+        the list before and after, for `restore_queue`."""
+        gone = {id(q) for q in entries}
         with self._lock:
             before = self.queue
-            after = [q for i, q in enumerate(before) if i not in gone]
+            after = [q for q in before if id(q) not in gone]
             if len(after) != len(before):
                 self.queue = after
                 self._relineup()
@@ -1654,12 +1676,12 @@ class Player:
             self.queue = []
             self._relineup()
 
-    def play_queued(self, position: int):
-        """Play a song from Up next straight away (it leaves the list)."""
+    def play_queued(self, entry: Queued):
+        """Play a song from Up next straight away (it leaves the list): this entry, if it's still
+        there (one that has played since isn't started again, nor its neighbour in its place)."""
         with self._lock:
-            queue = self.queue
-            if 0 <= position < len(queue):
-                self._start(queue[position])
+            if any(q is entry for q in self.queue):
+                self._start(entry)
 
     def _current(self):
         """What's playing: the queued song, or the list position."""
@@ -2007,9 +2029,29 @@ class Player:
 
     def refresh_hardware_volume(self, device=_CURRENT) -> bool | None:
         """Re-check whether the (current, or about-to-be-chosen) output device has its own
-        volume control. Call before switching bit-perfect on or changing device."""
-        self.hardware_volume = devices.has_hardware_volume(self._device if device is self._CURRENT else device)
+        volume control. Call before switching bit-perfect on or changing device. For the system
+        default, the device checked is noted: bit-perfect plays only there (see check_default)."""
+        name = self._device if device is self._CURRENT else device
+        if name is None:
+            # (Its name first: if Windows changes the default during the check, the change is caught.)
+            self._checked_default = devices.default_output_name()
+        self.hardware_volume = devices.has_hardware_volume(name)
+        self.volume_check_due = False
         return self.hardware_volume
+
+    def check_default(self) -> str | None:
+        """Bit-perfect on the system default: the device to play on — the one whose volume control
+        was checked (refresh_hardware_volume), by name — as long as it's still Windows' default.
+        If Windows has made another device the default since, this raises devices.DefaultChanged,
+        and nothing plays in bit-perfect until that device has been checked too (`volume_check_due`):
+        it may have no volume control of its own, and bit-perfect sends the file at full scale."""
+        name = devices.default_output_name()
+        with self._lock:
+            if name == self._checked_default:
+                return name
+            self.hardware_volume = None   # (not known for this device: the ear checks treat it as none)
+            self.volume_check_due = True
+        raise devices.DefaultChanged(f"Windows' default output is now {name or 'another device'}")
 
     @property
     def output_device(self) -> str | None:
@@ -2163,8 +2205,11 @@ class Player:
                 self._suspended_at = start_at
                 return
             try:
+                device = self._device
+                if self._exclusive and device is None:
+                    device = self.check_default()   # (bit-perfect: only the device whose volume was checked)
                 session = _Session(local, self._gain, lambda s: self._ended_events.put(("end", s)),
-                                   device=self._device, want_exclusive=self._exclusive, start_at=start_at,
+                                   device=device, want_exclusive=self._exclusive, start_at=start_at,
                                    events=self.events, monitors=self._monitors, index=index, follow=self._follow,
                                    on_advance=lambda s, previous, new: self._ended_events.put(
                                        ("advance", s, previous, new)),
@@ -2182,7 +2227,10 @@ class Player:
                 # The sound device, not the file, is the problem: skipping tracks won't help. Shown
                 # paused at the same spot, so play tries again from there.
                 log.warning("cannot open output for %s: %s", track.path, exc)
-                if isinstance(exc, devices.DeviceMissing):
+                if isinstance(exc, devices.DefaultChanged):
+                    self._message = (f"{exc}, so bit-perfect stopped here to check its volume first · press play "
+                                     "to carry on")
+                elif isinstance(exc, devices.DeviceMissing):
                     self._message = (f"{exc}. Bit-perfect mode plays only on the output you chose: connect it, "
                                      "or pick another under Output, then press play.")
                 else:

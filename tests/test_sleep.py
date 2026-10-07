@@ -160,6 +160,54 @@ def test_stop_after_resumes_with_the_list_if_that_song_left_up_next(tmp_path, fa
     player.stop()
 
 
+def test_stopped_after_a_song_play_carries_on_with_the_next_even_after_songs_are_added(tmp_path, fake_card):
+    (a, _), (b, _), (c, _), (d, _) = (wav(tmp_path, n, 5000) for n in ("a.wav", "b.wav", "c.wav", "d.wav"))
+    player = Player()
+    session = start(player, [a, b, c])
+    player.set_stop_after("song")
+    pull(session)
+    with player._lock:
+        player._ended(session)
+    assert player._session is None and player.index == 1
+    player.set_tracks([Track(p, p.stem) for p in (d, a, b, c)], keep_playing=True)   # an album added to the tab
+    assert player.status().index == 2               # still b, where it now sits
+    with player._lock:
+        player.play()
+    assert player._session._src.path == b           # b next, as it was (not the list's first song)
+    player.stop()
+
+
+def test_a_spot_paused_with_the_device_let_go_survives_songs_added_to_the_list(tmp_path, fake_card):
+    """The sleep timer's end, a lost device, ABX or Test signals leave the player paused with no stream
+    open (suspend): songs added to the tab playing meanwhile keep that spot for play."""
+    paths = [wav(tmp_path, f"{n}.wav", 44100 * 3)[0] for n in range(5)]
+    tracks = [Track(path, path.stem, duration=3.0) for path in paths]
+    player = Player()
+    player.set_tracks(tracks[:3])
+    player.play(2, start_at=1.5)
+    assert player.suspend() and player._session is None
+    player.set_tracks(tracks[:4], keep_playing=True)             # an album added to the tab playing
+    status = player.status()
+    assert status.state is State.PAUSED and status.index == 2 and status.position == pytest.approx(1.5)
+    player.play()                                                # carries on from there
+    status = player.status()
+    assert status.state is State.PLAYING and status.track is tracks[2] and status.position == pytest.approx(1.5)
+    # A song from Up next, paused the same way, carries on too (the list after it from the same place).
+    player.add_to_queue([tracks[4]])
+    player.next()
+    assert player.queued_now is not None and player.suspend()
+    player.set_tracks(tracks[:4] + [tracks[0]], keep_playing=True)
+    status = player.status()
+    assert status.state is State.PAUSED and status.track is tracks[4] and player.index == 2
+    # The song itself taken out of the list: nothing left to carry on with (stopped, as when playing).
+    player.next()
+    player.suspend()
+    player.set_tracks(tracks[:3], keep_playing=True)
+    assert player.status().state is State.STOPPED
+    player.stop()
+    player.stop()
+
+
 def test_end_of_this_album_stops_even_when_the_list_goes_round(tmp_path, fake_card):
     # One album with repeat all (or repeat one) never reaches another album: going round is its end.
     (a1, _), (a2, _) = wav(tmp_path / "Album", "1.wav", 5000), wav(tmp_path / "Album", "2.wav", 5000)

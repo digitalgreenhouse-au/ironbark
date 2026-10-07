@@ -627,7 +627,8 @@ class ClipWindow:
                                      gains=[loaded.gain_a, loaded.gain_b, loaded.gain_difference],
                                      volume=self.player.volume ** 2)
         self.audition = audition.Audition(switcher, device=self.player.output_device,
-                                          exclusive=self.player.exclusive, stream_factory=self._stream_factory)
+                                          exclusive=self.player.exclusive, stream_factory=self._stream_factory,
+                                          default_check=self.player.check_default)
         self._message = ("The loop moved to the chosen over: press A or B" if was_playing else "")
         # Another over was chosen while this one was being made: make that one now.
         self._prepare_versions()

@@ -40,6 +40,11 @@ class DeviceMissing(sd.PortAudioError):
     """The chosen output isn't connected (and bit-perfect mode won't play on another one)."""
 
 
+class DefaultChanged(DeviceMissing):
+    """Bit-perfect on the system default: Windows has made another device the default since its
+    volume control was checked (that one may have none, and bit-perfect sends full scale)."""
+
+
 def _com_call(fn: Callable[[], T], default: T | None = None, timeout: float = 3.0) -> T | None:
     """Run a Windows Core Audio query on a throwaway thread with COM set up, so COM
     state never leaks into the UI or audio threads. Any failure returns `default`."""

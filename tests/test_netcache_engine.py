@@ -397,6 +397,70 @@ def test_up_next_changed_during_the_join_window_lines_up_again(tmp_path, fake_ca
     p.stop()
 
 
+def test_a_wait_in_a_next_song_dropped_from_the_plan_ends_with_it(tmp_path, fake_card):
+    """The next song's read-ahead was waiting for the network when Up next changed: that wait goes
+    with the song, and the song lined up instead waits (and carries on) from its own spot."""
+    _, a_data, a_ref, _ = music(tmp_path, "a.wav", 2.0, seed=1)
+    _, b_data, b_ref, _ = music(tmp_path, "b.wav", 4.0, seed=2)
+    _, c_data, c_ref, _ = music(tmp_path, "c.wav", 10.0, seed=3)
+    prep = FakePreparer()
+    a, b, c = (prep.add(FakeCopy(tmp_path / "cache", f"{name}.wav", data))
+               for name, data in (("a", a_data), ("b", b_data), ("c", c_data)))
+    a.arrive()
+    b.arrive(seconds=1.2)                                       # B may start; its reads give up at 1.2 s
+    c.arrive(seconds=7.0)                                       # C too; its reads give up at 7.0 s
+    p = Player(preparer=prep)
+    p.set_volume(1.0)
+    p.set_tracks([Track(a.source, "A", duration=2.0), Track(b.source, "B", duration=4.0)])
+    p.play(0)
+    s = p._session
+    card = Card(s)
+    card.play_while(lambda: s.waiting is None, keep=12, pace=0.09)   # A heard; B's read-ahead waits
+    assert s._src.path == a.source and s._reading.path == b.source and not s.waiting.committed
+    p.play_next([Track(c.source, "C", duration=10.0)])         # Up next: C after A now, not B
+    assert wait_until(lambda: s._reading.path == c.source, 3)
+    assert s.waiting is None and s.network_wait is None          # B's wait went with B
+    _, cut = stall_and_cut(card, c)                             # C's own pause, at its own spot
+    assert s.waiting.source.path == c.source and 6 * RATE < cut <= 7 * RATE
+    got = card.audio
+    want = np.concatenate([a_ref, c_ref[:cut]])
+    assert np.array_equal(got[: len(want)], want) and not got[len(want):].any()   # nothing played twice
+    c.arrive()
+    b.arrive()                                                  # (after C the list carries on: B)
+    card.play_to_end()
+    got = card.audio
+    assert np.array_equal(got[got.any(axis=1)], np.concatenate([a_ref, c_ref, b_ref]))
+    p.stop()
+
+
+def test_after_a_pause_near_its_end_the_rest_of_a_song_plays_while_the_next_still_downloads(tmp_path,
+                                                                                             fake_card):
+    """A pause for the network heard in a song's last two seconds; the rest of it comes, but the next
+    song isn't ready: the rest plays (it can't fill the buffer, so it doesn't wait for that), then the
+    next song starts by itself once it's ready."""
+    _, a_data, a_ref, _ = music(tmp_path, "a.wav", 4.0, seed=1)
+    _, b_data, _, _ = music(tmp_path, "b.wav", 4.0, seed=2)
+    prep = FakePreparer()
+    a = prep.add(FakeCopy(tmp_path / "cache", "a.wav", a_data))
+    b = prep.add(FakeCopy(tmp_path / "cache", "b.wav", b_data))
+    a.arrive(seconds=2.6)                                       # A pauses about 1.4 s before its end
+    p = Player(preparer=prep)
+    p.set_volume(1.0)
+    p.set_tracks([Track(a.source, "A", duration=4.0), Track(b.source, "B", duration=4.0)])
+    p.play(0)
+    s = p._session
+    card = Card(s)
+    _, cut = stall_and_cut(card, a)
+    assert len(a_ref) - cut < (s._queue_blocks - 1) * BLOCK_FRAMES   # (the rest can't fill the buffer)
+    a.arrive()                                                  # the rest of A is here; nothing of B
+    assert wait_until(lambda: s._awaiting is not None, 3)       # A read to its end, waiting for B
+    card.play_to_end(5.0)
+    got = card.audio
+    assert np.array_equal(got[got.any(axis=1)], a_ref)          # all of A, once, in order
+    assert wait_until(lambda: p._preparing is not None, 3) and p.status().index == 1
+    p.stop()
+
+
 # -- the source goes away mid-song ---------------------------------------------------------------------
 def test_a_source_gone_mid_song_is_cut_short_and_playback_moves_on(tmp_path, fake_card):
     _, data, ref, _ = music(tmp_path, "a.wav", 4.0)
@@ -898,6 +962,31 @@ def test_a_sleep_timer_running_out_while_a_song_waits_for_the_network_still_ends
     prep.tick()
     time.sleep(0.2)
     assert p._session is None
+
+
+def test_a_sleep_timer_running_out_in_bit_perfect_while_a_song_waits_never_fades_it(tmp_path, fake_card,
+                                                                                   bit_perfect, monkeypatch):
+    """No stream is open yet, but the song will start in bit-perfect: the timer stops at its end
+    (the bit-perfect rule), rather than fading the music it sends to the device."""
+    from ironbark import sleep
+    monkeypatch.setattr(engine.devices, "find_device", lambda name, rescan_ok=True: 0)
+    monkeypatch.setattr(engine.devices, "default_output_name", lambda: "Test DAC")
+    monkeypatch.setattr(engine.devices, "has_hardware_volume", lambda name: True)
+    p, prep, copy = preparing_player(tmp_path)
+    p.refresh_hardware_volume()                                  # (the window's check, as bit-perfect goes on)
+    p.set_exclusive(True)
+    p.play(0)
+    clock = [0.0]
+    timer = sleep.SleepTimer(p, 1, clock=lambda: clock[0])
+    clock[0] = 61.0                                              # time's up while it waits
+    timer.tick(p.status())
+    assert timer.state == sleep.AT_BOUNDARY and p.stop_after == "song" and not p.status().fading
+    copy.arrive()
+    prep.tick()
+    assert wait_until(lambda: p._session is not None, 3)
+    status = p.status()
+    assert status.output.exclusive and not status.fading and p._fade is None and status.stop_after == "song"
+    p.stop()
 
 
 def test_a_song_found_gone_while_it_waits_to_start_is_skipped_saying_why(tmp_path, fake_card, quick_watch):

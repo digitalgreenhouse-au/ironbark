@@ -45,9 +45,12 @@ def fake_card(monkeypatch):
 
 @pytest.fixture
 def exclusive_card(monkeypatch, fake_card):
-    """A stand-in for a device that takes bit-perfect (exclusive) mode."""
+    """A stand-in for a device that takes bit-perfect (exclusive) mode — the system default, with a
+    volume control of its own."""
     monkeypatch.setattr(engine.devices, "find_device", lambda name, rescan_ok=True: 0)
     monkeypatch.setattr(engine.devices, "exclusive_supported", lambda: True)
+    monkeypatch.setattr(engine.devices, "default_output_name", lambda: "Test DAC")
+    monkeypatch.setattr(engine.devices, "has_hardware_volume", lambda name: True)
 
 
 def sine(seconds, amplitude, rate=RATE, channels=2, freq=997.0):
@@ -451,6 +454,84 @@ def test_audition_in_bit_perfect_mode_never_moves_to_another_device(monkeypatch)
     assert not made and not a.playing
 
 
+@pytest.fixture
+def changing_default(monkeypatch):
+    """Windows' default output, which the test changes: "Speakers" (with a volume control of its own)
+    until a "USB DAC" (with none) is plugged in and made the default."""
+    default = {"name": "Speakers"}
+    places, volumes = {"Speakers": 1, "USB DAC": 2}, {"Speakers": True, "USB DAC": False}
+    monkeypatch.setattr(devices, "find_device", lambda name, rescan_ok=True: places.get(name or default["name"]))
+    monkeypatch.setattr(devices, "default_output_name", lambda: default["name"])
+    monkeypatch.setattr(devices, "has_hardware_volume", lambda name: volumes[name or default["name"]])
+    monkeypatch.setattr(devices, "exclusive_supported", lambda: True)
+    monkeypatch.setattr(devices, "max_output_channels", lambda index: 2)
+    return default
+
+
+def test_bit_perfect_on_the_system_default_never_follows_it_to_an_unchecked_device(tmp_path, fake_card,
+                                                                                    changing_default, monkeypatch):
+    made = []
+
+    class Counted(FakeStream):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            made.append(kwargs)
+
+    monkeypatch.setattr(engine.sd, "OutputStream", Counted)
+    (one, _), (two, _) = wav(tmp_path, "1.wav", RATE * 5), wav(tmp_path, "2.wav", RATE * 5)
+    p = Player()
+    p.set_tracks([Track(one, "1", duration=5.0), Track(two, "2", duration=5.0)])
+    assert p.refresh_hardware_volume() is True                  # the window's check, as bit-perfect goes on
+    p.set_exclusive(True)
+    p.set_volume(1.0)                                           # (100%: as bit-perfect is meant to be heard)
+    p.play(0)
+    assert made[-1]["device"] == 1 and made[-1]["dtype"] == "int32"
+    changing_default["name"] = "USB DAC"                        # plugged in: Windows makes it the default
+    p.next()                                                    # a new stream (any song that can't join on)
+    status = p.status()
+    assert len(made) == 1 and p._session is None                # nothing opened on the new default
+    assert status.state is State.PAUSED and status.index == 1 and status.position == 0.0
+    assert "USB DAC" in status.message and "check its volume" in status.message
+    assert p.volume_check_due and p.hardware_volume is None     # (the ear checks treat it as having none)
+    p.play()
+    assert len(made) == 1 and p.status().state is State.PAUSED    # not until it has been checked
+    assert p.refresh_hardware_volume() is False and not p.volume_check_due   # (the window does this at once)
+    p.play()
+    assert made[-1]["device"] == 2 and p.status().state is State.PLAYING
+    p.close()
+
+
+def test_bit_perfect_on_the_system_default_needs_its_volume_checked_first(tmp_path, fake_card, changing_default):
+    path, _ = wav(tmp_path, "t.wav", RATE * 5)
+    p = Player()
+    p.set_tracks([Track(path, "t", duration=5.0)])
+    p.set_exclusive(True)                                       # (never checked)
+    p.play(0)
+    assert p._session is None and p.volume_check_due
+    p.refresh_hardware_volume()
+    p.play()
+    assert p._session is not None
+    p.close()
+
+
+def test_audition_in_bit_perfect_mode_on_the_system_default_asks_the_player_first(changing_default):
+    made = []
+    p = Player()
+    p.refresh_hardware_volume()
+    p.set_exclusive(True)
+    switcher = audition.Switcher([np.zeros((8000, 2), np.float32)], RATE)
+    a = audition.Audition(switcher, device=None, exclusive=True, default_check=p.check_default,
+                          stream_factory=lambda **kw: made.append(kw) or FakeStream(**kw))
+    a.play(0)
+    assert made[-1]["device"] == 1 and a.exclusive
+    a.stop()
+    changing_default["name"] = "USB DAC"
+    with pytest.raises(devices.DefaultChanged):
+        a.play(0)
+    assert len(made) == 1 and not a.playing and p.volume_check_due
+    p.close()
+
+
 def test_open_streams_are_known_so_a_rescan_waits(tmp_path, fake_card):
     path, _ = wav(tmp_path, "t.wav", RATE * 5)
     p = Player()
@@ -509,6 +590,7 @@ def test_a_device_taking_fewer_bits_is_reported(tmp_path, exclusive_card, monkey
     sf.write(deep, (RNG.standard_normal((20000, 2)) * 0.1), RATE, subtype="PCM_24")
     shallow, _ = wav(tmp_path, "shallow.wav", 20000)
     p = Player()
+    p.refresh_hardware_volume()                       # (the window's check, as bit-perfect goes on)
     p.set_exclusive(True)
     p.set_tracks([Track(deep, "deep"), Track(shallow, "shallow")])
     p.play(0)

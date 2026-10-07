@@ -95,6 +95,9 @@ class AnyPlayer:
     def seek(self, seconds):
         pass
 
+    def check_default(self):
+        return None
+
 
 def fake_audition():
     """A sound that's playing (for the windows' "stop if the player plays" check)."""

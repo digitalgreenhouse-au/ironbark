@@ -302,6 +302,9 @@ class WindowPlayer:
         self.state = State.PAUSED
         return True
 
+    def check_default(self):
+        return None
+
 
 def feed_blocks(player, x, path, rate=RATE):
     """Monitor-feed items for float samples, as int32 the player would send, all already heard."""
