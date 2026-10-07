@@ -59,7 +59,7 @@ class Action:
     scope: str              # see SCOPES
     label: str
     group: str              # see GROUPS
-    shift: bool = False     # a letter (or "?") works with Shift / Caps Lock too: S and Shift+S both shuffle
+    shift: bool = False     # a letter (or "?", "/") works with Shift / Caps Lock too: S and Shift+S both shuffle
     arg: bool = False       # the handler is told which key was pressed (as written in `keys`)
     shown: str = ""         # how the keys read in the sheet, when listing them all would be too long
     reserved: bool = False  # bound for a feature still to come: not listed in the sheet or the README
@@ -99,7 +99,8 @@ ACTIONS: tuple[Action, ...] = (
     Action("open_folder", _keys("Ctrl+O",), "main", "Open a folder", "Tabs & lists"),
     Action("open_playlist", _keys("Ctrl+Shift+O",), "main", "Open a playlist file", "Tabs & lists"),
     Action("new_playlist", _keys("Ctrl+N",), "main", "New playlist", "Tabs & lists"),
-    Action("search_tab", _keys("Ctrl+F", "/"), "main", "Search this tab", "Tabs & lists"),
+    # (shift: '/' is Shift+7 on German, Nordic and Spanish keyboards; on a US one Shift+/ is "?")
+    Action("search_tab", _keys("Ctrl+F", "/"), "main", "Search this tab", "Tabs & lists", shift=True),
     Action("list_play", _keys("Enter",), "list", "Track list: play the song (an album row: the album)",
            "Tabs & lists"),
     Action("list_queue", _keys("Ctrl+Enter",), "list", "Track list: add to Up next", "Tabs & lists"),
@@ -128,7 +129,8 @@ ACTIONS: tuple[Action, ...] = (
     Action("library", _keys("Ctrl+L",), "app", "Library (brings it to the front when it's open)",
            "Library & search"),
     Action("find", _keys("Ctrl+K", "Ctrl+Shift+F"), "app", "Search the library", "Library & search"),
-    Action("library_search", _keys("Ctrl+F", "/"), "library", "Library: search box", "Library & search"),
+    Action("library_search", _keys("Ctrl+F", "/"), "library", "Library: search box", "Library & search",
+           shift=True),
     Action("library_select_all", _keys("Ctrl+A",), "library", "Library: select every song (the song views)",
            "Library & search"),
     Action("library_open", _keys("Enter",), "library", "Library: open the album in a new tab", "Library & search"),

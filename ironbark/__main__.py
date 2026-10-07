@@ -75,21 +75,29 @@ def main(argv: list[str] | None = None) -> None:
 def _claim(paths: list[str]) -> instance.Instance | None:
     """This launch's place. None when another copy is running and has taken `paths` (it comes to
     the front). A copy that was closing just then is waited for; if another launch takes its place
-    first (several files opened at once), that one is handed the files instead."""
+    first (several files opened at once), that one is handed the files instead. Closing can take
+    a while (a tag save finishing its file), so a copy that's closing is waited for longer."""
     began = time.monotonic()
     here = instance.claim()
+    closing = False
     while not here.first:
         if here.forward(paths):
             return None
         here = instance.claim()
-        if time.monotonic() - began >= instance.FORWARD_TIMEOUT:
-            break   # (a copy there all along that never answered)
+        if here.first:
+            break
+        closing = here.closing()
+        if time.monotonic() - began >= (instance.CLOSING_WAIT_S if closing else instance.FORWARD_TIMEOUT):
+            break   # (a copy there all along that never answered, or one that never finished closing)
         time.sleep(0.05)
     if here.first:
         return here
-    crash.tell_native(f"{APP_NAME} isn't answering",
-                      f"{APP_NAME} is already open, but didn't answer. If it has stopped responding, close it "
-                      f"in Task Manager, then start {APP_NAME} again.")
+    if closing:
+        crash.tell_native(f"{APP_NAME} is closing", f"{APP_NAME} is still closing. Try again in a moment.")
+    else:
+        crash.tell_native(f"{APP_NAME} isn't answering",
+                          f"{APP_NAME} is already open, but didn't answer. If it has stopped responding, close "
+                          f"it in Task Manager, then start {APP_NAME} again.")
     sys.exit(1)
 
 
@@ -174,7 +182,8 @@ def _start_crash_log() -> None:
     """The player runs without a console, so errors would vanish. Record them in crash.log
     next to the settings: Python errors in the window code, on any other thread, or not caught
     anywhere, and a traceback of every thread if the program dies outright (faulthandler).
-    The running log, app.log, starts here too (logs.py)."""
+    The running log, app.log, starts here too (logs.py). Nothing here may stop the player
+    starting: a log it can't read, set aside or write to only means less is noted."""
     global _crash_file
     folder = settings.settings_path().parent
     logs.setup(folder)
@@ -184,8 +193,9 @@ def _start_crash_log() -> None:
     except Exception:
         prefs, on = {}, []
     logs.set_detailed(bool(prefs.get("detailed_logging")))
+    path = folder / "crash.log"
+    earlier = ""
     try:
-        path = folder / "crash.log"
         path.parent.mkdir(parents=True, exist_ok=True)
         # How the last run ended, before this one writes anything (crash.closed_unexpectedly).
         earlier = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
@@ -193,18 +203,35 @@ def _start_crash_log() -> None:
         if path.exists() and path.stat().st_size > 1_000_000:  # keep it from growing forever
             path.replace(path.with_suffix(".old.log"))
             earlier = ""
-        _crash_file = open(path, "a", encoding="utf-8", buffering=1)
+    except OSError:   # (it can't be read or set aside just now: this run still adds to it)
+        pass
+    try:
+        # A file name Windows allows may not be valid UTF-8 (half of a UTF-16 pair): written escaped.
+        _crash_file = open(path, "a", encoding="utf-8", errors="backslashreplace", buffering=1)
     except OSError:
         _crash_file = None
-        return
-    if not crash.tracks_exits(earlier):   # (a new log, or one from before clean exits were noted)
-        _crash_file.write(f"\n{crash.TRACKING}\n")
-    trying = f" · experiments on: {', '.join(on)}" if on else ""
-    _crash_file.write(f"\n--- {APP_NAME} {__version__} started {datetime.datetime.now():%d/%m/%Y %H:%M:%S}"
-                      f"{trying} ---\n")
-    faulthandler.enable(file=_crash_file, all_threads=True)
+    if _crash_file is not None:
+        lines = "" if crash.tracks_exits(earlier) else f"\n{crash.TRACKING}\n"   # (a new log, or an old one)
+        trying = f" · experiments on: {', '.join(on)}" if on else ""
+        lines += (f"\n--- {APP_NAME} {__version__} started {datetime.datetime.now():%d/%m/%Y %H:%M:%S}"
+                  f"{trying} ---\n")
+        _write_crash_log(lines)
+        faulthandler.enable(file=_crash_file, all_threads=True)
     threading.excepthook = _log_thread_error
     sys.excepthook = _log_uncaught
+
+
+def _write_crash_log(text: str, stream=None) -> None:
+    """Add to crash.log (or `stream`); a write that fails — a full drive, a network folder that has
+    gone, a file already closed — is skipped: logging an error must never cause one."""
+    stream = stream or _crash_file
+    if stream is None:
+        return
+    try:
+        stream.write(text)
+        stream.flush()
+    except (OSError, ValueError):
+        pass
 
 
 def _log_error(where: str, exc_type, value, tb) -> None:
@@ -215,16 +242,18 @@ def _log_error(where: str, exc_type, value, tb) -> None:
         return
     _last_logged = value
     text = "".join(traceback.format_exception(exc_type, value, tb))
-    stream = _crash_file or sys.stderr
-    if stream is not None:
-        stream.write(f"{datetime.datetime.now():%H:%M:%S} error {where}:\n{text}")
-        stream.flush()
+    _write_crash_log(f"{datetime.datetime.now():%H:%M:%S} error {where}:\n{text}", _crash_file or sys.stderr)
     if logging.getLogger().handlers:   # (with none, logging would print it to the console a second time)
         log.error("error %s", where, exc_info=(exc_type, value, tb))
 
 
 def _log_callback_error(exc_type, value, tb):
-    _log_error("in the window code", exc_type, value, tb)
+    """Tk's handler for an error in the window code. Nothing may escape it: an error raised here
+    would end the window's main loop, and the player with it."""
+    try:
+        _log_error("in the window code", exc_type, value, tb)
+    except Exception:  # noqa: BLE001
+        pass
     crash.report("in the window code", exc_type, value, tb)
 
 
@@ -232,7 +261,10 @@ def _log_thread_error(args: threading.ExceptHookArgs):
     if args.exc_type is SystemExit:   # (a thread ending itself on purpose, as Python's own hook allows)
         return
     name = args.thread.name if args.thread is not None else "?"
-    _log_error(f"in the {name} thread", args.exc_type, args.exc_value, args.exc_traceback)
+    try:
+        _log_error(f"in the {name} thread", args.exc_type, args.exc_value, args.exc_traceback)
+    except Exception:  # noqa: BLE001 — as for the window code: the error is still reported below
+        pass
     crash.report(f"in the {name} thread", args.exc_type, args.exc_value, args.exc_traceback)
 
 

@@ -757,11 +757,13 @@ class Cancelled(Exception):
     """The check was cancelled (its window closed) while waiting for an answer."""
 
 
-def fetch(url: str, prefs: dict | None, cancel: threading.Event | None = None) -> bytes | None:
+def fetch(url: str, prefs: dict | None, cancel: threading.Event | None = None,
+          https_only: bool = False) -> bytes | None:
     """GET one address. None = not found (404). Refuses unless network access is allowed —
     checked here, at the one place this program goes online, not just in the window. Gives up
     after DEADLINE seconds (TimeoutError) and stops when `cancel` is set (Cancelled), checked
-    between pieces of the answer."""
+    between pieces of the answer. `https_only`: an answer that a redirect brought from a plain
+    http:// address is refused (URLError)."""
     if not network_allowed(prefs):
         raise NetworkOff("network access is off (Settings → Network)")
     if cancel is not None and cancel.is_set():
@@ -770,6 +772,9 @@ def fetch(url: str, prefs: dict | None, cancel: threading.Event | None = None) -
     deadline = time.monotonic() + DEADLINE
     try:
         with _urlopen(request, timeout=TIMEOUT) as response:
+            answered_from = str(getattr(response, "url", None) or url)   # (where any redirects ended)
+            if https_only and not answered_from.lower().startswith("https://"):
+                raise urllib.error.URLError(f"the answer came from a plain http address: {answered_from}")
             read = getattr(response, "read1", response.read)   # read1: whatever has arrived
             data = bytearray()
             while len(data) < MAX_BYTES:

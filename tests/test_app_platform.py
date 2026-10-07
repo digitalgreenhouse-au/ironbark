@@ -183,6 +183,9 @@ class FakeInstance:
         self.sent.append(list(paths))
         return self.answers
 
+    def closing(self):   # (listening, whether or not it answers)
+        return False
+
     def stop_listening(self):
         pass
 

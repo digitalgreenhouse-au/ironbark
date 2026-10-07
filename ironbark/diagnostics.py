@@ -16,6 +16,8 @@ file the sound outputs' names show as "<device 1>", "<device 2>"…, the open ta
 the playlists' names as "<playlist 1>"… and searches as "<search 1>"… — again the same name always
 the same stand-in, so the files still agree with each other. A network folder's server ("\\\\sams-nas")
 is named on its own in the logs too (the network playback cache's notes), so it shows as "<server 1>"….
+A folder on a mapped network drive ("Z:\\Music") is also known by its server path, which the cache's
+notes use: Windows is asked what each such drive letter stands for, and that path gets the same stand-in.
 """
 
 from __future__ import annotations
@@ -103,11 +105,34 @@ class Redactor:
         key = _normal(path)
         if key not in self.names:
             self.names[key] = f"<folder {len(self.names) + 1}>"
-            server = _SERVER.match(path)
-            if server:   # (the logs also name it on its own, in small letters: "sams-nas isn't answering")
-                stand_in = self.word(server.group(1), "server")
-                self.words.setdefault(server.group(1).lower(), stand_in)
+            self._server_in(path)
         return self.names[key]
+
+    def _server_in(self, path: str) -> None:
+        server = _SERVER.match(path)
+        if server:   # (the logs also name it on its own, in small letters: "sams-nas isn't answering")
+            stand_in = self.word(server.group(1), "server")
+            self.words.setdefault(server.group(1).lower(), stand_in)
+
+    def learn_network_drives(self, target: Callable[[str], str | None]) -> None:
+        """A path met on a mapped network drive ("Z:\\Music") is also written in the logs by its
+        server path ("\\\\sams-nas\\media\\Music": the network playback cache's notes): that gets the
+        same stand-in, and the server's own name is left out too. `target("Z:")` is the server path a
+        drive letter stands for, or None; each letter is asked once."""
+        found: dict[str, str | None] = {}
+        for key, stand_in in list(self.names.items()):
+            if not re.match(r"[a-z]:(?:\\|$)", key):
+                continue
+            letter = key[0].upper() + ":"
+            if letter not in found:
+                try:
+                    found[letter] = target(letter)
+                except Exception:  # noqa: BLE001 — a lookup that fails only means one name fewer left out
+                    found[letter] = None
+            if found[letter]:
+                server_path = found[letter].rstrip("\\/") + key[2:]
+                self.names.setdefault(_normal(server_path), stand_in)
+                self._server_in(server_path)
 
     def word(self, text: str, kind: str) -> str:
         """The stand-in for a name of this kind ("device", "tab", "playlist", "search", "server")."""
@@ -284,10 +309,19 @@ def outputs_text(redactor: Redactor, default: str | None, connected: list[str], 
     return "\n".join(lines) + "\n"
 
 
+def network_target(letter: str) -> str | None:
+    """The server path a drive letter ("Z:") stands for when it's a network drive, else None."""
+    from .netcache import sources
+
+    return sources.network_target(letter)
+
+
 def contents(prefs: dict, folder: Path, outputs: Callable[[], tuple[str | None, list[str]]] = audio_outputs,
-             home: str | None = None, names: dict[str, list[str]] | None = None) -> dict[str, str]:
+             home: str | None = None, names: dict[str, list[str]] | None = None,
+             network: Callable[[str], str | None] = network_target) -> dict[str, str]:
     """Every file for the zip, by name. `names`: other names to leave out, by kind (the window's tab
-    titles and playlist names: {"tab": [...], "playlist": [...]})."""
+    titles and playlist names: {"tab": [...], "playlist": [...]}). `network`: the server path a drive
+    letter stands for (asked of Windows: call this off the window's thread)."""
     redactor = Redactor(home)
     files = {"README.txt": README, "about.txt": about(prefs)}
     try:
@@ -298,6 +332,7 @@ def contents(prefs: dict, folder: Path, outputs: Callable[[], tuple[str | None, 
     redactor.learn(names or {})
     files["settings.json"] = json.dumps(redactor.value(prefs), indent=2, ensure_ascii=False) + "\n"
     files["audio-outputs.txt"] = listed
+    redactor.learn_network_drives(network)   # (before the logs: they may name a mapped drive's server)
     for path in [folder / name for name in CRASH_LOGS] + logs.log_files(folder):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")

@@ -72,10 +72,21 @@ def newer(candidate: str, current: str = __version__) -> bool:
 
 
 def _trusted(url) -> bool:
+    """A plain https link to one of TRUSTED_HOSTS. Anything a web browser could read differently from
+    Python is refused: a backslash (a browser takes it as "/", so "https://evil.example\\@<trusted>/"
+    goes to evil.example), a user name or password ("@"), a port, spaces, and letters outside ASCII."""
     if not isinstance(url, str):
         return False
-    parts = urlsplit(url.strip())
-    return parts.scheme == "https" and (parts.hostname or "").lower() in TRUSTED_HOSTS
+    url = url.strip()
+    if not re.fullmatch(r"[!-~]+", url) or "\\" in url or "@" in url:
+        return False
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    return (parts.scheme == "https" and (parts.hostname or "").lower() in TRUSTED_HOSTS
+            and port is None and parts.username is None and parts.password is None)
 
 
 def parse(data: bytes | None) -> Release | None:
@@ -95,13 +106,19 @@ def parse(data: bytes | None) -> Release | None:
                    notes=" ".join(text("notes").split())[:NOTES_LIMIT].rstrip())
 
 
+def _fetch(url: str, prefs: dict) -> bytes | None:
+    """The feed, only ever over https: a redirect to a plain http:// address (which anyone on the
+    way could answer) is refused."""
+    return ripcheck.fetch(url, prefs, https_only=True)
+
+
 def check(prefs: dict, fetch: Callable | None = None) -> Release | None:
     """Ask once. A newer release, or None (up to date, nothing published yet, switched off, no
     connection, any problem — logged, never raised). Waits on the network: call it off the window's
     thread."""
     if not enabled(prefs):
         return None
-    fetch = fetch or ripcheck.fetch
+    fetch = fetch or _fetch
     try:
         release = parse(fetch(UPDATE_URL, prefs))
     except Exception as error:  # noqa: BLE001 — a failed check is simply "nothing new"
