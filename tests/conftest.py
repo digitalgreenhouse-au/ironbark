@@ -1,9 +1,8 @@
 """Shared test set-up.
 
-- On Windows the test windows are made on a hidden desktop of their own, so a test run never
-  puts windows in front of whatever the person at the computer is doing. They are still real
-  windows — mapped, laid out and measured exactly as on the visible desktop. Set
-  IRONBARK_TESTS_VISIBLE=1 to watch them on the normal desktop instead.
+- Test windows open on the normal desktop. IRONBARK_TESTS_HIDDEN=1 makes them on a hidden
+  desktop of their own instead — off by default: the taskbar's Start button stopped answering
+  clicks while test runs used one.
 - Every test gets its own empty cache folder (settings.cache_folder: where the library database
   lives), so no test can touch the real one. (A test that points the settings somewhere else
   takes the cache with them anyway: settings.cache_folder follows settings_path.)
@@ -70,7 +69,7 @@ def _below_normal_priority():
 
 
 _hidden_desktop = None
-if sys.platform == "win32" and os.environ.get("IRONBARK_TESTS_VISIBLE") != "1":
+if sys.platform == "win32" and os.environ.get("IRONBARK_TESTS_HIDDEN") == "1":
     _hidden_desktop = _use_hidden_desktop()
 if sys.platform == "win32":
     _below_normal_priority()
