@@ -13,14 +13,18 @@ XML reader the rip check needs; the library database works — SQLite with its w
 (WAL) and the song search index (FTS5), which a different Python's SQLite might lack; the indexer
 reads a library through a worker process (in the packaged program that's Ironbark.exe started
 again, which must run the task and not open a second player — or load Tk); the icon files are in
-the package; one player at a time works (a second launch is told one is running and hands its
-files over — under a name of the check's own, so a player that's really running is never
-reached); the main window opens, takes drag and drop, and closes. Most of these fail quietly
-inside the player (logged, feature off), so only this check catches them missing from a build.
+the package; the bundled components' licences are there for About → Licences; one player at a
+time works (a second launch is told one is running and hands its files over — under a name of the
+check's own, so a player that's really running is never reached); the main window opens, takes
+drag and drop, and closes. Most of these fail quietly inside the player (logged, feature off), so
+only this check catches them missing from a build.
 
 Writes nothing of the user's: while the window is open, the settings folder (and with it playlists,
-the library index and logs) is pointed at an empty temporary folder, deleted afterwards. The packaged program has no console, so the report can
-also go to a file (`--self-check report.txt`). Exit code 0 = every check passed, 1 = one failed.
+the library database and logs) is pointed at an empty temporary folder, deleted afterwards. Run
+from the command line (`hidden=True`), its windows are made on a hidden Windows desktop of their
+own: real windows, opened, laid out and closed, but never shown in front of whatever the person at
+the computer is doing. The packaged program has no console, so the report can also go to a file
+(`--self-check report.txt`). Exit code 0 = every check passed, 1 = one failed.
 """
 
 from __future__ import annotations
@@ -36,8 +40,16 @@ from pathlib import Path
 
 from . import APP_NAME, __version__
 
+HIDDEN_DESKTOP = "IronbarkSelfCheck"
+_hidden = False   # this run's windows are on the hidden desktop
 
-def run(report_path: str | None = None) -> int:
+
+def run(report_path: str | None = None, hidden: bool = False) -> int:
+    """Every check, in turn. `hidden`: first move this thread to a hidden desktop (it must own no
+    window yet — so before any check, as some make hidden windows of their own)."""
+    global _hidden
+    if hidden:
+        _hidden = _use_hidden_desktop()
     lines = [f"{APP_NAME} {__version__} self-check"
              + (" (packaged)" if getattr(sys, "frozen", False) else "")]
     failed = False
@@ -45,7 +57,8 @@ def run(report_path: str | None = None) -> int:
                         ("Windows audio", _check_windows_audio), ("media controls", _check_media_controls),
                         ("secure connections", _check_network), ("library database", _check_library_db),
                         ("library indexer", _check_indexer), ("icon files", _check_icons),
-                        ("single instance", _check_single_instance), ("main window", _check_window)):
+                        ("licences", _check_licences), ("single instance", _check_single_instance),
+                        ("main window", _check_window)):
         try:
             detail = check()
             lines.append(f"OK    {name}: {detail}")
@@ -62,6 +75,32 @@ def run(report_path: str | None = None) -> int:
         with open(report_path, "w", encoding="utf-8") as file:
             file.write(text)
     return 1 if failed else 0
+
+
+def _use_hidden_desktop() -> bool:
+    """Move this thread to a desktop of its own, so the windows the checks open never appear on
+    screen. Windows only; False (carry on on the normal desktop) when it can't be done — the
+    thread already owns a window, or this session may not make desktops."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.CreateDesktopW.restype = wintypes.HANDLE
+    user32.CreateDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+                                      wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    user32.SetThreadDesktop.restype = wintypes.BOOL
+    user32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+    user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+    generic_all = 0x10000000
+    desktop = user32.CreateDesktopW(HIDDEN_DESKTOP, None, None, 0, generic_all, None)
+    if not desktop:
+        return False
+    if not user32.SetThreadDesktop(desktop):
+        user32.CloseDesktop(desktop)
+        return False
+    return True   # (the handle stays open until the program ends: closing it would strand the windows)
 
 
 def _check_sndfile() -> str:
@@ -249,6 +288,26 @@ def _check_icons() -> str:
     return f"{len(appicon.SIZES)} sizes + {appicon.ICO_NAME}"
 
 
+def _check_licences() -> str:
+    """About → Licences lists the bundled components' licences: in the packaged program, the
+    licenses folder the build puts beside Ironbark.exe (with the summary, THIRD_PARTY_LICENSES.md,
+    first); run from source, the source tree's own files. Without them the list would be empty."""
+    from . import help_window
+
+    documents = help_window.licence_documents()
+    if not documents:
+        raise FileNotFoundError("no licence files for About → Licences"
+                                + (" (no licenses folder beside the program)" if getattr(sys, "frozen", False)
+                                   else ""))
+    if documents[0][1].name != help_window.THIRD_PARTY:
+        raise FileNotFoundError(f"{help_window.THIRD_PARTY} is missing from the licences")
+    empty = [path.name for _name, path in documents if path.stat().st_size == 0]
+    if empty:
+        raise RuntimeError(f"empty licence files: {', '.join(empty)}")
+    where = "the licenses folder" if help_window.licence_folder() is not None else "the source tree"
+    return f"{len(documents)} files for About -> Licences, from {where}"
+
+
 def _check_single_instance() -> str:
     import uuid
 
@@ -302,7 +361,8 @@ def _check_window() -> str:
             raise RuntimeError("error in the window code:\n" + errors[0])
         if drops is None:
             raise RuntimeError("the window opened, but drag and drop (tkdnd) didn't load")
-        return f"opened and closed; Tk {tk.TkVersion}, drag and drop (tkdnd {drops})"
+        where = " (on a hidden desktop)" if _hidden else ""
+        return f"opened and closed{where}; Tk {tk.TkVersion}, drag and drop (tkdnd {drops})"
     finally:
         from . import library_index
 

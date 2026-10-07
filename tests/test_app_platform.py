@@ -199,6 +199,38 @@ def test_a_second_launch_forwards_its_paths_and_starts_nothing(monkeypatch, tmp_
     assert later.sent == [[str(tmp_path / "song.flac"), str(tmp_path / "Album")]]
 
 
+def test_a_second_launch_never_loads_the_player_or_the_library_database(tmp_path):
+    # It hands its files over and ends before the engine, the window or the library database is
+    # even imported, so it can't open library.db or start a look at the library alongside the
+    # running copy. Run as a program of its own, as Explorer would start it.
+    import subprocess
+
+    import textwrap
+
+    script = textwrap.dedent("""
+        import sys
+        from ironbark import __main__ as start, instance
+
+        class Running:
+            first = False
+
+            def forward(self, paths, front=True, timeout=0):
+                return True
+
+        instance.claim = lambda *a, **k: Running()
+        start.main(["song.flac"])
+        loaded = [m for m in ("sqlite3", "numpy", "ironbark.library_db", "ironbark.indexer",
+                              "ironbark.library_index", "ironbark.engine", "ironbark.ui") if m in sys.modules]
+        print("LOADED", loaded)
+        """)
+    env = dict(os.environ, APPDATA=str(tmp_path), LOCALAPPDATA=str(tmp_path))
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60, env=env,
+                          cwd=str(tmp_path))
+    assert done.returncode == 0, done.stderr
+    assert "LOADED []" in done.stdout, done.stdout
+    assert not any(tmp_path.rglob("library.db*"))
+
+
 def test_the_first_launch_opens_the_window_with_its_paths(monkeypatch, tmp_path):
     first = FakeInstance(first=True)
     ran = []
@@ -235,7 +267,7 @@ def test_self_check_never_looks_for_a_running_player(monkeypatch):
     monkeypatch.setattr(instance, "claim", lambda *a, **k: pytest.fail("looked for a running player"))
     import ironbark.selfcheck as selfcheck
 
-    monkeypatch.setattr(selfcheck, "run", lambda report: 0)
+    monkeypatch.setattr(selfcheck, "run", lambda report, hidden=False: 0)
     with pytest.raises(SystemExit) as stop:
         start.main(["--self-check"])
     assert stop.value.code == 0

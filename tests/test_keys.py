@@ -8,7 +8,9 @@ played, nothing of the user's is read or written) and are skipped without a disp
 from __future__ import annotations
 
 import re
+import tkinter as tk
 from pathlib import Path
+from tkinter import ttk
 from types import SimpleNamespace
 
 import pytest
@@ -207,6 +209,7 @@ def test_every_window_answers_every_key_in_its_scope(make_window, monkeypatch):
     window.show_compare()
     window.show_abx()
     window.show_testsignals()
+    window.show_lyrics()
     window.open_library()
     window.show_help()
     window.show_about()
@@ -215,7 +218,7 @@ def test_every_window_answers_every_key_in_its_scope(make_window, monkeypatch):
     _pump(root, 0.5)
     windows = {"main": root}
     for name in ("_now_playing", "_meters", "_pcm", "_clip", "_spectrogram", "_scope", "_compare", "_abx",
-                 "_testsignals", "_library", "_help", "_about", "_tag_window", "_tag_history"):
+                 "_testsignals", "_lyrics", "_library", "_help", "_about", "_tag_window", "_tag_history"):
         windows[name] = getattr(window, name).win
     for name, win in windows.items():
         assert window.keys.attached(win), name
@@ -469,6 +472,20 @@ def test_settings_has_help_and_about(make_window):
         if hasattr(w, "text_value"):
             texts.append(w.text_value)
     assert set(texts) == {"Keyboard shortcuts (F1)", "About Ironbark", "Save diagnostics…", "Open log folder"}
+
+    def labels(container):
+        found, stack = [], [container]
+        while stack:
+            w = stack.pop()
+            stack.extend(w.winfo_children())
+            if isinstance(w, (tk.Label, ttk.Label)):
+                found.append(str(w.cget("text")))
+        return found
+
+    # Detailed logging and Check for updates are switches in Help, and only there.
+    in_help, everywhere = labels(window.help_box), labels(window.settings_pop.body)
+    for title in ("Detailed logging", "Check for updates"):
+        assert title in in_help and everywhere.count(title) == 1, title
     window._from_settings(window.show_help)
     _pump(root, 0.2)
     assert not window.settings_pop.is_open and window._help.win.winfo_exists()

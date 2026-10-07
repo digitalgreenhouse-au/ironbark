@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> None:
         _enable_crisp_text_on_windows()
         from . import selfcheck
 
-        sys.exit(selfcheck.run(args.self_check or None))
+        sys.exit(selfcheck.run(args.self_check or None, hidden=True))   # (its windows never on screen)
 
     paths = instance.absolute(args.paths)
     here = _claim(paths)

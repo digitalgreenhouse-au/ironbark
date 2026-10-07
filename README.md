@@ -22,7 +22,8 @@ source under the [MIT licence](LICENSE).
   scope — each built to its published standard and tested against the official test signals
   where they exist.
 - **Simple to live with.** A small window for the corner of your screen: tabs for albums, a
-  library, playlists, gapless playback, media keys, a mini player, light and dark themes.
+  library that copes with big collections, playlists, gapless playback, a shortcut for everything,
+  media keys, a mini player, light and dark themes.
 
 ## Install and run
 
@@ -40,8 +41,10 @@ uv run ironbark "D:\Music\Song.flac"     # a file plays at once (playlists and C
 Only one Ironbark runs at a time: starting it again, or opening files with it, hands them to the one
 already open and brings it to the front.
 
-Run the tests with `uv run pytest`. `uv run ironbark --self-check` checks that a copy works
-(sound libraries, icons, the main window) without playing anything or saving anything.
+Run the tests with `uv run pytest` (add `--perf -m perf` for the large-library speed benchmarks).
+`uv run ironbark --self-check` checks that a copy works (sound libraries, the library database and
+its background reader, one-player-at-a-time, icons, licences, the main window) without playing
+anything or saving anything; its windows open on a hidden desktop, so nothing appears on screen.
 
 ### Building the Windows installer
 
@@ -73,12 +76,29 @@ Windows SmartScreen warns about an unknown publisher.
   new tab never interrupts what's playing. Drag tabs to reorder them.
 - **Library** (Ctrl+L): browse by album, artist, genre, year, composer or recently added; sort by any
   column; search. **Play next / Add to queue** from any song or album.
+- **Built for big collections:** the Library keeps a database of your music, read once in the
+  background (at low priority; in several processes for a big library) and then only what changed,
+  so the player never freezes. Use **several music folders** (Settings → Library). An unplugged
+  drive or a sleeping network share never empties the Library.
+- **Search** ignores accents and special letters ("lodz" finds Łódź, "strasse" finds Straße) and
+  looks at title, artist, album, album artist, composer, genre, year and file name.
 - **Spots new music:** albums copied into your music folder appear in the Library by themselves,
   marked as new until you open them.
+- **Volume levelling** (Settings → Sound, off by default): Track, Album or Smart, from ReplayGain
+  tags or Ironbark's own loudness measurement, never turning a song up past its peak. While it
+  changes a song's level the samples aren't the file's own, so the status square turns amber.
+- **Stop after this song** (Ctrl+.) and a **sleep timer** (15–90 minutes or the end of the album;
+  Ctrl+Shift+S) — a gentle fade in shared mode, a clean stop at the end of a song in bit-perfect mode.
+- **Lyrics** (L): from the song's tags or a `.lrc` / `.txt` file beside it, never from the internet;
+  synced lyrics light up line by line.
 - **Playlists** are plain `.m3u8` files any player can open. Missing songs stay listed as "file not
   found", so a playlist never quietly loses them.
 - **Drag and drop** folders, songs and playlists from Explorer onto the player or onto a tab.
 - **Media keys and Windows' media panel**, with play / pause / next / previous on the taskbar preview.
+- **Keyboard:** playback, volume and window shortcuts work in every Ironbark window; **F1** lists
+  them all. Removing or moving a song in a playlist can be undone (Ctrl+Z).
+- **Opens files from Explorer** (double-click, or *Open with* after the installer's optional task),
+  and only one Ironbark runs at a time.
 - **Mini player** (Z): a small strip that stays on top, with its own position.
 - **Light or dark** themes (or follow Windows); both meet the WCAG AA contrast guidelines.
 - **Files are identified by their contents**, so an MP3 renamed `.flac` is flagged.
@@ -89,7 +109,7 @@ Windows SmartScreen warns about an unknown publisher.
   sample rate — the device receives the file's samples untouched. Ironbark checks whether your
   device has its own volume control and protects your ears if it doesn't.
 - **The proof:** every block sent is checked, sample for sample, against an independent decode. Any
-  change (volume, clipping guard) is reported with where it started.
+  change (volume, clipping guard, volume levelling) is reported with where it started.
 - **What Windows does to the sound** (shared mode): Windows' own recording of the device's output
   is compared with what Ironbark sent — untouched, resampled, level-changed, or altered by effects.
 - **Dropout early warning:** buffer health, slow reads and a log of every dropout with its likely
@@ -111,6 +131,8 @@ Windows SmartScreen warns about an unknown publisher.
 - **Format flags:** HDCD, MQA and pre-emphasis are detected (not decoded).
 - **Lossless check:** decodes the whole file and verifies its stored MD5; damaged files are reported
   with where they stop.
+- **Rip-log check** (offline): compares each track with the checksums your EAC or XLD log recorded
+  when the CD was ripped.
 - **Rip verification** (optional, online): compares a CD rip with the **AccurateRip** and
   **CUETools** databases. Off unless you switch on Settings → Network → *Allow network access*.
 
@@ -126,6 +148,16 @@ Windows SmartScreen warns about an unknown publisher.
 | D | **Compare** | Are two files the same music, sample for sample? If not, by how much? |
 | X | **ABX test** | A blind listening test with a hidden score and its p-value |
 | T | **Test signals** | 1 kHz tone (THD+N), J-test (jitter) and sweep (frequency response) to measure a DAC or amp |
+
+### When something goes wrong
+
+- A clear message with **Copy details** and **Open log folder**, never a flood of boxes.
+- Settings → Help → **Save diagnostics…** saves a zip for a problem report (versions, sound outputs,
+  logs and settings, with folder names left out) on your computer. It is never sent anywhere.
+- Settings → Help → **About Ironbark**: the version, every bundled component's licence, and a *Copy
+  version info* button.
+- Settings → Help → **Check for updates** (off by default, and only while network access is
+  allowed) mentions a newer version in the status line. It never downloads or installs anything.
 
 ### Experimental (Settings → Experimental, off until you switch them on)
 

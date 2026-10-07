@@ -4,6 +4,70 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.31.0 — 07/10/2026
+
+New features for big collections, the keyboard, and everyday listening.
+
+**Library**
+- The Library now keeps a database of your music, built for large collections. The first look
+  reads tags in the background at low priority (in several processes for a big library) and can
+  be stopped: it carries on where it left off next time. The player never freezes while the Library, start-up or the new-music check
+  works things out.
+- Several music folders: Settings → Library lists them, with Add folder… and Remove. A folder
+  inside one already listed isn't added twice.
+- Your old library index is brought across once, with every date kept, so Recently added and the
+  new-music dots carry on as before.
+- An unplugged drive, a sleeping network share or a folder Windows won't open never empties the
+  Library or makes music look new when it comes back. A download still growing in the music
+  folder is looked at on its own, less and less often, instead of the whole library.
+- Searching ignores accents and special letters ("lodz" finds Łódź, "strasse" finds Straße) and
+  now also looks at album artist, composer, genre and year. Loading the whole library into a tab
+  is much quicker.
+- Songs you listen to (half a song, or 4 minutes of a long one) are counted, ready for Most played
+  and Recently played views to come.
+- If the library database is ever damaged, it's repaired at the next start, keeping your play
+  counts and favourites.
+
+**Keyboard**
+- Playback, volume and window shortcuts now work in every Ironbark window (Now Playing, Meters,
+  the Library…), not only the main one, and letter keys work with Caps Lock or Shift held.
+  Single-letter keys wait while you type in a box (Ctrl+Space still plays and pauses).
+- New keys for volume, mute, jumping through a song, changing tabs, Up next, undo (Ctrl+Z), Stop
+  after this song (Ctrl+.), the sleep timer (Ctrl+Shift+S) and lyrics (L). Moving a song in a
+  playlist is now Alt+↑ / ↓.
+- F1 (or ?) shows every key, with a filter box. A new About window has the version, the licences,
+  the privacy summary and Copy version info. Settings has a new Help section.
+- Removing or moving a song in a playlist, or clearing Up next, can be undone.
+- Edit tags (Experimental): Enter moves to the next field, Ctrl+S saves, and closing with unsaved
+  changes asks first.
+
+**Opening, problems and updates**
+- Only one Ironbark runs at a time: opening it again, or opening music files with it, hands them
+  to the open player and brings it to the front. Several files opened together arrive in one tab.
+- The Windows installer can add Ironbark to Explorer's "Open with" list (optional, unticked; it
+  never becomes the default player).
+- If something goes wrong, a box says so, with Copy details, Open log folder and Close.
+- Settings → Help → Save diagnostics… saves a zip you can attach to a problem report, with folder
+  names left out. It is never sent anywhere.
+- Settings → Help → Check for updates (off by default, and only with network access allowed):
+  once a day it asks digitalgreenhouse.com.au whether a newer version is out and says so in the
+  status line. It never downloads or installs anything.
+- The self-check (--self-check) also tests the library database, its background reader, the
+  licences and one-player-at-a-time, and its windows no longer appear on screen.
+
+**Listening**
+- Volume levelling (Settings → Sound, off by default): Track, Album or Smart, with a pre-amp. It
+  uses ReplayGain tags or measures the loudness itself, and never turns a song up past its peak.
+  While it changes a song's level the status square turns amber: the samples aren't the file's
+  own then, so it isn't bit-perfect.
+- Stop after this song, and a sleep timer (15–90 minutes, or the end of the album), from a song's
+  right-click menu, the Up next list or the keys. In shared mode the music fades out gently; in
+  bit-perfect mode it stops at the end of a song.
+- Lyrics (L): from the song's tags or a .lrc or .txt file beside it, never from the internet.
+  Synced lyrics light up line by line.
+- Now Playing → Check → Rip: "Check against rip log" compares each track with the checksums your
+  EAC or XLD log recorded when the CD was ripped. No internet needed.
+
 ## 0.30.0 — 07/10/2026
 
 A full code review of the player, and fixes for what it found. Two new warnings; otherwise
