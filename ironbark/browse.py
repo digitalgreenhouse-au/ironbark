@@ -10,12 +10,14 @@ year or composer, or listed newest first; and the sort order for each column.
 
 from __future__ import annotations
 
+import os
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audiofile
-from .library import Album, Track, album_folder, natural_key, play_order, sort_name
+from . import searchfold
+from .library import Album, Track, album_folder_text, natural_key, play_order, sort_name
 
 VARIOUS = "Various Artists"
 UNKNOWN = {"artist": "Unknown artist", "genre": "No genre", "year": "Unknown year", "composer": "No composer"}
@@ -71,16 +73,25 @@ def make_album(folder: Path, tracks: list[Track], added: float = 0.0) -> Album:
                  added=added, title=_most_common(t.album for t in tracks) or "")
 
 
-def albums_from(tracks: list[Track], added: dict[Path, float] | None = None, root: Path | None = None) -> list[Album]:
+def albums_from(tracks: list[Track], added: Mapping[Path | str, float] | None = None,
+                root: Path | None = None) -> list[Album]:
     """Albums from a flat list of tracks: a folder of music is an album, "CD1" / "Disc 2" folders
-    count towards their parent (as library.find_albums). `added`: when each real file arrived."""
-    by_folder: dict[Path, list[Track]] = {}
+    count towards their parent (as library.find_albums). `added`: when each real file arrived
+    (keyed by its path, or the path as text). Worked out on path text, one Path per album: making
+    a Path per track was most of the time this took for a big library."""
+    when_of = {os.fspath(k): v for k, v in (added or {}).items()}
+    by_folder: dict[str, list[Track]] = {}
+    newest: dict[str, float] = {}
     for track in tracks:
-        by_folder.setdefault(album_folder(audiofile.real_path(track.path)), []).append(track)
+        name = os.fspath(track.path)   # (a CUE track's text is its whole file's path)
+        folder = album_folder_text(os.path.dirname(name))
+        by_folder.setdefault(folder, []).append(track)
+        when = when_of.get(name, 0.0)
+        newest[folder] = max(newest[folder], when) if folder in newest else when
     albums = []
-    for folder, group in by_folder.items():
-        when = max((added or {}).get(audiofile.real_path(t.path), 0.0) for t in group)
-        albums.append(make_album(folder, play_order(folder, group), when))
+    for text, group in by_folder.items():
+        folder = Path(text)
+        albums.append(make_album(folder, play_order(folder, group), newest[text]))
     names = Counter(a.name for a in albums)  # same folder name in two places: say where each lives
     for album in albums:
         if names[album.name] > 1 and album.path != root:
@@ -157,9 +168,10 @@ def group_albums(albums: list[Album], view: str) -> list[Group]:
     return sorted(groups, key=order)
 
 
-def matches(album: Album, words: list[str], fold=str.casefold) -> bool:
-    """Library search: every word typed appears in the album's name, title, artist, year,
-    genres or composers."""
+def matches(album: Album, words: list[str], fold=searchfold.fold) -> bool:
+    """Library search: every word typed (folded: searchfold.words) appears in the album's name,
+    title, artist, year, genres or composers. `fold` may be a remembering version of
+    searchfold.fold."""
     haystack = fold(" ".join([album.name, album.title, album.artist, str(album.year or ""),
                               *album.genres, *album.composers]))
     return all(word in haystack for word in words)

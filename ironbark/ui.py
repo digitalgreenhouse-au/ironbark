@@ -14,7 +14,13 @@ careful saving is tag_editor.py; a song that's playing waits until the player mo
 Up next: right-click songs (or an album in the Library) → Play next / Add to queue; they play
 before the tab carries on (engine.Player keeps the list, so they join on gaplessly). An
 "Up next (n)" line above the status line opens the list. Albums and tabs are read through the
-saved library index (library_index.py) when it's up to date, so nothing is read twice.
+library database (library_index.py) when it's up to date, so nothing is read twice.
+
+The library (0.31): Settings → Library lists the library folders (Add folder… / Remove, or
+Change… while there's one). Nothing that reads the database runs on this thread: the start-up
+look, the new albums and the Library window's album list are worked out on workers, and their
+answers picked up by `_poll` (or the window's own loop). A song listened to for long enough is
+counted as a play (`_count_listening`), stored from a worker.
 
 Light / Dark (0.19.0): Settings → Window → Theme (Dark, Light, Follow Windows — Dark by default);
 theme.use re-colours every open window at once. Mini mode (0.19.0): the same window shrunk to a
@@ -47,8 +53,8 @@ from tkinter import filedialog, ttk
 from PIL import ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, dragdrop,
-               experiments, library_index, mediakeys, placement, playlists, popups, settings, tag_editor, theme,
-               watcher)
+               experiments, library_db, library_index, mediakeys, placement, playlists, popups, settings, tag_editor,
+               theme, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -57,7 +63,7 @@ from .details import NowPlayingWindow, output_line
 from .engine import Player, State
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
-from .library_window import LibraryWindow
+from .library_window import LibraryWindow, adding_folder
 from .meter_window import MeterWindow
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
 from .pcm_window import PcmWindow
@@ -71,6 +77,7 @@ from .tabbar import IconButton, MenuRow, Popover, SettingRow, TabBar, Tooltip, g
 log = logging.getLogger(__name__)
 
 POLL_MS = 250
+HEARD_STEP_S = 2.0  # a move further than this between polls is a seek, not listening
 MEDIA_POLL_MS = 60   # how often presses from media keys / Windows' media panel are picked up
 AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
@@ -125,6 +132,57 @@ def _known_music_folder() -> Path | None:
 def default_music_folder() -> Path:
     """The library folder until one is chosen: the system's Music folder, else ~/Music."""
     return _known_music_folder() or Path.home() / "Music"
+
+
+def library_folders(prefs: dict) -> list[Path]:
+    """The library folders in the settings (`library_folders`; before there could be several,
+    `library_folder`), else the system's Music folder. Each once, and none inside another
+    (library_db.outermost: its albums would be listed twice)."""
+    folders = prefs.get("library_folders") or ([prefs["library_folder"]] if prefs.get("library_folder") else [])
+    found = library_db.outermost(folder for folder in folders if isinstance(folder, str) and folder)
+    return found or [default_music_folder()]
+
+
+def _refresh_library(index: library_index.LibraryIndex) -> None:
+    """Bring the library database up to date (a worker thread's work: nothing of the window's)."""
+    try:
+        index.refresh()
+    except Exception:
+        log.exception("couldn't bring the library up to date")
+    finally:
+        index.db.release()
+
+
+def _find_new_albums(index: library_index.LibraryIndex, since: float, results: queue.SimpleQueue) -> None:
+    """The new albums, worked out on a worker thread (it reads the database) and handed to
+    _watch_reports as a report with nothing changed."""
+    try:
+        results.put(watcher.Report(new=index.new_album_times(since), album_folders=frozenset(index.album_folders())))
+    except Exception as error:
+        index.db.note_damage(error)   # (a damaged file is put right at the next start)
+        log.exception("couldn't work out the new albums")
+    finally:
+        index.db.release()
+
+
+def _store_play(index: library_index.LibraryIndex, key: str, heard: float, duration: float) -> None:
+    """Count a play (LibraryDB.record_play) on a worker thread."""
+    try:
+        index.db.record_play(key, heard, duration)
+    except Exception as error:
+        index.db.note_damage(error)
+        log.exception("couldn't count a play of %s", key)
+    finally:
+        index.db.release()
+
+
+@dataclass
+class _Listening:
+    """The song playing now, and how much of it has been heard (seeks aren't counted)."""
+    key: str
+    duration: float
+    position: float
+    heard: float = 0.0
 
 
 def _queued_alone(playing_tab: int | None, status) -> bool:
@@ -255,6 +313,7 @@ class PlayerWindow:
         # its reports are picked up by _poll (never handled on the watcher's thread).
         self.watcher = watcher.Watcher(self._index)
         self._new_albums: list[Path] = []        # the new albums, newest first (watcher.new_albums)
+        self._listening: _Listening | None = None   # the song being heard, for its play count
         self._opened_key = None                  # the song last marked as opening its album
         self.media = mediakeys.MediaKeys()        # presses from media keys / Windows arrive here
         self._windows_media = None                # mediakeys.WindowsMedia while switched on
@@ -585,14 +644,14 @@ class PlayerWindow:
         self._update_home_text()
 
         self._caption(b, "Library")
+        self.library_rows = ttk.Frame(b, style="Pop.TFrame")   # one row per library folder
+        self.library_rows.pack(fill="x")
+        self._paint_library_folders()
         row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x")
-        self.library_text = ttk.Label(row, text="", style="Pop.TLabel")
-        self.library_text.pack(side="left", fill="x", expand=True)
-        self._pop_button(row, "Change…", self._change_library_folder, "Choose the folder your music is in").pack(
-            side="right")
-        self._update_library_text()
-        self._setting(b, "Watch for new music", "Checks the folder every few minutes.",
+        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+        self._pop_button(row, "Add folder…", self._add_library_folder,
+                         "Add another folder of music to the Library").pack(side="right")
+        self._setting(b, "Watch for new music", "Checks the folders every few minutes.",
                       self.watch_music, self._toggle_watch)
 
         self._caption(b, "Network")
@@ -846,6 +905,9 @@ class PlayerWindow:
         tab.loading = True
         progress = {"done": 0, "total": 0, "tracks": None, "missing": 0, "unavailable": False}
         tab.load_progress = progress
+        index = self._index()
+        if tab.kind in ("album", "folder") and index.indexer.running:
+            index.indexer.prioritise(tab.path)   # (a first look under way reads this one next)
 
         def work():
             try:
@@ -862,10 +924,8 @@ class PlayerWindow:
                         words = [_fold(w) for w in tab.query.split()]
                         albums = [a for a in albums if browse.matches(a, words, _fold)]
                     progress["total"] = len(albums)
-                    tracks = []
-                    for album in albums:
-                        tracks += self._scan(album.path)
-                        progress["done"] += 1
+                    tracks = self._library_tracks(albums)
+                    progress["done"] = len(albums)
                 elif tab.kind == "files":
                     tracks = []  # dropped files: all in extras
                 else:
@@ -1395,7 +1455,11 @@ class PlayerWindow:
             self.open_tab("folder", folder, play=True)
 
     def _library_root(self) -> Path:
-        return Path(self.prefs["library_folder"] or default_music_folder())
+        """The (first) library folder."""
+        return library_folders(self.prefs)[0]
+
+    def _library_roots(self) -> list[Path]:
+        return library_folders(self.prefs)
 
     def _current_tab_title(self) -> str | None:
         return self.tabs[self.current].title if 0 <= self.current < len(self.tabs) else None
@@ -1453,9 +1517,9 @@ class PlayerWindow:
         current = Path(tab.path) if tab and tab.kind == "album" else None
         if self._library is not None and self._library.win.winfo_exists():
             self._library.close()
-        self._library = LibraryWindow(self.root, self._library_root(), current,
+        self._library = LibraryWindow(self.root, self._library_roots(), current,
                       on_choose=lambda path: self.open_tab("album", path, play=True),
-                      on_root_changed=self._set_library_folder,
+                      on_root_changed=self._set_library_folders,
                       on_load_all=lambda root, query: self.open_tab("library", root, query),
                       on_add=self.add_album_to_current, add_target=self._current_tab_title,
                       on_drag=self._album_drag, on_queue=self.queue_album,
@@ -1468,23 +1532,38 @@ class PlayerWindow:
 
     # -- the library index --------------------------------------------------------------------------
     def _index(self) -> library_index.LibraryIndex:
-        return library_index.shared(self._library_root())
+        """The library (nothing is read here: safe on this thread; its reads belong on workers)."""
+        return library_index.shared(self._library_roots())
 
     def _refresh_index(self):
-        """Bring the saved library index up to date in the background (only changed files are
-        read; the first time ever, every file once), so the Library opens at once."""
+        """Bring the library database up to date in the background (only changed files are
+        read; the first time ever, every file once), so the Library opens at once. (Whether the
+        folders are there is found out on the worker: a sleeping network drive can take a while.)"""
         index = self._index()
-        if not index.root.is_dir() or index.refreshed:
+        if index.refreshed:
             return
-        threading.Thread(target=index.refresh, name="library-index", daemon=True).start()
+        threading.Thread(target=_refresh_library, args=(index,), name="library-start", daemon=True).start()
 
     def _library_albums(self, root: Path) -> list:
-        """Every album under `root`, from the index when `root` is the library folder."""
+        """Every album in the library, from the database, when `root` is one of the library
+        folders (a "library" tab: Load all); else every album found under `root`. (A worker
+        thread's work.)"""
         index = self._index()
-        if index.root == root and root.is_dir():
-            index.refresh()  # (quick when nothing has changed: a walk of names, sizes and times)
+        if Path(root) in index.roots:
+            if not index.built:
+                index.refresh()   # the first look isn't finished: wait for it (it may be under way)
             return index.albums()
         return find_albums(root) if root.is_dir() else []
+
+    def _library_tracks(self, albums: list) -> list[Track]:
+        """Every song of these albums, in this order: from the database (nothing on disk is looked at
+        again, so a whole library loads quickly), else read from the files. (A worker thread's work.)"""
+        stored = self._index().albums_tracks([album.path for album in albums])
+        tracks: list[Track] = []
+        for album in albums:
+            found = stored.get(album.path)
+            tracks += found if found is not None else self._scan(album.path)
+        return tracks
 
     def _scan(self, folder: Path, whole_tree: bool = False) -> list[Track]:
         """An album's (or a whole folder's) tracks in play order: from the index when it's up to
@@ -1740,17 +1819,44 @@ class PlayerWindow:
         return "break"
 
     def _change_library_folder(self):
+        """Settings → Library → Change… (while there's one library folder): another in its place."""
         folder = filedialog.askdirectory(title="Choose your music library folder",
                                          initialdir=str(self._library_root()), mustexist=True)
         if folder:
-            self._set_library_folder(Path(folder))
+            self._set_library_folders([Path(folder)])
 
-    def _set_library_folder(self, path: Path):
-        self.prefs["library_folder"] = str(path)
-        self._update_library_text()
-        self._update_new_albums()
+    def _add_library_folder(self):
+        folder = filedialog.askdirectory(title="Add a folder of music to the Library",
+                                         initialdir=str(self._library_root()), mustexist=True)
+        if not folder:
+            return
+        roots, note = adding_folder(self._library_roots(), Path(folder))
+        if roots != self._library_roots():
+            self._set_library_folders(roots)
+        if note:
+            self._set_notice(note, 8000)
+
+    def _remove_library_folder(self, folder: Path):
+        folders = [f for f in self._library_roots() if f != folder]
+        if folders:
+            self._set_library_folders(folders)
+            self._set_notice(f"Took “{folder}” out of the Library (its music files are untouched)", 6000)
+
+    def _set_library_folders(self, folders: list[Path]):
+        """The library folders are now these. The look under way for the old ones is stopped first
+        (library_index.LibraryIndex.set_roots), then the library is looked through again on a worker."""
+        folders = library_db.outermost(folders)
+        self.prefs["library_folders"] = [str(f) for f in folders]
+        self.prefs["library_folder"] = str(folders[0])   # (what a version before several folders reads)
+        index = self._index()   # (takes the new folders on: a look still under way for the old ones stops)
+        self.root.after_idle(self._paint_library_folders)   # (not now: the Remove clicked is one of the rows)
+        if self._library is not None and self._library.win.winfo_exists():
+            self._library.set_roots(folders)
         if self.watcher.running:
             self.watcher.look_now()
+        elif not (self._library is not None and self._library.win.winfo_exists()):
+            threading.Thread(target=_refresh_library, args=(index,), name="library-folders", daemon=True).start()
+        self._update_new_albums()
 
     # -- spotting new music (watcher.py) -----------------------------------------------------------
     def _new_music_state(self) -> dict:
@@ -1765,6 +1871,7 @@ class PlayerWindow:
         state = self._new_music_state()
         if not isinstance(state.get("since"), (int, float)):
             state["since"] = time.time()   # nothing already in the library counts as new
+        self.watcher.since = state["since"]   # (its reports then carry the new albums)
         self.watcher.start(delay_s)
 
     def _toggle_watch(self):
@@ -1775,31 +1882,40 @@ class PlayerWindow:
             self.watcher.stop()
 
     def _update_new_albums(self):
+        """Work the new albums out afresh — on a worker thread, as it reads the database;
+        _watch_reports takes the answer in."""
         state = self._new_music_state()
         since = state.get("since")
         if not isinstance(since, (int, float)):
             self._new_albums = []
             return
-        self._new_albums = watcher.new_albums(self._index(), since, state["opened"])
+        threading.Thread(target=_find_new_albums, args=(self._index(), since, self.watcher.results),
+                         name="new-albums", daemon=True).start()
 
     def _watch_reports(self):
-        """Take in what the watcher found (called from _poll, on the Tk thread)."""
+        """Take in what the watcher found, and new albums worked out on a worker (called from
+        _poll, on the Tk thread: the reading was done on theirs, so this is only showing it). A
+        look that changed nothing brings nothing to do."""
         reports = self.watcher.drain()
         if not reports:
             return
         state = self._new_music_state()
-        index = self._index()
-        if isinstance(state.get("since"), (int, float)) and index.entries:
-            state["opened"] = watcher.tidy_opened(state["opened"], index, state["since"])
-        self._update_new_albums()
+        found = next((report for report in reversed(reports) if report.new is not None), None)
+        if found is not None:
+            if isinstance(state.get("since"), (int, float)) and found.album_folders is not None:
+                state["opened"] = watcher.tidy_opened(state["opened"], found.album_folders, state["since"])
+            self._new_albums = watcher.still_new(found.new, state["opened"])
         changed = False
         for report in reports:
             changed = changed or not report.diff.nothing
             text = watcher.note(report, len(watcher.arrived(report, self._new_albums)))
             if text:
                 self._set_notice(text, NEW_MUSIC_NOTE_MS)
-        if changed and self._library is not None and self._library.win.winfo_exists():
-            self._library.reload()
+        if self._library is not None and self._library.win.winfo_exists():
+            if changed:
+                self._library.reload()
+            elif found is not None:
+                self._library.refill()
 
     def _mark_opened(self, folder: Path):
         """An album was opened (a tab, added to one, queued, or one of its songs played): it's
@@ -1810,7 +1926,7 @@ class PlayerWindow:
         self._new_music_state()["opened"][str(folder)] = time.time()
         self._new_albums = [f for f in self._new_albums if f != folder]
         if self._library is not None and self._library.win.winfo_exists():
-            self._library.reload()
+            self._library.refill()
 
     def _status_clicked(self, _event=None):
         """The status line: "Closed …" reopens the tab; "New music: …" shows Recently added."""
@@ -1820,9 +1936,29 @@ class PlayerWindow:
             self.prefs["library_view"] = "recent"
             self.open_library()
 
-    def _update_library_text(self):
-        root = str(self._library_root())
-        self.library_text.configure(text=root if len(root) <= 30 else "…" + root[-29:])
+    def _paint_library_folders(self):
+        """Settings → Library: a row per library folder — Change… while there's one, Remove when
+        there are several."""
+        rows = getattr(self, "library_rows", None)
+        if rows is None or not rows.winfo_exists():
+            return
+        for child in self.library_rows.winfo_children():
+            child.destroy()
+        folders = self._library_roots()
+        for folder in folders:
+            row = ttk.Frame(self.library_rows, style="Pop.TFrame")
+            row.pack(fill="x", pady=theme.pad(0, theme.GAP_HAIR))
+            text = str(folder)
+            label = ttk.Label(row, text=text if len(text) <= 30 else "…" + text[-29:], style="Pop.TLabel")
+            label.pack(side="left", fill="x", expand=True)
+            Tooltip(label, text)
+            if len(folders) == 1:
+                self._pop_button(row, "Change…", self._change_library_folder,
+                                 "Choose the folder your music is in").pack(side="right")
+            else:
+                self._pop_button(row, "Remove", lambda folder=folder: self._remove_library_folder(folder),
+                                 "Take this folder out of the Library (its music files stay where they are)").pack(
+                    side="right")
 
     # -- home position -------------------------------------------------------
     def make_home(self):
@@ -2686,6 +2822,7 @@ class PlayerWindow:
         the autosave for the rest of the session."""
         try:
             self._guarded(self._refresh_view)
+            self._guarded(self._count_listening)
             self._polls += 1
             if self._polls % AUTOSAVE_EVERY == 0:
                 self._guarded(self._save_if_changed)
@@ -2698,6 +2835,42 @@ class PlayerWindow:
             self._guarded(self._watch_reports)
         finally:
             self._poll_job = self.root.after(POLL_MS, self._poll)
+
+    def _count_listening(self):
+        """Keep count of how much of the song playing has been heard; when it ends or is left (another
+        song, stopped, started again), store it as a play if it counts as one (library_db.counts_as_play)
+        — on a worker thread."""
+        status = self.player.status()
+        track = status.track if status.state is not State.STOPPED else None
+        key = audiofile.key(track.path) if track is not None else None
+        listening = self._listening
+        if listening is not None and (key != listening.key or status.position < listening.position - HEARD_STEP_S):
+            self._record_play()
+            listening = None
+        if key is None:
+            return
+        if listening is None:
+            listening = self._listening = _Listening(key, float(track.duration or 0.0), status.position)
+        step = status.position - listening.position
+        if status.state is State.PLAYING and 0 < step <= HEARD_STEP_S:
+            listening.heard += step
+        listening.position = status.position
+
+    def _record_play(self) -> threading.Thread | None:
+        """Store the song just heard as a play (when it counts as one), on a worker thread."""
+        listening, self._listening = self._listening, None
+        if listening is None or not library_db.counts_as_play(listening.heard, listening.duration):
+            return None
+        thread = threading.Thread(target=_store_play, args=(self._index(), listening.key, listening.heard,
+                                                            listening.duration), name="library-play", daemon=True)
+        thread.start()
+        return thread
+
+    def _record_last_play(self):
+        """Closing: the song being heard counts too (given a moment to be stored)."""
+        thread = self._record_play()
+        if thread is not None:
+            thread.join(1.0)
 
     def _guarded(self, step):
         """Run one part of the poll; an error is logged (the first of its kind) and the rest goes on."""
@@ -2899,7 +3072,7 @@ class PlayerWindow:
             return
         try:
             for step in (self._save_on_close, self._stop_timers, self._stop_media, self.watcher.stop,
-                         self.player.close, self._last_tag_tries):
+                         self._record_last_play, self._stop_indexing, self.player.close, self._last_tag_tries):
                 try:
                     step()
                 except Exception:
@@ -2911,6 +3084,10 @@ class PlayerWindow:
         if not self._save_if_changed():
             time.sleep(0.2)   # (a file locked for a moment by antivirus or backup): once more
             self._save_if_changed()
+
+    def _stop_indexing(self):
+        """A look at the library under way stops after the folder in hand (the next start carries on)."""
+        self._index().indexer.cancel()
 
     def _stop_timers(self):
         for job in (self._poll_job, self._media_job, self._theme_job):

@@ -235,6 +235,28 @@ def test_a_missing_library_folder_is_reported_not_raised(tmp_path, monkeypatch):
     assert report.error and not report.news and watcher.note(report, 0) == ""
 
 
+def test_an_unplugged_library_folder_doesnt_silence_the_others(music, tmp_path):
+    """(0.31) Two library folders, one on a drive that isn't plugged in: music arriving in the other
+    is still news, and a folder's first look (when the drive does arrive) still isn't."""
+    usb = tmp_path / "USB"
+    index = LibraryIndex([music, usb])
+    look = Watcher(lambda: index)
+    first = look.check()
+    assert first.first_build and first.error and not first.news and index.unbuilt() == [usb]
+    since = time.time() - 1
+    age(flac(music / "Fresh" / "01.flac", "Fresh", "Fresh"), 60)
+    report = look.check()
+    assert report.error and not report.first_build and report.news
+    new = watcher.new_albums(index, since, {})
+    assert new == [music / "Fresh"] and watcher.note(report, len(watcher.arrived(report, new))) == \
+        "New music: 1 new album in the Library"
+    age(flac(usb / "Backup" / "01.flac", "Backup", "Backup"), 60)    # the drive is plugged in: its first look
+    report = look.check()
+    assert report.first_build and not report.error and len(report.diff.added) == 1 and not report.news
+    assert index.unbuilt() == [] and watcher.new_albums(index, since, {}) == [music / "Fresh"]
+    library_index.close_shared()
+
+
 def test_watching_is_on_by_default():
     assert settings.DEFAULTS["watch_music"] is True
 
@@ -269,10 +291,20 @@ def player_side(index, look, prefs):
     return w
 
 
+def wait_for_albums(window, root):
+    """Until the album list has come from the query thread (0.31: never read on Tk's thread)."""
+    deadline = time.monotonic() + 20
+    while (window._loading or window._asked is not None) and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.02)
+    assert not window._loading
+
+
 def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root, monkeypatch):
     from ironbark.library_window import NEW_DOT, LibraryWindow
     index, look = build(music)
     prefs = {"new_music": {"since": time.time() - 1, "opened": {}}}
+    look.since = prefs["new_music"]["since"]   # (as _start_watching sets it: reports carry the new albums)
     w = player_side(index, look, prefs)
     for name in ("Alpha", "Beta", "Gamma"):
         age(flac(music / name / "01.flac", name, name), 60)
@@ -285,6 +317,7 @@ def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root
     library = LibraryWindow(tk_root, music, None, lambda p: None, lambda p: None, lambda r, q: None,
                             new_albums=lambda: w._new_albums)
     w._library = library
+    wait_for_albums(library, tk_root)
     assert "3 new albums" in library.status.cget("text")
     names = [library.tree.set(iid, "album") for iid in library.tree.get_children()]
     assert names == [NEW_DOT + "Alpha", NEW_DOT + "Beta", NEW_DOT + "Gamma", "Old Album", "Other"]
@@ -299,10 +332,16 @@ def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root
     w._mark_opened(music / "Gamma")
     assert library._view_labels["recent"].cget("text") == "Recently added"
     assert "new album" not in library.status.cget("text")
-    # a later start: the opened ones stay opened (kept in the settings)
+    # a later start: the opened ones stay opened (kept in the settings). (0.31) Worked out on a
+    # worker thread, which hands a report to the watcher's queue for _watch_reports.
     w2 = player_side(index, look, prefs)
+    w2._new_albums = [music / "Alpha"]
     w2._update_new_albums()
-    assert w2._new_albums == []
+    deadline = time.monotonic() + 20
+    while look.results.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    w2._watch_reports()
+    assert w2._new_albums == [] and w2.notices == []
     library.close()
 
 

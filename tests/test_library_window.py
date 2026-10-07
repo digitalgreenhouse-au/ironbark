@@ -64,6 +64,15 @@ def wait_for_index(window, root):
     assert window._refresh is None
 
 
+def wait_for_albums(window, root):
+    """Until the album list has come from the query thread (0.31: never read on Tk's thread)."""
+    deadline = time.monotonic() + 20
+    while (window._loading or window._asked is not None) and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.02)
+    assert not window._loading
+
+
 def column(window, name, parent=""):
     return [window.tree.set(iid, name) for iid in window.tree.get_children(parent)]
 
@@ -107,11 +116,61 @@ def test_second_open_shows_the_saved_index_at_once(root, music):
     w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
     wait_for_index(w, root)
     w.close()
-    library_index._shared = None                 # as after a restart: read back from the file
-    again = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
-    assert column(again, "album") == ["21", "Hits", "Tommy"]   # before any refresh has finished
+    library_index._shared = None                 # as after a restart: read back from the database
+    look = library_index.shared(music).indexer
+    look._lock.acquire()                         # a look under way: the new window's refresh waits for it
+    try:
+        again = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+        wait_for_albums(again, root)             # (the list comes from the query thread, a moment later)
+        assert column(again, "album") == ["21", "Hits", "Tommy"] and again._refresh is not None   # before any
+    finally:                                                                                       # refresh finished
+        look._lock.release()
     wait_for_index(again, root)
     again.close()
+
+
+def test_several_library_folders_and_add_folder(root, music, tmp_path, monkeypatch):
+    """(0.31) The Library lists every library folder's albums; "Add folder…" adds one (the player is
+    told the new list) and the list follows it once its refresh is done."""
+    from tkinter import filedialog
+
+    more = tmp_path / "More"
+    flac(more / "Blue" / "01.flac", title="River", artist="Joni Mitchell", album="Blue", date="1971")
+    monkeypatch.setattr(LibraryWindow, "_sorts", {})       # (the sort is kept for the session)
+    told = []
+    w = LibraryWindow(root, [music], None, lambda p: None, told.append, lambda r, q: None)
+    wait_for_index(w, root)
+    assert column(w, "album") == ["21", "Hits", "Tommy"] and w.win.title() == "Library — Music"
+    monkeypatch.setattr(filedialog, "askdirectory", lambda **kwargs: str(more))
+    w._add_folder()
+    assert told == [[music, more]] and w.roots == [music, more]
+    wait_for_index(w, root)
+    assert column(w, "album") == ["21", "Blue", "Hits", "Tommy"] and w.win.title() == "Library — 2 folders"
+    assert "4 albums in 2 library folders" in w.status.cget("text")
+    w.set_roots([more])                                      # (Settings → Library → Remove)
+    wait_for_index(w, root)
+    assert column(w, "album") == ["Blue"] and library_index.shared([more]).db.roots() == [str(more)]
+    told.clear()
+    monkeypatch.setattr(filedialog, "askdirectory", lambda **kwargs: str(more / "Blue"))
+    w._add_folder()                                          # (a folder already in the library)
+    assert told == [] and w.roots == [more] and "already in the Library" in w.status.cget("text")
+    w.close()
+
+
+def test_adding_a_folder_inside_or_around_the_library_folders():
+    """(0.31) No album is ever listed twice: a folder inside a library folder is already in the
+    library; one that holds library folders takes their place."""
+    from ironbark.library_window import adding_folder
+    from ironbark.ui import library_folders
+
+    music, jazz, other = Path("C:/Music"), Path("C:/Music/Jazz"), Path("D:/Other")
+    assert adding_folder([music], other) == ([music, other], "")
+    assert adding_folder([music], music) == ([music], f"“{music}” is already in the Library")
+    assert adding_folder([music, other], jazz) == ([music, other],
+                                                   f"“{jazz}” is already in the Library (it's inside “{music}”)")
+    roots, note = adding_folder([jazz, other], music)
+    assert roots == [other, music] and "takes in" in note and str(jazz) in note
+    assert library_folders({"library_folders": [str(jazz), str(music), str(other)]}) == [music, other]
 
 
 def test_track_list_artist_and_album_columns(root):

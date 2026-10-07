@@ -102,6 +102,11 @@ def test_every_bundled_library_needs_its_licence_file(tmp_path, licence_check):
     assert not any(p.startswith(("python312.dll", "libffi-8.dll")) for p in problems)
 
 
+def test_the_library_databases_sqlite_is_covered(licence_check):
+    assert licence_check.needed("sqlite3.dll") == ["SQLite-public-domain.txt"]
+    assert licence_check.needed("_sqlite3.pyd") == ["Python-LICENSE.txt", "SQLite-public-domain.txt"]
+
+
 # Licence files ironbark.spec makes itself (from the Python install, soundfile, the repo).
 MADE_BY_THE_SPEC = {"Python-LICENSE.txt", "tk8.6-license.terms.txt", "libsndfile-COPYING.txt",
                     "THIRD_PARTY_LICENSES.md"}
