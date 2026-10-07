@@ -27,7 +27,13 @@ shows an "Open your library" button (Ctrl+L) instead of the empty layout.
 
 Pop-ups (0.21.0): every question box is an in-app prompt and every right-click menu a
 popups.PopupMenu (popups.py), so they follow Dark / Light; a prompt leaves the mini strip first
-(`_for_prompt`). Settings scrolls when it's taller than the window (tabbar.Popover(scroll=True))."""
+(`_for_prompt`). Settings scrolls when it's taller than the window (tabbar.Popover(scroll=True)).
+
+Opening from outside: files, folders, playlists and CUE sheets named on the command line, or handed
+over by a later launch (instance.py — "Open with", a double-click on a file while the player is
+open) are opened like a drop on the window (`open_paths`); a file asked for this way plays at once.
+Also: Settings → Window → Detailed logging (logs.py), Save diagnostics… (diagnostics.py), Settings →
+Network → Check for updates (updates.py); Python's cycle collector runs on this thread (tkgc.py)."""
 
 from __future__ import annotations
 
@@ -40,15 +46,16 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, ttk
 
 from PIL import ImageTk
 
-from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, dragdrop,
-               experiments, library_index, mediakeys, placement, playlists, popups, settings, tag_editor, theme,
-               watcher)
+from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
+               dragdrop, experiments, library_index, logs, mediakeys, placement, playlists, popups, settings,
+               tag_editor, theme, tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -84,6 +91,9 @@ NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
 THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
 FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the mini strip has its own)
+UPDATE_FIRST_MS = 30000    # Check for updates: the first look this long after start-up…
+UPDATE_EVERY_MS = 3600000  # …then this often (updates.due decides whether a day has passed)
+UPDATE_NOTE_MS = 30000     # how long "Ironbark X.Y.Z is available" stays in the status line
 
 
 def fmt_time(seconds: float) -> str:
@@ -117,7 +127,7 @@ def _known_music_folder() -> Path | None:
         finally:
             ole32.CoTaskMemFree(found)   # (Windows allocates the text even when it fails)
     except (OSError, AttributeError, ValueError):
-        pass
+        log.debug("Windows' Music folder couldn't be looked up", exc_info=True)
     return None
 
 
@@ -193,10 +203,15 @@ class Tab:
 
 
 class PlayerWindow:
-    def __init__(self, root: tk.Tk, player: Player, folder: str | None = None):
+    def __init__(self, root: tk.Tk, player: Player, folder: str | None = None, paths: list[str] | None = None,
+                 requests: queue.Queue | None = None):
+        """folder: an album folder to open and play (as before); paths: files / folders / playlists /
+        CUE sheets named on the command line (`open_paths`); requests: where later launches' requests
+        arrive (instance.Instance.requests), taken by `_poll`."""
         self.root = root
         self.player = player
         self.prefs = settings.load()
+        self._requests = requests
         self._seek_target_playing = True  # does the seek bar show the playing song? (set by _poll)
         self._shown_key = None
         self._now_playing: NowPlayingWindow | None = None
@@ -251,6 +266,12 @@ class PlayerWindow:
         self.allow_network = tk.BooleanVar(value=bool(self.prefs["allow_network"]))
         self.media_controls = tk.BooleanVar(value=bool(self.prefs["media_controls"]))
         self.watch_music = tk.BooleanVar(value=bool(self.prefs["watch_music"]))
+        self.check_updates = tk.BooleanVar(value=bool(self.prefs["check_updates"]))
+        self.detailed_logging = tk.BooleanVar(value=bool(self.prefs["detailed_logging"]))
+        self._update_found: updates.Release | None = None   # set by the update check's thread
+        self._update_checking = False
+        self.update_available: updates.Release | None = None
+        self._update_job = None
         # Spotting new music (0.17.0): a thread looks at the library folder every few minutes;
         # its reports are picked up by _poll (never handled on the watcher's thread).
         self.watcher = watcher.Watcher(self._index)
@@ -312,6 +333,8 @@ class PlayerWindow:
             # once the window is up, and before anything can start playing.
             root.after_idle(self._protect_ears, hardware_volume)
         self._restore_tabs(folder)
+        if paths:
+            self.open_paths(paths)
         if settings.problem:   # a damaged settings file was set aside at start: said once
             self._set_notice(settings.problem, 12000)
         self._poll_job = self.root.after(POLL_MS, self._poll)
@@ -320,6 +343,10 @@ class PlayerWindow:
         else:
             self.root.after(INDEX_AFTER_MS, self._refresh_index)
         self._update_new_albums()
+        self._update_job = self.root.after(UPDATE_FIRST_MS, self._update_tick)
+        # Up and running: from here Python's cycle collector runs only on this thread (tkgc.py).
+        self.collector = tkgc.Collector(root)
+        self.collector.start()
 
     # -- layout --------------------------------------------------------------
     def _build(self):
@@ -583,6 +610,8 @@ class PlayerWindow:
             side="right", padx=theme.pad(0, theme.GAP))
         self._setting(b, "Open at home", "Start up at the home position.", self.open_at_home)
         self._update_home_text()
+        self._setting(b, "Detailed logging", "Notes more of what the player does in its log, to help track "
+                      "down a problem. Off normally.", self.detailed_logging, self._detailed_logging_changed)
 
         self._caption(b, "Library")
         row = ttk.Frame(b, style="Pop.TFrame")
@@ -598,8 +627,12 @@ class PlayerWindow:
         self._caption(b, "Network")
         self._setting(b, "Allow network access", "Lets rip verification look up checksums online "
                       "(AccurateRip, CUETools DB). The CUETools DB lookup isn't encrypted, so others "
-                      "on the network can see which disc is looked up. Nothing else uses the internet.",
+                      "on the network can see which disc is looked up. Otherwise only Check for updates "
+                      "uses the internet.",
                       self.allow_network, self._network_changed)
+        self._setting(b, "Check for updates", "Once a day, asks digitalgreenhouse.com.au whether a newer "
+                      f"{APP_NAME} is out. Nothing about you or your music is sent. Needs network access.",
+                      self.check_updates, self._updates_changed)
 
         if experiments.EXPERIMENTS:
             self._caption(b, "Experimental")
@@ -616,10 +649,25 @@ class PlayerWindow:
             self.experiment_vars[experiment.key] = var
             self._setting(b, experiment.title, experiment.description, var,
                           lambda key=experiment.key: self._toggle_experiment(key))
+        self._add_help_buttons(b)
         self.version_label = ttk.Label(b, text="", style="PopMuted.TLabel")
         self.version_label.pack(anchor="e", pady=theme.pad(theme.GAP_LARGE, 0))
         self._paint_version()
         return pop
+
+    def _add_help_buttons(self, parent):
+        """Help for when something's wrong: Save diagnostics… (and Open log folder), in a row at the
+        bottom of Settings."""
+        tk.Frame(parent, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
+        row = ttk.Frame(parent, style="Pop.TFrame")
+        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+        self.diagnostics_button = self._pop_button(row, "Save diagnostics…", self.save_diagnostics,
+                                                   "Save a .zip to send with a problem report: versions, sound "
+                                                   "outputs, logs and settings (folder names left out). Nothing "
+                                                   "is sent anywhere.")
+        self.diagnostics_button.pack(side="left")
+        self._pop_button(row, "Open log folder", self._open_log_folder,
+                         "Where crash.log and app.log are kept").pack(side="left", padx=theme.pad(theme.GAP, 0))
 
     def _volume_slid(self, value: float):
         """The Settings volume slider moved (while dragging, and let go)."""
@@ -628,11 +676,24 @@ class PlayerWindow:
         self._update_volume_text()
 
     def _network_changed(self):
-        """Off by default; read live by rip verification (ripcheck.network_allowed), the only
-        part of the player that goes online."""
+        """Off by default; read live by rip verification (ripcheck.network_allowed) and the update
+        check, the only parts of the player that go online."""
         self.prefs["allow_network"] = self.allow_network.get()
         if self._now_playing is not None and self._now_playing.win.winfo_exists():
             self._now_playing.network_changed()
+        self._check_for_update_if_due()
+
+    def _updates_changed(self):
+        """Check for updates: off by default, and only switched on while network access is allowed."""
+        if self.check_updates.get() and not self.allow_network.get():
+            self.check_updates.set(False)
+            self._set_notice("Check for updates needs network access: switch on Allow network access first", 8000)
+        self.prefs["check_updates"] = self.check_updates.get()
+        self._check_for_update_if_due()
+
+    def _detailed_logging_changed(self):
+        self.prefs["detailed_logging"] = self.detailed_logging.get()
+        logs.set_detailed(self.detailed_logging.get())
 
     def _toggle_experiment(self, key: str):
         experiments.set_enabled(self.prefs, key, self.experiment_vars[key].get())
@@ -647,6 +708,8 @@ class PlayerWindow:
         behaves differently from the release."""
         on = len(experiments.switched_on(self.prefs))
         extra = f" · {on} experiment{'' if on == 1 else 's'} on" if on else ""
+        if self.update_available is not None:
+            extra += f" · {self.update_available.version} available"
         self.version_label.configure(text=f"{APP_NAME} {__version__}{extra}")
 
     def _build_new_menu(self) -> Popover:
@@ -736,13 +799,14 @@ class PlayerWindow:
         else:
             self._refresh_tabs()
 
-    def open_tab(self, kind: str, path, query: str = "", play: bool = False):
+    def open_tab(self, kind: str, path, query: str = "", play: bool = False, interrupt: bool = False):
         """Open (or switch to, if it's already open) a tab for this album / folder / library view.
         play: start it once it's loaded — but only when nothing is playing or paused. Music
-        already going carries on while you set up other tabs; press play in the new one when ready."""
+        already going carries on while you set up other tabs; press play in the new one when ready.
+        interrupt: play it even so (it was asked for by name: "Open with", a double-click)."""
         if kind == "album":
             self._mark_opened(Path(str(path)))
-        if play and self.player.status().state is not State.STOPPED:
+        if play and not interrupt and self.player.status().state is not State.STOPPED:
             play = False
             self._set_notice(f"Opened “{Path(str(path)).name}” · the music playing carries on: press play "
                              "there when you're ready", 6000)
@@ -880,6 +944,7 @@ class PlayerWindow:
                                 have.add(audiofile.key(track.path))
                                 tracks.append(track)
             except OSError:
+                log.warning("couldn't read the tab %s", tab.path, exc_info=True)
                 tracks = []
             except Exception:   # (a file no reader expected: the tab ends up empty, never stuck loading)
                 log.exception("couldn't load the tab %s", tab.path)
@@ -949,7 +1014,7 @@ class PlayerWindow:
             self._set_notice(f"{progress['missing']} song(s) in “{tab.title}” can't be found: moved, or on a drive "
                              "that isn't plugged in?", 8000)
         elif not tab.tracks:
-            self._set_notice(f"No FLAC, WAV or MP3 files in {tab.title}")
+            self._set_notice(f"No music files in {tab.title}")
         elif tab.kind == "library":
             self._set_notice(f"Loaded {len(tab.tracks)} tracks from {progress['total']} albums")
         if index == self.current:
@@ -995,7 +1060,7 @@ class PlayerWindow:
                     if tab.kind == "album" or album_folder(first) == Path(tab.path):
                         name = found.album
             except OSError:
-                pass
+                log.info("couldn't look up the tab %s", tab.path, exc_info=True)
             except Exception:
                 log.exception("couldn't look up the tab %s", tab.path)
             finally:   # always published: the tab's label waits for it
@@ -1083,6 +1148,7 @@ class PlayerWindow:
             try:
                 self._peaks[path] = true_peak(path) or 0.0
             except (OSError, RuntimeError, ValueError):
+                log.info("couldn't measure the true peak of %s", path, exc_info=True)
                 self._peaks[path] = 0.0
             except Exception:
                 log.exception("couldn't measure the true peak of %s", path)
@@ -1499,6 +1565,7 @@ class PlayerWindow:
         try:
             return self._scan(album)
         except OSError:
+            log.info("couldn't read %s", album, exc_info=True)
             return []
         except Exception:
             log.exception("couldn't read %s", album)
@@ -1616,6 +1683,7 @@ class PlayerWindow:
                 try:
                     fresh[real] = read_track(real)
                 except OSError:
+                    log.info("couldn't re-read %s after its tags were saved", real, exc_info=True)
                     continue
             for name in self.TAG_FIELDS:
                 setattr(track, name, getattr(fresh[real], name))
@@ -1813,12 +1881,15 @@ class PlayerWindow:
             self._library.reload()
 
     def _status_clicked(self, _event=None):
-        """The status line: "Closed …" reopens the tab; "New music: …" shows Recently added."""
+        """The status line: "Closed …" reopens the tab; "New music: …" shows Recently added;
+        "Ironbark X.Y.Z is available" opens the download page."""
         if self._notice.startswith("Closed"):
             self.reopen_tab()
         elif self._notice.startswith("New music"):
             self.prefs["library_view"] = "recent"
             self.open_library()
+        elif self.update_available is not None and self._notice == self._update_text(self.update_available):
+            self.open_download_page()
 
     def _update_library_text(self):
         root = str(self._library_root())
@@ -2287,6 +2358,7 @@ class PlayerWindow:
         try:
             paths = [Path(p) for p in self.root.tk.splitlist(data)]
         except tk.TclError:
+            log.warning("a drop's list of files couldn't be read: %r", data, exc_info=True)
             paths = []
         if target is None or not paths:
             return "refuse_drop"
@@ -2348,18 +2420,25 @@ class PlayerWindow:
             message = self._open_dropped(plan)
         self._set_notice(f"{message} · {note}" if note else message, 8000)
 
-    def _open_dropped(self, plan: dragdrop.DropPlan) -> str:
+    def _open_dropped(self, plan: dragdrop.DropPlan, asked: bool = False) -> str:
         """A drop on the window: new tabs. Only the first may start playing, and only when
-        nothing is playing or paused (as for any new tab)."""
+        nothing is playing or paused (as for any new tab).
+        asked: they were named ("Open with", a double-click, the command line): a file among them —
+        music, a playlist or a CUE sheet — is what was asked for, so it plays, even over music
+        already playing. Folders alone open as a drop's do."""
         actions = dragdrop.actions_for(plan, on_tab=False)
-        play = self.player.status().state is State.STOPPED
+        chosen = self._asked_for(actions, plan) if asked else None
+        play = chosen is None and self.player.status().state is State.STOPPED
+        interrupt = {"interrupt": True} if chosen is not None else {}
         opened = []
         for action in actions:
+            if chosen is not None:
+                play = action is chosen
             if action.kind == "open_folder":
-                self.open_tab("folder", action.path, play=play)
+                self.open_tab("folder", action.path, play=play, **interrupt)
                 opened.append(action.path.name)
             elif action.kind == "open_playlist":
-                self.open_tab("playlist", action.path, play=play)
+                self.open_tab("playlist", action.path, play=play, **interrupt)
                 opened.append(action.path.stem)
             elif action.kind == "open_files":
                 self.open_files_tab(list(action.paths), play=play)
@@ -2372,11 +2451,176 @@ class PlayerWindow:
         return f"Opened {len(opened)} tabs"
 
     def open_files_tab(self, files: list[Path], play: bool = False):
-        """One new tab holding just these music files, in this order (saved with the tab)."""
+        """One new tab holding just these music files, in this order (saved with the tab). The same
+        files opened again (a second double-click) go back to their tab."""
+        extras = [str(f) for f in files]
+        for i, tab in enumerate(self.tabs):
+            if tab.kind == "files" and tab.extras == extras:
+                self.select_tab(i, then_play=play)
+                return
         tab = Tab("files", str(files[0].parent))
-        tab.extras = [str(f) for f in files]
+        tab.extras = extras
         self.tabs.append(tab)
         self.select_tab(len(self.tabs) - 1, then_play=play)
+
+    @staticmethod
+    def _asked_for(actions: list, plan: dragdrop.DropPlan):
+        """Of what was named, the action that plays: the music files, else the first playlist, else the
+        first CUE sheet's album. None when only folders were named."""
+        for kind in ("open_files", "open_playlist"):
+            found = next((a for a in actions if a.kind == kind), None)
+            if found is not None:
+                return found
+        cues = [folder for folder in plan.cue_folders if folder not in plan.folders]
+        return next((a for a in actions if a.kind == "open_folder" and a.path in cues), None)
+
+    # -- opening from outside (the command line, "Open with", a later launch) ---------------------------
+    def open_paths(self, paths: list[str]):
+        """Open what was named outside the player, as a drop on the window would (dragdrop.py): folders
+        as tabs, music files together in one tab, playlists and CUE sheets as theirs. A file asked for
+        this way plays at once (`_open_dropped`, asked). Sorting them out touches the disk, so it runs
+        on a thread; `_finish_open_paths` carries it out."""
+        named = [Path(p) for p in paths if p]
+        if not named:
+            return
+        result: dict = {}
+
+        def work():
+            try:
+                result["plan"] = dragdrop.plan_drop(named)
+            except Exception:
+                log.exception("couldn't sort out the files named")
+                result["plan"] = dragdrop.DropPlan(missing=named)
+
+        self._set_notice("Opening…", 0)
+        threading.Thread(target=work, name="open-paths", daemon=True).start()
+        self.root.after(50, self._finish_open_paths, result)
+
+    def _finish_open_paths(self, result: dict):
+        if "plan" not in result:
+            self.root.after(50, self._finish_open_paths, result)
+            return
+        plan = result["plan"]
+        note = plan.note()
+        if plan.nothing:
+            self._set_notice(f"Nothing to open · {note}" if note else "Nothing to open", 8000)
+            return
+        message = self._open_dropped(plan, asked=True)
+        self._set_notice(f"{message} · {note}" if note else message, 8000)
+
+    def _take_requests(self):
+        """Later launches' requests (instance.py), handed over by its thread through a queue. Those
+        that arrive together open together (several files chosen in Explorer start a launch each)."""
+        if self._requests is None:
+            return
+        front, paths = False, []
+        while True:
+            try:
+                request = self._requests.get_nowait()
+            except queue.Empty:
+                break
+            front = front or request.front
+            paths += request.paths
+            log.info("a later launch handed over %d path(s)%s", len(request.paths),
+                     " and asked to come to the front" if request.front else "")
+        if front:
+            self.bring_to_front()
+        if paths:
+            self.open_paths(paths)
+
+    def bring_to_front(self):
+        """Show the window in front of the others (from the taskbar if it was minimised)."""
+        if self.root.state() in ("iconic", "withdrawn"):
+            self.root.deiconify()
+        self.root.lift()
+        if not self.on_top.get():   # in front once, without staying on top
+            self.root.attributes("-topmost", True)
+            self.root.after_idle(lambda: self.root.attributes("-topmost", self.on_top.get()))
+        try:
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+
+    # -- help: diagnostics, the log folder ----------------------------------------------------------
+    def save_diagnostics(self, destination: str | None = None):
+        """Save a diagnostics .zip where the user chooses (diagnostics.py). Nothing is sent anywhere."""
+        Popover.close_open()
+        if destination is None:
+            destination = filedialog.asksaveasfilename(
+                parent=self.root, title="Save diagnostics", defaultextension=".zip",
+                initialfile=diagnostics.default_name(), filetypes=[("Zip file", "*.zip")])
+        if not destination:
+            return
+        prefs = json.loads(json.dumps(self.prefs))   # (a copy of its own for the thread)
+        result: dict = {}
+
+        def work():
+            try:
+                result["path"] = diagnostics.write_zip(Path(destination), prefs, settings.settings_path().parent)
+            except Exception as error:   # reported in the window
+                log.warning("couldn't save diagnostics", exc_info=True)
+                result["error"] = error
+
+        self._set_notice("Saving diagnostics…", 0)
+        threading.Thread(target=work, name="diagnostics", daemon=True).start()
+        self.root.after(100, self._finish_diagnostics, result)
+
+    def _finish_diagnostics(self, result: dict):
+        if not result:
+            self.root.after(100, self._finish_diagnostics, result)
+            return
+        if "path" in result:
+            self._set_notice(f"Diagnostics saved as {result['path'].name} · nothing has been sent anywhere", 10000)
+            return
+        self._set_notice("", 1)
+        self._for_prompt()
+        popups.tell(self.root, "Diagnostics weren't saved", f"{result['error']}", tone="warn")
+
+    def _open_log_folder(self):
+        from . import crash
+
+        Popover.close_open()
+        crash.open_folder(settings.settings_path().parent)
+
+    # -- Check for updates (updates.py) ----------------------------------------------------------------
+    def _update_tick(self):
+        try:
+            self._check_for_update_if_due()
+        finally:
+            self._update_job = self.root.after(UPDATE_EVERY_MS, self._update_tick)
+
+    def _check_for_update_if_due(self):
+        """Start a check on a thread when one is due (switched on, network allowed, a day since)."""
+        if self._update_checking or not updates.due(self.prefs):
+            return
+        self._update_checking = True
+        self.prefs["update_checked"] = time.time()   # noted now: a failed check also waits a day
+        prefs = {key: self.prefs.get(key) for key in ("check_updates", "allow_network")}
+
+        def work():
+            try:
+                self._update_found = updates.check(prefs)
+            finally:
+                self._update_checking = False
+
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+
+    def _take_update(self):
+        found, self._update_found = self._update_found, None
+        if found is None:
+            return
+        self.update_available = found
+        self._paint_version()
+        self._set_notice(self._update_text(found), UPDATE_NOTE_MS)
+
+    @staticmethod
+    def _update_text(release: updates.Release) -> str:
+        return f"{APP_NAME} {release.version} is available · click here for the download page"
+
+    def open_download_page(self):
+        """Opens the page in the web browser; nothing is downloaded by the player."""
+        release = self.update_available
+        webbrowser.open(release.url if release is not None else updates.DOWNLOAD_PAGE)
 
     def _add_tracks_to_tab(self, tab: Tab, tracks: list[Track], extras: list[str]) -> str:
         """Add songs to the bottom of a tab (a drop, or songs dragged onto it). A playlist saves
@@ -2696,6 +2940,8 @@ class PlayerWindow:
                 if self._library is not None and self._library.win.winfo_exists():
                     self._guarded(self._library.reload)
             self._guarded(self._watch_reports)
+            self._guarded(self._take_requests)
+            self._guarded(self._take_update)
         finally:
             self._poll_job = self.root.after(POLL_MS, self._poll)
 
@@ -2858,6 +3104,8 @@ class PlayerWindow:
             allow_network=self.allow_network.get(),
             media_controls=self.media_controls.get(),
             watch_music=self.watch_music.get(),
+            check_updates=self.check_updates.get(),
+            detailed_logging=self.detailed_logging.get(),
         )
         self.prefs["mini_on_top" if self.mini_mode else "always_on_top"] = self.on_top.get()
         # (0.25.0) While Settings has grown the mini strip's window, the strip's own place is kept.
@@ -2913,8 +3161,9 @@ class PlayerWindow:
             self._save_if_changed()
 
     def _stop_timers(self):
-        for job in (self._poll_job, self._media_job, self._theme_job):
-            self.root.after_cancel(job)
+        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job):
+            if job is not None:
+                self.root.after_cancel(job)
 
     def _last_tag_tries(self):
         """The player has let go of its files: a last quick try for the songs still waiting (a save

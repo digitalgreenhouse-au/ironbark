@@ -9,8 +9,10 @@ Checks: libsndfile loads and round-trips a tiny FLAC made in memory (bit for bit
 and lists the system's audio (WASAPI on Windows) — no stream is opened, so nothing is heard; on
 Windows, pycaw/comtypes read Windows' own list of outputs, and Windows' media controls and taskbar
 buttons can be reached (nothing is shown); secure connections (ssl, with root certificates) and the
-XML reader the rip check needs; the icon files are in the package; the main window opens, takes
-drag and drop, and closes. Most of these fail quietly inside the player (logged, feature off), so
+XML reader the rip check needs; the icon files are in the package; one player at a time works (a
+second launch is told one is running and hands its files over — under a name of the check's own,
+so a player that's really running is never reached); the main window opens, takes drag and drop,
+and closes. Most of these fail quietly inside the player (logged, feature off), so
 only this check catches them missing from a build.
 
 Writes nothing of the user's: while the window is open, the settings folder (and with it playlists,
@@ -39,7 +41,7 @@ def run(report_path: str | None = None) -> int:
     for name, check in (("libsndfile", _check_sndfile), ("PortAudio", _check_portaudio),
                         ("Windows audio", _check_windows_audio), ("media controls", _check_media_controls),
                         ("secure connections", _check_network), ("icon files", _check_icons),
-                        ("main window", _check_window)):
+                        ("single instance", _check_single_instance), ("main window", _check_window)):
         try:
             detail = check()
             lines.append(f"OK    {name}: {detail}")
@@ -170,6 +172,30 @@ def _check_icons() -> str:
     if not (appicon.assets() / appicon.ICO_NAME).is_file():
         raise FileNotFoundError(appicon.ICO_NAME)
     return f"{len(appicon.SIZES)} sizes + {appicon.ICO_NAME}"
+
+
+def _check_single_instance() -> str:
+    import uuid
+
+    from . import instance
+
+    key = f"{APP_NAME}-selfcheck-{uuid.uuid4().hex[:12]}"
+    folder = Path(tempfile.mkdtemp(prefix="ironbark-selfcheck-"))   # (the lock file's place off Windows)
+    try:
+        running = instance.claim(key, folder)
+        try:
+            later = instance.claim(key, folder)
+            if not running.first or later.first:
+                raise RuntimeError("a second launch wasn't told a player is already running")
+            if not later.forward(["check.flac"], front=False, timeout=5):
+                raise RuntimeError("a second launch couldn't hand its files to the running player")
+            if running.requests.get(timeout=5) != instance.Request(("check.flac",), False):
+                raise RuntimeError("the running player received something other than what was sent")
+        finally:
+            running.close()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    return "named mutex + pipe" if sys.platform == "win32" else "lock file + local socket"
 
 
 def _check_window() -> str:

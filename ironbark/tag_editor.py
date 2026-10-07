@@ -35,6 +35,7 @@ import binascii
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -60,6 +61,8 @@ from .tagio import id3 as id3tags
 from .tagio import mp4 as mp4tags
 from .tagio.flac import FLACFile
 from .tagio.vorbis import Picture
+
+log = logging.getLogger(__name__)
 
 EXPERIMENT = "tag_editor"   # the key in experiments.EXPERIMENTS
 VARIOUS = "(various)"       # shown for a field that differs between the songs being edited
@@ -1011,6 +1014,54 @@ def _prune_history() -> None:
                 blob.unlink()
         except OSError:
             pass
+
+
+UNFINISHED = ("pending", "waiting", "saving")   # a file's state in a save the player never finished
+STOPPED_REASON = "the player stopped before it was saved — not saved"
+
+
+def sweep_leftover_copies() -> int:
+    """At start-up: a save the player never finished (a crash, a power cut) can leave its checked
+    copies (`.~name.dgtmp`) beside the music. They're deleted — only in the folders of files whose
+    save the tag history shows unfinished, and never one a save in hand is using. Files that were
+    still waiting their turn are then marked not saved (a file caught in the middle of its swap stays
+    marked saved, so Undo can still put it back). Returns how many copies were deleted. Best effort:
+    touches the music folders, so run it off the window's thread."""
+    removed = 0
+    for entry in history():
+        files = [item for item in entry.get("files", []) if isinstance(item, dict)]
+        unfinished = [item for item in files if item.get("state") in UNFINISHED and isinstance(item.get("path"), str)]
+        if not unfinished:
+            continue
+        for folder in {Path(item["path"]).parent for item in unfinished}:
+            try:
+                copies = [p for p in folder.glob(f"{TEMP_PREFIX}*{TEMP_SUFFIX}") if p.is_file()]
+            except OSError:
+                continue   # (a drive that isn't connected: tried again next start)
+            for copy in copies:
+                original = copy.with_name(copy.name[len(TEMP_PREFIX):-len(TEMP_SUFFIX)])
+                with _claims_lock:
+                    in_hand = _claim_key(original) in _claims
+                if in_hand:
+                    continue
+                try:
+                    copy.unlink()
+                except OSError:
+                    log.info("tag history: couldn't delete the leftover copy %s", copy, exc_info=True)
+                    continue
+                removed += 1
+                log.info("tag history: deleted the leftover copy %s", copy)
+        changed = False
+        for item in unfinished:
+            if item["state"] != "saving":
+                item.update(state="failed", saved=False, reason=STOPPED_REASON)
+                changed = True
+        if changed:
+            try:
+                _write_json(Path(entry["file"]), {k: v for k, v in entry.items() if k != "file"})
+            except OSError:
+                log.info("tag history: couldn't update %s", entry["file"], exc_info=True)
+    return removed
 
 
 # -- a whole save -------------------------------------------------------------------------------------

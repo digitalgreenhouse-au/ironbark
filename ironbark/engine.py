@@ -277,6 +277,7 @@ class _Session:
         try:
             self._latency = float(self._stream.latency)
         except (TypeError, ValueError, sd.PortAudioError):
+            log.debug("the output's latency couldn't be read; taking 0.1 s", exc_info=True)
             self._latency = 0.1
         # Every block sent is fingerprinted, and checked against a second, independent decode.
         first.sent = SentRecord(path, self.samplerate, self.dtype, BLOCK_FRAMES)
@@ -350,6 +351,7 @@ class _Session:
         try:
             return sd.query_devices(self._stream.device)["name"]
         except (sd.PortAudioError, ValueError, TypeError):
+            log.debug("the output's name couldn't be read", exc_info=True)
             return "Output device"
 
     def renumber(self, index: int):
@@ -472,10 +474,12 @@ class _Session:
         try:
             fresh = audiofile.open(source.path)
         except Exception:  # noqa: BLE001 — (gone, or damaged at the start too)
+            log.info("couldn't reopen %s after a decode error", source.name, exc_info=True)
             return False
         try:
             fresh.seek(frame)
         except Exception:  # noqa: BLE001 — still damaged there
+            log.info("couldn't seek past the damage in %s", source.name, exc_info=True)
             fresh.close()
             return False
         old, source.file = source.file, fresh

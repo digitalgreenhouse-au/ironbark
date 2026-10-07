@@ -4,6 +4,9 @@
 ; Installs for the current user only, with no admin prompt, into %LOCALAPPDATA%\Programs\Ironbark.
 ; Installing a newer version over an older one upgrades it in place. Uninstalling leaves the user's
 ; settings and playlists (%APPDATA%\Ironbark) unless they choose to remove them.
+;
+; Optional (unticked): Ironbark in Explorer's "Open with" list for music files, playlists and CUE
+; sheets. It never makes itself the default program for anything.
 
 #ifndef AppVersion
   #error Pass the version: ISCC /DAppVersion=X.Y.Z
@@ -23,6 +26,9 @@ AppVersion={#AppVersion}
 AppVerName=Ironbark {#AppVersion}
 AppPublisher=Digital Greenhouse
 AppPublisherURL=https://digitalgreenhouse.com.au/
+AppSupportURL=https://www.digitalgreenhouse.com.au
+AppUpdatesURL=https://www.digitalgreenhouse.com.au
+AppContact=https://www.digitalgreenhouse.com.au
 AppCopyright=Copyright Digital Greenhouse. MIT licence.
 VersionInfoVersion={#AppVersion}
 VersionInfoDescription=Ironbark music player installer
@@ -43,12 +49,15 @@ SolidCompression=yes
 ; If Ironbark is open, setup offers to close it (and reopen it afterwards).
 CloseApplications=yes
 RestartApplications=yes
+; Explorer re-reads its "Open with" lists after installing and uninstalling.
+ChangesAssociations=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "openwith"; Description: "Add Ironbark to ""Open with"" for music files (it won't become the default)"; GroupDescription: "Explorer:"; Flags: unchecked
 
 [InstallDelete]
 ; An upgrade replaces the bundled libraries whole, so files a newer version no longer uses don't linger.
@@ -64,10 +73,68 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 Name: "{autoprograms}\Ironbark"; Filename: "{app}\Ironbark.exe"; AppUserModelID: "DigitalGreenhouse.Ironbark"
 Name: "{autodesktop}\Ironbark"; Filename: "{app}\Ironbark.exe"; AppUserModelID: "DigitalGreenhouse.Ironbark"; Tasks: desktopicon
 
+[Registry]
+; "Open with": Ironbark offered for these file types, under the current user only. Nothing here sets a
+; default program. All of it goes on uninstall (uninsdeletekey / uninsdeletevalue).
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "Ironbark"; Flags: uninsdeletekey; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\Ironbark.exe,0"; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Ironbark.exe"" ""%1"""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".flac"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".wav"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".aif"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".aiff"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".m4a"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".mp3"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".ogg"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".opus"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".cue"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".m3u"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\Ironbark.exe\SupportedTypes"; ValueType: string; ValueName: ".m3u8"; ValueData: ""; Tasks: openwith
+; Ironbark's own file kinds (ProgIDs), which the extensions' OpenWithProgids lists point at.
+Root: HKCU; Subkey: "Software\Classes\Ironbark.Music"; ValueType: string; ValueName: ""; ValueData: "Music file"; Flags: uninsdeletekey; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Ironbark.Music\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\Ironbark.exe,0"; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Ironbark.Music\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Ironbark.exe"" ""%1"""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Ironbark.Playlist"; ValueType: string; ValueName: ""; ValueData: "Playlist"; Flags: uninsdeletekey; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Ironbark.Playlist\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\Ironbark.exe,0"; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Ironbark.Playlist\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Ironbark.exe"" ""%1"""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Ironbark.CueSheet"; ValueType: string; ValueName: ""; ValueData: "CUE sheet"; Flags: uninsdeletekey; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Ironbark.CueSheet\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\Ironbark.exe,0"; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Ironbark.CueSheet\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Ironbark.exe"" ""%1"""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.flac\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Music"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.wav\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Music"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.aif\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Music"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.aiff\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Music"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.m4a\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Music"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.mp3\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Music"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.ogg\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Music"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.opus\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Music"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.cue\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.CueSheet"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.m3u\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Playlist"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.m3u8\OpenWithProgids"; ValueType: string; ValueName: "Ironbark.Playlist"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+
 [Run]
 Filename: "{app}\Ironbark.exe"; Description: "{cm:LaunchProgram,Ironbark}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+{ The running player holds this mutex (ironbark/instance.py, INSTALLER_MUTEX). Uninstalling while it
+  runs would leave its files behind, so ask for it to be closed first. Setup itself doesn't need
+  this: CloseApplications offers to close it and reopen it afterwards. }
+function InitializeUninstall(): Boolean;
+begin
+  Result := True;
+  while CheckForMutexes('DigitalGreenhouse.Ironbark.Running') do
+  begin
+    if UninstallSilent then
+      Exit;
+    if MsgBox('Ironbark is open. Close it, then click OK to carry on uninstalling.',
+         mbError, MB_OKCANCEL) = IDCANCEL then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Settings: String;
