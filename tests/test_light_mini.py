@@ -328,7 +328,8 @@ def test_mini_and_full_keep_their_own_places_and_the_music_plays_on(make_window)
     window, root, player, errors = make_window(mini_geometry="640x140+300+60")
     full_before = _where(root)
     assert full_before[2:] == (120, 120)
-    assert root.bind("z")                            # key Z is bound
+    found = window.keys.resolve(root, "z", 0)        # key Z is bound (through the keyboard table, keys.py)
+    assert found is not None and found[0].id == "mini"
 
     window.toggle_mini()
     _pump(root, 0.5)

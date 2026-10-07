@@ -153,9 +153,11 @@ class ClipWindow:
         self._loaded = None            # ((path, over time), Versions or why not), from the thread
         self._last: str | None = None
         self._message = ""
-        for key, letter in (("a", "A"), ("b", "B"), ("d", "D")):
-            self.win.bind(key, lambda e, l=letter: self.hear(l))
-        self.win.bind("<space>", lambda e: self.stop() if self.playing else self.hear(self._last or "A"))
+        for letter in "ABD":
+            for key in (letter.lower(), letter):   # (either case: Caps Lock doesn't matter)
+                self.win.bind(key, lambda e, l=letter: self._own_key(lambda: self.hear(l)))
+        self.win.bind("<space>", lambda e: self._own_key(
+            lambda: self.stop() if self.playing else self.hear(self._last or "A")))
 
         self._keep_going = toolwin.KeepGoing(self.win)
         theme.on_change(self._palette_changed)
@@ -629,6 +631,14 @@ class ClipWindow:
         self._message = ("The loop moved to the chosen over: press A or B" if was_playing else "")
         # Another over was chosen while this one was being made: make that one now.
         self._prepare_versions()
+
+    def _own_key(self, act) -> str | None:
+        """A / B / D and Space are this window's while Hear it is showing, and win over the app's
+        (B: PCM stream, D: Compare, Space: play / pause). Without it they're the app's as anywhere."""
+        if self.listen_frame is None:
+            return None
+        act()
+        return "break"
 
     def hear(self, letter: str):
         if self.listen_frame is None or self.audition is None:

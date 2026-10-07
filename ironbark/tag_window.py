@@ -3,9 +3,11 @@ Experimental → "Tag editing" is on (ui.PlayerWindow checks before opening eith
 
 Edit tags: one song or many (a whole album). A field the songs don't share shows "(various)" in
 grey and is left alone unless you type over it. The cover can be replaced (a JPEG or PNG) or
-removed. Save asks first ("Save changes to 12 files?"), then tag_editor does the careful part on
-its own thread: old tags to the history, each file copied, changed, checked sample for sample,
-swapped in. A song that's playing waits until the player moves on.
+removed. Save (the button, or Ctrl+S — Enter only moves to the next field, so a key can't write
+files by accident) asks first ("Save changes to 12 files?"), then tag_editor does the careful part
+on its own thread: old tags to the history, each file copied, changed, checked sample for sample,
+swapped in. A song that's playing waits until the player moves on. Esc, Cancel or the window's ×
+with edits not yet saved ask "Discard changes?" first.
 
 Tag history: every save, newest first; Undo puts the old tags back the same careful way.
 """
@@ -22,7 +24,7 @@ from typing import Callable
 
 from PIL import Image, ImageOps, ImageTk
 
-from . import audiofile, controls, placement, popups, tag_editor, theme
+from . import audiofile, controls, keys, placement, popups, tag_editor, theme
 from .tag_editor import VARIOUS, Edit, TagSave
 
 COVER_PX = 88
@@ -86,7 +88,8 @@ class TagWindow:
     def __init__(self, parent: tk.Misc, tracks: list, prefs: dict, on_saved: Callable[[TagSave], None],
                  busy: Callable[[], set[Path]], on_history: Callable[[], None] = lambda: None,
                  confirm: Callable[[str, str], bool] | None = None,
-                 choose_picture: Callable[[], str] | None = None):
+                 choose_picture: Callable[[], str] | None = None,
+                 confirm_discard: Callable[[str, str], bool] | None = None):
         self.parent, self.prefs = parent, prefs
         self.on_saved, self.busy, self.on_history = on_saved, busy, on_history
         self.editable = [t for t in tracks if not tag_editor.why_read_only(t)]
@@ -99,6 +102,7 @@ class TagWindow:
         self.cover_change: tag_editor.Cover | None = None
         self.saving: _Saving | None = None
         self._loaded: dict | None = None
+        self._baseline: tuple | None = None   # the fields and cover as last read or saved (see dirty)
 
         self.win = tk.Toplevel(parent, bg=theme.BG)
         self.win.title("Edit tags")
@@ -106,10 +110,11 @@ class TagWindow:
         self.win.minsize(theme.px(340), theme.px(420))
         placement.restore(self.win, prefs.get("tags_geometry", ""))
         theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        self.win.protocol("WM_DELETE_WINDOW", self.request_close)
+        self.win.bind("<Escape>", lambda e: self.request_close())
         self.win.bind("<Configure>", self._moved, add="+")
         self.confirm = confirm or ask(self.win, "Save")
+        self.confirm_discard = confirm_discard or ask(self.win, "Discard")
         self.choose_picture = choose_picture or (lambda: filedialog.askopenfilename(
             parent=self.win, title="Choose the cover picture", filetypes=PICTURE_TYPES))
 
@@ -132,9 +137,9 @@ class TagWindow:
         bottom.pack(side="bottom", fill="x", pady=theme.pad(10, 0))
         controls.FlatButton(bottom, "Tag history…", self.on_history).pack(side="left")
         self.save_button = controls.FlatButton(bottom, "Save", self.save, kind="primary", state="disabled",
-                                               label="Save (Enter)")
+                                               label=f"Save ({keys.hint('save_tags')})")
         self.save_button.pack(side="right")
-        self.cancel_button = controls.FlatButton(bottom, "Cancel", self.close)
+        self.cancel_button = controls.FlatButton(bottom, "Cancel", self.request_close)
         self.cancel_button.pack(side="right", padx=theme.pad(0, theme.GAP))
         self.status = ttk.Label(outer, text="Reading tags…", style="Muted.TLabel", wraplength=theme.px(400),
                                 justify="left")
@@ -151,7 +156,7 @@ class TagWindow:
             entry = ttk.Entry(form, textvariable=var, state="disabled")
             entry.grid(row=row, column=1, sticky="ew", pady=theme.px(2))
             entry.bind("<FocusIn>", lambda e, w=entry: w.select_range(0, "end"))
-            entry.bind("<Return>", lambda e: self.save())
+            entry.bind("<Return>", lambda e, n=name: self._next_field(n))
             var.trace_add("write", lambda *_, n=name: self._paint_field(n))
             self.vars[name], self.entries[name] = var, entry
 
@@ -221,6 +226,7 @@ class TagWindow:
             var.set(self.shown.get(name, ""))
             self.entries[name].configure(state="normal" if self.editable else "disabled")
         self._paint_cover()
+        self._baseline = self._state()
         if self.editable:
             self.save_button.configure(state="normal")
             self.choose_button.configure(state="normal")
@@ -230,6 +236,23 @@ class TagWindow:
         else:
             reasons = "; ".join(sorted({r for _t, r in self.skipped}))
             self.status.configure(text=f"Nothing here can be edited: {reasons}", style="Warn.TLabel")
+
+    def _next_field(self, name: str):
+        """Enter in a field: on to the next one (round to the first). Saving is Ctrl+S or Save."""
+        names = list(self.entries)
+        self.entries[names[(names.index(name) + 1) % len(names)]].focus_set()
+        return "break"
+
+    def key_handlers(self) -> dict:
+        """What the keyboard table's Edit tags keys do here (keys.Keys.attach)."""
+        return {"save_tags": lambda: self.save()}
+
+    def _state(self) -> tuple:
+        return tuple(var.get() for var in self.vars.values()), id(self.cover_change)
+
+    def dirty(self) -> bool:
+        """Typed over a field, or chose a new cover (or none), since the tags were read or saved?"""
+        return self._baseline is not None and self._state() != self._baseline
 
     def _paint_field(self, name: str):
         various = self.vars[name].get() == VARIOUS and self.shown.get(name) == VARIOUS
@@ -334,6 +357,7 @@ class TagWindow:
 
     def _done(self, save: TagSave):
         self.saving = None
+        self._baseline = self._state()   # (what's typed now has been tried: closing doesn't ask)
         self.on_saved(save)
         if not save.failed and not save.waiting:
             self.status.configure(text=f"✓ {save.describe()}", style="Good.TLabel")
@@ -354,6 +378,13 @@ class TagWindow:
     def lift(self):
         self.win.deiconify()
         self.win.lift()
+
+    def request_close(self):
+        """Esc, Cancel or the window's ×: with edits not yet saved, ask before dropping them."""
+        if self.saving is None and self.dirty() and not self.confirm_discard(
+                "Discard changes?", "Your edits haven't been saved to the files."):
+            return
+        self.close()
 
     def close(self):
         if self.saving is not None:  # never left half done: stop after the file in hand

@@ -124,9 +124,12 @@ class AbxWindow:
         self.note.pack(side="bottom", fill="x", pady=theme.pad(8, 0))
         outer.bind("<Configure>", self._rewrap)
 
-        for key, letter in (("a", "A"), ("b", "B"), ("x", "X")):
-            self.win.bind(key, lambda e, l=letter: self.hear(l))
-        self.win.bind("<space>", lambda e: self.stop() if self.playing else self.hear(self._last or "A"))
+        # This window's own keys (either case, so Caps Lock doesn't matter) win over the app's —
+        # B and X would otherwise open the PCM stream and this window, Space play the music.
+        for letter in "ABX":
+            for key in (letter.lower(), letter):
+                self.win.bind(key, lambda e, l=letter: self.hear(l) or "break")
+        self.win.bind("<space>", lambda e: (self.stop() if self.playing else self.hear(self._last or "A")) or "break")
 
         self.pair: abx.Pair | None = None
         self.test: abx.AbxTest | None = None
