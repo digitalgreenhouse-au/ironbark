@@ -91,7 +91,8 @@ DEFAULTS = {
     "update_checked": 0.0,       # when that was last asked (seconds since 1970; 0 = never)
     "media_controls": True,      # Settings → Window: media keys, Windows' media panel, taskbar buttons
     "detailed_logging": False,   # Settings → Window: the player's own notes in app.log too, not just problems
-    "library_view": "albums",    # the Library's browse view: albums/artists/genres/years/composers/recent
+    "library_view": "albums",    # the Library's view: albums/artists/genres/years/composers/recent, or a song
+                                 # view: songs/most_played/recently_played/favourites
     "track_columns": [],         # optional track-list columns on show: "artist", "album"
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window

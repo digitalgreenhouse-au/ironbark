@@ -75,7 +75,11 @@ Windows SmartScreen warns about an unknown publisher.
 - **Tabs** for albums, folders, playlists and the Library. Each tab remembers where it was; opening a
   new tab never interrupts what's playing. Drag tabs to reorder them.
 - **Library** (Ctrl+L): browse by album, artist, genre, year, composer or recently added; sort by any
-  column; search. **Play next / Add to queue** from any song or album.
+  column; search. **Songs** lists every song in the library, and **Most played**, **Recently played**
+  and **Favourites** (♥ — right-click any song) keep your listening close. **Play next / Add to
+  queue** from any song or album.
+- **Search the whole library** (Ctrl+K): songs, albums and artists as you type, from any window;
+  Enter plays the song in its album, Shift+Enter plays it next, Ctrl+Enter adds it to Up next.
 - **Built for big collections:** the Library keeps a database of your music, read once in the
   background (at low priority; in several processes for a big library) and then only what changed,
   so the player never freezes. Use **several music folders** (Settings → Library). An unplugged
@@ -248,6 +252,8 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+Tab / Ctrl+Shift+Tab | Library: next / previous view (Albums, Artists, …) |
 | F5 | Library: look for added or changed music |
 | ↓ · Enter | Search box: go to the list · play (open) the first result |
+| Enter · Shift+Enter · Ctrl+Enter · Alt+Enter | Library search (Ctrl+K): play · play next · add to Up next · open the album |
+| A – Z · 0 – 9 | Library list: jump to the first name starting with what you type |
 
 ### Editing
 

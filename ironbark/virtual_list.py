@@ -141,7 +141,8 @@ class VirtualTree:
         for key, move in (("<Key-Up>", lambda: self.step(-1)), ("<Key-Down>", lambda: self.step(1)),
                           ("<Key-Prior>", lambda: self.step(-self.page())),
                           ("<Key-Next>", lambda: self.step(self.page())),
-                          ("<Key-Home>", lambda: self.select(0)), ("<Key-End>", lambda: self.select(len(self.source) - 1))):
+                          ("<Key-Home>", lambda: self.select(0)),
+                          ("<Key-End>", lambda: self.select(len(self.source) - 1))):
             tree.bind(key, lambda e, m=move: self._navigate(e, m))
         tree.bind("<Key-Left>", lambda e: self._sideways(False))
         tree.bind("<Key-Right>", lambda e: self._sideways(True))
@@ -149,9 +150,14 @@ class VirtualTree:
         tree.bind("<Destroy>", self._destroyed, add="+")
 
     def _destroyed(self, event):
-        if event.widget is self.tree:   # (let go of the owner's methods: see ChoiceRow._untrace)
+        """Gone: let go of the owner's methods (see ChoiceRow._untrace) and of its fonts here, on Tk's
+        thread — a Tk font left to Python's cycle collector may be freed on any thread, and a Tk
+        object freed off Tk's thread breaks the interpreter."""
+        if event.widget is self.tree:
             self.on_select = self.on_activate = self.on_toggle = self.on_jump = self.on_top_edge = None
             self.source = ListSource()
+            self.fonts = {}
+            self._widths.clear()
             self._render_job = None
 
     # -- the source ------------------------------------------------------------------------------

@@ -1228,6 +1228,59 @@ class LibraryDB:
                 rows += con.execute(_TRACK_SELECT + f" WHERE t.id IN ({', '.join('?' * len(chunk))})", chunk).fetchall()
         return SongHits(_ranked(rows, words, whole_words=False), min(count, COUNT_CAP), count > COUNT_CAP)
 
+    # -- songs for the Library's song views --
+    def song_ids(self, order: str = "title", reverse: bool = False) -> list[int]:
+        """Every song's id (not those missing), sorted by a column of the Library's Songs view —
+        title, artist, album, year, quality or time (`reverse`: that column the other way round;
+        unknown years stay last) — then by artist, album, disc and track. The column's names sort as
+        the albums do (folded, "The" left off, 2 before 10); the ones after it plainly, ignoring case
+        (a Python sort key for every name of every song took four times as long)."""
+        terms = _SONG_ORDER.get(order, _SONG_ORDER["title"])
+        first = ", ".join(f"{expr}{' DESC' if desc != (reverse and flips) else ''}" for expr, flips, desc in terms)
+        con = self._con()
+        con.create_function("ib_sort", 1, _sort_text, deterministic=True)
+        return [row[0] for row in con.execute(
+            "SELECT t.id FROM tracks t JOIN files f ON f.id = t.file_id WHERE f.missing_since IS NULL"
+            f" ORDER BY {first}, t.artist COLLATE NOCASE, t.album COLLATE NOCASE, t.disc_no, t.track_no,"
+            " t.title COLLATE NOCASE, t.id")]
+
+    def songs(self, ids: Iterable[int]) -> list[SongHit]:
+        """These songs (by tracks.id) with their album folders, in the order asked; unknown ids
+        left out."""
+        ids = list(ids)
+        found: dict[int, SongHit] = {}
+        with self._reading() as con:
+            for chunk in _chunks(ids):
+                for row in con.execute(_TRACK_SELECT + f" WHERE t.id IN ({', '.join('?' * len(chunk))})", chunk):
+                    found[row[3]] = _hit(row)
+        return [found[i] for i in ids if i in found]
+
+    def songs_by_keys(self, keys: Iterable) -> list[SongHit]:
+        """The songs with these play / favourite keys (audiofile.key: a CUE track is "file#3"), in
+        the order asked; one that isn't in the library (or is missing) is left out."""
+        keys = list(dict.fromkeys(_key(k) for k in keys))
+        ids: dict[str, int] = {}
+        places: dict[str, tuple[int, str] | None] = {}
+        with self._reading() as con:
+            for key in keys:
+                path, mark, number = key.rpartition("#")
+                cue = int(number) if mark and number.isdecimal() else None
+                folder, name = os.path.split(path if cue is not None else key)
+                if folder not in places:
+                    found = _locate(con, folder)
+                    places[folder] = (found[0], found[2]) if found else None
+                place = places[folder]
+                if place is None:
+                    continue
+                row = con.execute(
+                    "SELECT t.id FROM tracks t JOIN files f ON f.id = t.file_id JOIN folders d ON d.id = f.folder_id"
+                    " WHERE d.root_id = ? AND d.rel = ? AND f.name = ? AND f.missing_since IS NULL"
+                    " AND t.cue_number IS ?", (place[0], _to_db(place[1]), _to_db(name), cue)).fetchone()
+                if row is not None:
+                    ids[key] = row[0]
+        hits = {hit.id: hit for hit in self.songs(ids.values())}
+        return [hits[ids[key]] for key in keys if key in ids and ids[key] in hits]
+
     # -- plays and favourites --
     def record_play(self, key, seconds_heard: float, duration: float, when: float | None = None) -> bool:
         """A song was listened to for `seconds_heard` of its `duration`: stored as a play when it
@@ -1524,6 +1577,24 @@ _TOP_HITS = ("SELECT r.path, d.rel, f.name, t.id, " + ", ".join(f"t.{n}" for n i
              + f" FROM (SELECT rowid AS id, {_BM25} AS score FROM song_fts WHERE song_fts MATCH ?"
              " ORDER BY score LIMIT ?) AS s JOIN tracks t ON t.id = s.id JOIN files f ON f.id = t.file_id"
              " JOIN folders d ON d.id = f.folder_id JOIN roots r ON r.id = d.root_id ORDER BY s.score")
+
+
+# The Songs view's sorts: (SQL, flips with a reversed sort?, descending?) for each column's first
+# ORDER BY terms. Lossy files come first by quality (as the album list's Quality column).
+_SONG_ORDER = {
+    "title": (("ib_sort(t.title)", True, False),),
+    "artist": (("ib_sort(t.artist)", True, False),),
+    "album": (("ib_sort(t.album)", True, False),),
+    "year": (("t.year IS NULL", False, False), ("t.year", True, False)),
+    "quality": (("t.codec IN ('MP3', 'Vorbis', 'Opus', 'AAC')", True, True), ("t.bits", True, False),
+                ("t.sample_rate", True, False)),
+    "time": (("t.duration", True, False),),
+}
+
+
+def _hit(row) -> SongHit:
+    """A SongHit (no search words) from a _TRACK_SELECT row: the track and its album folder."""
+    return SongHit(row[3], _track(row), Path(_join(row[0], _album_rel(_from_db(row[1])))))
 
 
 def _ranked(rows: list, words: list[str], whole_words: bool) -> list[SongHit]:

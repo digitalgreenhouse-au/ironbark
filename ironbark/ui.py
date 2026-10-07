@@ -74,7 +74,8 @@ from PIL import ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
                dragdrop, experiments, keys, levelling, library_db, library_index, logs, loudness, mediakeys,
-               placement, playlists, popups, settings, sleep, tag_editor, theme, tkgc, updates, watcher)
+               placement, playlists, popups, quick_search, settings, sleep, tag_editor, theme, tkgc, updates,
+               watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -82,6 +83,7 @@ from .testsignals_window import TestSignalsWindow
 from .details import NowPlayingWindow, output_line
 from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
+from .favourites import Favourites
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
 from .library_window import LibraryWindow, adding_folder
@@ -95,6 +97,7 @@ from .scope_window import ScopeWindow
 from .spectrogram_window import SpectrogramWindow
 from .tag_window import TagHistoryWindow, TagWindow
 from .playlist_view import PlaylistView, _fold
+from .quick_search import QuickSearch
 from .tabbar import IconButton, MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
 
 log = logging.getLogger(__name__)
@@ -314,6 +317,10 @@ class PlayerWindow:
         self._abx: AbxWindow | None = None
         self._testsignals: TestSignalsWindow | None = None
         self._library: LibraryWindow | None = None
+        self._quick: QuickSearch | None = None       # the song search panel (Ctrl+K), made when first opened
+        # Favourite songs (♥): read from the library database on a worker, then kept here.
+        self.favourites = Favourites(lambda: self._index().db)
+        self.favourites.changed.append(self._favourites_changed)
         self._tag_window: TagWindow | None = None
         self._tag_history: TagHistoryWindow | None = None
         self._help: HelpWindow | None = None
@@ -453,6 +460,7 @@ class PlayerWindow:
         if settings.problem:   # a damaged settings file was set aside at start: said once
             self._set_notice(settings.problem, 12000)
         self._poll_job = self.root.after(POLL_MS, self._poll)
+        self.favourites.load()
         if self.watch_music.get():
             self._start_watching(INDEX_AFTER_MS / 1000)
         else:
@@ -591,7 +599,9 @@ class PlayerWindow:
         self.undo_link.bind("<Button-1>", lambda e: self.undo())
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
-                                     on_heading_menu=self._heading_menu)
+                                     on_heading_menu=self._heading_menu,
+                                     on_search_library=lambda query: self.find_in_library(query),
+                                     is_favourite=lambda track: track in self.favourites)
         self.playlist.set_columns(self.prefs.get("track_columns") or ())
         # "Up next (3) · Song": shown above the status line only while songs are queued; click
         # for the list. (Packed from the bottom, ahead of the track list, like the status line.)
@@ -975,12 +985,77 @@ class PlayerWindow:
         self.root.lift()
         self._open_settings()
 
-    def find_in_library(self):
-        """Ctrl+K / Ctrl+Shift+F: search the whole library. For now that's the Library window's search
-        box (albums, artists, years, genres, composers), opened or brought forward and ready to type in."""
-        self.open_library()
+    def find_in_library(self, query: str | None = None):
+        """Ctrl+K / Ctrl+Shift+F, from any window: the song search panel over this window
+        (quick_search.py), ready to type in. `query`: search for that (the track list's "Search the
+        whole library")."""
+        if self.mini_mode:
+            self.toggle_mini()
+        if self.root.state() == "iconic":
+            self.root.deiconify()
+        self.root.lift()
+        if self._quick is None:
+            self._quick = QuickSearch(self.root, self._index, self.song_actions(), top=lambda: self.bar.winfo_height())
+        self._quick.open(query)
+
+    def song_actions(self) -> quick_search.Actions:
+        """What the search panel and the Library's song views can ask of the player."""
+        return quick_search.Actions(
+            play_song=self.play_song, queue_tracks=self._queue_tracks,
+            open_album=lambda album, play: self.open_tab("album", album, play=play, interrupt=play),
+            queue_album=self.queue_album, playlists=self._known_playlists, add_to_playlist=self.add_to_playlist,
+            new_playlist=self.new_playlist, show_in_library=lambda album: self.open_library(album=album),
+            show_artist=lambda name: self.open_library(view="artists", search=name),
+            drag=self._found_drag, favourites=self.favourites)
+
+    def play_song(self, track: Track, album: Path):
+        """Play a song found in the library: its album opens in a tab (or its tab comes to the front)
+        and plays from that song, the album carrying on after it. Asked for by name, so it plays
+        even if something else is playing."""
+        album, key = Path(album), audiofile.key(track.path)
+        self._mark_opened(album)
+        index = next((i for i, tab in enumerate(self.tabs) if tab.same("album", album)), None)
+        if index is None:
+            self.tabs.append(Tab("album", str(album)))
+            index = len(self.tabs) - 1
+        tab = self.tabs[index]
+        if tab.tracks is not None and not tab.loading:
+            self.select_tab(index)
+            found = next((i for i, t in enumerate(tab.tracks) if audiofile.key(t.path) == key), None)
+            if found is not None:
+                self._play_tab(index, found)
+                return
+            self._forget_songs(tab)   # (not in the tab as it was read: read it again, then play)
+        tab.resume_path, tab.resume_at, tab.last_index = key, 0.0, -1
+        self.select_tab(index, then_play=True)
+
+    def _found_drag(self, carried, x_root: int, y_root: int, phase: str):
+        """A song (a list of one) or an album (its folder) dragged out of the search panel or the
+        Library's song views: onto a tab adds it there (nowhere else: the panel covers the window)."""
+        target = self._drop_target(x_root, y_root) if phase != "cancel" else None
+        if target is not None and target[0] != "tab":
+            target = None
+        album = carried if isinstance(carried, Path) else None
+        what = (f"“{album.name}”" if album is not None
+                else "the song" if len(carried) == 1 else f"{len(carried)} songs")
+        if phase == "move":
+            self._show_drop_target(target, what)
+            return
+        self._clear_drop_target()
+        if phase != "drop" or target is None:
+            return
+        tab = self.tabs[target[1]]
+        if album is not None:
+            self.add_album_to_current(album, tab=tab)
+        else:
+            tracks = [t for t in carried if not t.missing]
+            self._set_notice(self._add_tracks_to_tab(tab, tracks, [audiofile.key(t.path) for t in tracks]))
+
+    def _favourites_changed(self):
+        """A song was made a favourite (or not), or the stored list arrived: the ♥ marks follow."""
+        self.playlist.refresh_titles()
         if self._library is not None and self._library.win.winfo_exists():
-            self._library.focus_search()
+            self._library.favourites_changed()
 
     def toggle_full_screen(self):
         """F11 is kept for a full-screen view to come (so it isn't given another meaning meanwhile):
@@ -1963,6 +2038,9 @@ class PlayerWindow:
             add.add(path.stem, lambda p=path: self.add_to_playlist(p, tracks))
         add.add_separator()
         add.add("New playlist…", lambda: self.new_playlist(tracks))   # (Ctrl+N makes an empty one)
+        favourite = all(track in self.favourites for track in tracks)
+        menu.add("Remove from favourites" if favourite else "Add to favourites",
+                 lambda: self.favourites.set(tracks, not favourite), quick_search.HEART)
         if self._tag_editing():
             menu.add_separator()
             menu.add("Edit tags…" if single else f"Edit tags of these {len(rows)} songs…",
@@ -2119,10 +2197,11 @@ class PlayerWindow:
         self._set_notice(message)
         on_done(message)
 
-    def open_library(self, view: str | None = None):
+    def open_library(self, view: str | None = None, album: Path | None = None, search: str | None = None):
         """The Library window (one at a time): an open one is brought to the front as it was, search
         and all (Ctrl+L) — unless the library folders have been changed in Settings since: then it's
-        made afresh for the new folders. `view`: show that view (e.g. "recent" for new music)."""
+        made afresh for the new folders. `view`: show that view (e.g. "recent" for new music);
+        `album`: show (and select) that album; `search`: search the Library for that."""
         if view is not None:
             self.prefs["library_view"] = view
         if (self._library is not None and self._library.win.winfo_exists()
@@ -2131,10 +2210,14 @@ class PlayerWindow:
         if self._library is not None and self._library.win.winfo_exists():
             if view is not None:
                 self._library.set_view(view)
+            if album is not None or search is not None:
+                self._library.show(album=album, search=search)
             self._library.lift()
             return
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         current = Path(tab.path) if tab and tab.kind == "album" else None
+        if album is not None:
+            current = Path(album)
         library = LibraryWindow(self.root, self._library_roots(), current,
                                 on_choose=lambda path: self.open_tab("album", path, play=True),
                                 on_root_changed=self._set_library_folders,
@@ -2146,8 +2229,11 @@ class PlayerWindow:
                                 geometry=self.prefs["library_geometry"],
                                 on_moved=lambda geometry: self.prefs.update(library_geometry=geometry),
                                 on_edit_tags=self.edit_album_tags, can_edit_tags=self._tag_editing,
-                                new_albums=lambda: self._new_albums)
+                                new_albums=lambda: self._new_albums, actions=self.song_actions(),
+                                on_add_tracks=self._add_tracks_to_current)
         self._library = self._with_keys(library, "library", library.key_handlers())
+        if album is not None or search:
+            library.show(album=album, search=search or None)
 
     # -- the library index --------------------------------------------------------------------------
     def _index(self) -> library_index.LibraryIndex:
@@ -2165,8 +2251,8 @@ class PlayerWindow:
 
     def _library_albums(self, root: Path) -> list:
         """Every album in the library, from the database, when `root` is one of the library
-        folders (a "library" tab: Load all); else every album found under `root`. (A worker
-        thread's work.)"""
+        folders (a "library" tab: the Library's "Open all albums in a tab"); else every album found
+        under `root`. (A worker thread's work.)"""
         index = self._index()
         if Path(root) in index.roots:
             if not index.built:
@@ -3358,6 +3444,19 @@ class PlayerWindow:
         release = self.update_available
         webbrowser.open(release.url if release is not None else updates.DOWNLOAD_PAGE)
 
+    def _add_tracks_to_current(self, tracks: list[Track]) -> str:
+        """Songs (from the Library's song views) onto the bottom of the tab on show, or a new tab of
+        their own when none is open. Returns what was done, to say."""
+        tracks = [t for t in tracks if not t.missing]
+        if not tracks:
+            return "Nothing to add"
+        if not 0 <= self.current < len(self.tabs):
+            self.open_files_tab([t.path for t in tracks])
+            return "Opened in a new tab"
+        message = self._add_tracks_to_tab(self.tabs[self.current], tracks, [audiofile.key(t.path) for t in tracks])
+        self._set_notice(message)
+        return message
+
     def _add_tracks_to_tab(self, tab: Tab, tracks: list[Track], extras: list[str]) -> str:
         """Add songs to the bottom of a tab (a drop, or songs dragged onto it). A playlist saves
         them into its .m3u8; any other tab keeps `extras` so they're there after a restart, and
@@ -3678,6 +3777,8 @@ class PlayerWindow:
                 if self._library is not None and self._library.win.winfo_exists():
                     self._guarded(self._library.reload)
             self._guarded(self._watch_reports)
+            if not self.favourites.ready:
+                self._guarded(self.favourites.take_loaded)
             self._guarded(self._take_requests)
             self._guarded(self._take_update)
         finally:

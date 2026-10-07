@@ -229,3 +229,21 @@ def test_rows_drag_by_key_and_keep_their_selection_across_a_new_source(root):
     assert vt.selected == 3 and vt.tree.selection() == ("k5",)
     vt.set_source(ListSource(rows))                      # a new list: from the top, nothing selected
     assert vt.selected is None and vt.top == 0
+
+
+@pytest.mark.perf
+def test_a_step_through_a_big_list_is_quick(root):
+    """(perf) Moving one row through 200,000, a page at a time and by the scrollbar: each refill
+    of the rows on show well under 5 ms (the median), the window never waiting on the list."""
+    import statistics
+    import time
+
+    vt = make(root, Numbers())
+    times = []
+    for top in list(range(0, 400)) + list(range(100_000, 100_400, 7)) + list(range(0, 200_000, 4_999)):
+        started = time.perf_counter()
+        vt.scroll_to(top)
+        times.append(time.perf_counter() - started)
+    median = statistics.median(times)
+    print(f"\nrefill median {median * 1000:.2f} ms, worst {max(times) * 1000:.2f} ms, {vt.page()} rows")
+    assert median < 0.005

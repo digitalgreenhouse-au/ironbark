@@ -18,6 +18,7 @@ from ironbark.engine import State
 from ironbark.library_window import LibraryWindow
 from ironbark.playlist_view import PlaylistView
 from ironbark.tag_window import TagHistoryWindow, TagWindow
+from ironbark.favourites import Favourites
 from ironbark.ui import PlayerWindow, Tab
 
 ON = {"experiments": {tag_editor.EXPERIMENT: True}}
@@ -76,7 +77,7 @@ def window(root, prefs, tracks, **extra):
     w = SimpleNamespace(root=root, prefs=prefs, tabs=[Tab("album", "C:/Music/Album")], current=0,
                         playlist=SimpleNamespace(columns=(), selected_rows=lambda: [0, 1]),
                         opened=[], _tag_window=None, _tag_history=None, sleep_timer=None,
-                        player=SimpleNamespace(stop_after=None), **extra)
+                        player=SimpleNamespace(stop_after=None), favourites=Favourites(lambda: None), **extra)
     w.tabs[0].tracks = tracks
     for name in ("_menu", "_track_menu", "_columns_menu", "_sleep_menu", "stop_after_current", "_tag_editing",
                  "edit_selected_tags", "edit_album_tags", "show_tag_history"):
