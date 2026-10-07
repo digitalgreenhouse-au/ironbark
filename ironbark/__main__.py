@@ -12,6 +12,7 @@ import faulthandler
 import logging
 import sys
 import threading
+import time
 import tkinter as tk
 import traceback
 
@@ -73,15 +74,19 @@ def main(argv: list[str] | None = None) -> None:
 
 def _claim(paths: list[str]) -> instance.Instance | None:
     """This launch's place. None when another copy is running and has taken `paths` (it comes to
-    the front)."""
+    the front). A copy that was closing just then is waited for; if another launch takes its place
+    first (several files opened at once), that one is handed the files instead."""
+    began = time.monotonic()
     here = instance.claim()
+    while not here.first:
+        if here.forward(paths):
+            return None
+        here = instance.claim()
+        if time.monotonic() - began >= instance.FORWARD_TIMEOUT:
+            break   # (a copy there all along that never answered)
+        time.sleep(0.05)
     if here.first:
         return here
-    if here.forward(paths):
-        return None
-    again = instance.claim()   # it may have been closing just then
-    if again.first:
-        return again
     crash.tell_native(f"{APP_NAME} isn't answering",
                       f"{APP_NAME} is already open, but didn't answer. If it has stopped responding, close it "
                       f"in Task Manager, then start {APP_NAME} again.")
@@ -109,7 +114,8 @@ def _run(paths: list[str], here: instance.Instance) -> None:
         player_class, window_class = _player_classes()
         root = tk.Tk()
         root.report_callback_exception = _log_callback_error
-        window = window_class(root, player_class(), paths=paths, requests=here.requests)
+        window = window_class(root, player_class(), paths=paths, requests=here.requests,
+                              on_close=here.stop_listening)
     except Exception:
         # A packaged build has no console, and may never pass this to sys.excepthook: log it here,
         # then say so in a box the user can copy the details from.

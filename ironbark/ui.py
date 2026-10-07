@@ -50,6 +50,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, ttk
+from typing import Callable
 
 from PIL import ImageTk
 
@@ -204,14 +205,17 @@ class Tab:
 
 class PlayerWindow:
     def __init__(self, root: tk.Tk, player: Player, folder: str | None = None, paths: list[str] | None = None,
-                 requests: queue.Queue | None = None):
+                 requests: queue.Queue | None = None, on_close: Callable[[], None] | None = None):
         """folder: an album folder to open and play (as before); paths: files / folders / playlists /
         CUE sheets named on the command line (`open_paths`); requests: where later launches' requests
-        arrive (instance.Instance.requests), taken by `_poll`."""
+        arrive (instance.Instance.requests), taken by `_poll`; on_close: called as soon as closing
+        starts (instance.Instance.stop_listening: from then on a later launch waits for this one to
+        go, rather than handing its files to a window that's closing)."""
         self.root = root
         self.player = player
         self.prefs = settings.load()
         self._requests = requests
+        self._on_close = on_close
         self._seek_target_playing = True  # does the seek bar show the playing song? (set by _poll)
         self._shown_key = None
         self._now_playing: NowPlayingWindow | None = None
@@ -333,8 +337,9 @@ class PlayerWindow:
             # once the window is up, and before anything can start playing.
             root.after_idle(self._protect_ears, hardware_volume)
         self._restore_tabs(folder)
-        if paths:
-            self.open_paths(paths)
+        # Named on the command line: opened by the first poll, with any later launch's that has
+        # arrived meanwhile (`_take_requests`).
+        self._named: list[tuple[str, ...]] = [tuple(paths)] if paths else []
         if settings.problem:   # a damaged settings file was set aside at start: said once
             self._set_notice(settings.problem, 12000)
         self._poll_job = self.root.after(POLL_MS, self._poll)
@@ -2497,6 +2502,8 @@ class PlayerWindow:
         self.root.after(50, self._finish_open_paths, result)
 
     def _finish_open_paths(self, result: dict):
+        if self._closing:   # (sorted out only after closing began: nothing to open it in)
+            return
         if "plan" not in result:
             self.root.after(50, self._finish_open_paths, result)
             return
@@ -2509,24 +2516,34 @@ class PlayerWindow:
         self._set_notice(f"{message} · {note}" if note else message, 8000)
 
     def _take_requests(self):
-        """Later launches' requests (instance.py), handed over by its thread through a queue. Those
-        that arrive together open together (several files chosen in Explorer start a launch each)."""
-        if self._requests is None:
+        """Later launches' requests (instance.py), handed over by its thread through a queue. Several
+        files chosen in Explorer start a launch each, all within a moment, so what's named (this
+        launch's own command line too) is gathered until a poll brings nothing new, then opened
+        together — one tab, one start — in name order when several launches named it. Left alone
+        once the window is closing: what they ask for would only close with it."""
+        if self._closing:
             return
-        front, paths = False, []
-        while True:
+        front, arrived = False, False
+        while self._requests is not None:
             try:
                 request = self._requests.get_nowait()
             except queue.Empty:
                 break
+            arrived = True
             front = front or request.front
-            paths += request.paths
+            if request.paths:
+                self._named.append(request.paths)
             log.info("a later launch handed over %d path(s)%s", len(request.paths),
                      " and asked to come to the front" if request.front else "")
         if front:
             self.bring_to_front()
-        if paths:
-            self.open_paths(paths)
+        if arrived or not self._named:
+            return
+        named, self._named = self._named, []
+        paths = [path for group in named for path in group]
+        if len(named) > 1:
+            paths.sort(key=str.casefold)
+        self.open_paths(paths)
 
     def bring_to_front(self):
         """Show the window in front of the others (from the taskbar if it was minimised)."""
@@ -3128,6 +3145,11 @@ class PlayerWindow:
         if self._closing:   # already on its way
             return
         self._closing = True
+        if self._on_close is not None:
+            try:
+                self._on_close()
+            except Exception:
+                log.exception("while closing: on_close failed")
         self._close_when_saved(time.monotonic() + QUIT_WAIT_MS / 1000)
 
     def _tag_saves_running(self) -> list:

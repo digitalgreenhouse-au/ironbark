@@ -27,6 +27,14 @@ from . import APP_NAME, __version__, experiments, logs
 
 # A full path: a drive (C:\ or C:/), a network share (\\server\share) or, off Windows, from the root.
 _PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/]|/(?!/))")
+# Where a path may begin in a log: a drive, or slashes that don't carry on a name (a network share,
+# a path from the root, or one inside quotes, where Python writes every backslash twice: 'C:\\Users').
+_PATH_START = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?=[\\/])|(?<![\w:.~$\\/-])[\\/]+(?=[^\\/\s])")
+_SEPARATORS = frozenset("\\/")
+_NOT_IN_NAMES = frozenset('\\/\r\n\t"<>|*?:')   # (and line ends): one part of a path stops at these
+# A path written in a log may also end inside the part that follows it, just before one of these:
+# "D:\Music\Abba (missing)", "'E:\\x.flac',".
+_MAY_END_BEFORE = frozenset(" '.,;)]}")
 CRASH_LOGS = ("crash.log", "crash.old.log")
 README = f"""{APP_NAME} diagnostics
 
@@ -49,28 +57,27 @@ def default_name(now: datetime.datetime | None = None) -> str:
     return f"{APP_NAME}-diagnostics-{now:%Y%m%d-%H%M}.zip"
 
 
+def _normal(path: str) -> str:
+    """How paths are compared: each run of slashes one backslash, none at the end, letter case ignored."""
+    return re.sub(r"[\\/]+", r"\\", path).rstrip("\\").casefold()
+
+
 class Redactor:
     """Replaces paths with "<folder N>" (numbered in the order first met; the same path, whatever
     its letter case or slashes, always gets the same number)."""
 
     def __init__(self, home: str | None = None):
-        self.names: dict[str, str] = {}   # normalised path → its stand-in
-        self.originals: dict[str, str] = {}   # the path as first written → its stand-in
+        self.names: dict[str, str] = {}   # normalised path (`_normal`) → its stand-in
         self.home = home if home is not None else str(Path.home())
 
     @staticmethod
     def is_path(text) -> bool:
         return isinstance(text, str) and bool(_PATH.match(text))
 
-    @staticmethod
-    def _key(path: str) -> str:
-        return path.replace("/", "\\").rstrip("\\").casefold()
-
     def name(self, path: str) -> str:
-        key = self._key(path)
+        key = _normal(path)
         if key not in self.names:
             self.names[key] = f"<folder {len(self.names) + 1}>"
-        self.originals.setdefault(path, self.names[key])
         return self.names[key]
 
     def value(self, value):
@@ -84,19 +91,55 @@ class Redactor:
         return value
 
     def text(self, text: str) -> str:
-        """A log's text with the paths already met replaced (longest first, so a folder inside
-        another is replaced whole), then the home folder."""
-        variants = {}
-        for original, stand_in in self.originals.items():
-            for form in {original, original.replace("\\", "/"), original.replace("/", "\\")}:
-                variants[form.rstrip("\\/")] = stand_in
-        for form in sorted(variants, key=len, reverse=True):
-            if len(form) > 3:   # (a drive's root, "C:", would take every "C:" in the log with it)
-                text = re.sub(re.escape(form), lambda _m, s=variants[form]: s, text, flags=re.IGNORECASE)
-        if self.home and len(self.home) > 3:
-            for form in {self.home, self.home.replace("\\", "/")}:
-                text = re.sub(re.escape(form), "<home>", text, flags=re.IGNORECASE)
-        return text
+        """A log's text with the paths already met replaced, and the home folder as <home>: written
+        with either slash, in any case, or with every backslash doubled (as Python writes a path in
+        an error message), and each time the longest that fits, so a folder inside another is
+        replaced whole. One pass over the text, however many paths the settings hold."""
+        # (Never a drive's root: "C:" begins every path on the drive.)
+        known = {key: stand_in for key, stand_in in self.names.items() if len(key) > 3}
+        home = _normal(self.home) if self.home else ""
+        if len(home) > 3:
+            known.setdefault(home, "<home>")
+        if not known:
+            return text
+        pieces, done = [], 0
+        for start in _PATH_START.finditer(text):
+            if start.start() < done:   # (inside a path just replaced)
+                continue
+            found = _known_at(known, text, start.start(), start.end())
+            if found is not None:
+                end, stand_in = found
+                pieces += [text[done:start.start()], stand_in]
+                done = end
+        pieces.append(text[done:])
+        return "".join(pieces)
+
+
+def _known_at(known: dict[str, str], text: str, start: int, root_end: int) -> tuple[int, str] | None:
+    """The longest known path written at text[start:] (it begins with a drive or slashes, which end
+    at `root_end`): (where it ends, its stand-in), or None. Walks the path part by part, so it takes
+    as long as the path is long, whatever the number of known paths."""
+    drive = text[start] not in _SEPARATORS
+    key = text[start:root_end].casefold() if drive else ""
+    at, size, best = (root_end if drive else start), len(text), None
+    while at < size and text[at] in _SEPARATORS:
+        first = at
+        while first < size and text[first] in _SEPARATORS:
+            first += 1
+        stop = first
+        while stop < size and text[stop] not in _NOT_IN_NAMES:
+            stop += 1
+        part = text[first:stop]
+        if not part:
+            break
+        for cut in [len(part)] + [i for i in range(len(part) - 1, 0, -1) if part[i] in _MAY_END_BEFORE]:
+            stand_in = known.get(f"{key}\\{part[:cut].casefold()}")
+            if stand_in is not None:
+                best = (first + cut, stand_in)
+                break
+        key = f"{key}\\{part.casefold()}"
+        at = stop
+    return best
 
 
 def about(prefs: dict) -> str:

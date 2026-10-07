@@ -67,6 +67,42 @@ def test_other_start_up_errors_still_show_as_they_are(monkeypatch):
         launch.run()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_a_folder_too_deep_is_named_before_the_player_starts(monkeypatch):
+    # The player itself loads the sound libraries only once it opens its window, so the launcher
+    # tries the deepest one first: the plain message, never the general "couldn't start" box.
+    started = []
+    fake = types.ModuleType("ironbark.__main__")
+    fake.main = lambda: started.append(True)
+    monkeypatch.setitem(sys.modules, "ironbark.__main__", fake)
+    launch = load("ironbark_launch", WINDOWS / "launch.py")
+    told = []
+    monkeypatch.setattr(launch, "tell", told.append)
+    deep = "C:\\" + "d" * (launch.MAX_PATH - len(launch.DEEPEST))
+    monkeypatch.setattr(launch.sys, "executable", deep + "\\Ironbark.exe")
+    with pytest.raises(SystemExit) as stop:
+        launch.run()
+    assert stop.value.code == 1 and "shorter" in told[0] and deep in told[0] and started == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_another_library_problem_is_left_to_the_players_own_start_up(monkeypatch):
+    started = []
+    fake = types.ModuleType("ironbark.__main__")
+    fake.main = lambda: started.append(True)
+    monkeypatch.setitem(sys.modules, "ironbark.__main__", fake)
+    launch = load("ironbark_launch", WINDOWS / "launch.py")
+    monkeypatch.setattr(launch, "tell", lambda text: pytest.fail("not a path problem"))
+    monkeypatch.setattr(launch.sys, "executable", r"C:\Ironbark\Ironbark.exe")
+    import ctypes
+
+    def unloadable(path):
+        raise OSError("cannot load library: error 0x7e")
+    monkeypatch.setattr(ctypes, "WinDLL", unloadable)
+    launch.run()
+    assert started == [True]
+
+
 def test_what_counts_as_a_path_too_long():
     launch = load("ironbark_launch", WINDOWS / "launch.py")
     short = r"C:\Ironbark"

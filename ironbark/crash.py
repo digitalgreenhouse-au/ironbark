@@ -114,7 +114,13 @@ def log_folder() -> Path:
 # -- in the window -------------------------------------------------------------------------------
 def attach(root, before: Callable[[], None] | None = None, folder: Callable[[], Path] = log_folder) -> None:
     """Show reported errors in `root` from now on (an `after` loop on its thread). `before()` runs
-    before a box goes up (the player leaves its mini strip first)."""
+    before a box goes up (the player leaves its mini strip first).
+
+    The box holds every click in the program until it's answered, so it only goes up while `root` is
+    on screen, and brings it in front of the program's other windows: in a minimised window it would
+    leave the Library (say) not answering, with nothing to show why. Errors met meanwhile wait (one
+    of each kind, a few at most) until the window is back."""
+    waiting: list[Report] = []
 
     def drain():
         try:
@@ -123,12 +129,17 @@ def attach(root, before: Callable[[], None] | None = None, folder: Callable[[], 
                     found = _pending.get_nowait()
                 except queue.Empty:
                     break
+                if len(waiting) < MAX_BOXES and all(found.signature != w.signature for w in waiting):
+                    waiting.append(found)
+            while waiting and _on_screen(root):
+                found = waiting.pop(0)
                 if may_show(found):
                     if before is not None:
                         try:
                             before()
                         except Exception:  # noqa: BLE001
                             log.debug("getting ready for the error box failed", exc_info=True)
+                    root.lift()
                     show_in_app(root, found, folder())
         except Exception:  # noqa: BLE001 — the error box itself failing mustn't make more of them
             log.exception("couldn't show the error box")
@@ -139,6 +150,13 @@ def attach(root, before: Callable[[], None] | None = None, folder: Callable[[], 
                 pass
 
     root.after(DRAIN_MS, drain)
+
+
+def _on_screen(root) -> bool:
+    try:
+        return root.state() not in ("iconic", "withdrawn")
+    except Exception:  # noqa: BLE001 — the window has gone
+        return False
 
 
 def show_in_app(root, found: Report, folder: Path):

@@ -40,6 +40,7 @@ from . import APP_NAME
 log = logging.getLogger(__name__)
 
 FORWARD_TIMEOUT = 8.0     # s a second launch keeps trying to reach the running copy (it may still be starting)
+ANSWER_WAIT_S = 2.0       # s at least for its answer once connected (it answers at once unless it has hung)
 MAX_REQUEST = 1 << 20     # bytes: the longest request taken (thousands of paths)
 ACK = b"\x01"
 # The installer looks for this before uninstalling ("close Ironbark first"). Not per user: the
@@ -93,15 +94,18 @@ def default_key() -> str:
 
 class Instance:
     """This launch's place. `first`: it's the running copy, and later launches' requests arrive
-    on `requests`. Otherwise `forward` hands this launch's own over. `close` lets go (at exit)."""
+    on `requests`. Otherwise `forward` hands this launch's own over. `stop_listening` once the
+    player starts closing (a later launch then waits for it to go, and becomes the player itself);
+    `close` lets go of everything (at exit)."""
 
     def __init__(self, first: bool, requests: queue.Queue | None = None,
                  send: Callable[[list[str], bool, float], bool] | None = None,
-                 closers: tuple[Callable[[], None], ...] = ()):
+                 closers: tuple[Callable[[], None], ...] = (), listeners: tuple[Callable[[], None], ...] = ()):
         self.first = first
         self.requests: queue.Queue = requests if requests is not None else queue.Queue()
         self._send = send
         self._closers = list(closers)
+        self._listeners = list(listeners)
 
     @classmethod
     def alone(cls) -> "Instance":
@@ -109,7 +113,9 @@ class Instance:
         return cls(True)
 
     def forward(self, paths, front: bool = True, timeout: float = FORWARD_TIMEOUT) -> bool:
-        """Hand `paths` to the running copy (and ask it to come forward). True once it has them."""
+        """Hand `paths` to the running copy (and ask it to come forward). True once it has them;
+        False when it didn't answer in time, or has closed meanwhile (this launch can then claim
+        its place)."""
         if self.first or self._send is None:
             return False
         try:
@@ -118,13 +124,24 @@ class Instance:
             log.warning("couldn't reach the running copy", exc_info=True)
             return False
 
+    def stop_listening(self) -> None:
+        """Take no more requests: one taken now would only be lost with the closing window. Still
+        the running copy until `close`, so a later launch waits for this one to go."""
+        listeners, self._listeners = self._listeners, []
+        _run_all(listeners)
+
     def close(self) -> None:
+        self.stop_listening()
         closers, self._closers = self._closers, []
-        for close in reversed(closers):
-            try:
-                close()
-            except Exception:  # noqa: BLE001 — closing is best effort
-                log.debug("letting go of the instance failed", exc_info=True)
+        _run_all(closers)
+
+
+def _run_all(closers: list[Callable[[], None]]) -> None:
+    for close in reversed(closers):
+        try:
+            close()
+        except Exception:  # noqa: BLE001 — closing is best effort
+            log.debug("letting go of the instance failed", exc_info=True)
 
 
 def claim(key: str | None = None, folder: Path | None = None) -> Instance:
@@ -168,6 +185,7 @@ def _read_exactly(read: Callable[[int], bytes], size: int) -> bytes | None:
 
 
 # -- Windows: named mutex + named pipe ---------------------------------------------------------------
+ERROR_FILE_NOT_FOUND = 2
 ERROR_ALREADY_EXISTS = 183
 ERROR_PIPE_CONNECTED = 535
 ERROR_PIPE_BUSY = 231
@@ -177,6 +195,7 @@ PIPE_ACCESS_DUPLEX = 0x3
 FILE_FLAG_FIRST_PIPE_INSTANCE = 0x80000
 PIPE_REJECT_REMOTE_CLIENTS = 0x8   # (with PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, all 0)
 GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
+SYNCHRONIZE = 0x00100000
 OPEN_EXISTING = 3
 PIPE_BUFFER = 65536
 
@@ -194,6 +213,8 @@ def _k32():
         k = ctypes.WinDLL("kernel32", use_last_error=True)
         k.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
         k.CreateMutexW.restype = wintypes.HANDLE
+        k.OpenMutexW.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
+        k.OpenMutexW.restype = wintypes.HANDLE
         k.CloseHandle.argtypes = (wintypes.HANDLE,)
         k.CreateNamedPipeW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
                                        wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID)
@@ -253,6 +274,18 @@ def create_mutex(name: str) -> tuple[int, bool]:
     return handle, error == ERROR_ALREADY_EXISTS
 
 
+def mutex_exists(name: str) -> bool:
+    """Does some program hold this mutex? (Opened only to look: one that can't be opened for another
+    reason counts as there.)"""
+    import ctypes
+
+    handle = _k32().OpenMutexW(SYNCHRONIZE, False, name)
+    if _invalid(handle):
+        return ctypes.get_last_error() != ERROR_FILE_NOT_FOUND
+    _close_handle(handle)
+    return True
+
+
 def _close_handle(handle) -> None:
     _k32().CloseHandle(handle)
 
@@ -261,23 +294,23 @@ def _claim_windows(key: str) -> Instance:
     handle, taken = create_mutex(mutex_name(key))
     if taken:
         _close_handle(handle)
-        return Instance(False, send=lambda paths, front, timeout: send_to_pipe(pipe_name(key), encode(paths, front),
-                                                                               timeout))
+        return Instance(False, send=lambda paths, front, timeout: send_to_pipe(
+            pipe_name(key), encode(paths, front), timeout, running=lambda: mutex_exists(mutex_name(key))))
     requests: queue.Queue = queue.Queue()
-    closers = [lambda: _close_handle(handle)]
+    closers, listeners = [lambda: _close_handle(handle)], []
     try:
         server = PipeServer(pipe_name(key), requests)
     except OSError:
         log.warning("couldn't listen for later launches", exc_info=True)   # still the only copy
     else:
-        closers.append(server.close)
+        listeners.append(server.close)
     try:
         installer, _ = create_mutex(INSTALLER_MUTEX)
     except OSError:
         pass
     else:
         closers.append(lambda: _close_handle(installer))
-    return Instance(True, requests, closers=tuple(closers))
+    return Instance(True, requests, closers=tuple(closers), listeners=tuple(listeners))
 
 
 class PipeServer:
@@ -357,11 +390,13 @@ class PipeServer:
             self.thread.join(0.1)
 
 
-def send_to_pipe(name: str, frame: bytes, timeout: float = FORWARD_TIMEOUT) -> bool:
+def send_to_pipe(name: str, frame: bytes, timeout: float = FORWARD_TIMEOUT,
+                 running: Callable[[], bool] | None = None) -> bool:
     """A later launch's side: connect (waiting while the running copy is still starting up, or busy
-    with another launch), let it take the foreground, send the request, wait for its answer."""
+    with another launch), let it take the foreground, send the request, wait for its answer.
+    `running()` says whether the running copy is still there: once it has gone (it was closing),
+    this stops waiting at once."""
     import ctypes
-    from ctypes import wintypes
 
     k = _k32()
     deadline = time.monotonic() + timeout
@@ -370,29 +405,55 @@ def send_to_pipe(name: str, frame: bytes, timeout: float = FORWARD_TIMEOUT) -> b
         if not _invalid(handle):
             break
         error = ctypes.get_last_error()
+        if running is not None and error != ERROR_PIPE_BUSY and not running():
+            return False   # it closed: this launch can be the player now
         if time.monotonic() >= deadline:
             log.warning("the running copy didn't answer (Windows error %d)", error)
             return False
         if error == ERROR_PIPE_BUSY:
             k.WaitNamedPipeW(name, 200)
         else:
-            time.sleep(0.05)   # not listening yet
-    try:
-        server = wintypes.ULONG(0)
-        if k.GetNamedPipeServerProcessId(handle, ctypes.byref(server)):
-            # Windows only lets the program the user just started bring a window forward: pass that on.
-            ctypes.WinDLL("user32").AllowSetForegroundWindow(wintypes.DWORD(server.value))
-        sent = 0
-        while sent < len(frame):
-            done = wintypes.DWORD(0)
-            if not k.WriteFile(handle, frame[sent:], len(frame) - sent, ctypes.byref(done), None):
-                return False
-            sent += done.value
-        answer = ctypes.create_string_buffer(1)
-        got = wintypes.DWORD(0)
-        return bool(k.ReadFile(handle, answer, 1, ctypes.byref(got), None)) and answer.raw[:got.value] == ACK
-    finally:
-        _close_handle(handle)
+            time.sleep(0.05)   # not listening yet (or no more)
+    # Sending and waiting for the answer can't be given a time limit as such: they run on a thread
+    # of their own, which this launch stops waiting for (a copy that takes the call and then hangs
+    # mustn't leave this launch running, unseen, for ever).
+    answer: dict = {}
+
+    def talk():
+        try:
+            answer["taken"] = _talk(handle, frame)
+        except OSError:
+            answer["taken"] = False
+        finally:
+            _close_handle(handle)
+
+    thread = threading.Thread(target=talk, name="instance-send", daemon=True)
+    thread.start()
+    thread.join(max(deadline - time.monotonic(), ANSWER_WAIT_S))
+    if thread.is_alive():
+        log.warning("the running copy took the request but didn't answer")
+        return False
+    return answer.get("taken", False)
+
+
+def _talk(handle, frame: bytes) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    k = _k32()
+    server = wintypes.ULONG(0)
+    if k.GetNamedPipeServerProcessId(handle, ctypes.byref(server)):
+        # Windows only lets the program the user just started bring a window forward: pass that on.
+        ctypes.WinDLL("user32").AllowSetForegroundWindow(wintypes.DWORD(server.value))
+    sent = 0
+    while sent < len(frame):
+        done = wintypes.DWORD(0)
+        if not k.WriteFile(handle, frame[sent:], len(frame) - sent, ctypes.byref(done), None):
+            return False
+        sent += done.value
+    reply = ctypes.create_string_buffer(1)
+    got = wintypes.DWORD(0)
+    return bool(k.ReadFile(handle, reply, 1, ctypes.byref(got), None)) and reply.raw[:got.value] == ACK
 
 
 # -- elsewhere: lock file + local socket ------------------------------------------------------------
@@ -425,6 +486,19 @@ def _unlock(file) -> None:
         file.close()
 
 
+def lock_held(lock_path: Path) -> bool:
+    """Does a running copy hold this lock file? (Taken for a moment to find out, and let go.)"""
+    try:
+        file = open(lock_path, "a+b")
+    except OSError:
+        return True   # (can't tell: as if it does)
+    if _lock(file):
+        _unlock(file)
+        return False
+    file.close()
+    return True
+
+
 def claim_with_socket(key: str, folder: Path) -> Instance:
     """The lock file + socket way (Mac and Linux; tests use it on Windows too)."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -432,14 +506,15 @@ def claim_with_socket(key: str, folder: Path) -> Instance:
     lock = open(lock_path, "a+b")
     if not _lock(lock):
         lock.close()
-        return Instance(False, send=lambda paths, front, timeout: send_to_socket(info_path, paths, front, timeout))
+        return Instance(False, send=lambda paths, front, timeout: send_to_socket(
+            info_path, paths, front, timeout, running=lambda: lock_held(lock_path)))
     requests: queue.Queue = queue.Queue()
     try:
         server = SocketServer(info_path, requests)
     except OSError:
         log.warning("couldn't listen for later launches", exc_info=True)
         return Instance(True, requests, closers=(lambda: _unlock(lock),))
-    return Instance(True, requests, closers=(lambda: _unlock(lock), server.close))
+    return Instance(True, requests, closers=(lambda: _unlock(lock),), listeners=(server.close,))
 
 
 class SocketServer:
@@ -475,6 +550,8 @@ class SocketServer:
                 except OSError:
                     break
                 with conn:
+                    if self._stop.is_set():   # (closing: taken now, it would only be lost)
+                        break
                     try:
                         conn.settimeout(2.0)
                         body = _read_frame(conn.recv)
@@ -496,16 +573,20 @@ class SocketServer:
             pass
 
 
-def send_to_socket(info_path: Path, paths, front: bool = True, timeout: float = FORWARD_TIMEOUT) -> bool:
+def send_to_socket(info_path: Path, paths, front: bool = True, timeout: float = FORWARD_TIMEOUT,
+                   running: Callable[[], bool] | None = None) -> bool:
+    """As `send_to_pipe`, through the running copy's socket."""
     deadline = time.monotonic() + timeout
     while True:
         try:
             info = json.loads(info_path.read_text(encoding="utf-8"))
             port, key = int(info["port"]), str(info["key"])
-            with socket.create_connection(("127.0.0.1", port), timeout=2.0) as conn:
+            with socket.create_connection(("127.0.0.1", port), timeout=ANSWER_WAIT_S) as conn:
                 conn.sendall(encode(paths, front, key))
                 return conn.recv(1) == ACK
         except (OSError, ValueError, KeyError, TypeError):
+            if running is not None and not running():
+                return False   # it closed: this launch can be the player now
             if time.monotonic() >= deadline:
                 log.warning("the running copy didn't answer", exc_info=True)
                 return False

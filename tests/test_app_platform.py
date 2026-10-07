@@ -90,6 +90,58 @@ def test_the_socket_way_works_the_same(tmp_path):
     after.close()
 
 
+@windows_only
+def test_a_launch_while_the_player_is_closing_waits_for_it_then_takes_its_place():
+    key = unique_key()
+    running = instance.claim(key)
+    running.stop_listening()                        # its window has started closing…
+    later = instance.claim(key)
+    assert running.first and not later.first
+    threading.Timer(0.5, running.close).start()     # …and it's gone half a second later
+    began = time.monotonic()
+    assert later.forward(["a.flac"], timeout=5) is False   # never handed to a window that's closing
+    assert time.monotonic() - began < 3                    # nor kept waiting the whole time
+    assert running.requests.empty()
+    after = instance.claim(key)
+    after.close()
+    assert after.first
+
+
+def test_the_socket_way_waits_for_a_closing_copy_too(tmp_path):
+    key = unique_key()
+    running = instance.claim_with_socket(key, tmp_path)
+    running.stop_listening()
+    later = instance.claim_with_socket(key, tmp_path)
+    assert not later.first
+    threading.Timer(0.5, running.close).start()
+    began = time.monotonic()
+    assert later.forward(["a.flac"], timeout=5) is False and time.monotonic() - began < 3
+    assert running.requests.empty()
+    after = instance.claim_with_socket(key, tmp_path)
+    assert after.first
+    after.close()
+
+
+@windows_only
+def test_a_copy_that_takes_the_call_but_never_answers_doesnt_hold_the_launch(monkeypatch):
+    key = unique_key()
+    release = threading.Event()
+
+    def hung(self, size):   # the running copy connects, then never reads or answers
+        release.wait(10)
+        return b""
+    monkeypatch.setattr(instance.PipeServer, "_read", hung)
+    running = instance.claim(key)
+    later = instance.claim(key)
+    try:
+        began = time.monotonic()
+        assert later.forward(["a.flac"], timeout=0.5) is False
+        assert time.monotonic() - began < instance.ANSWER_WAIT_S + 2
+    finally:
+        release.set()
+        running.close()
+
+
 def test_the_self_check_proves_one_player_at_a_time_under_a_name_of_its_own(monkeypatch):
     from ironbark import selfcheck
 
@@ -131,6 +183,9 @@ class FakeInstance:
         self.sent.append(list(paths))
         return self.answers
 
+    def stop_listening(self):
+        pass
+
     def close(self):
         self.closed = True
 
@@ -153,9 +208,22 @@ def test_the_first_launch_opens_the_window_with_its_paths(monkeypatch, tmp_path)
     assert ran == [([str(tmp_path / "a.flac")], first)] and first.closed
 
 
+def test_a_copy_that_closed_while_another_launch_took_its_place_gets_the_files(monkeypatch):
+    # Several files opened just as the player was closing: one of the launches becomes the player,
+    # and the others hand their files to it (no "isn't answering").
+    closing, new = FakeInstance(first=False, answers=False), FakeInstance(first=False, answers=True)
+    claims = iter([closing, new])
+    monkeypatch.setattr(instance, "claim", lambda *a, **k: next(claims))
+    monkeypatch.setattr(crash, "tell_native", lambda *a, **k: pytest.fail("said it isn't answering"))
+    monkeypatch.setattr(start, "_run", lambda *a: pytest.fail("a second player was started"))
+    start.main([r"C:\a.flac"])
+    assert closing.sent == new.sent == [[r"C:\a.flac"]]
+
+
 def test_a_running_copy_that_doesnt_answer_is_reported(monkeypatch):
     stuck = FakeInstance(first=False, answers=False)
     told = []
+    monkeypatch.setattr(instance, "FORWARD_TIMEOUT", 0.3)   # (each real try waits this long itself)
     monkeypatch.setattr(instance, "claim", lambda *a, **k: stuck)
     monkeypatch.setattr(crash, "tell_native", lambda title, text, warning=True: told.append(title))
     with pytest.raises(SystemExit) as stop:
@@ -238,12 +306,63 @@ def test_requests_that_arrive_together_open_together():
     for paths in (("C:\\a.flac",), ("C:\\b.flac",), ()):
         requests.put(instance.Request(paths, True))
     calls = []
-    w = SimpleNamespace(_requests=requests, bring_to_front=lambda: calls.append("front"),
+    w = SimpleNamespace(_requests=requests, _closing=False, _named=[], bring_to_front=lambda: calls.append("front"),
                         open_paths=lambda paths: calls.append(list(paths)))
     PlayerWindow._take_requests(w)
-    assert calls == ["front", ["C:\\a.flac", "C:\\b.flac"]]
+    assert calls == ["front"]                       # at once: the window comes forward…
+    PlayerWindow._take_requests(w)
+    assert calls == ["front", ["C:\\a.flac", "C:\\b.flac"]]   # …and once nothing more comes, one tab
     PlayerWindow._take_requests(w)
     assert calls == ["front", ["C:\\a.flac", "C:\\b.flac"]]
+
+
+def test_launches_a_moment_apart_and_the_first_ones_own_files_open_as_one():
+    # Several files chosen in Explorer with no player open: one launch becomes the player, the
+    # others hand theirs over while its window is still being built, or a poll or two later.
+    requests = queue.Queue()
+    calls = []
+    w = SimpleNamespace(_requests=requests, _closing=False, _named=[("C:\\Album\\03.flac",)],
+                        bring_to_front=lambda: None, open_paths=lambda paths: calls.append(list(paths)))
+    requests.put(instance.Request(("C:\\Album\\02.flac",), True))
+    PlayerWindow._take_requests(w)
+    requests.put(instance.Request(("C:\\Album\\01.flac",), True))
+    PlayerWindow._take_requests(w)
+    assert calls == []
+    PlayerWindow._take_requests(w)
+    assert calls == [["C:\\Album\\01.flac", "C:\\Album\\02.flac", "C:\\Album\\03.flac"]]   # in name order
+    w._named = [("C:\\b.flac", "C:\\a.flac")]   # one launch's own list keeps its order
+    PlayerWindow._take_requests(w)
+    assert calls[-1] == ["C:\\b.flac", "C:\\a.flac"]
+
+
+def test_the_player_stops_listening_as_soon_as_it_starts_closing(make_window):
+    window, root, player, errors = make_window()
+    stopped, opened = [], []
+    window._on_close = lambda: stopped.append(window._closing)
+    window._requests = queue.Queue()
+    window.open_paths = opened.append
+    window.quit()
+    assert stopped == [True]
+    window._requests.put(instance.Request(("C:\\a.flac",), True))   # (taken just before it stopped)
+    window._take_requests()
+    assert opened == [] and errors == []
+
+
+def test_the_window_is_told_how_to_stop_listening(monkeypatch):
+    made = []
+    monkeypatch.setattr(start, "_start_crash_log", lambda: None)
+    monkeypatch.setattr(start.settings, "carry_over_old_folder", lambda: False)
+    monkeypatch.setattr(start, "_enable_crisp_text_on_windows", lambda: None)
+    monkeypatch.setattr(start.appicon, "set_app_id", lambda: None)
+    monkeypatch.setattr(start.tk, "Tk", lambda: SimpleNamespace(report_callback_exception=None, mainloop=lambda: None))
+    monkeypatch.setattr(start, "Player", lambda: None)
+    monkeypatch.setattr(start, "PlayerWindow", lambda root, player, **kwargs: made.append(kwargs) or SimpleNamespace())
+    monkeypatch.setattr(crash, "attach", lambda root, before=None: None)
+    monkeypatch.setattr(start, "_sweep_tag_copies", lambda: None)
+    here = FakeInstance(first=True)
+    start._run(["C:\\a.flac"], here)
+    assert made[0]["on_close"] == here.stop_listening and made[0]["requests"] is here.requests
+    assert made[0]["paths"] == ["C:\\a.flac"]
 
 
 def test_coming_to_the_front_from_the_taskbar():
@@ -398,6 +517,29 @@ def test_errors_on_other_threads_reach_the_window_as_one_box(root, monkeypatch, 
     assert Prompt.stack == []
 
 
+def test_the_box_waits_while_the_window_is_minimised(root, tmp_path, monkeypatch):
+    # It holds every click in the program: hidden in a minimised window, it would leave the program's
+    # other windows (the Library, say) not answering, with nothing to show why.
+    from ironbark.popups import Prompt
+
+    copied = []
+    monkeypatch.setattr(crash, "copy_text", lambda text, window=None: copied.append(text) or True)
+    crash.attach(root, folder=lambda: tmp_path)
+    root.iconify()
+    _pump(root, 0.2)
+    for n in range(50):   # (one kind: the same line, again and again)
+        crash.report("in the cover-art thread", *error_info(f"lost {n}"))
+    _pump(root, 1.2)
+    assert Prompt.stack == [] and crash._pending.empty()   # none shown, and the rest not piling up
+    root.deiconify()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not Prompt.stack:
+        _pump(root, 0.1)
+    assert len(Prompt.stack) == 1
+    Prompt.stack[0]._chosen(0)
+    assert "RuntimeError: lost 0" in copied[0]
+
+
 def test_the_box_fits_the_players_narrowest_window(root, tmp_path):
     from ironbark import theme
     from ironbark.popups import Prompt
@@ -462,6 +604,35 @@ def test_a_drive_root_in_the_settings_doesnt_blank_out_the_logs():
     redactor = diagnostics.Redactor(home="")
     redactor.value({"library_folder": "C:\\"})
     assert redactor.text("C:\\Program Files\\x and C: drive") == "C:\\Program Files\\x and C: drive"
+
+
+def test_paths_in_error_messages_are_left_out_too():
+    # Python writes a path in an error message with every backslash doubled; a log line may carry
+    # on straight after a path ("(missing)", a closing quote, a comma).
+    redactor = diagnostics.Redactor(home="C:\\Users\\Jane")
+    redactor.value({"library_folder": "D:\\Music", "tabs": [{"extras": ["E:\\Rips\\x.flac"]}],
+                    "last_folder": "D:\\Music\\Abba"})
+    text = redactor.text("PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\jane\\\\Music\\\\a.flac'\n"
+                         "couldn't read the tab D:\\Music\\Abba (missing)\n"
+                         "['E:\\\\Rips\\\\x.flac', 'd:/music/abba/02.flac']\n"
+                         "\\\\NAS\\share\\x · 07/10/2026 · https://example.com/a")
+    assert "Jane" not in text and "jane" not in text and "Abba" not in text and "Rips" not in text
+    assert "'<home>\\\\Music\\\\a.flac'" in text and "<folder 3> (missing)" in text
+    assert "['<folder 2>', '<folder 3>/02.flac']" in text
+    assert text.endswith("\\\\NAS\\share\\x · 07/10/2026 · https://example.com/a")   # nothing else touched
+
+
+def test_a_long_users_settings_and_full_logs_are_redacted_quickly():
+    # Auto VU keeps a setting for every album played: thousands of paths, and logs of megabytes.
+    albums = [f"D:\\Music\\Artist {n % 300}\\Album {n}" for n in range(3000)]
+    redactor = diagnostics.Redactor(home="C:\\Users\\Jane")
+    redactor.value({"vu_auto": {album: -14.0 for album in albums}})
+    log_text = "\n".join(f"07/10/2026 10:00:00 WARNING ironbark.ui: couldn't read the tab {albums[n * 7 % 3000]}"
+                         f"\\01 Song.flac" for n in range(25000))
+    began = time.monotonic()
+    redacted = redactor.text(log_text)
+    assert time.monotonic() - began < 5   # (it took minutes when each path was a pass of its own)
+    assert "Artist" not in redacted and redacted.count("<folder ") == 25000
 
 
 # -- the rotating log -------------------------------------------------------------------------------
