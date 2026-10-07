@@ -23,7 +23,7 @@ import struct
 from pathlib import Path
 
 from . import id3
-from ._files import TagError, file_size, read_at, replace_region
+from ._files import TagError, file_size, read_at, reading, replace_region
 
 NEW_PADDING = 1024
 _ID3_IDS = (b"id3 ", b"ID3 ")
@@ -37,12 +37,13 @@ class ChunkFile:
     forms: tuple[bytes, ...] = (b"WAVE",)
     new_id = b"id3 "
 
+    @reading
     def __init__(self, path):
         self.path = Path(path)
         order = ">I" if self.big_endian else "<I"
         self.chunks: list[tuple[bytes, int, int]] = []   # (ID, where its header starts, data size)
         self.tags: id3.ID3Tag | None = None
-        self.damaged_tag = False          # an ID3 chunk that won't parse: read as none, never rewritten
+        self.damaged_tag = False          # an ID3 chunk that won't parse or be followed to its end: never rewritten
         with open(self.path, "rb") as f:
             size = file_size(f)
             head = read_at(f, 0, 12) if size >= 12 else b""
@@ -57,6 +58,7 @@ class ChunkFile:
                     data = read_at(f, at + 8, min(length, size - at - 8))
                     try:
                         self.tags = id3.ID3Tag.parse(data)
+                        self.damaged_tag = bool(self.tags.problem)
                     except TagError:
                         self.damaged_tag = True
                 at += 8 + length + (length & 1)
@@ -75,7 +77,7 @@ class ChunkFile:
 
     def save(self, major: int) -> None:
         if self.damaged_tag:
-            raise TagError("its ID3 tag is damaged, so it isn't rewritten (nothing in it is lost)")
+            raise TagError(id3.damaged_reason(self.tags))
         tag = self.add_tags()
         body = tag.render(major)
         chunk = self._id3_chunk()
@@ -98,7 +100,7 @@ class ChunkFile:
 
     def delete(self) -> None:
         if self.damaged_tag:
-            raise TagError("its ID3 tag is damaged, so it isn't rewritten (nothing in it is lost)")
+            raise TagError(id3.damaged_reason(self.tags))
         chunk = self._id3_chunk()
         if chunk is not None:
             _chunk_id, at, length = chunk

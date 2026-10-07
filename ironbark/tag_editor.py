@@ -4,9 +4,12 @@ This is the first part of the player that writes to your music files, so every s
 long way round, one file at a time:
 
 1. The file's old tags are saved to the tag history first (`TagHistory` beside the settings,
-   one JSON file per save), so every edit can be undone (`undo_jobs`).
-2. The file is copied (a hidden `.~name.dgtmp` beside it) and the new tags are written into the
-   copy (Ironbark's own tag writer, tagio/), then read back.
+   one small JSON file per save; pictures stored once each in its `blobs` folder; the newest
+   HISTORY_KEEP saves kept), so every edit can be undone (`undo_jobs`). A file whose earlier
+   save is still waiting to be swapped in isn't saved again until that one is done.
+2. The file is copied (`.~name.dgtmp` beside it) and the new tags are written into the copy
+   (Ironbark's own tag writer, tagio/), then read back. Links are left alone (a symbolic link
+   would become a plain file; hard-linked names would split apart).
 3. The copy's sound is proved untouched: both files are decoded through `audiofile.open` (the
    player's one decode path) and compared sample for sample; for FLAC the stored MD5 fingerprint
    must be unchanged and must match the decoded sound.
@@ -73,6 +76,10 @@ TEMP_PREFIX, TEMP_SUFFIX = ".~", ".dgtmp"  # not a music extension, so no scan e
 BLOCK = 1 << 16                 # frames per read when comparing the sound
 HISTORY_FOLDER = "TagHistory"
 HISTORY_FORMAT = 1
+HISTORY_KEEP = 500              # saves kept in the tag history (older ones can no longer be undone)
+BLOB_FOLDER = "blobs"           # big values (pictures) in the history, stored once each by their SHA-256
+BLOB_MIN = 4096                 # a value at least this long (base64 / text characters) goes to the blob store
+BLOB_GRACE_SECONDS = 3600       # an unreferenced blob this new may belong to a save still being written
 FRONT_COVER = 3                 # picture type "front cover" (FLAC, ID3)
 _INTEGER_SUBTYPES = {"PCM_S8", "PCM_U8", "PCM_16", "PCM_24", "PCM_32", "ALAC_16", "ALAC_20", "ALAC_24", "ALAC_32"}
 
@@ -296,8 +303,9 @@ def changes(shown: dict[str, str], typed: dict[str, str]) -> dict[str, str]:
     return out
 
 
-def validate(fields: dict[str, str]) -> list[str]:
-    """Plain-words problems with the values typed (none = fine to save)."""
+def validate(fields: dict[str, str], kinds=()) -> list[str]:
+    """Plain-words problems with the values typed (none = fine to save). `kinds`: the files'
+    kinds (kind_of), for what only some formats can hold."""
     problems = []
     for name in ("track", "disc"):
         value = fields.get(name, "")
@@ -306,6 +314,9 @@ def validate(fields: dict[str, str]) -> list[str]:
     year = fields.get("year", "")
     if year and not _YEAR.match(year):
         problems.append("Year: a year like 2004, or a date like 2004-05-03")
+    elif len(year) == 7 and ID3_KINDS & set(kinds):   # ID3v2.3 stores a year, or a day and month with it
+        problems.append("Year: MP3, WAV and AIFF tags hold a year or a whole date (2004, or 2004-05-03), "
+                        "not a year and month")
     for name, value in fields.items():
         if "\x00" in value:
             problems.append(f"{LABELS[name]}: contains a hidden character that can't be saved")
@@ -342,7 +353,9 @@ def _write_field(audio, kind: str, name: str, value: str, riff: dict[str, str], 
             return
         frame_id = _ID3[name]
         tags.delall(frame_id)
-        if name in LISTS and version == 4:
+        if name == "genre":
+            text = _id3_genre_text(value, version)
+        elif name in LISTS and version == 4:
             text = _split(value)  # ID3v2.4 keeps several values (null-separated)
         else:
             text = [value]        # v2.3 has no standard way to list several: one "a; b" text
@@ -371,19 +384,33 @@ def _write_field(audio, kind: str, name: str, value: str, riff: dict[str, str], 
             tags.pop(atom, None)
 
 
+def _id3_genre_text(value: str, version: int) -> list[str]:
+    """TCON's text as written: v2.4 one value per genre, v2.3 one "a; b" text. In v2.3 a genre
+    starting with "(" would be read as a numbered reference ("(17)" = Rock), so it's written
+    with the literal-"(" escape "((". Numbers ("17") are kept as typed; every ID3 reader shows
+    them as the numbered genre's name."""
+    if version == 4:
+        return _split(value)
+    return ["(" + value if value.startswith("(") else value]
+
+
 def _picture_block(cover: Cover) -> Picture:
     return Picture(type=FRONT_COVER, mime=cover.mime, desc="", width=cover.width, height=cover.height, depth=24,
                    data=cover.data)
 
 
 def _keep(pictures: list, type_of: Callable, removing: bool) -> list:
-    """The pictures that stay. Replacing the cover: everything but the front covers — or, with no
-    front cover, nothing (the first picture was being shown as the cover). Removing it: nothing —
-    the player shows any picture left in the file as the cover (artwork.embedded_art), so a back
-    cover left behind would simply take its place. (Undo brings them all back.)"""
-    if not removing and any(type_of(p) == FRONT_COVER for p in pictures):
+    """The pictures that stay. Replacing the cover: every picture but the one shown as the cover
+    — the front covers, or with no front cover the first readable picture (`type_of` None =
+    unreadable) — so booklet scans stored as "other" survive. Removing it: nothing — the player
+    shows any picture left in the file as the cover (artwork.embedded_art), so a back cover left
+    behind would simply take its place. (Undo brings them all back.)"""
+    if removing:
+        return []
+    if any(type_of(p) == FRONT_COVER for p in pictures):
         return [p for p in pictures if type_of(p) != FRONT_COVER]
-    return []
+    shown = next((i for i, p in enumerate(pictures) if type_of(p) is not None), None)
+    return [p for i, p in enumerate(pictures) if i != shown]
 
 
 def _write_cover(audio, kind: str, cover: Cover):
@@ -545,6 +572,13 @@ def same_snapshot(a: dict | None, b: dict | None, kind: str) -> bool:
         return False
 
 
+def snapshot_digest(snap: dict | None, kind: str) -> str:
+    """A short fingerprint of what a snapshot says (by meaning, as same_snapshot compares). The
+    history keeps this for the tags a save left behind: all it's needed for is telling whether
+    the file was edited again since."""
+    return hashlib.sha256(repr(_meaning(snap, kind)).encode("utf-8", "backslashreplace")).hexdigest()
+
+
 def restore(audio, kind: str, snap: dict) -> int | None:
     """Put a snapshot's tags back into an opened file object (replacing what's there). Returns
     the ID3 version to save with (None for other formats)."""
@@ -612,7 +646,8 @@ class Prepared:
     path: Path
     temp: Path
     stat: tuple[int, int]   # the original's size and modified time when it was copied
-    after: dict             # the copy's tag snapshot
+    after: str              # the digest of the copy's tag snapshot (`snapshot_digest`)
+    copy: tuple[int, int]   # the checked copy's own size and modified time
 
 
 def temp_path(path: Path) -> Path:
@@ -667,14 +702,20 @@ def _remove(path: Path) -> None:
 def prepare(path, kind: str, change: Callable, check: Callable | None = None,
             cancel: threading.Event | None = None) -> Prepared:
     """Copy the file, `change(audio)` the copy's tags, read them back (`check(copy) -> problem`),
-    prove the sound untouched. Raises SaveError (the copy is deleted; the original never touched)."""
+    prove the sound untouched. Raises SaveError (the copy is deleted; the original never touched).
+    Links are refused: swapping a new file in would replace a symbolic link with a plain file,
+    and give a hard-linked file's other names the old tags."""
     path = Path(path)
+    if path.is_symlink():
+        raise SaveError("the file is a link to another file — edit the original instead")
     try:
         st = path.stat()
     except OSError as error:
         raise SaveError("the file can't be found") from error
     if _read_only(st):
         raise SaveError("the file is read-only")
+    if st.st_nlink > 1:
+        raise SaveError("the file has other names (hard links), which a save would split apart — left alone")
     temp = temp_path(path)
     try:
         shutil.copy2(path, temp)
@@ -688,15 +729,16 @@ def prepare(path, kind: str, change: Callable, check: Callable | None = None,
         problem = same_audio(path, temp, kind, cancel)
         if problem:
             raise SaveError(problem)
-        after = snapshot(temp, kind)
+        after = snapshot_digest(snapshot(temp, kind), kind)
         _keep_created(st, temp)
+        copy = temp.stat()
     except SaveError:
         _remove(temp)
         raise
-    except (*_TAG_ERRORS, RuntimeError, sf.LibsndfileError) as error:
+    except Exception as error:  # noqa: BLE001 — whatever went wrong, the copy goes; the original was never touched
         _remove(temp)
         raise SaveError(f"couldn't write the tags ({error})") from error
-    return Prepared(path, temp, (st.st_size, st.st_mtime_ns), after)
+    return Prepared(path, temp, (st.st_size, st.st_mtime_ns), after, (copy.st_size, copy.st_mtime_ns))
 
 
 def commit(prepared: Prepared) -> None:
@@ -710,6 +752,13 @@ def commit(prepared: Prepared) -> None:
     if (st.st_size, st.st_mtime_ns) != prepared.stat:
         discard(prepared)
         raise SaveError("the file changed while it was waiting — not saved")
+    try:
+        copy = prepared.temp.stat()
+    except OSError as error:
+        raise SaveError("the checked copy has gone — not saved") from error
+    if (copy.st_size, copy.st_mtime_ns) != prepared.copy:
+        discard(prepared)
+        raise SaveError("the checked copy changed while it was waiting — not saved")
     try:
         os.replace(prepared.temp, prepared.path)
     except PermissionError as error:
@@ -734,13 +783,17 @@ class Job:
 
 def _field_check(kind: str, edit: Edit) -> Callable:
     def check(temp) -> str | None:
-        got = read_fields(temp, kind)
+        audio = _open(temp, kind)
+        got = _fields_from(audio, kind, temp)
         for name, value in edit.fields.items():
             want = "; ".join(_split(value)) if name in LISTS else value
             have = "; ".join(_split(got[name])) if name in LISTS else got[name]
             if name == "track" and kind == "mp4" and value:  # stored as numbers: "03" reads back "3"
                 number, _, total = value.partition("/")
                 want = f"{int(number)}/{int(total)}" if total and int(total) else str(int(number))
+            if name == "genre" and kind in ID3_KINDS and value:  # as every ID3 reader shows it: "17" → Rock
+                written = _id3_genre_text(value, _id3_version(audio))
+                want = "; ".join(_split(_joined(id3tags.genres(written))))
             if have != want:
                 return f"{LABELS[name]} didn't read back as written (“{have}”)"
         if edit.cover is not None:
@@ -768,7 +821,9 @@ def edit_jobs(tracks, edit: Edit) -> list[Job]:
 
 def undo_jobs(entry: dict) -> tuple[list[Job], list[Path], list[Path]]:
     """Put back the tags a saved edit replaced. Returns (jobs, files edited again since — undoing
-    takes those later changes back too, so ask first —, files that have gone)."""
+    takes those later changes back too, so ask first —, files that have gone).
+    Reads every file, so it's for a worker thread. The old tags are taken out of the history
+    (pictures from its blob store) only when each file's turn comes."""
     jobs, changed, gone = [], [], []
     for item in entry.get("files", []):
         if not item.get("saved"):
@@ -778,17 +833,22 @@ def undo_jobs(entry: dict) -> tuple[list[Job], list[Path], list[Path]]:
             gone.append(path)
             continue
         try:
-            if not same_snapshot(snapshot(path, kind), item.get("after"), kind):
+            now = snapshot(path, kind)
+            if "after_digest" in item:
+                same = snapshot_digest(now, kind) == item["after_digest"]
+            else:   # (history written before the digests: the whole snapshot)
+                same = same_snapshot(now, item.get("after"), kind)
+            if not same:
                 changed.append(path)
         except _TAG_ERRORS:
             changed.append(path)
 
         def check(temp, kind=kind, before=before):
-            if same_snapshot(snapshot(temp, kind), before, kind):
+            if same_snapshot(snapshot(temp, kind), _unpack(before), kind):
                 return None
             return "the old tags didn't read back exactly"
 
-        jobs.append(Job(path, kind, lambda audio, k=kind, b=before: restore(audio, k, b), check))
+        jobs.append(Job(path, kind, lambda audio, k=kind, b=before: restore(audio, k, _unpack(b)), check))
     return jobs, changed, gone
 
 
@@ -827,7 +887,155 @@ def mark_undone(entry: dict, by: str) -> None:
     entry["undone_by"] = by
 
 
+# Big values (pictures, mostly) are kept once each in TagHistory\blobs, named by their SHA-256,
+# so an album's shared cover is stored once however many files and saves hold it, and each
+# history entry stays a few kilobytes. In an entry, a big base64 value becomes
+# {"history_parts": [base64 or {"history_blob": name}…]} (an ID3 tag cut into its header and
+# frames, an MP4 ilst into its items, so the picture is a piece of its own) and a big Vorbis
+# comment value {"history_text": name}. Small values stay as they are; entries written before
+# the blob store simply have none of these.
+def _blob_folder() -> Path:
+    return history_folder() / BLOB_FOLDER
+
+
+def _put_blob(data: bytes) -> str:
+    name = hashlib.sha256(data).hexdigest()
+    path = _blob_folder() / name
+    if path.exists():
+        os.utime(path)   # in use again: old unreferenced blobs are only swept after BLOB_GRACE_SECONDS
+        return name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{name}.{threading.get_ident()}.tmp")   # (two saves may store one picture at once)
+    temp.write_bytes(data)
+    os.replace(temp, path)
+    return name
+
+
+def _get_blob(name: str) -> bytes:
+    if not re.fullmatch(r"[0-9a-f]{64}", str(name)):
+        raise SaveError("the tag history entry is damaged")
+    try:
+        data = (_blob_folder() / name).read_bytes()
+    except OSError as error:
+        raise SaveError("the old tags' pictures are missing from the tag history") from error
+    if hashlib.sha256(data).hexdigest() != name:
+        raise SaveError("the old tags' pictures in the tag history are damaged")
+    return data
+
+
+def _id3_pieces(data: bytes) -> list[bytes]:
+    """A rendered ID3 tag (no unsynchronisation, no padding: `snapshot_of`) cut into its header
+    and frames; whole if it isn't laid out like that."""
+    pieces, at = [data[:id3tags.HEADER]], id3tags.HEADER
+    while at + 10 <= len(data):
+        size = data[at + 4: at + 8]
+        at_end = at + 10 + (id3tags.synchsafe(size) if data[3] == 4 else int.from_bytes(size, "big"))
+        pieces.append(data[at: at_end])
+        at = at_end
+    return pieces if at == len(data) else [data]
+
+
+def _mp4_pieces(data: bytes) -> list[bytes]:
+    """MP4 ilst items (boxes: a 32-bit size first); whole if they don't add up."""
+    pieces, at = [], 0
+    while at + 8 <= len(data):
+        size = int.from_bytes(data[at: at + 4], "big")
+        if size < 8:
+            return [data]
+        pieces.append(data[at: at + size])
+        at += size
+    return pieces if at == len(data) else [data]
+
+
+def _pack_base64(value, split: Callable | None = None):
+    if not isinstance(value, str) or len(value) < BLOB_MIN:
+        return value
+    data = base64.b64decode(value)
+    pieces = split(data) if split is not None else [data]
+    return {"history_parts": [{"history_blob": _put_blob(p)} if len(p) >= BLOB_MIN else _b64(p) for p in pieces]}
+
+
+def _pack(snap: dict | None, kind: str) -> dict | None:
+    """A snapshot as the history stores it (big values in the blob store). OSError if a blob
+    can't be written."""
+    if snap is None:
+        return None
+    if kind in VORBIS_KINDS:
+        out = dict(snap)
+        out["comments"] = [[k, {"history_text": _put_blob(v.encode("utf-8"))} if len(v) >= BLOB_MIN else v]
+                           for k, v in snap.get("comments", [])]
+        if "pictures" in snap:
+            out["pictures"] = [_pack_base64(p) for p in snap["pictures"]]
+        return out
+    if kind in ID3_KINDS:
+        return dict(snap, id3=_pack_base64(snap.get("id3"), _id3_pieces))
+    return dict(snap, ilst=_pack_base64(snap.get("ilst"), _mp4_pieces))
+
+
+def _unpack(value):
+    """A stored snapshot (or any part of one) with its blob references read back in. SaveError
+    if a blob is missing or damaged."""
+    if isinstance(value, list):
+        return [_unpack(v) for v in value]
+    if isinstance(value, dict):
+        if set(value) == {"history_parts"}:
+            return _b64(b"".join(_get_blob(p["history_blob"]) if isinstance(p, dict) else base64.b64decode(p)
+                                 for p in value["history_parts"]))
+        if set(value) == {"history_text"}:
+            return _get_blob(value["history_text"]).decode("utf-8")
+        return {k: _unpack(v) for k, v in value.items()}
+    return value
+
+
+def _prune_history() -> None:
+    """Keep the newest HISTORY_KEEP entries (and any with files still waiting), then sweep the
+    blobs no entry refers to any more. Best effort."""
+    folder = history_folder()
+    entries = sorted(folder.glob("TagEdit_*.json"), reverse=True)
+    for path in entries[HISTORY_KEEP:]:
+        try:
+            if not re.search(r'"state": "waiting"', path.read_text(encoding="utf-8")):
+                path.unlink()
+        except OSError:
+            pass
+    used = set()
+    for path in folder.glob("TagEdit_*.json"):
+        try:
+            used.update(re.findall(r'"history_(?:blob|text)": "([0-9a-f]{64})"', path.read_text(encoding="utf-8")))
+        except OSError:
+            return   # can't tell what's in use: sweep nothing
+    now = time.time()
+    for blob in _blob_folder().glob("*") if _blob_folder().is_dir() else []:
+        try:
+            if blob.name not in used and now - blob.stat().st_mtime >= BLOB_GRACE_SECONDS:
+                blob.unlink()
+        except OSError:
+            pass
+
+
 # -- a whole save -------------------------------------------------------------------------------------
+# Which save holds each file: a copy in hand, or checked and waiting to be swapped in. A second
+# save of the same file meanwhile is refused: its copy would be made from the old file, so
+# swapping it in after the first would quietly take the first save's changes back out.
+_claims: dict[str, str] = {}
+_claims_lock = threading.Lock()
+
+
+def _claim_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _claim(path: Path, owner: str) -> bool:
+    with _claims_lock:
+        return _claims.setdefault(_claim_key(path), owner) == owner
+
+
+def _release(path: Path, owner: str) -> None:
+    with _claims_lock:
+        if _claims.get(_claim_key(path)) == owner:
+            del _claims[_claim_key(path)]
+
+
 @dataclass
 class FileResult:
     path: Path
@@ -857,28 +1065,51 @@ class TagSave:
     def _write_history(self):
         _write_json(self.history_file, self.entry)
 
-    def _note(self, index: int, result: FileResult, after: dict | None = None):
+    def _try_write(self):
+        try:
+            self._write_history()
+        except OSError:
+            pass   # (every swap was written down before it happened)
+
+    def _note(self, index: int, result: FileResult, after: str | None = None):
         item = self.entry["files"][index]
         item["saved"] = result.state == "saved"
         item["state"] = result.state
         item["reason"] = result.reason
         if after is not None:
-            item["after"] = after
+            item["after_digest"] = after
 
     def run(self, busy: Callable[[Path], bool] = lambda path: False, cancel: threading.Event | None = None,
             progress: Callable[[int, int, Path], None] | None = None) -> list[FileResult]:
-        # 1. The old tags, all of them, saved before anything is written.
-        befores = []
+        try:
+            self._run(busy, cancel, progress)
+        except Exception as error:  # noqa: BLE001 — a slip must never leave copies or claims behind
+            self.give_up(f"stopped by an unexpected error ({error})")
+        self.progress = (len(self.jobs), len(self.jobs))
+        self.done = True
+        return self.results
+
+    def _run(self, busy, cancel, progress):
+        # 1. The old tags, all of them, kept in the history before anything is written.
         for job, result in zip(self.jobs, self.results):
+            before = None
             try:
-                before = snapshot(job.path, job.kind)
-            except _TAG_ERRORS as error:
-                result.state, result.reason, before = "failed", f"couldn't read its tags ({error})", None
-            befores.append(before)
-            self.entry["files"].append({"path": str(job.path), "kind": job.kind, "before": before, "after": None,
+                before = _pack(snapshot(job.path, job.kind), job.kind)
+            except OSError as error:
+                result.state, result.reason = "failed", f"couldn't read its tags or keep them in the history ({error})"
+            except Exception as error:  # noqa: BLE001 — a file that can't be read is reported, not a crash
+                result.state, result.reason = "failed", f"couldn't read its tags ({error})"
+            self.entry["files"].append({"path": str(job.path), "kind": job.kind, "before": before, "after_digest": None,
                                         "saved": False, "state": result.state, "reason": result.reason})
-        if any(b is not None for b in befores):
-            self._write_history()
+        if any(item["before"] is not None for item in self.entry["files"]):
+            try:
+                self._write_history()
+            except OSError as error:
+                for result in self.results:
+                    if result.state != "failed":
+                        result.state, result.reason = "failed", (f"couldn't write the tag history ({error}), so "
+                                                                 "nothing was changed")
+                return
         # 2. Each file in turn.
         for i, (job, result) in enumerate(zip(self.jobs, self.results)):
             self.progress = (i, len(self.jobs))
@@ -890,20 +1121,37 @@ class TagSave:
                 result.state, result.reason = "failed", "stopped before it was saved"
                 self._note(i, result)
                 continue
+            if not _claim(job.path, self.id):
+                result.state, result.reason = "failed", ("an earlier tag save of this file is still under way "
+                                                         "or waiting for the player — not saved; try again "
+                                                         "once it's done")
+                self._note(i, result)
+                continue
             try:
                 prepared = prepare(job.path, job.kind, job.change, job.check, cancel)
             except SaveError as error:
+                _release(job.path, self.id)
                 result.state, result.reason = "failed", str(error)
                 self._note(i, result)
                 continue
             self._prepared[job.path] = prepared
             self._swap(i, job.path, busy)
-            self._write_history()
-        self.progress = (len(self.jobs), len(self.jobs))
-        self._write_history()
+        self._try_write()
         self._finish_undo()
-        self.done = True
-        return self.results
+        try:
+            _prune_history()
+        except OSError:
+            pass
+
+    def _drop(self, index: int, path: Path, reason: str):
+        """A file that won't be saved: its copy deleted, its claim let go, the reason noted."""
+        prepared = self._prepared.pop(path, None)
+        if prepared is not None:
+            discard(prepared)
+        _release(path, self.id)
+        result = self.results[index]
+        result.state, result.reason = "failed", reason
+        self._note(index, result)
 
     def _swap(self, index: int, path: Path, busy: Callable[[Path], bool]) -> bool:
         result, prepared = self.results[index], self._prepared[path]
@@ -911,21 +1159,48 @@ class TagSave:
             result.state, result.reason = "waiting", "playing — saved once the player moves on"
             self._note(index, result)
             return False
+        # Written down as saved before the swap: if the write after it fails, Undo still finds it.
+        self.entry["files"][index].update(saved=True, state="saving", after_digest=prepared.after)
+        try:
+            self._write_history()
+        except OSError as error:
+            self._drop(index, path, f"couldn't update the tag history ({error}), so it wasn't saved")
+            self._try_write()
+            return False
         try:
             commit(prepared)
         except Busy:
             result.state, result.reason = "waiting", "in use — saved once it's free"
             self._note(index, result)
+            self._try_write()
             return False
         except SaveError as error:
-            del self._prepared[path]
-            result.state, result.reason = "failed", str(error)
-            self._note(index, result)
+            self._drop(index, path, str(error))
+            self._try_write()
             return False
         del self._prepared[path]
+        _release(path, self.id)
         result.state, result.reason = "saved", ""
         self._note(index, result, prepared.after)
+        self._try_write()
         return True
+
+    def give_up(self, reason: str):
+        """After an unexpected error: every file not saved or waiting is reported as not saved,
+        with its copy and claim let go. One caught mid-swap stays marked saved in the history
+        (it may have been swapped in), so Undo can still put it back."""
+        for i, result in enumerate(self.results):
+            if result.state in ("saved", "waiting"):
+                continue
+            prepared = self._prepared.pop(result.path, None)
+            if prepared is not None:
+                discard(prepared)
+            _release(result.path, self.id)
+            if result.state != "failed":
+                result.state, result.reason = "failed", reason
+            if i < len(self.entry["files"]) and self.entry["files"][i].get("state") != "saving":
+                self._note(i, result)
+        self._try_write()
 
     def _finish_undo(self):
         if self.undo_of is not None and any(r.state == "saved" for r in self.results) and self.undo_of.get("file"):
@@ -953,24 +1228,14 @@ class TagSave:
         for i, result in enumerate(self.results):
             if result.state == "waiting" and self._swap(i, result.path, busy):
                 saved.append(result.path)
-        if saved or any(r.state == "failed" for r in self.results):
-            try:
-                self._write_history()
-            except OSError:
-                pass
         return saved
 
     def abandon(self) -> None:
         """Give up on the waiting files (the player is closing and they're still in use)."""
         for i, result in enumerate(self.results):
             if result.state == "waiting":
-                discard(self._prepared.pop(result.path))
-                result.state, result.reason = "failed", "still in use when the player closed — not saved"
-                self._note(i, result)
-        try:
-            self._write_history()
-        except OSError:
-            pass
+                self._drop(i, result.path, "still in use when the player closed — not saved")
+        self._try_write()
 
     def describe(self) -> str:
         """One line for the status line: "Saved new tags in 12 files" (+ waiting / not saved)."""

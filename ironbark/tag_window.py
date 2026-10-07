@@ -12,6 +12,7 @@ Tag history: every save, newest first; Undo puts the old tags back the same care
 
 from __future__ import annotations
 
+import hashlib
 import io
 import threading
 import tkinter as tk
@@ -39,23 +40,39 @@ def _plural(n: int, word: str) -> str:
 
 
 class _Saving:
-    """Runs a TagSave on its own thread and reports back on the Tk thread (shared by both windows)."""
+    """Runs a TagSave on its own thread and reports back on the Tk thread (shared by both windows).
+    `stop()` asks it to stop after the file in hand; `wait()` waits for the thread (it never
+    touches Tk, so the player can wait for it before it closes)."""
 
     def __init__(self, owner: tk.Misc, save: TagSave, busy: set[Path], on_progress, on_done):
         self.owner, self.save = owner, save
         self.on_progress, self.on_done = on_progress, on_done
         self.cancel = threading.Event()
         self.finished = False
+        self.error: Exception | None = None
         self._at = (0, len(save.jobs), None)
-        threading.Thread(target=self._work, args=(busy,), name="tag-save", daemon=True).start()
+        self._thread = threading.Thread(target=self._work, args=(busy,), name="tag-save", daemon=True)
+        self._thread.start()
         owner.after(100, self._tick)
 
     def _work(self, busy: set[Path]):
         try:
             self.save.run(busy=lambda path: path in busy, cancel=self.cancel,
                           progress=lambda i, n, path: setattr(self, "_at", (i, n, path)))
+        except Exception as error:  # noqa: BLE001 — reported in the window, not lost on stderr
+            self.error = error
+            self.save.give_up(f"stopped by an unexpected error ({error})")
         finally:
             self.finished = True
+
+    def stop(self):
+        """Stop after the file in hand (a file is never left half done)."""
+        self.cancel.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for the save to finish; True once it has."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
 
     def _tick(self):
         if not self.finished:
@@ -75,7 +92,10 @@ class TagWindow:
         self.editable = [t for t in tracks if not tag_editor.why_read_only(t)]
         self.skipped = [(t, tag_editor.why_read_only(t)) for t in tracks if tag_editor.why_read_only(t)]
         self.shown: dict[str, str] = {}
-        self.covers: list[bytes | None] = []
+        # Each song's embedded cover as a SHA-256 (None = no cover), and the first cover's bytes
+        # for the thumbnail: a big selection never holds every file's picture at once.
+        self.covers: list[str | None] = []
+        self.cover_preview: bytes | None = None
         self.cover_change: tag_editor.Cover | None = None
         self.saving: _Saving | None = None
         self._loaded: dict | None = None
@@ -167,15 +187,22 @@ class TagWindow:
 
     # -- reading what's there ---------------------------------------------------------------------
     def _read(self):
-        values, covers, failed = [], [], []
-        for track in self.editable:
-            path, kind = Path(audiofile.real_path(track.path)), tag_editor.kind_of(track)
-            try:
-                values.append(tag_editor.read_fields(path, kind))
-                covers.append(tag_editor.read_cover(path, kind))
-            except Exception as error:  # noqa: BLE001 — a damaged tag is a reason to show, not a crash
-                failed.append((track, f"its tags couldn't be read ({error})"))
-        self._loaded = {"values": values, "covers": covers, "failed": failed}
+        values, covers, failed, preview = [], [], [], None
+        try:
+            for track in self.editable:
+                path, kind = Path(audiofile.real_path(track.path)), tag_editor.kind_of(track)
+                try:
+                    fields = tag_editor.read_fields(path, kind)
+                    cover = tag_editor.read_cover(path, kind)
+                except Exception as error:  # noqa: BLE001 — a damaged tag is a reason to show, not a crash
+                    failed.append((track, f"its tags couldn't be read ({error})"))
+                    continue
+                values.append(fields)
+                covers.append(hashlib.sha256(cover).hexdigest() if cover else None)
+                if preview is None and cover:
+                    preview = cover
+        finally:   # (always: the window waits for this)
+            self._loaded = {"values": values, "covers": covers, "preview": preview, "failed": failed}
 
     def _wait_for_read(self):
         if not self.win.winfo_exists():
@@ -188,7 +215,7 @@ class TagWindow:
             gone = {id(t) for t, _r in failed}
             self.editable = [t for t in self.editable if id(t) not in gone]
             self.skipped += failed
-        self.covers = self._loaded["covers"]
+        self.covers, self.cover_preview = self._loaded["covers"], self._loaded["preview"]
         self.shown = tag_editor.common(self._loaded["values"]) if self.editable else {}
         for name, var in self.vars.items():
             var.set(self.shown.get(name, ""))
@@ -217,16 +244,16 @@ class TagWindow:
         elif change is not None:
             data, text = None, "Removed when you press Save (every picture stored in the file; undo brings them back)"
         else:
-            distinct = {c for c in self.covers}
+            distinct = set(self.covers)
             if not self.covers:
                 data, text = None, ""
             elif len(distinct) > 1:
-                data, text = next((c for c in self.covers if c), None), "(various) — the songs have different covers"
+                data, text = self.cover_preview, "(various) — the songs have different covers"
             elif self.covers[0] is None:
                 data, text = None, ("No cover stored in the file" + ("s" if len(self.covers) > 1 else "")
                                     + " (the player shows a picture from the folder, if there is one)")
             else:
-                data = self.covers[0]
+                data = self.cover_preview
                 text = "Stored in the file" if len(self.covers) == 1 else f"The same cover in all {len(self.covers)}"
         self.cover_text.configure(text=text)
         size = theme.px(COVER_PX)
@@ -278,7 +305,7 @@ class TagWindow:
             self.status.configure(text="Nothing changed yet — type over a field, or choose a cover",
                                   style="Muted.TLabel")
             return
-        problems = tag_editor.validate(edit.fields)
+        problems = tag_editor.validate(edit.fields, {tag_editor.kind_of(t) for t in self.editable})
         if problems:
             self.status.configure(text=" · ".join(problems), style="Warn.TLabel")
             return
@@ -347,6 +374,7 @@ class TagHistoryWindow:
                  busy: Callable[[], set[Path]], confirm: Callable[[str, str], bool] | None = None):
         self.prefs, self.on_saved, self.busy = prefs, on_saved, busy
         self.saving: _Saving | None = None
+        self.reading = False   # Undo is reading the entry's files (on a thread) before it asks
         self.entries: list[dict] = []
         self.win = tk.Toplevel(parent, bg=theme.BG)
         self.win.title("Tag history")
@@ -409,17 +437,46 @@ class TagHistoryWindow:
 
     def _paint_button(self):
         entry = self._selected()
-        ok = (entry is not None and self.saving is None and not entry.get("undone_by")
+        ok = (entry is not None and self.saving is None and not self.reading and not entry.get("undone_by")
               and any(f.get("saved") for f in entry.get("files", [])))
         self.undo_button.configure(state="normal" if ok else "disabled")
 
     def undo(self, entry: dict | None = None):
+        """Read the entry's files on a thread (every file is opened: slow for an album on a network
+        drive), then ask, then put the old tags back."""
         entry = entry or self._selected()
-        if entry is None or self.saving is not None or entry.get("undone_by"):
+        if entry is None or self.saving is not None or self.reading or entry.get("undone_by"):
             return
-        jobs, changed, gone = tag_editor.undo_jobs(entry)
+        found: dict = {}
+
+        def work():
+            try:
+                found["jobs"] = tag_editor.undo_jobs(entry)
+            except Exception as error:  # noqa: BLE001 — shown as the reason, not a crash
+                found["error"] = error
+
+        self.reading = True
+        self.undo_button.configure(state="disabled")
+        self.status.configure(text="Reading the files…", style="Muted.TLabel")
+        threading.Thread(target=work, name="tag-undo-read", daemon=True).start()
+        self.win.after(50, self._wait_for_jobs, entry, found)
+
+    def _wait_for_jobs(self, entry: dict, found: dict):
+        if not self.win.winfo_exists():
+            return
+        if not found:
+            self.win.after(50, self._wait_for_jobs, entry, found)
+            return
+        self.reading = False
+        self.status.configure(text="")
+        if "error" in found:
+            self.status.configure(text=f"Couldn't read the files: {found['error']}", style="Warn.TLabel")
+            self._paint_button()
+            return
+        jobs, changed, gone = found["jobs"]
         if not jobs:
             self.status.configure(text="Nothing to undo: its files have gone (moved or deleted)", style="Warn.TLabel")
+            self._paint_button()
             return
         detail = "Each file is copied, checked sample for sample, and only then swapped in."
         if changed:
@@ -428,6 +485,7 @@ class TagHistoryWindow:
         if gone:
             detail = f"{_plural(len(gone), 'file')} can't be found and will be left out.\n\n" + detail
         if not self.confirm(f"Undo “{entry.get('summary', '')}” on {_plural(len(jobs), 'file')}?", detail):
+            self._paint_button()
             return
         save = TagSave(jobs, f"Undo: {entry.get('summary', '')}", undo_of=entry)
         self.undo_button.configure(state="disabled")
