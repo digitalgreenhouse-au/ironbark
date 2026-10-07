@@ -94,7 +94,7 @@ class SleepTimer:
         if self.state == FADING:
             return "Sleep timer: fading out…"
         if self.state == AT_BOUNDARY:
-            return "Sleep timer: time's up · stopping at the end of this song (bit-perfect: no fade)"
+            return "Sleep timer: time's up · stops after this song (bit-perfect: no fade)"
         if self.state == AT_ALBUM_END:
             return "Sleep timer: stopping at the end of this album"
         return ""

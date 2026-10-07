@@ -4,11 +4,18 @@ Settings → Help → "Save diagnostics…" asks where to save it; nothing is se
 - README.txt — what's in it;
 - about.txt — Ironbark's version, whether it's the packaged program, the experiments switched on,
   Windows' version, Python / Tk / libsndfile / PortAudio versions;
-- audio-outputs.txt — the names of the sound outputs connected, and the default one;
+- audio-outputs.txt — how many sound outputs are connected, which is the default and which is
+  chosen in Settings;
 - settings.json — the settings, with every folder or file path replaced by "<folder 1>",
   "<folder 2>"… (the same path always gets the same name), so no user name or music shows;
 - crash.log (and crash.old.log) and app.log (and its older copies), with the same paths replaced,
   and the user's home folder shown as "<home>".
+
+Names can say who someone is too ("Sam's AirPods", a playlist named after a person), so in every
+file the sound outputs' names show as "<device 1>", "<device 2>"…, the open tabs' titles as "<tab 1>"…,
+the playlists' names as "<playlist 1>"… and searches as "<search 1>"… — again the same name always
+the same stand-in, so the files still agree with each other. A network folder's server ("\\\\sams-nas")
+is named on its own in the logs too (the network playback cache's notes), so it shows as "<server 1>"….
 """
 
 from __future__ import annotations
@@ -30,11 +37,20 @@ _PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/]|/(?!/))")
 # Where a path may begin in a log: a drive, or slashes that don't carry on a name (a network share,
 # a path from the root, or one inside quotes, where Python writes every backslash twice: 'C:\\Users').
 _PATH_START = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?=[\\/])|(?<![\w:.~$\\/-])[\\/]+(?=[^\\/\s])")
+# A network share's server: \\server\share (or //server/share).
+_SERVER = re.compile(r"^[\\/]{2}([^\\/]+)[\\/]")
 _SEPARATORS = frozenset("\\/")
 _NOT_IN_NAMES = frozenset('\\/\r\n\t"<>|*?:')   # (and line ends): one part of a path stops at these
 # A path written in a log may also end inside the part that follows it, just before one of these:
 # "D:\Music\Abba (missing)", "'E:\\x.flac',".
 _MAY_END_BEFORE = frozenset(" '.,;)]}")
+# Settings whose value names a sound output (or, for the hardware test, an input), and ones that
+# hold something typed into a search box.
+DEVICE_KEYS = frozenset({"output_device", "testsignals_output", "testsignals_input"})
+SEARCH_KEYS = frozenset({"query", "last_filter"})
+NAME_MIN = 3   # characters: a shorter name isn't replaced in the logs (it would hit ordinary words)
+# Tab titles the player gives every such tab, which say nothing about anyone.
+GENERIC_TITLES = frozenset({"Library", "Files"})
 CRASH_LOGS = ("crash.log", "crash.old.log")
 README = f"""{APP_NAME} diagnostics
 
@@ -42,13 +58,17 @@ Made by {APP_NAME} at your request, to send with a problem report. Nothing has b
 you choose whether to share this file, and with whom.
 
 about.txt          {APP_NAME}'s version, Windows' version, and the parts it's built from
-audio-outputs.txt  the sound outputs connected when this was made
+audio-outputs.txt  how many sound outputs were connected when this was made, the default one
+                   and the one chosen in Settings
 settings.json      your settings, with folder and file paths replaced by <folder 1>, <folder 2>...
 crash.log          errors {APP_NAME} has met (if any)
 app.log            what {APP_NAME} noted while running (more with Settings > Help > Detailed logging)
 
-In the logs, the same paths are replaced, and your home folder shows as <home>. Music file names a
-log mentions in passing may still show: look through the files before sending if that matters.
+In the logs, the same paths are replaced, and your home folder shows as <home>. In every file the
+names of your sound outputs show as <device 1>, <device 2>..., your open tabs' titles as <tab 1>...,
+your playlists' names as <playlist 1>..., searches as <search 1>... and network servers as
+<server 1>... Music file names a log mentions in passing may still show: look through the files
+before sending if that matters.
 """
 
 
@@ -64,10 +84,15 @@ def _normal(path: str) -> str:
 
 class Redactor:
     """Replaces paths with "<folder N>" (numbered in the order first met; the same path, whatever
-    its letter case or slashes, always gets the same number)."""
+    its letter case or slashes, always gets the same number), and names that aren't paths — sound
+    outputs, tab titles, playlists, searches, a network folder's server — with "<device N>",
+    "<tab N>", "<playlist N>", "<search N>", "<server N>" (`word`; numbered per kind, the same name
+    always the same stand-in)."""
 
     def __init__(self, home: str | None = None):
         self.names: dict[str, str] = {}   # normalised path (`_normal`) → its stand-in
+        self.words: dict[str, str] = {}   # a name, exactly as written → its stand-in
+        self._counts: dict[str, int] = {}
         self.home = home if home is not None else str(Path.home())
 
     @staticmethod
@@ -78,16 +103,44 @@ class Redactor:
         key = _normal(path)
         if key not in self.names:
             self.names[key] = f"<folder {len(self.names) + 1}>"
+            server = _SERVER.match(path)
+            if server:   # (the logs also name it on its own, in small letters: "sams-nas isn't answering")
+                stand_in = self.word(server.group(1), "server")
+                self.words.setdefault(server.group(1).lower(), stand_in)
         return self.names[key]
 
-    def value(self, value):
-        """A settings value with its paths (in keys too) replaced."""
+    def word(self, text: str, kind: str) -> str:
+        """The stand-in for a name of this kind ("device", "tab", "playlist", "search", "server")."""
+        found = self.words.get(text)
+        if found is None:
+            self._counts[kind] = self._counts.get(kind, 0) + 1
+            found = self.words[text] = f"<{kind} {self._counts[kind]}>"
+        return found
+
+    def learn(self, names: dict[str, list[str]]) -> None:
+        """Names to leave out wherever they appear, by kind ({"tab": [...], "playlist": [...]})."""
+        for kind, found in names.items():
+            for text in found:
+                if isinstance(text, str) and text.strip() and text not in GENERIC_TITLES:
+                    self.word(text, kind)
+
+    def value(self, value, key: str = ""):
+        """A settings value with its paths (in keys too) replaced; under `key` a value may be a name
+        (an output, a tab's title, a search) and is replaced as one."""
         if isinstance(value, str):
-            return self.name(value) if self.is_path(value) else value
+            if self.is_path(value):
+                return self.name(value)
+            if value and key in DEVICE_KEYS:
+                return self.word(value, "device")
+            if value and key in SEARCH_KEYS:
+                return self.word(value, "search")
+            if value and key == "title" and value not in GENERIC_TITLES:
+                return self.word(value, "tab")
+            return value
         if isinstance(value, list):
-            return [self.value(v) for v in value]
+            return [self.value(v, key) for v in value]
         if isinstance(value, dict):
-            return {(self.name(k) if self.is_path(k) else k): self.value(v) for k, v in value.items()}
+            return {(self.name(k) if self.is_path(k) else k): self.value(v, k) for k, v in value.items()}
         return value
 
     def text(self, text: str) -> str:
@@ -101,7 +154,7 @@ class Redactor:
         if len(home) > 3:
             known.setdefault(home, "<home>")
         if not known:
-            return text
+            return self._names_in(text)
         pieces, done = [], 0
         for start in _PATH_START.finditer(text):
             if start.start() < done:   # (inside a path just replaced)
@@ -112,7 +165,18 @@ class Redactor:
                 pieces += [text[done:start.start()], stand_in]
                 done = end
         pieces.append(text[done:])
-        return "".join(pieces)
+        return self._names_in("".join(pieces))
+
+    def _names_in(self, text: str) -> str:
+        """The names met so far replaced wherever they stand alone (not inside a longer word), the
+        longest first, written exactly as they were (case matters: "Help" the album, not "help")."""
+        # (only the names the text holds at all go into the pattern: a log is megabytes long)
+        words = sorted((w for w in self.words if len(w) >= NAME_MIN and w in text), key=len, reverse=True)
+        if not words:
+            return text
+        pattern = "|".join(("(?<!\\w)" if w[0].isalnum() or w[0] == "_" else "") + re.escape(w)
+                           + ("(?!\\w)" if w[-1].isalnum() or w[-1] == "_" else "") for w in words)
+        return re.sub(pattern, lambda m: self.words[m.group(0)], text)
 
 
 def _known_at(known: dict[str, str], text: str, start: int, root_end: int) -> tuple[int, str] | None:
@@ -132,7 +196,7 @@ def _known_at(known: dict[str, str], text: str, start: int, root_end: int) -> tu
         part = text[first:stop]
         if not part:
             break
-        for cut in [len(part)] + [i for i in range(len(part) - 1, 0, -1) if part[i] in _MAY_END_BEFORE]:
+        for cut in [len(part)] + [i for i in range(len(part) - 1, 0, -1) if _may_end(part, i)]:
             stand_in = known.get(f"{key}\\{part[:cut].casefold()}")
             if stand_in is not None:
                 best = (first + cut, stand_in)
@@ -140,6 +204,23 @@ def _known_at(known: dict[str, str], text: str, start: int, root_end: int) -> tu
         key = f"{key}\\{part.casefold()}"
         at = stop
     return best
+
+
+def _may_end(part: str, at: int) -> bool:
+    """May a path end inside this part of it, just before part[at]? Before a quote, a comma or a
+    bracket, yes. Before a space only when what follows isn't more of a name ("D:\\Music\\Abba (missing)",
+    "…Abba is gone", but not "D:\\Music Videos", a folder of its own, nor "Abba Gold"); before a full stop
+    only at the end of a sentence ("…Abba." but not "Abba.flac")."""
+    mark = part[at]
+    if mark not in _MAY_END_BEFORE:
+        return False
+    rest = part[at + 1:]
+    if mark == " ":
+        rest = rest.lstrip(" ")
+        return not rest or not (rest[0].isupper() or rest[0].isdigit())
+    if mark == ".":
+        return not rest or rest[0] in " '\")]},;"
+    return True
 
 
 def about(prefs: dict) -> str:
@@ -181,27 +262,42 @@ def _portaudio_version() -> str:
     return sounddevice.get_portaudio_version()[1]
 
 
-def audio_outputs() -> str:
-    """The outputs connected now (Windows' own list), and the default one."""
+def audio_outputs() -> tuple[str | None, list[str]]:
+    """(the default output, the outputs connected now) — Windows' own list."""
     from . import devices
 
-    names = devices.output_names()
-    default = devices.default_output_name()
-    lines = [f"Default output: {default or 'unknown'}", "Connected outputs:"]
-    lines += [f"  {name}" for name in names] or ["  (none found)"]
+    return devices.default_output_name(), devices.output_names()
+
+
+def outputs_text(redactor: Redactor, default: str | None, connected: list[str], chosen: str) -> str:
+    """audio-outputs.txt: the outputs by their stand-ins, so it still says which is the default, which
+    is chosen and whether that one is connected."""
+    lines = [f"Default output: {redactor.word(default, 'device') if default else 'unknown'}",
+             f"Connected outputs ({len(connected)}):"]
+    lines += [f"  {redactor.word(name, 'device')}" for name in connected] or ["  (none found)"]
+    if chosen:
+        here = "connected" if chosen in connected else "not connected now"
+        lines.append(f"Chosen in Settings: {redactor.word(chosen, 'device')} ({here})")
+    else:
+        lines.append("Chosen in Settings: Windows' default output")
+    lines.append("(Output names are left out: <device 1>, <device 2>... stand for them in every file.)")
     return "\n".join(lines) + "\n"
 
 
-def contents(prefs: dict, folder: Path, outputs: Callable[[], str] = audio_outputs,
-             home: str | None = None) -> dict[str, str]:
-    """Every file for the zip, by name."""
+def contents(prefs: dict, folder: Path, outputs: Callable[[], tuple[str | None, list[str]]] = audio_outputs,
+             home: str | None = None, names: dict[str, list[str]] | None = None) -> dict[str, str]:
+    """Every file for the zip, by name. `names`: other names to leave out, by kind (the window's tab
+    titles and playlist names: {"tab": [...], "playlist": [...]})."""
     redactor = Redactor(home)
     files = {"README.txt": README, "about.txt": about(prefs)}
     try:
-        files["audio-outputs.txt"] = outputs()
+        default, connected = outputs()
+        listed = outputs_text(redactor, default, list(connected), str(prefs.get("output_device") or ""))
     except Exception as error:  # noqa: BLE001
-        files["audio-outputs.txt"] = f"The list of outputs couldn't be read: {error}\n"
+        listed = f"The list of outputs couldn't be read: {error}\n"
+    redactor.learn(names or {})
     files["settings.json"] = json.dumps(redactor.value(prefs), indent=2, ensure_ascii=False) + "\n"
+    files["audio-outputs.txt"] = listed
     for path in [folder / name for name in CRASH_LOGS] + logs.log_files(folder):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -211,11 +307,12 @@ def contents(prefs: dict, folder: Path, outputs: Callable[[], str] = audio_outpu
     return files
 
 
-def write_zip(destination: Path, prefs: dict, folder: Path, outputs: Callable[[], str] = audio_outputs,
-              home: str | None = None) -> Path:
+def write_zip(destination: Path, prefs: dict, folder: Path,
+              outputs: Callable[[], tuple[str | None, list[str]]] = audio_outputs, home: str | None = None,
+              names: dict[str, list[str]] | None = None) -> Path:
     """Write the zip (whole, or not at all). Touches the disk and asks Windows for the outputs:
     call it off the window's thread. Raises OSError when it can't be written."""
-    files = contents(prefs, folder, outputs, home)
+    files = contents(prefs, folder, outputs, home, names)
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, text in files.items():

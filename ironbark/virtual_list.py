@@ -191,8 +191,8 @@ class VirtualTree:
     is configured here first, so it wins over the owner's tags). `margin=True`: the scrollbar sits
     in the margin right of the list instead (controls.AutoScrollbar.in_margin), so the list keeps its
     full width and its words line up with what's above it; `parent` must then be the frame whose
-    padding is that margin (or `scroll_parent`, when that's another frame). `multiple=True`:
-    several rows can be selected (see the module notes).
+    padding is that margin (or `scroll_parent` names that frame: a list deeper inside it).
+    `multiple=True`: several rows can be selected (see the module notes).
 
     Callbacks: on_select(index | None) when the selection moves (the row the keyboard is on);
     on_activate(index) on a double-click of an ordinary row; on_toggle(index) to fold or open a

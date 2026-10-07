@@ -132,6 +132,19 @@ def _run(paths: list[str], here: instance.Instance) -> None:
     crash.attach(root, before=getattr(window, "_for_prompt", None))
     threading.Thread(target=_sweep_tag_copies, name="tag-copies-sweep", daemon=True).start()
     root.mainloop()
+    _note_clean_exit()
+
+
+def _note_clean_exit() -> None:
+    """The window has closed normally: noted at the end of crash.log, so the next start knows this run
+    didn't crash (anything written after this line — a crash while shutting down — still counts)."""
+    if _crash_file is None:
+        return
+    try:
+        _crash_file.write(crash.clean_exit_line() + "\n")
+        _crash_file.flush()
+    except (OSError, ValueError):   # (a full disk; a file already closed)
+        pass
 
 
 def _close_half_built(root) -> None:
@@ -174,12 +187,18 @@ def _start_crash_log() -> None:
     try:
         path = folder / "crash.log"
         path.parent.mkdir(parents=True, exist_ok=True)
+        # How the last run ended, before this one writes anything (crash.closed_unexpectedly).
+        earlier = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        crash.note_last_run(earlier)
         if path.exists() and path.stat().st_size > 1_000_000:  # keep it from growing forever
             path.replace(path.with_suffix(".old.log"))
+            earlier = ""
         _crash_file = open(path, "a", encoding="utf-8", buffering=1)
     except OSError:
         _crash_file = None
         return
+    if not crash.tracks_exits(earlier):   # (a new log, or one from before clean exits were noted)
+        _crash_file.write(f"\n{crash.TRACKING}\n")
     trying = f" · experiments on: {', '.join(on)}" if on else ""
     _crash_file.write(f"\n--- {APP_NAME} {__version__} started {datetime.datetime.now():%d/%m/%Y %H:%M:%S}"
                       f"{trying} ---\n")

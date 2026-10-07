@@ -311,7 +311,7 @@ def test_bit_perfect_mode_stops_at_the_next_song_boundary_instead():
     now[0] = 15 * 60
     timer.tick(status(exclusive=True))
     assert player.fades == [] and player.stop_after == "song" and timer.state == sleep.AT_BOUNDARY
-    assert "stopping at the end of this song (bit-perfect: no fade)" in timer.describe()
+    assert "stops after this song (bit-perfect: no fade)" in timer.describe()
     timer.tick(status(exclusive=True, stop_after="song"))
     assert timer.active
     timer.tick(status(exclusive=True, stop_after=""))   # it stopped there

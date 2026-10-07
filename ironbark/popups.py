@@ -5,6 +5,8 @@ light boxes and menus — so they follow Dark / Light like everything else (them
 middle of a window, built on the same surface / border as the pop-overs (tabbar.Popover). They are
 **modal**, like the Windows boxes they replace: the rest of the app takes no clicks or keys until
 it's answered (a click outside makes the box flash), Enter = the default button, Esc = cancel.
+Tab / Shift+Tab go round the box's text box and buttons (a DG-green ring shows which has the
+keyboard), and Enter then presses that one.
 The helpers wait for the answer (Tk keeps running meanwhile, so the music and the window carry on)
 and return it. A warning that must not be missed — the hearing-safety one when bit-perfect is
 switched on, "Turn your amp down first" before a test signal — uses `cover=True`: the box sits
@@ -49,7 +51,9 @@ class Prompt(tk.Frame):
 
     `buttons`: (label, value) or (label, value, kind) left to right; kind "primary" (filled green),
     "danger" (red ring — Delete) or "plain"; `default` = the index Enter presses (drawn filled
-    unless it's "danger"); Esc / closing answers `cancel`. `entry`: show a text box with this text
+    unless it's "danger"); Esc / closing answers `cancel`. Tab / Shift+Tab move the keyboard round the
+    text box and the buttons (left to right; the first Tab goes to the default button), and Enter or
+    Space then press the button that has it. `entry`: show a text box with this text
     (selected), and answer the typed text (stripped) for the default button; `validate(text)` returns
     a problem to show under the box ("There's already a playlist called …") or None. `tone`
     "warn" + `cover=True` for warnings that must not be missed. Enter never presses a "danger"
@@ -141,8 +145,9 @@ class Prompt(tk.Frame):
 
         # Keys and clicks: the box's widgets get the prompts' tag *instead of* the window's, so the
         # player's shortcuts (Ctrl+W, n, Space…) and the pop-overs' click-outside don't act while
-        # it's up. Enter / Esc / Tab are handled there; typing still works (each widget keeps its
-        # class). The tag is bound once for all prompts: a class binding lasts as long as Tk does,
+        # it's up. Enter / Esc / Tab are handled there (a button with the keyboard takes Enter itself,
+        # first); typing still works (each widget keeps its class). The tag is bound once for all
+        # prompts: a class binding lasts as long as Tk does,
         # so one made per box (with the box in its function) would keep every box ever shown alive.
         root = self._root()
         if not getattr(root, "_dg_prompt_keys_bound", False):
@@ -150,8 +155,9 @@ class Prompt(tk.Frame):
             for key in ("<Return>", "<KP_Enter>"):
                 self.bind_class(PROMPT_TAG, key, lambda e: Prompt._dispatch(e, Prompt.press_default) or "break")
             self.bind_class(PROMPT_TAG, "<Escape>", lambda e: Prompt._dispatch(e, Prompt.press_cancel) or "break")
-            for key in ("<Tab>", "<Shift-Tab>"):
-                self.bind_class(PROMPT_TAG, key, lambda e: "break")
+            for key, step in (("<Tab>", 1), ("<Shift-Tab>", -1)):
+                self.bind_class(PROMPT_TAG, key, lambda e, s=step: Prompt._dispatch(e, Prompt.tab, e.widget, s)
+                                or "break")
             self.bind_class(PROMPT_TAG, "<ButtonPress>", lambda e: Prompt._dispatch(e, Prompt._pressed, e))
         self._retag(self)
         if self.cover is not None:
@@ -230,6 +236,27 @@ class Prompt(tk.Frame):
         except tk.TclError:   # another app holds a grab, or the window isn't viewable yet
             pass
         target = self.entry if self.entry is not None else self
+        try:
+            target.focus_set()
+        except tk.TclError:
+            pass
+
+    def focus_order(self) -> list[tk.Misc]:
+        """Where Tab goes, in turn: the text box (if there is one), then the buttons left to right."""
+        return ([self.entry] if self.entry is not None else []) + [b for b in self.buttons if b.can_focus()]
+
+    def tab(self, widget, step: int = 1):
+        """Tab (step 1) or Shift+Tab (-1) from `widget`: the keyboard to the next (or previous) one
+        in `focus_order`, round and round. From the box itself (nothing in it has the keyboard yet),
+        it goes to the default button — the one Enter presses — so the first Tab shows that."""
+        order = self.focus_order()
+        if not order:
+            return
+        if widget in order:
+            target = order[(order.index(widget) + step) % len(order)]
+        else:
+            default = self.buttons[self.default]
+            target = default if default in order else order[0]
         try:
             target.focus_set()
         except tk.TclError:
@@ -355,7 +382,8 @@ def ask_text(window: tk.Misc, title: str, message: str = "", *, initial: str = "
 def confirm(window: tk.Misc, title: str, message: str = "", *, detail: str = "", ok: str = "OK",
             cancel: str = "Cancel", danger: bool = False, tone: str = "plain", cover: bool = False) -> bool:
     """A yes / no question. Enter = `ok`, Esc = `cancel`. True for ok. `danger` (Delete…): `ok` is
-    ringed in red and Enter answers `cancel` — only a click on `ok` goes ahead."""
+    ringed in red and Enter answers `cancel` — only choosing `ok` on purpose goes ahead (a click, or Tab
+    past `cancel` to it and then Enter or Space)."""
     return bool(Prompt(window, title, message, detail=detail, tone=tone, cover=cover, cancel=False,
                        buttons=((ok, True, "danger" if danger else "primary"), (cancel, False)),
                        default=1 if danger else 0).wait())

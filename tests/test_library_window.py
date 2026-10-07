@@ -196,7 +196,7 @@ def test_up_next_line_and_list(root):
     status = tk.Label(body)
     status.pack(side="bottom")
     w = SimpleNamespace(player=player, root=root, scale=1.0, _up_next_key=None, prefs={}, _notice="",
-                        sleep_timer=None, _netcache=None, _marks_shown=[])
+                        sleep_timer=None, _netcache=None, _marks_shown=[], _up_next_docked=lambda: False)
     w.playlist = PlaylistView(body, on_play=lambda i: None)
     w.up_next_label = tk.Label(body)
     w.up_next_pop = Popover(root, width=300)

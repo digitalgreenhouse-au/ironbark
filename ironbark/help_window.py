@@ -55,25 +55,31 @@ SOFTWARE.
 """
 
 # The README's Privacy section, word for word (a test keeps the two the same).
-PRIVACY = ("Ironbark doesn't collect or send anything about you or your music. Nothing uses the internet "
-           "until you switch on Settings → Network → Allow network access. Then only two features can:\n"
+PRIVACY = ("Ironbark doesn't collect anything about you or your music. Nothing uses the internet until you "
+           "switch on Settings → Network → Allow network access. Then only two features can:\n"
            "\n"
            "• Rip verification: when you press Verify rip online, it sends only the disc's IDs and track "
-           "layout to AccurateRip and CUETools DB.\n"
-           "• Check for updates (Settings → Help, its own switch, also off by default): once a day it reads "
-           "one small file from digitalgreenhouse.com.au saying what the latest version is. The site sees "
-           "only your internet address and the Ironbark version, as any website would. Nothing is downloaded"
-           " or installed: a newer version is only mentioned in the status line.\n"
+           "layout to AccurateRip and CUETools DB. As with any request, those websites see your computer's "
+           "internet address and the Ironbark version. The CUETools DB look-up isn't encrypted, so others on "
+           "your network can see which disc is looked up.\n"
+           "• Check for updates (Settings → Help, its own switch, also off by default): once a day it asks "
+           "digitalgreenhouse.com.au for one small file saying what the latest version is. The request names "
+           "the Ironbark version, and the website sees your computer's internet address, as any website you "
+           "visit does; nothing else goes with it. Nothing is downloaded or installed: a newer version is only "
+           "mentioned in the status line.\n"
            "\n"
            "Lyrics, the rip-log check and the library's song search all work offline, from files on your "
-           "computer. The network playback cache (Experimental) only talks to the network drives your music is "
-           "already on; it never uses the internet.\n"
+           "computer. Music on network drives (\\\\server\\share, or a mapped drive like Z:) and OneDrive plays "
+           "without network access: Windows fetches those files, as it does for any program. The network "
+           "playback cache (Experimental) only talks to the network drives your music is already on; it never "
+           "uses the internet.\n"
            "\n"
            "Settings, playlists and the logs are kept on your computer (on Windows, in %APPDATA%\\Ironbark), "
            "and the library database, with your play counts and favourites, beside them (on Windows, in "
            "%LOCALAPPDATA%\\Ironbark). If something goes wrong, Settings → Help → Save diagnostics… saves a "
            "zip on your computer that you can choose to attach to a problem report (versions, sound outputs,"
-           " logs and settings, with folder names left out); it is never sent anywhere.")
+           " logs and settings, with the names of folders, tabs, playlists and sound outputs left out); it is "
+           "never sent anywhere.")
 
 
 def copyright_line() -> str:

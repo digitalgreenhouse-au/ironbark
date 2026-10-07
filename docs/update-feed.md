@@ -34,8 +34,9 @@ Other fields are ignored, so more can be added later without breaking older copi
 
 ## What the check sends
 
-One HTTPS `GET` of the address above, with the User-Agent `Ironbark/<version>`. Nothing about the
-person or their music is sent. If the file is missing (404), the server doesn't answer (it gives up
+One HTTPS `GET` of the address above, with the User-Agent `Ironbark/<version>`. The web server sees
+the computer's internet address, as with any request; nothing else about the person or their music
+is sent. If the file is missing (404), the server doesn't answer (it gives up
 after 30 seconds at the most) or there's no connection, Ironbark quietly tries again the next day.
 
 ## Testing a new file

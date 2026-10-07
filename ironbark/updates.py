@@ -3,8 +3,9 @@
 Off unless Settings → Help → "Check for updates" is switched on, and then only while "Allow
 network access" is on too (the one switch every use of the internet answers to: the fetch is
 ripcheck.fetch, which checks it). At most once a day it reads one small file, UPDATE_URL, which
-says what the latest version is. Nothing is sent but the request itself (the player's name and
-version, as the User-Agent). No file there yet, no connection, a slow server: all quietly mean
+says what the latest version is. What goes out is the request itself: it names the player and its
+version (the User-Agent), and the website sees the computer's internet address, as any website
+does; nothing else is sent. No file there yet, no connection, a slow server: all quietly mean
 "nothing new".
 
 It never downloads or installs anything. A newer version shows a line in the status line; clicking
