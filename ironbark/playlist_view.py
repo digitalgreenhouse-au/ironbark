@@ -228,7 +228,7 @@ class PlaylistView:
         # A Treeview gives the tag configured *first* the say when two set the same option (checked
         # on Tk 8.6.12): "hover" comes first so a hovered album / playing row lights up too. Its
         # text turns TEXT: green text on the hover grey would be under WCAG AA's 4.5:1 in Dark.
-        self.tree.tag_configure("hover", background=theme.SURFACE_HI, foreground=theme.TEXT)
+        self.tree.tag_configure("hover", background=theme.HOVER, foreground=theme.TEXT)
         self.tree.tag_configure("album", background=theme.BG, foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("playing", foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("note", foreground=theme.MUTED)

@@ -1,9 +1,14 @@
 """The strip along the top of the window: tabs (one per album or library view), the
-+ / home / gear buttons and, on Windows, our own minimise / close.
++ / gear buttons and, on Windows, our own minimise / close.
 
 The tabs always share the one row with the buttons: as more open, or the
 window narrows, they get slimmer and their names shorten, but they never drop to a row
 of their own.
+
+The selected tab is shaped like a browser's: rounded at the top, flowing into the page below
+it with small inward curves at its foot. The others are quiet names, with a thin line between
+two quiet neighbours and a rounded plate under the pointer; the tab playing music carries a
+small level mark. Everything on the strip sits on one centre line (theme.ROW_Y).
 
 Pressing on any empty part of the strip drags the window (natively, via chrome.py);
 double-clicking it calls `on_double` (snap home).
@@ -18,10 +23,11 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageTk
 
-from . import chrome, theme
+from . import chrome, shapes, theme
 
 # Colours are theme.py roles, read when drawn (so they follow a palette change): the strip is
-# STRIP, the tab on show BG, a tab something dragged would land on SURFACE_HI.
+# STRIP with a TAB_EDGE line along its foot, the selected tab BG, a hovered tab's plate STRIP_HI,
+# a tab something dragged would land on gets a DG-green ring.
 
 # Windows ships these icon fonts; elsewhere we fall back to plain characters.
 GLYPHS = {
@@ -75,10 +81,13 @@ class Tooltip:
 
     (0.21.0) One delay for every tooltip (TOOLTIP_DELAY_MS); long text wraps to fit the window it
     belongs to (at most TOOLTIP_WRAP wide), and the tip goes above the widget when there's no room
-    below it in the window."""
+    below it in the window.
 
-    def __init__(self, widget: tk.Misc, text):
-        self.widget, self.text = widget, text
+    `at`: where the tip's left edge goes (screen x), for a widget that holds several things (the
+    tab strip: under the tab the pointer is on); by default, the widget's left edge."""
+
+    def __init__(self, widget: tk.Misc, text, at: Callable[[], int] | None = None):
+        self.widget, self.text, self.at = widget, text, at
         self._job = None
         self._tip: tk.Toplevel | None = None
         widget.bind("<Enter>", self._schedule, add="+")
@@ -127,7 +136,7 @@ class Tooltip:
                  wraplength=self.wrap(), highlightthickness=1, highlightbackground=theme.BORDER).pack()
         tip.update_idletasks()
         top = self.widget.winfo_toplevel()
-        x = self.widget.winfo_rootx()
+        x = self.at() if self.at is not None else self.widget.winfo_rootx()
         right = top.winfo_rootx() + top.winfo_width()
         if x + tip.winfo_width() > right:  # keep it over the player, not off its edge
             x = max(top.winfo_rootx(), right - tip.winfo_width())
@@ -148,14 +157,21 @@ class Tooltip:
                 pass
             self._tip = None
 
+    def reschedule(self):
+        """Start the wait again (what the tip would say has changed under a still widget)."""
+        self._hide()
+        self._schedule()
+
 
 class IconButton(tk.Label):
     """A flat icon button with a hover colour (tk.Label, so it can sit on the dark strip).
     Colours are theme roles ("STRIP", "ACCENT", …), looked up each time it's painted, so the
-    button follows a palette change; `size` is an icon size (theme.ICON_*), `width` px at 100%."""
+    button follows a palette change; `size` is an icon size (theme.ICON_*), `width` px at 100%.
+    `set_active(True)` lights it as if hovered, with its glyph in ACCENT_TEXT (the gear while
+    Settings is open)."""
 
     def __init__(self, parent, root, name: str, command: Callable[[], None], size: int = theme.ICON,
-                 width: int = 34, bg: str = "STRIP", hover: str = "SURFACE_HI", fg: str = "MUTED",
+                 width: int = 34, bg: str = "STRIP", hover: str = "STRIP_HI", fg: str = "MUTED",
                  hover_fg: str = "TEXT", label: str = ""):
         font = icon_font(root, size) or theme.font(size + 1)
         super().__init__(parent, text=glyph(root, name), font=font, bg=theme.colour(bg), fg=theme.colour(fg),
@@ -176,7 +192,7 @@ class IconButton(tk.Label):
             self.command()
 
     def set_colour(self, fg: str):
-        """Change the resting colour, a theme role (e.g. "ACCENT" when a toggle like shuffle is on)."""
+        """Change the resting colour, a theme role (e.g. "GOOD" when the bit-perfect lock is on)."""
         self._fg = fg
         self._paint(False)
 
@@ -187,19 +203,132 @@ class IconButton(tk.Label):
     def _paint(self, hover: bool):
         lit = hover or self.active
         self.configure(bg=theme.colour(self._hover if lit else self._bg),
-                       fg=theme.colour(self._hover_fg if hover else ("ACCENT" if self.active else self._fg)))
+                       fg=theme.colour(self._hover_fg if hover else ("ACCENT_TEXT" if self.active else self._fg)))
+
+
+class RoundIconButton(IconButton):
+    """An IconButton (glyph from the icon font, colours as theme roles) that lights up with a soft
+    round disc under the pointer instead of a square: the transport's buttons, the header's lock and
+    ⓘ, the strip's + and gear. `diameter` and `width` px at 100% (the disc is centred in the width).
+    `hover` is the disc's role (HOVER on the window, STRIP_HI on the strip), `pressed` the disc while
+    held down.
+
+    `drawn="prev"` / `"next"`: the glyph is drawn into the picture (shapes.skip, filled, TEXT)
+    instead of taken from the icon font. `set_on(True)`: the glyph in ACCENT_TEXT with a small dot
+    under it (shuffle / repeat on), so "on" isn't told by colour alone."""
+
+    ON_DOT = 3          # px at 100%: the "on" dot…
+    ON_DOT_BELOW = 12   # …centred this far under the glyph's centre
+    SKIP_SIZE = 12      # px at 100%: a drawn previous / next glyph's height
+
+    def __init__(self, parent, root, name: str, command: Callable[[], None], diameter: int = 36,
+                 width: int = 40, hover: str = "HOVER", pressed: str = "SURFACE_DOWN", drawn: str = "", **options):
+        self._diameter = max(12, theme.px(diameter))
+        self._pressed = False
+        self._hovering = False
+        self._pressed_role = pressed
+        self._drawn = drawn
+        self.on = False
+        super().__init__(parent, root, name, command, width=width, hover=hover, **options)
+        side = max(0, (theme.px(width) - self._diameter) // 2)
+        self.configure(width=0, height=0, padx=side, pady=0, bd=0, compound="center", cursor="hand2")
+        if drawn:
+            self.configure(text="")
+        self.bind("<ButtonPress-1>", lambda e: self._press(True), add="+")
+        self.bind("<ButtonRelease-1>", lambda e: self._press(False), add="+")
+        self.bind("<Destroy>", self._let_go, add="+")
+        theme.on_change(self._palette_changed)
+        self._paint(False)
+
+    def _let_go(self, event):
+        if event.widget is self:   # (destroyed: its picture is let go here, on Tk's thread)
+            self._photo = None
+
+    def _press(self, down: bool):
+        self._pressed = down
+        self._paint(self._hovering)
+
+    def set_on(self, on: bool):
+        """Shuffle / repeat on: ACCENT_TEXT glyph and the dot under it; off: MUTED, no dot."""
+        self.on = on
+        self.set_colour("ACCENT_TEXT" if on else "MUTED")
+
+    def _palette_changed(self, _palette):
+        self._paint(self._hovering)
+
+    def glyph_colour(self, hover: bool) -> str:
+        if self._drawn:
+            return theme.TEXT
+        return theme.colour(self._hover_fg if hover else ("ACCENT_TEXT" if self.active else self._fg))
+
+    def _paint(self, hover: bool):
+        self._hovering = hover
+        if not hover:
+            self._pressed = False
+        d = self._diameter
+        bg = theme.colour(self._bg)
+        lit = hover or self.active
+        disc = theme.colour(self._pressed_role if self._pressed else self._hover) if lit else None
+        ink = self.glyph_colour(hover)
+        dot = theme.ACCENT_TEXT if self.on and not hover else None
+        drawn = self._drawn
+        s = theme.scale()
+
+        def draw() -> Image.Image:
+            k = shapes.SUPERSAMPLE
+            image = Image.new("RGB", (d * k, d * k), bg)
+            g = ImageDraw.Draw(image)
+            if disc:
+                g.ellipse((0, 0, d * k - 1, d * k - 1), fill=disc)
+            if dot:
+                r, cy = self.ON_DOT * s * k / 2, (d / 2 + self.ON_DOT_BELOW * s) * k
+                g.ellipse((d * k / 2 - r, cy - r, d * k / 2 + r, cy + r), fill=dot)
+            if drawn:
+                shapes.skip(theme.px(self.SKIP_SIZE), ink, drawn == "next", image, (d / 2, d / 2))
+            return shapes.down(image, (d, d))
+
+        self._photo = shapes.photo(self, ("round button", d, bg, disc, ink if drawn else None, dot, drawn), draw)
+        self.configure(image=self._photo, bg=bg, fg=ink)
+
+
+class CaptionButton(IconButton):
+    """Minimise or close: a full-height plate CAPTION_W wide that stops one pixel short of the
+    strip's foot (so the strip's bottom line runs under it), its glyph on the strip's centre line.
+    One label: a see-through spacer picture, anchored to the bottom, puts the glyph's centre on
+    ROW_Y, so the tooltip and the clicks need nothing more."""
+
+    def __init__(self, parent, root, name: str, command: Callable[[], None], **options):
+        super().__init__(parent, root, name, command, size=theme.ICON_SMALL, **options)
+        height = theme.px(theme.STRIP_H) - TabBar.line_width()
+        below = height - theme.px(theme.ROW_Y)          # from the centre line down to the plate's foot
+        self._spacer = shapes.spacer_photo(self, 1, 2 * below)
+        self.configure(image=self._spacer, compound="center", anchor="s", width=theme.px(theme.CAPTION_W),
+                       height=height, padx=0, pady=0, bd=0)
 
 
 class TabBar(tk.Frame):
-    DRAG_GAP = 28              # px at 100%: empty space left of the first tab, for dragging the window
-    MIN_TAB = 6                # px at 100%: just a sliver, so however many are open they all fit (and +)
-    CLOSE_REVEAL_MS = 450      # hover a tab this long and its small close button fades in
+    """The strip: one tk.Canvas for the tabs, with the +, gear, minimise and close buttons as
+    widgets over it.
 
+    Tabs are repainted, never rebuilt: each tab has a slot of canvas items (the line after it, its
+    level mark, its name) made once, and the one-of-a-kind pieces (the selected tab's two ends,
+    middle and top rim; the hover plate; the drop ring; the × and its disc; the strip's bottom line)
+    are shared. A change only re-sends the options and positions that changed, so a tab switch costs
+    a few item changes, not a strip. Nothing is drawn per width: plates and rings are two cached end
+    pictures with plain rectangles between them (shapes.ends)."""
+
+    DRAG_GAP = theme.DRAG_GAP   # (the strip's tokens live in theme; kept here for older callers)
+    MIN_TAB = theme.MIN_TAB
+    CLOSE_REVEAL_MS = 450      # hover a tab this long and its small close button shows
     DRAG_START = 6             # px at 100%: move this far with the button down and a tab press becomes a drag
+    X_DISC_MIX = 0.16          # the × disc under the pointer: this far from its plate toward TEXT
+    FIT_CACHE = 600            # shortened names remembered (by name and width) before starting afresh
+    # Back to front: each kind of item is raised in this order whenever new slots are made.
+    LAYERS = ("line", "plate", "divider", "selected", "ring", "mark", "name", "xdisc", "xglyph")
 
     def __init__(self, parent, root: tk.Tk, *, on_select, on_close, on_new, on_settings, on_double,
                  on_quit, on_tab_menu=lambda index, event: None, on_move=lambda source, target: None):
-        self.row_height = theme.px(36)
+        self.row_height = theme.px(theme.STRIP_H)
         self.height = self.row_height
         super().__init__(parent, bg=theme.STRIP)
         self.root = root
@@ -207,52 +336,130 @@ class TabBar(tk.Frame):
         self.on_double = on_double
         self.on_tab_menu = on_tab_menu
         self.on_move = on_move
-        # A tab being dragged: {"index", "x0", "moving"}. Kept here, not on the tab widgets: the
-        # tabs change under the pointer mid-drag (each swap moves the names along the slots).
+        # A tab being dragged: {"index", "x0", "moving"}. Kept here, not per tab: the tabs change
+        # under the pointer mid-drag (each swap moves the names along the slots).
         self._drag: dict | None = None
-        self._slot = 1  # one tab's width plus its gap, set by _layout
+        self._slot = 1        # one tab's width plus its gap, set by _layout
+        self._per = 1         # one tab's width
         self.top_row = tk.Frame(self, bg=theme.STRIP, height=self.row_height)
         self.top_row.pack(fill="x")
         self.top_row.pack_propagate(False)
+        self.canvas = tk.Canvas(self.top_row, bg=theme.STRIP, height=self.row_height, highlightthickness=0, bd=0)
+        self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
         self._titles: list[str] = []
         self._current = -1
         self._playing: int | None = None
         self._state = None
         self._highlight: int | None = None  # the tab something being dragged would land on
-        # (0.23.0) One slot per tab, made once and repainted on every change (select, rename, drag,
-        # resize) — rebuilding the whole strip on each tab switch took 16–52 ms (3–10 tabs, measured
-        # 05/10/2026). Slot i always shows tab i; a slot is only made or destroyed when the number
-        # of tabs changes. Each slot frame carries .line, .label, .close and .shown (the text on it).
-        self._tab_widgets: list[tk.Frame] = []
+        self._hover: int | None = None      # the tab under the pointer
+        self._x_shown: int | None = None    # the tab whose × is showing (after CLOSE_REVEAL_MS)
+        self._x_hot = False                 # …and the pointer is on the ×
+        self._x_job = None
+        self._x_pressed: int | None = None  # a press that began on a tab's ×
+        self._shown: list[str] = []         # each slot's name as shown (shortened, or "")
+        self._fits: dict[tuple[str, int], str] = {}
+        self._add_at = None                 # where + was last placed
         self.text_font = tkfont.Font(root=root, family=theme.FONT, size=theme.SIZE_BODY)
+        icon = icon_font(root, theme.TAB_CLOSE)
+        self.x_font = icon if icon else theme.font(theme.TAB_CLOSE)
+        # What each item last showed, so only changes are sent to Tk (and the pictures it shows are
+        # kept here: Tk drops a picture once Python lets go of it).
+        self._sent: dict[int, dict] = {}
+        self._placed: dict[int, tuple] = {}
+        self._pictures: dict[int, object] = {}
 
+        c = self.canvas
+        self._line = c.create_rectangle(0, 0, 0, 0, outline="", tags="line")
+        self._plate = self._three_slice("plate", 1)
+        self._sel_ends = (c.create_image(0, 0, anchor="nw", state="hidden", tags="selected"),
+                          c.create_image(0, 0, anchor="nw", state="hidden", tags="selected"))
+        self._sel_mid = c.create_rectangle(0, 0, 0, 0, outline="", state="hidden", tags="selected")
+        self._sel_rim = c.create_rectangle(0, 0, 0, 0, outline="", state="hidden", tags="selected")
+        self._ring = self._three_slice("ring", 2)
+        self._x_disc = c.create_image(0, 0, anchor="center", state="hidden", tags="xdisc")
+        self._x_glyph = c.create_text(0, 0, anchor="center", state="hidden", font=self.x_font,
+                                      text=glyph(root, "x"), tags="xglyph")
+        self._slots: list[dict[str, int]] = []
+
+        # The buttons: widgets over the canvas, each centred on the strip's line.
+        self.close_btn = self.min_btn = None
         if chrome.CUSTOM:
-            self.close_btn = IconButton(self, root, "close", on_quit, size=theme.ICON_SMALL, width=40,
-                                        hover="CLOSE_HOVER", hover_fg="ON_ACCENT", label="Close")
-            self.close_btn.pack(in_=self.top_row, side="right", fill="y")
+            self.close_btn = CaptionButton(self, root, "close", on_quit, hover="CLOSE_HOVER", hover_fg="ON_ACCENT",
+                                           label="Close")
+            self.close_btn.place(in_=self.top_row, relx=1.0, x=0, y=0, anchor="ne")
             # No maximise button: a corner player rarely wants it, and the strip needs the room.
             # Windows+Up still maximises; so does double-clicking the strip until a home is set.
-            self.min_btn = IconButton(self, root, "min", root.iconify, size=theme.ICON_SMALL, width=40,
-                                      label="Minimise")
-            self.min_btn.pack(in_=self.top_row, side="right", fill="y")
-        self.settings_btn = IconButton(self, root, "settings", on_settings, width=30, label="Settings")
-        self.settings_btn.pack(in_=self.top_row, side="right", fill="y", padx=theme.pad(0, theme.GAP_SMALL))
+            self.min_btn = CaptionButton(self, root, "min", root.iconify, label="Minimise")
+            self.min_btn.place(in_=self.top_row, relx=1.0, x=-theme.px(theme.CAPTION_W), y=0, anchor="ne")
+        disc = theme.DISC
+        self.settings_btn = RoundIconButton(self, root, "settings", on_settings, diameter=disc, width=disc,
+                                            bg="STRIP", hover="STRIP_HI", pressed="STRIP_HI", label="Settings")
+        right = self._caption_room() + theme.px(theme.DISC_MARGIN)
+        self.settings_btn.place(in_=self.top_row, relx=1.0, x=-right, y=self._disc_top(), anchor="ne")
+        self.add_btn = RoundIconButton(self, root, "add", on_new, diameter=disc, width=disc, bg="STRIP",
+                                       hover="STRIP_HI", pressed="STRIP_HI", label="New tab")
+        self.add_btn.place(in_=self.top_row, x=self._add_x(0), y=self._disc_top())
+        for button in (self.add_btn, self.settings_btn, self.min_btn, self.close_btn):
+            if button is not None:
+                button.lift()
 
-        self.tabs_frame = tk.Frame(self, bg=theme.STRIP)
-        self.add_btn = IconButton(self, root, "add", on_new, size=theme.ICON_SMALL, width=28, label="New tab")
-        self.spacer = tk.Frame(self, bg=theme.STRIP)
-        # A gap before the first tab, like Firefox: somewhere to grab the window by.
-        self.tabs_frame.pack(in_=self.top_row, side="left", fill="y", padx=(theme.px(self.DRAG_GAP), 0))
-        self.add_btn.pack(in_=self.top_row, side="left", fill="y")
-        self.spacer.pack(in_=self.top_row, side="left", fill="both", expand=True)
-
-        for widget in (self, self.top_row, self.spacer, self.tabs_frame):
-            widget.bind("<ButtonPress-1>", lambda e: chrome.start_move(self.root))
-            widget.bind("<Double-Button-1>", lambda e: self.on_double())
-            widget.bind("<MouseWheel>", self._wheel)
-            widget.bind("<B1-Motion>", self._drag_motion)  # a tab dragged past the others' ends
-            widget.bind("<ButtonRelease-1>", self._drag_end)
+        c.bind("<ButtonPress-1>", self._pressed)
+        c.bind("<Double-Button-1>", self._double)
+        c.bind("<B1-Motion>", self._drag_motion)
+        c.bind("<ButtonRelease-1>", self._released)
+        c.bind("<Button-2>", self._middle)            # middle-click closes, as in browsers
+        c.bind("<Button-3>", self._right)
+        c.bind("<MouseWheel>", self._wheel)
+        c.bind("<Motion>", lambda e: self._pointer(e.x, e.y))
+        c.bind("<Leave>", lambda e: self._pointer(None, None))
+        # One tooltip for the whole strip: the hovered tab's full name, under that tab. (Made after
+        # the bindings above: its own add to them.)
+        self.tooltip = Tooltip(c, self._tip_text, at=self._tip_x)
         self.bind("<Configure>", lambda e: self._layout())
+        theme.on_change(self._palette_changed)
+
+    @staticmethod
+    def line_width() -> int:
+        """The strip's 1 px lines in real pixels (never thinner than one)."""
+        return max(1, theme.px(1))
+
+    def _caption_room(self) -> int:
+        return 2 * theme.px(theme.CAPTION_W) if chrome.CUSTOM else 0
+
+    def _disc_top(self) -> int:
+        return theme.px(theme.ROW_Y) - theme.px(theme.DISC) // 2
+
+    def _add_x(self, count: int) -> int:
+        """Where + goes: just after the last tab (at the drag gap's end when there are none)."""
+        return theme.px(self.DRAG_GAP) + count * self._slot - theme.px(theme.TAB_GAP) + theme.px(theme.ADD_GAP)
+
+    def _three_slice(self, layer: str, pieces: int) -> tuple[int, ...]:
+        """A plate (`pieces` 1: one middle rectangle) or ring (2: its top and bottom edges) at any
+        width: two end pictures and plain rectangles between them."""
+        c = self.canvas
+        ends = tuple(c.create_image(0, 0, anchor="nw", state="hidden", tags=layer) for _ in range(2))
+        middle = tuple(c.create_rectangle(0, 0, 0, 0, outline="", state="hidden", tags=layer) for _ in range(pieces))
+        return ends + middle
+
+    # -- sending only what changed ---------------------------------------------------------------
+    def _set(self, item: int, **options):
+        sent = self._sent.setdefault(item, {})
+        changed = {k: v for k, v in options.items() if sent.get(k) != v}
+        if changed:
+            if "image" in changed:
+                self._pictures[item] = changed["image"]
+            sent.update(changed)
+            self.canvas.itemconfigure(item, **changed)
+
+    def _at(self, item: int, *xy):
+        xy = tuple(int(v) for v in xy)
+        if self._placed.get(item) != xy:
+            self._placed[item] = xy
+            self.canvas.coords(item, *xy)
+
+    def _hide(self, *items: int):
+        for item in items:
+            self._set(item, state="hidden")
 
     # -- tabs ----------------------------------------------------------------
     def set_tabs(self, titles: list[str], current: int, playing: int | None):
@@ -263,137 +470,331 @@ class TabBar(tk.Frame):
         self._titles, self._current, self._playing = list(titles), current, playing
         self._layout()
 
+    def _make_slots(self, count: int):
+        """Slots follow the number of tabs: items are only made or deleted when that changes."""
+        c = self.canvas
+        made = False
+        while len(self._slots) < count:
+            self._slots.append({
+                "divider": c.create_rectangle(0, 0, 0, 0, outline="", state="hidden", tags="divider"),
+                "mark": c.create_image(0, 0, anchor="w", state="hidden", tags="mark"),
+                "name": c.create_text(0, 0, anchor="w", font=self.text_font, text="", tags="name"),
+            })
+            self._shown.append("")
+            made = True
+        while len(self._slots) > count:
+            for item in self._slots.pop().values():
+                c.delete(item)
+                self._sent.pop(item, None)
+                self._placed.pop(item, None)
+                self._pictures.pop(item, None)
+            self._shown.pop()
+        if made:
+            for layer in self.LAYERS:
+                c.tag_raise(layer)
+
     def _layout(self):
         n = len(self._titles)
-        while len(self._tab_widgets) > n:          # fewer tabs: drop the spare slots
-            self._tab_widgets.pop().destroy()
-        if not n:
-            # Tk leaves a frame at its old size when its last child goes, so + would float where
-            # the tabs ended (or past the strip's end): shrink it to nothing.
-            self.tabs_frame.configure(width=1)
-            return
-        width = self.winfo_width()
-        buttons = [self.settings_btn]
-        if chrome.CUSTOM:
-            buttons += [self.min_btn, self.close_btn]
-        room = (width - sum(w.winfo_reqwidth() for w in buttons) - self.add_btn.winfo_reqwidth()
-                - theme.px(self.DRAG_GAP + 10))
-        # Equal widths, so the albums sit side by side and you can flick between them; with
-        # many open they slim down (names shortened with …) rather than leave the row.
-        per_tab = max(theme.px(self.MIN_TAB), min(theme.px(200), room // n - theme.px(2)))
-        self._slot = per_tab + theme.px(2)
-        while len(self._tab_widgets) < n:          # more tabs: one new slot each
-            self._tab_widgets.append(self._make_tab(len(self._tab_widgets)))
-        for i, title in enumerate(self._titles):
-            self._paint_tab(i, title, per_tab)
+        for name in ("_hover", "_x_shown", "_highlight"):
+            if getattr(self, name) is not None and getattr(self, name) >= n:
+                setattr(self, name, None)
+        self._make_slots(n)
+        px = theme.px
+        width = max(1, self.winfo_width())
+        height = self.row_height
+        line = self.line_width()
+        self._set(self._line, fill=theme.TAB_EDGE)
+        self._at(self._line, 0, height - line, width, height)
+        if n:
+            right = self._caption_room() + px(theme.DISC) + 2 * px(theme.DISC_MARGIN)
+            room = width - right - (px(theme.DISC) + px(theme.ADD_GAP)) - px(self.DRAG_GAP + 10)
+            # Equal widths, so the albums sit side by side and you can flick between them; with
+            # many open they slim down (names shortened with …) rather than leave the row.
+            self._per = max(px(self.MIN_TAB), min(px(theme.TAB_MAX), room // n - px(theme.TAB_GAP)))
+            self._slot = self._per + px(theme.TAB_GAP)
+        add_x = self._add_x(n)
+        if add_x != self._add_at:
+            self._add_at = add_x
+            self.add_btn.place_configure(x=add_x)
+        self._paint_selected()
+        self._paint_plate()
+        self._paint_ring()
+        for i in range(n):
+            self._paint_slot(i)
+        self._paint_close()
 
-    def _make_tab(self, i: int) -> tk.Frame:
-        """Slot i: a frame with the playing line along its bottom, the name, and the close button
-        that fades in on hover. Its bindings use the slot's number, which is always the tab's."""
-        tab = tk.Frame(self.tabs_frame, height=theme.px(30))
-        tab.pack_propagate(False)
-        tab.pack(side="left", anchor="s", padx=(0, theme.px(2)))
-        # The tab playing music gets a green line along its bottom edge.
-        # (A drop target gets a green outline instead, so it's clear where a drag will land.)
-        tab.line = tk.Frame(tab, height=max(2, theme.px(2)))
-        tab.line.pack(side="bottom", fill="x")
-        tab.label = tk.Label(tab, font=self.text_font, anchor="w")
-        tab.shown = ""
-        # The whole name on hover, when it's shortened (or the tab is too slim to show it): on the
-        # name when it shows, else on the tab itself — never both, or two tips would open.
-        Tooltip(tab.label, lambda: self._full_name(i))
-        Tooltip(tab, lambda: "" if tab.label.winfo_manager() else self._full_name(i))
-        for w in (tab, tab.label):
-            w.bind("<ButtonPress-1>", lambda e: self._press(i, e))
-            w.bind("<B1-Motion>", self._drag_motion)
-            w.bind("<ButtonRelease-1>", self._drag_end)
-            w.bind("<Button-2>", lambda e: self.on_close(i))  # middle-click closes, as in browsers
-            w.bind("<MouseWheel>", self._wheel)
-            w.bind("<Button-3>", lambda e: self.on_tab_menu(i, e))
-        self._add_close_button(tab, i)
-        return tab
+    def slot_x(self, i: int) -> int:
+        """Tab i's left edge on the strip (real px)."""
+        return theme.px(self.DRAG_GAP) + i * self._slot
+
+    def _slim(self) -> bool:
+        return self._per < theme.px(theme.TAB_SLIM)
+
+    def _busy(self) -> set:
+        """Tabs that hide the lines beside them: the selected one, the hovered one, a drop target."""
+        return {self._current, self._hover, self._highlight} - {None}
+
+    def _paint_slot(self, i: int):
+        """Slot i as tab i: its name (shortened to fit), level mark, and the line after it."""
+        px = theme.px
+        slot = self._slots[i]
+        x, per, cy = self.slot_x(i), self._per, px(theme.ROW_Y)
+        busy = self._busy()
+        lit = i in busy
+        # The line between two quiet tabs.
+        gap = x + per + px(theme.TAB_GAP) // 2
+        half = px(theme.DIVIDER_H) // 2
+        if i < len(self._titles) - 1 and not lit and i + 1 not in busy:
+            self._at(slot["divider"], gap, cy - half, gap + self.line_width(), cy + half)
+            self._set(slot["divider"], fill=theme.TAB_EDGE, state="normal")
+        else:
+            self._hide(slot["divider"])
+        playing = i == self._playing
+        colour = theme.TEXT if lit else theme.MUTED
+        title = self._titles[i]
+        if self._slim():
+            # A slim tab: its mark alone when it's playing, else a short name, centred.
+            centre = x + per // 2
+            if playing:
+                self._at(slot["mark"], centre - px(theme.MARK_W) // 2, cy)
+                self._set(slot["mark"], image=shapes.level_mark_photo(self, "ACCENT_TEXT"), state="normal")
+                shown = ""
+            else:
+                self._hide(slot["mark"])
+                room = per - 2 * px(theme.TAB_PAD_SLIM)
+                shown = self._fit(title, room) if room >= px(10) else ""
+            self._at(slot["name"], centre, cy)
+            self._set(slot["name"], anchor="center", text=shown, fill=colour)
+        else:
+            text_x, end = x + px(theme.TAB_PAD_L), x + per - px(theme.TAB_PAD_R)
+            if playing:
+                self._at(slot["mark"], text_x, cy)
+                self._set(slot["mark"], image=shapes.level_mark_photo(self, "ACCENT_TEXT"), state="normal")
+                text_x += px(theme.MARK_W + theme.MARK_GAP)
+            else:
+                self._hide(slot["mark"])
+            if i == self._x_shown:   # the name ends before the ×, never cut by it
+                end = x + per - px(theme.CLOSE_SLOT) - px(theme.GAP_HAIR)
+            shown = self._fit(title, end - text_x) if end - text_x >= px(10) else ""
+            self._at(slot["name"], text_x, cy)
+            self._set(slot["name"], anchor="w", text=shown, fill=colour)
+        self._shown[i] = shown
+
+    def _paint_selected(self):
+        """The selected tab: two end pictures (corner, flare and rim), a middle and a top rim."""
+        items = (*self._sel_ends, self._sel_mid, self._sel_rim)
+        i = self._current
+        if not 0 <= i < len(self._titles):
+            self._hide(*items)
+            return
+        px = theme.px
+        x0, x1 = self.slot_x(i), self.slot_x(i) + self._per
+        top, height, line, flare = px(theme.TAB_TOP), self.row_height, self.line_width(), px(theme.TAB_FLARE)
+        radius = max(0, min(px(theme.RADIUS_M), self._per // 2 - px(2)))   # slim tabs: smaller corners
+        left, right = shapes.tab_end_photos(self, radius, flare, height - top, line, "BG", "TAB_EDGE")
+        cap = flare + radius + line
+        self._at(self._sel_ends[0], x0 - flare, top)
+        self._at(self._sel_ends[1], x1 + flare - cap, top)
+        self._at(self._sel_mid, x0 - flare + cap, top, x1 + flare - cap, height)
+        self._at(self._sel_rim, x0 - flare + cap, top, x1 + flare - cap, top + line)
+        self._set(self._sel_ends[0], image=left, state="normal")
+        self._set(self._sel_ends[1], image=right, state="normal")
+        self._set(self._sel_mid, fill=theme.BG, state="normal")
+        self._set(self._sel_rim, fill=theme.TAB_EDGE, state="normal")
+
+    def _plate_box(self, i: int) -> tuple[int, int, int, int, int]:
+        """(left, top, right, bottom, radius) of tab i's hover plate / drop ring (real px)."""
+        px = theme.px
+        x0 = self.slot_x(i) + px(theme.PLATE_INSET)
+        x1 = self.slot_x(i) + self._per - px(theme.PLATE_INSET)
+        top = px(theme.ROW_Y) - px(theme.PLATE_H) // 2
+        bottom = top + px(theme.PLATE_H)
+        radius = max(1, min(px(theme.RADIUS_M), (x1 - x0) // 2, (bottom - top) // 2))
+        return x0, top, x1, bottom, radius
+
+    def _paint_plate(self):
+        """A rounded STRIP_HI plate under a hovered tab (never the selected one)."""
+        i = self._hover
+        if i is None or i == self._current or i >= len(self._titles):
+            self._hide(*self._plate)
+            return
+        x0, top, x1, bottom, radius = self._plate_box(i)
+        if x1 - x0 < 2:
+            self._hide(*self._plate)
+            return
+        left, right = shapes.ends_photos(self, bottom - top, radius, fill="STRIP_HI")
+        self._at(self._plate[0], x0, top)
+        self._at(self._plate[1], x1 - radius, top)
+        self._at(self._plate[2], x0 + radius, top, x1 - radius, bottom)
+        self._set(self._plate[0], image=left, state="normal")
+        self._set(self._plate[1], image=right, state="normal")
+        self._set(self._plate[2], fill=theme.STRIP_HI, state="normal")
+
+    def _paint_ring(self):
+        """A 2 px DG-green ring round the tab something dragged would land on (no fill: green
+        on the hover grey would be too faint in Light)."""
+        i = self._highlight
+        if i is None or i >= len(self._titles):
+            self._hide(*self._ring)
+            return
+        x0, top, x1, bottom, radius = self._plate_box(i)
+        ring = max(2, theme.px(2))
+        left, right = shapes.ends_photos(self, bottom - top, radius, outline="ACCENT", line=ring)
+        self._at(self._ring[0], x0, top)
+        self._at(self._ring[1], x1 - radius, top)
+        self._at(self._ring[2], x0 + radius, top, x1 - radius, top + ring)
+        self._at(self._ring[3], x0 + radius, bottom - ring, x1 - radius, bottom)
+        self._set(self._ring[0], image=left, state="normal")
+        self._set(self._ring[1], image=right, state="normal")
+        for edge in self._ring[2:]:
+            self._set(edge, fill=theme.ACCENT, state="normal")
+
+    def _x_centre(self, i: int) -> tuple[int, int]:
+        px = theme.px
+        return (self.slot_x(i) + self._per - px(theme.PLATE_INSET) - px(theme.GAP_HAIR) - px(theme.CLOSE_DISC) // 2,
+                px(theme.ROW_Y))
+
+    def _on_x(self, i: int, x: int, y: int) -> bool:
+        """Is (x, y) on tab i's × (its CLOSE_SLOT-wide square)?"""
+        cx, cy = self._x_centre(i)
+        half = theme.px(theme.CLOSE_SLOT) // 2
+        return abs(x - cx) <= half and abs(y - cy) <= half
+
+    def _paint_close(self):
+        """The × on the tab it's showing for: MUTED, or TEXT on a disc under the pointer."""
+        i = self._x_shown
+        if i is None or i >= len(self._titles) or self._slim():
+            self._hide(self._x_disc, self._x_glyph)
+            return
+        cx, cy = self._x_centre(i)
+        self._at(self._x_glyph, cx, cy)
+        self._set(self._x_glyph, fill=theme.TEXT if self._x_hot else theme.MUTED, state="normal")
+        if self._x_hot:
+            plate = theme.BG if i == self._current else theme.STRIP_HI
+            disc = shapes.disc_photo(self, theme.px(theme.CLOSE_DISC), theme.mix(plate, "TEXT", self.X_DISC_MIX))
+            self._at(self._x_disc, cx, cy)
+            self._set(self._x_disc, image=disc, state="normal")
+        else:
+            self._hide(self._x_disc)
 
     def _full_name(self, i: int) -> str:
         """Tab i's whole name for its tooltip — only when the tab shows less than that."""
-        if i >= len(self._titles) or i >= len(self._tab_widgets):
+        if i is None or i >= len(self._titles) or i >= len(self._shown):
             return ""
         title = self._titles[i]
-        return title if self._tab_widgets[i].shown != title else ""
+        return title if self._shown[i] != title else ""
 
-    def _paint_tab(self, i: int, title: str, per_tab: int):
-        """Show slot i as tab `title`: selected / playing / drop target, width, shortened name."""
-        tab = self._tab_widgets[i]
-        active, playing, target = i == self._current, i == self._playing, i == self._highlight
-        bg = theme.SURFACE_HI if target else (theme.BG if active else theme.STRIP)
-        tab.configure(bg=bg, width=per_tab)
-        tab.line.configure(bg=theme.ACCENT if playing else bg)
-        thick = max(2, theme.px(2)) if target else 0
-        tab.configure(highlightthickness=thick, highlightbackground=theme.ACCENT, highlightcolor=theme.ACCENT)
-        text_room = per_tab - theme.px(8) - theme.px(4)
-        if text_room >= theme.px(10):
-            tab.shown = self._fit(title, text_room)
-            tab.label.configure(text=tab.shown, bg=bg, fg=theme.TEXT if active or target else theme.MUTED)
-            if not tab.label.winfo_manager():
-                tab.label.pack(side="left", fill="x", expand=True, padx=(theme.px(6), theme.px(2)))
+    def _tip_text(self) -> str:
+        return self._full_name(self._hover) if self._hover is not None else ""
+
+    def _tip_x(self) -> int:
+        i = self._hover
+        return self.canvas.winfo_rootx() + (self.slot_x(i) if i is not None else 0)
+
+    # -- the pointer -----------------------------------------------------------------------------
+    def _slot_at(self, x: int, y: int) -> int | None:
+        """The tab at (x, y) on the strip (None: an empty part)."""
+        if not self._titles or not theme.px(theme.TAB_TOP) <= y < self.row_height:
+            return None
+        offset = x - theme.px(self.DRAG_GAP)
+        if offset < 0:
+            return None
+        i = offset // max(1, self._slot)
+        if i >= len(self._titles) or offset - i * self._slot >= self._per:
+            return None
+        return int(i)
+
+    def _pointer(self, x: int | None, y: int | None):
+        """The pointer moved over the strip (None: it left): the hover plate, the × and the tooltip
+        follow the tab under it."""
+        slot = None if x is None else self._slot_at(x, y)
+        hot = slot is not None and slot == self._x_shown and self._on_x(slot, x, y)
+        if slot != self._hover:
+            self._hover = slot
+            self._x_shown, hot = None, False
+            if self._x_job is not None:
+                self.after_cancel(self._x_job)
+                self._x_job = None
+            if slot is not None and not self._slim():
+                self._x_job = self.after(self.CLOSE_REVEAL_MS, self._reveal_x)
+            self._x_hot = hot
+            self._layout()
+            if slot is not None:
+                self.tooltip.reschedule()
+            else:
+                self.tooltip._hide()
+        elif hot != self._x_hot:
+            self._x_hot = hot
+            self._paint_close()
+
+    def _reveal_x(self):
+        """The pointer has rested on a tab: its × shows (and its name makes room for it)."""
+        self._x_job = None
+        if self._hover is not None and self.winfo_exists() and not self._slim():
+            self._x_shown = self._hover
+            self._layout()
+
+    def _forget_hover(self):
+        self._hover = self._x_shown = None
+        self._x_hot = False
+        if self._x_job is not None:
+            self.after_cancel(self._x_job)
+            self._x_job = None
+        self.tooltip._hide()
+        self._layout()
+
+    def _pressed(self, event):
+        """A press on a tab selects it (and may turn into a drag); on its × it waits for the
+        release; on an empty part it drags the window."""
+        self.tooltip._hide()
+        i = self._slot_at(event.x, event.y)
+        if i is None:
+            chrome.start_move(self.root)
+            return
+        if i == self._x_shown and self._on_x(i, event.x, event.y):
+            self._x_pressed = i
+            return
+        self._press(i, event)
+
+    def _released(self, event):
+        i, self._x_pressed = self._x_pressed, None
+        if i is not None and i < len(self._titles) and self._on_x(i, event.x, event.y):
+            self.on_close(i)   # let go on the × it was pressed on (slid off: nothing, like any button)
+        self._drag_end(event)
+
+    def _double(self, event):
+        i = self._slot_at(event.x, event.y)
+        if i is None:
+            self.on_double()
         else:
-            tab.shown = ""
-            tab.label.pack_forget()
-        tab.close.configure(bg=bg)
+            self._pressed(event)   # a quick second press on a tab is just a press
 
-    def _add_close_button(self, tab: tk.Frame, index: int):
-        """A small close button that takes no room: it only fades in after hovering a tab
-        for a moment, so it's easy to reach on purpose but hard to hit by accident."""
-        icon = icon_font(self.root, theme.ICON_SMALL)
-        small = (icon[0], theme.TAB_CLOSE) if icon else theme.font(theme.TAB_CLOSE)
-        close = tab.close = tk.Label(tab, text=glyph(self.root, "x"), font=small, fg=theme.MUTED, cursor="hand2",
-                                     padx=theme.px(3))
-        close.bind("<ButtonRelease-1>", lambda e: released_over(e, close) and self.on_close(index))
-        close.bind("<Enter>", lambda e: close.configure(fg=theme.TEXT))
-        close.bind("<Leave>", lambda e: close.configure(fg=theme.MUTED))
-        state = {"job": None}
+    def _middle(self, event):
+        i = self._slot_at(event.x, event.y)
+        if i is not None:
+            self.on_close(i)
 
-        def reveal():
-            state["job"] = None
-            if tab.winfo_exists():
-                close.place(relx=1.0, x=-theme.px(4), rely=0.45, anchor="e")
-                close.lift()
+    def _right(self, event):
+        i = self._slot_at(event.x, event.y)
+        if i is not None:
+            self.on_tab_menu(i, event)
 
-        def enter(_event):
-            if state["job"] is None and not close.winfo_ismapped():
-                state["job"] = self.after(self.CLOSE_REVEAL_MS, reveal)
-
-        def leave(_event):
-            self.after(60, hide_if_gone)
-
-        def hide_if_gone():
-            if not tab.winfo_exists():
-                return
-            x, y = self.winfo_pointerxy()
-            # Tk's path, not winfo_containing's widget: that fails on a part of Tk's own that
-            # Python has no object for (an open drop-down list).
-            under = str(self.tk.call("winfo", "containing", "-displayof", self, x, y))
-            if under == str(tab) or under.startswith(str(tab) + "."):
-                return  # still over the tab (or its close button)
-            if state["job"] is not None:
-                self.after_cancel(state["job"])
-                state["job"] = None
-            close.place_forget()
-
-        for w in (tab, tab.label, close):
-            w.bind("<Enter>", enter, add="+")
-            w.bind("<Leave>", leave, add="+")
+    def _palette_changed(self, _palette):
+        """A new palette: everything is sent again in its colours, pointing at its pictures."""
+        if not self.winfo_exists():
+            return
+        self._sent.clear()
+        self._pictures.clear()
+        self.canvas.configure(bg=theme.STRIP)
+        self._layout()
 
     # -- drag and drop onto a tab ---------------------------------------------
     def tab_at(self, x_root: int, y_root: int) -> int | None:
         """The tab under this screen point (None: not over a tab)."""
-        for i, widget in enumerate(self._tab_widgets):
-            try:
-                x, y = widget.winfo_rootx(), widget.winfo_rooty()
-                if x <= x_root < x + widget.winfo_width() and y <= y_root < y + widget.winfo_height():
-                    return i
-            except tk.TclError:
-                return None
-        return None
+        try:
+            return self._slot_at(x_root - self.canvas.winfo_rootx(), y_root - self.canvas.winfo_rooty())
+        except tk.TclError:
+            return None
 
     def highlight(self, index: int | None):
         """Light up the tab a drag would land on (None: none)."""
@@ -415,9 +816,10 @@ class TabBar(tk.Frame):
             if abs(event.x_root - drag["x0"]) < theme.px(self.DRAG_START):
                 return
             drag["moving"] = True
-            self.configure(cursor="sb_h_double_arrow")
+            self.canvas.configure(cursor="sb_h_double_arrow")
+            self._forget_hover()   # the tabs move under the pointer: no plate or × left behind
         # Like a browser: the tab follows the pointer, swapping places as it passes the others.
-        x = event.x_root - self.tabs_frame.winfo_rootx()
+        x = event.x_root - self.canvas.winfo_rootx() - theme.px(self.DRAG_GAP)
         target = min(max(0, x // max(1, self._slot)), len(self._titles) - 1)
         if target != drag["index"]:
             source, drag["index"] = drag["index"], target
@@ -425,7 +827,7 @@ class TabBar(tk.Frame):
 
     def _drag_end(self, _event=None):
         if self._drag is not None and self._drag["moving"]:
-            self.configure(cursor="")
+            self.canvas.configure(cursor="")
         self._drag = None
 
     def _wheel(self, event):
@@ -435,12 +837,24 @@ class TabBar(tk.Frame):
             self.on_select((self._current + step) % len(self._titles))
 
     def _fit(self, text: str, width: int) -> str:
-        """Trim `text` with an ellipsis so it fits `width` pixels."""
+        """Trim `text` with an ellipsis so it fits `width` pixels (a space before the … goes too:
+        "Amyl And…", not "Amyl And …"). Remembered by name and width: a tab switch re-fits every
+        name, and measuring a long name down to a short tab takes dozens of measurements."""
+        key = (text, width)
+        shown = self._fits.get(key)
+        if shown is None:
+            if len(self._fits) > self.FIT_CACHE:
+                self._fits.clear()
+            shown = self._fits[key] = self._shorten(text, width)
+        return shown
+
+    def _shorten(self, text: str, width: int) -> str:
         if self.text_font.measure(text) <= width:
             return text
         original = text
         while text and self.text_font.measure(text + "…") > width:
             text = text[:-1]
+        text = text.rstrip()
         return text + "…" if text else original[:1]  # a very slim tab still shows its first letter
 
 
@@ -450,10 +864,11 @@ class Toggle(tk.Label):
     draws jagged circles on Windows). Follows its BooleanVar, however that gets changed."""
 
     # Pictures are cached per Tk root (root._dg_toggle_images: (on, width, height, colours) -> PhotoImage).
+    WIDTH, HEIGHT = 34, 18    # px at 100%
 
     def __init__(self, parent, root, variable: tk.BooleanVar, command: Callable[[], None] | None = None,
                  bg: str = "SURFACE"):
-        self._size = (theme.px(34), theme.px(18))
+        self._size = (theme.px(self.WIDTH), theme.px(self.HEIGHT))
         self._app_root, self._bg = root, bg  # (not _root: that name is a Tk method); bg: a theme role
         super().__init__(parent, bg=theme.colour(bg), bd=0, cursor="hand2")
         self.variable, self.command = variable, command
@@ -512,10 +927,16 @@ class Toggle(tk.Label):
 
 class SettingRow(tk.Frame):
     """One on/off setting: its name, a line saying what it does, and a Toggle on the right.
-    Clicking anywhere on the row flips it."""
+    Clicking anywhere on the row flips it.
+
+    `wrap`: where the description starts a new line (real px). None: the text column's real width,
+    followed as the row is laid out (Settings is narrower while its scrollbar shows), so no line
+    stops short and leaves one word on a line of its own; `wrap` is then only the first guess."""
+
+    SWITCH_ROOM = Toggle.WIDTH + theme.GAP_LARGE   # px at 100%: the switch and its gap, right of the text
 
     def __init__(self, parent, root, title: str, description: str, variable: tk.BooleanVar,
-                 command: Callable[[], None] | None = None, wrap: int = 220):
+                 command: Callable[[], None] | None = None, wrap: int | None = None, guess: int = 220):
         super().__init__(parent, bg=theme.SURFACE, cursor="hand2")
         self.toggle = Toggle(self, root, variable, command)
         self.toggle.pack(side="right", anchor="n", pady=theme.pad(theme.GAP_HAIR, 0), padx=theme.pad(theme.GAP_LARGE, 0))
@@ -524,13 +945,23 @@ class SettingRow(tk.Frame):
         name = tk.Label(text, text=title, bg=theme.SURFACE, fg=theme.TEXT, font=theme.font(theme.SIZE_BODY), anchor="w")
         name.pack(fill="x")
         parts = [self, text, name]
+        self.about = None
         if description:
-            about = tk.Label(text, text=description, bg=theme.SURFACE, fg=theme.MUTED,
-                             font=theme.font(theme.SIZE_SMALL), anchor="w", justify="left", wraplength=wrap)
+            about = self.about = tk.Label(text, text=description, bg=theme.SURFACE, fg=theme.MUTED,
+                                          font=theme.font(theme.SIZE_SMALL), anchor="w", justify="left",
+                                          wraplength=wrap or guess)
             about.pack(fill="x")
             parts.append(about)
+            if wrap is None:
+                text.bind("<Configure>", self._column_changed, add="+")
         for w in parts:
             w.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self.toggle.toggle())
+
+    def _column_changed(self, event):
+        """The text column changed width: the description wraps at its new edge. (The width comes from
+        the panel, never from the text, so a new wrap can't change it again.)"""
+        if event.width > 1 and int(self.about.cget("wraplength")) != event.width:
+            self.about.configure(wraplength=event.width)
 
 
 DISABLED_FADE = 0.45   # (0.21.0) a greyed-out menu item: its text this far from MUTED toward the background
@@ -588,7 +1019,7 @@ class MenuRow(tk.Frame):
         """Highlight the row (under the pointer, or chosen with the arrow keys). A greyed-out row
         never lights up."""
         self.active = active and self.enabled
-        self._paint(theme.SURFACE_HI if self.active else theme.SURFACE)
+        self._paint(theme.HOVER if self.active else theme.SURFACE)
 
     def _paint(self, bg):
         for w in self._parts:

@@ -289,14 +289,19 @@ def test_controls_ignore_a_release_away_from_them(root):
     switch.pack()
     bar.set_tabs(["One", "Two"], 0, None)
     _pump(root, 0.2)
-    close = bar._tab_widgets[1].close
-    close.place(relx=1.0, x=-4, rely=0.45, anchor="e")
+    bar._pointer(bar.slot_x(1) + 5, theme.px(theme.ROW_Y))   # rest on tab 2: its close glyph shows
+    bar._reveal_x()
     _pump(root, 0.05)
+    x, y = bar._x_centre(1)
     far = 300
-    for widget in (close, setting, row, choices.labels["b"], switch.label):
+    bar.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+    _release(bar.canvas, x + far, y)
+    for widget in (setting, row, choices.labels["b"], switch.label):
         _release(widget, widget.winfo_width() + far, 2)
     assert (closed, flag.get(), ran, choice.get(), switch_var.get()) == ([], False, [], "a", False)
-    for widget in (close, setting, row, choices.labels["b"], switch.label):
+    bar.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+    _release(bar.canvas, x, y)
+    for widget in (setting, row, choices.labels["b"], switch.label):
         _release(widget, 2, 2)
     assert (closed, flag.get(), ran, choice.get(), switch_var.get()) == ([1], True, [1], "b", True)
 

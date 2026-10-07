@@ -55,6 +55,13 @@ class Palette:
     STRIP: str                # the tab strip along the top
     CLOSE_HOVER: str          # the window's close button under the pointer
     SWITCH_OFF: str           # the track of a slider switch that's off: clearly "empty", not disabled
+    # The rounded look. DG green (ACCENT) is never drawn on STRIP_HI or HOVER: in Light it falls
+    # under 3:1 there, so marks, ticks and "on" glyphs on them are ACCENT_TEXT.
+    STRIP_HI: str             # on the strip under the pointer: a tab's plate, the + and gear discs
+    TAB_EDGE: str             # the selected tab's rim, the strip's bottom line, the lines between tabs
+    EDGE: str                 # the 1 px rim of fields, plain buttons, menus, pop-overs and prompts
+    HOVER: str                # a list or menu row under the pointer; round icon buttons' disc on BG
+    THUMB: str                # a scrollbar's thumb at rest
 
     # The meters' own colours. The VU face is drawn like a real meter's (cream card, black ink,
     # red over 0 VU) whatever the theme; they're roles so they're named in one place.
@@ -92,6 +99,11 @@ DARK = Palette(
     STRIP="#0e0f12",
     CLOSE_HOVER="#c42b1c",  # Windows' own close-button red
     SWITCH_OFF="#4a4d55",
+    STRIP_HI="#24262b",
+    TAB_EDGE="#2c2e33",
+    EDGE="#45484f",
+    HOVER="#36383e",
+    THUMB="#787d85",
     METER_FACE="#efe4c8",   # the classic VU face
     METER_INK="#1d1d1b",
     METER_RED="#ba372a",    # (0.19.0: was #c0392b — a shade darker, for AA on the cream face)
@@ -125,6 +137,11 @@ LIGHT = Palette(
     STRIP="#edeff2",
     CLOSE_HOVER="#c42b1c",  # Windows' own close-button red
     SWITCH_OFF="#c9ccd1",
+    STRIP_HI="#dcdfe4",
+    TAB_EDGE="#d0d4d9",
+    EDGE="#c3c7cd",
+    HOVER="#e8ebee",
+    THUMB="#878c94",
     METER_FACE="#efe4c8",
     METER_INK="#1d1d1b",
     METER_RED="#ba372a",
@@ -146,6 +163,7 @@ current: Palette = DARK
 BG = SURFACE = SURFACE_HI = SURFACE_DOWN = BORDER = TEXT = MUTED = ACCENT = ACCENT_TEXT = ACCENT_INK = ""
 SELECT = ON_ACCENT = ""
 GOOD = WARN = DANGER = STRIP = CLOSE_HOVER = SWITCH_OFF = ""
+STRIP_HI = TAB_EDGE = EDGE = HOVER = THUMB = ""
 METER_FACE = METER_INK = METER_RED = METER_RIM = METER_LEVEL = METER_LOUDNESS = ""
 globals().update(DARK.roles())
 
@@ -199,6 +217,8 @@ TEXT_PAIRS = (
     ("WARN", "SURFACE_HI"),                                    # (0.20.0) the volume badge under the pointer
     ("DANGER", "BG"), ("DANGER", "SURFACE"),
     ("METER_INK", "METER_FACE"), ("METER_RED", "METER_FACE"),  # the VU face's numbers
+    ("TEXT", "STRIP_HI"), ("MUTED", "STRIP_HI"),               # a tab's name on its hover plate
+    ("TEXT", "HOVER"), ("MUTED", "HOVER"),                     # a hovered list or menu row
 )
 # …and for icons, lines and marks that carry meaning.
 GRAPHIC_PAIRS = (
@@ -208,9 +228,15 @@ GRAPHIC_PAIRS = (
     ("MUTED", "SWITCH_OFF"),                                   # …and when off
     ("ON_ACCENT", "CLOSE_HOVER"),                              # the × on the red close button
     ("METER_LEVEL", "BG"), ("METER_LOUDNESS", "BG"),           # meter bars
-    ("ACCENT_TEXT", "SURFACE_HI"),                             # (0.21.0) a menu tick on the highlighted row
+    ("ACCENT_TEXT", "HOVER"),                                  # a menu tick on the highlighted row; an "on"
+                                                               # shuffle / repeat on its hover disc
     ("WARN", "SURFACE"), ("WARN", "BG"),                       # (0.21.0) a warning box's edge and sign
     ("DANGER", "SURFACE"),                                     # (0.21.0) the red ring round "Delete"
+    ("ACCENT_TEXT", "STRIP"),                                  # the playing tab's level mark
+    ("ACCENT_TEXT", "STRIP_HI"),                               # …on a hovered tab; the gear while Settings is open
+    ("GOOD", "HOVER"),                                         # the bit-perfect lock (on) on its hover disc
+    ("GOOD", "BG"), ("MUTED", "BG"),                           # the status dot (WARN on BG is above)
+    ("THUMB", "BG"), ("THUMB", "SURFACE"),                     # a scrollbar's thumb at rest
 )
 
 
@@ -283,21 +309,28 @@ NUMBERS = FONT
 MINUS = "\u2212"          # the minus sign: as wide as "+" in Segoe UI (the hyphen isn't)
 FIGURE_SPACE = "\u2007"   # a space as wide as a digit (measured: 10 px, as a digit, Segoe UI 9 pt)
 
+# The semibold face, for titles: Windows ships Segoe UI in a true semibold, which Tk can use as a
+# family of its own (Tk 8.6's -weight knows only normal and bold). `apply` checks Tk really has it
+# (semibold_family); where it doesn't (a Mac, so far), "semibold" falls back to bold.
+FONT_SEMIBOLD = "Segoe UI Semibold" if sys.platform == "win32" else ""
+SEMIBOLD = ""         # set by apply: FONT_SEMIBOLD when Tk has it, else "" (bold stands in)
+
 # The type scale, in points (Tk scales points with the display itself, so no px() here).
 SIZE_TINY = 7         # scale numbers under bars and plots
 SIZE_SMALL = 8        # captions, one-line descriptions, small notes
 SIZE_BODY = 9         # ordinary text (Windows' own default size)
-SIZE_LARGE = 10       # a slightly bigger mark (the × in Up next)
+SIZE_LARGE = 10       # a slightly bigger mark (the × in Up next); the line under the now-playing title
 SIZE_HEADING = 11     # a pop-over's title
 SIZE_TITLE = 12       # a window's title line
+SIZE_DISPLAY = 13     # the now-playing title (semibold)
 SIZE_MONO = 10        # sample numbers (PCM stream)
 
-# Icon glyphs (Segoe Fluent Icons / MDL2 Assets), in points.
-ICON_SMALL = 9        # strip buttons, the ⓘ button, a tab's ×
-ICON = 10             # the gear, the bit-perfect lock
+# Icon glyphs (Segoe Fluent Icons / MDL2 Assets), in points — each size has one job.
+TAB_CLOSE = 8         # a tab's ×, the search ×, Up next's ×, chevrons
+ICON_SMALL = 9        # minimise / close, the magnifier
+ICON = 10             # +, the gear, the lock, ⓘ; the mini strip's and menus' icons
 ICON_MEDIUM = 11      # shuffle / repeat
-ICON_LARGE = 13       # previous / next
-TAB_CLOSE = 8         # the small × on a tab
+ICON_LARGE = 13       # the mini strip's play glyph only (previous / next are drawn: shapes.skip)
 
 # The VU face (Pillow): TrueType files, and text heights as a share of the face's height.
 METER_FONT_FILE = "segoeui.ttf"
@@ -307,8 +340,26 @@ METER_FACE_BIG = 0.16      # "VU", "−" and "+"
 
 
 def font(size: int = SIZE_BODY, *style: str) -> tuple:
-    """A Segoe UI font at one of the SIZE_* steps, e.g. font(SIZE_SMALL, "bold")."""
+    """A Segoe UI font at one of the SIZE_* steps, e.g. font(SIZE_SMALL, "bold"). "semibold" is the
+    semibold face where Tk has it (see FONT_SEMIBOLD), else bold."""
+    if "semibold" in style:
+        rest = tuple(s for s in style if s != "semibold")
+        return (SEMIBOLD, size, *rest) if SEMIBOLD else (FONT, size, "bold", *rest)
     return (FONT, size, *style)
+
+
+def semibold_family(root: tk.Misc | None = None) -> str:
+    """FONT_SEMIBOLD if Tk really draws it here, else "". Measured, like tabular_digits: Tk quietly
+    swaps a family it can't find for another (Arial, on Windows), so the family Tk ends up with must
+    be the one asked for, and its words must come out wider than the regular face's."""
+    if not FONT_SEMIBOLD:
+        return ""
+    semi = tkfont.Font(root=root, family=FONT_SEMIBOLD, size=SIZE_DISPLAY)
+    regular = tkfont.Font(root=root, family=FONT, size=SIZE_DISPLAY)
+    sample = "Gacked On Anger"
+    if semi.actual("family") != FONT_SEMIBOLD or semi.measure(sample) <= regular.measure(sample):
+        return ""
+    return FONT_SEMIBOLD
 
 
 def mono(size: int = SIZE_MONO, *style: str) -> tuple:
@@ -363,6 +414,42 @@ GAP_MEDIUM = 8
 GAP_LARGE = 10
 GAP_WIDE = 12
 
+# Corners (px at 100%): one rule for the whole app — icon-only buttons are round, buttons with
+# words are pills, and what you type into or what holds content has corners of 4, 8 or 12.
+RADIUS_S = 4
+RADIUS_M = 8
+RADIUS_L = 12
+
+# The tab strip (px at 100%). Every name and glyph on it is centred on one line, ROW_Y down.
+STRIP_H = 36              # the strip's height
+TAB_TOP = 6               # where the selected tab's body starts (it runs down into the page)
+TAB_H = STRIP_H - TAB_TOP
+ROW_Y = 21                # the centre line of every tab name and strip glyph
+TAB_FLARE = 6             # the small inward curves where the selected tab flows into the page
+TAB_GAP = 2               # between two tabs
+TAB_MAX = 200             # a tab's widest, however wide the window
+MIN_TAB = 6               # a tab's narrowest: however many are open, they all fit (and +)
+TAB_SLIM = 48             # narrower than this, a tab shows a centred short name (or just its mark)
+TAB_PAD_L = 8             # a tab's name starts this far in…
+TAB_PAD_R = 6             # …and ends this far before the tab's right edge
+TAB_PAD_SLIM = 4          # a slim tab's name, each side
+PLATE_INSET = 4           # a hovered tab's plate, in from the tab's sides (= TAB_FLARE - TAB_GAP)
+PLATE_H = 24              # …and its height
+DIVIDER_H = 16            # the line between two quiet tabs
+MARK_W = 9                # the playing mark: three 2 px level bars…
+MARK_GAP = 5              # …and the gap after it, before the name
+CLOSE_SLOT = 20           # a tab's × and the room it takes from the name
+CLOSE_DISC = 16           # the disc under the × when the pointer is on it
+DRAG_GAP = 28             # empty strip left of the first tab, for dragging the window
+DISC = 28                 # the + and gear buttons' round hover disc
+DISC_MARGIN = 2           # either side of the gear
+ADD_GAP = 2               # between the last tab and +
+CAPTION_W = 40            # minimise and close: full-height plates this wide
+
+# Controls (px at 100%).
+CONTROL_H = 32            # fields, and pills with words
+CONTROL_H_SMALL = 24      # badges, compact pills
+
 # (0.20.0) The slim scrollbar (no arrow buttons; see SLIM_SCROLLBAR) and the search box's insets.
 SCROLLBAR_WIDTH = 8       # px at 100%: the thumb shows 1 px narrower each side (its border is the window colour)
 SEARCH_ICON_ROOM = 26     # px at 100%: room left of the search text for the magnifier
@@ -405,9 +492,10 @@ def pad(*values: float):
 # -- ttk styles ----------------------------------------------------------------------------
 def apply(root: tk.Tk) -> None:
     """Style the app's ttk widgets with the current palette (run again after a palette change)."""
-    global _scale, NUMBERS
+    global _scale, NUMBERS, SEMIBOLD
     _scale = root.winfo_fpixels("1i") / 96
     NUMBERS = FONT if tabular_digits(FONT, root) else MONO
+    SEMIBOLD = semibold_family(root)
     root.configure(bg=BG)
     style = ttk.Style(root)
     if "clam" in style.theme_names():
@@ -497,8 +585,8 @@ def apply(root: tk.Tk) -> None:
     style.configure("Pop.TFrame", background=SURFACE)
     style.configure("Pop.TLabel", background=SURFACE, foreground=TEXT)
     style.configure("PopMuted.TLabel", background=SURFACE, foreground=MUTED)
-    style.configure("PopCaption.TLabel", background=SURFACE, foreground=MUTED, font=font(SIZE_SMALL, "bold"))
-    style.configure("PopTitle.TLabel", background=SURFACE, foreground=TEXT, font=font(SIZE_HEADING, "bold"))
+    style.configure("PopCaption.TLabel", background=SURFACE, foreground=MUTED, font=font(SIZE_SMALL, "semibold"))
+    style.configure("PopTitle.TLabel", background=SURFACE, foreground=TEXT, font=font(SIZE_HEADING, "semibold"))
     style.configure("Pop.TCheckbutton", background=SURFACE, foreground=TEXT,
                     indicatorbackground=BG, indicatorforeground=ON_ACCENT)
     style.map("Pop.TCheckbutton", background=[("active", SURFACE)],
@@ -506,11 +594,14 @@ def apply(root: tk.Tk) -> None:
     # (0.21.0) No ttk button or scale styles for pop-overs any more: Settings' buttons are drawn pills
     # (controls.PillButton) and its volume the drawn slider (controls.Slider).
 
-    style.configure("Title.TLabel", font=font(SIZE_TITLE, "bold"))
+    style.configure("Title.TLabel", font=font(SIZE_TITLE, "semibold"))
+    # The main window's now-playing title, and the line under it (artist — album).
+    style.configure("Display.TLabel", font=font(SIZE_DISPLAY, "semibold"))
+    style.configure("Subtitle.TLabel", foreground=MUTED, font=font(SIZE_LARGE))
     # (0.22.0) Section headings in every window as in Settings (PopCaption): small bold capitals in
     # the secondary text colour, with a faint line above each one but the first (controls.section).
     # (They were DG green until 0.21.0; muted, the green and amber *values* stand out.)
-    style.configure("Section.TLabel", foreground=MUTED, font=font(SIZE_SMALL, "bold"))
+    style.configure("Section.TLabel", foreground=MUTED, font=font(SIZE_SMALL, "semibold"))
     # (0.22.0) Live numbers: digits all one width (numbers()), plain / green / amber.
     style.configure("Number.TLabel", font=numbers(SIZE_BODY))
     style.configure("GoodNumber.TLabel", foreground=GOOD, font=numbers(SIZE_BODY))

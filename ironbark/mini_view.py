@@ -90,10 +90,10 @@ class MiniView(tk.Frame):
                                        hover="CLOSE_HOVER", hover_fg="ON_ACCENT", label="Close")
         self.close_button.pack(side="right", padx=(0, theme.px(theme.GAP_SMALL)))
         self.full_button = IconButton(self, root, "full", on_full, size=theme.ICON_SMALL, width=30, bg="BG",
-                                      label="Full player (Z)")
+                                      hover="HOVER", label="Full player (Z)")
         self.full_button.pack(side="right")
         self.settings_button = IconButton(self, root, "settings", on_settings, size=theme.ICON_SMALL, width=30,
-                                          bg="BG", label="Settings")
+                                          bg="BG", hover="HOVER", label="Settings")
         self.settings_button.pack(side="right")
         square = theme.px(10)
         self.status_square = tk.Frame(self, bg=theme.BG, width=square, height=square, cursor="hand2")
@@ -101,13 +101,14 @@ class MiniView(tk.Frame):
         self.status_square.bind("<Button-1>", lambda e: on_details())
         self._status_detail = ""
         Tooltip(self.status_square, lambda: self._status_detail)
-        self.next_button = IconButton(self, root, "next", on_next, size=theme.ICON, width=30, bg="BG", label="Next")
+        self.next_button = IconButton(self, root, "next", on_next, size=theme.ICON, width=30, bg="BG", hover="HOVER",
+                                      label="Next")
         self.next_button.pack(side="right")
         self.play_button = IconButton(self, root, "play", on_play, size=theme.ICON_LARGE, width=36, bg="BG",
-                                      fg="ACCENT", label="Play / pause")
+                                      hover="HOVER", fg="ACCENT", label="Play / pause")
         self.play_button.pack(side="right")
         self.previous_button = IconButton(self, root, "prev", on_previous, size=theme.ICON, width=30, bg="BG",
-                                          label="Previous")
+                                          hover="HOVER", label="Previous")
         self.previous_button.pack(side="right")
 
         # The rest: title, artist (or a passing note), the seek bar.

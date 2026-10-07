@@ -84,12 +84,17 @@ class Prompt(tk.Frame):
 
         head = tk.Frame(body, bg=theme.SURFACE)
         head.pack(fill="x")
+        self.title_wrap = wrap
         if tone == "warn":
             font = icon_font(window, theme.ICON_MEDIUM) or theme.font(theme.SIZE_HEADING, "bold")
             self.sign = tk.Label(head, text=glyph(window, "warning"), font=font, bg=theme.SURFACE, fg=theme.WARN)
             self.sign.pack(side="left", anchor="n", padx=theme.pad(0, theme.GAP_MEDIUM), pady=theme.pad(theme.GAP_HAIR, 0))
+            # The sign shares the title's line: the title wraps in the room left beside it, or its
+            # last word runs past the box's edge and is cut off.
+            self.title_wrap = max(theme.px(theme.GAP_WIDE),
+                                  wrap - self.sign.winfo_reqwidth() - theme.px(theme.GAP_MEDIUM))
         self.title_label = tk.Label(head, text=title, bg=theme.SURFACE, fg=theme.TEXT, anchor="w", justify="left",
-                                    font=theme.font(theme.SIZE_HEADING, "bold"), wraplength=wrap)
+                                    font=theme.font(theme.SIZE_HEADING, "semibold"), wraplength=self.title_wrap)
         self.title_label.pack(side="left", fill="x", expand=True)
         self.message_label = self.detail_label = None
         if message:
@@ -127,7 +132,9 @@ class Prompt(tk.Frame):
                 kind = "primary"
             button = PillButton(row, label, lambda v=value, i=index: self._chosen(i), bg="SURFACE",
                                 **self._button_style(kind))
-            button.pack(side="right", padx=theme.pad(theme.GAP, 0) if index < len(specs) - 1 else 0)
+            # Packed from the right: every button but the rightmost keeps its gap on its right side,
+            # between it and the button after it.
+            button.pack(side="right", padx=(0, theme.px(theme.GAP_MEDIUM)) if index < len(specs) - 1 else 0)
             self.buttons.insert(0, button)
             self.values.insert(0, value)
 

@@ -54,6 +54,30 @@ def test_pairs_name_real_roles_and_cover_every_text_colour():
     assert {"TEXT", "MUTED", "ACCENT_TEXT", "ON_ACCENT", "GOOD", "WARN", "DANGER"} <= text_colours
 
 
+def test_the_rounded_looks_pairs_are_checked():
+    for pair in (("TEXT", "STRIP_HI"), ("MUTED", "STRIP_HI"), ("TEXT", "HOVER"), ("MUTED", "HOVER")):
+        assert pair in theme.TEXT_PAIRS
+    for pair in (("ACCENT_TEXT", "STRIP"), ("ACCENT_TEXT", "STRIP_HI"), ("ACCENT_TEXT", "HOVER"),
+                 ("THUMB", "BG"), ("THUMB", "SURFACE")):
+        assert pair in theme.GRAPHIC_PAIRS
+    assert ("ACCENT_TEXT", "SURFACE_HI") not in theme.GRAPHIC_PAIRS     # the menu tick moved to HOVER
+
+
+def test_dg_green_is_never_drawn_on_the_hover_greys():
+    """In Light, DG green on STRIP_HI or HOVER is under 3:1, so what sits on them in green — the
+    playing tab's mark, the lit gear, a menu tick, an "on" glyph — is ACCENT_TEXT instead."""
+    for background in ("STRIP_HI", "HOVER"):
+        assert theme.contrast_ratio(theme.LIGHT.ACCENT, getattr(theme.LIGHT, background)) < theme.AA_GRAPHICS
+        assert ("ACCENT", background) not in theme.GRAPHIC_PAIRS
+    import inspect
+
+    from ironbark import tabbar
+
+    assert '"ACCENT_TEXT" if self.active' in inspect.getsource(tabbar.IconButton._paint)        # lit gear
+    assert 'level_mark_photo(self, "ACCENT_TEXT")' in inspect.getsource(tabbar.TabBar._paint_slot)
+    assert '"ACCENT_TEXT" if on' in inspect.getsource(tabbar.RoundIconButton.set_on)
+
+
 @pytest.mark.parametrize("palette", [theme.DARK, theme.LIGHT], ids=["dark", "light"])
 def test_each_palette_has_every_role_once(palette):
     values = [v.lower() for v in palette.roles().values()]

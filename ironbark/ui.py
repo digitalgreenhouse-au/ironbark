@@ -68,13 +68,14 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, ttk
+from tkinter import font as tkfont
 from typing import Callable
 
 from PIL import ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
                dragdrop, experiments, keys, levelling, library_db, library_index, logs, loudness, mediakeys,
-               placement, playlists, popups, settings, sleep, tag_editor, theme, tkgc, updates, watcher)
+               placement, playlists, popups, settings, shapes, sleep, tag_editor, theme, tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -95,7 +96,7 @@ from .scope_window import ScopeWindow
 from .spectrogram_window import SpectrogramWindow
 from .tag_window import TagHistoryWindow, TagWindow
 from .playlist_view import PlaylistView, _fold
-from .tabbar import IconButton, MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
+from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +117,11 @@ NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
 THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
 FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the mini strip has its own)
+SETTINGS_WIDTH = 310       # px at 100%: the Settings panel (less in a narrow window)
+HEAD_ICON_SLOT = 24        # px at 100%: the lock's and ⓘ's slots (and round hover discs) beside the format line
+INFO_INK_INSET = 6         # px at 100%: the ⓘ glyph's ink stops this far inside its slot (measured from Segoe
+                           # Fluent Icons / MDL2 Assets at 10 pt), so the slot reaches this far into the margin
+STATUS_DOT = 8             # px at 100%: the status dot
 UPDATE_FIRST_MS = 30000    # Check for updates: the first look this long after start-up…
 UPDATE_EVERY_MS = 3600000  # …then this often (updates.due decides whether a day has passed)
 UPDATE_NOTE_MS = 30000     # how long "Ironbark X.Y.Z is available" stays in the status line
@@ -499,32 +505,43 @@ class PlayerWindow:
         if not self.show_art.get():
             self.art_box.pack_forget()
             text.pack_configure(pady=0)
-        self.title_label = ttk.Label(text, text="Nothing playing", style="Title.TLabel", anchor="w")
+        self.title_label = ttk.Label(text, text="Nothing playing", style="Display.TLabel", anchor="w")
         self.title_label.pack(fill="x")
-        self.sub_label = ttk.Label(text, text="Open your library: Ctrl+L", style="Sub.TLabel",
+        self.sub_label = ttk.Label(text, text="Open your library: Ctrl+L", style="Subtitle.TLabel",
                                    anchor="w")
         self.sub_label.pack(fill="x")
         info_row = ttk.Frame(text)
         info_row.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
-        # Right of the format line: the status square, the bit-perfect lock and Details
-        # (packed first, so a long format line can't squeeze them).
-        IconButton(info_row, self.root, "info", self.show_details, size=theme.ICON_SMALL, width=26, bg="BG",
-                   label="Details: live stats, file info, lossless check").pack(side="right")
+        # Right of the format line, one group in one size and style: the status dot, the
+        # bit-perfect lock and Details, each icon in a slot with a round hover disc. The group sits
+        # over the row (placed, not packed in it) so the ⓘ's ink can end on the content edge, its
+        # slot reaching into the window's margin; a spacer keeps the format line clear of it.
+        self.head_icons = tk.Frame(body, bg=theme.BG)
+        self.info_button = controls.RoundIconButton(self.head_icons, self.root, "info", self.show_details,
+                                                    size=theme.ICON, diameter=HEAD_ICON_SLOT, width=HEAD_ICON_SLOT,
+                                                    bg="BG", label="Details: live stats, file info, lossless check")
+        self.info_button.pack(side="right")
         self.lock_button = None
         if self.can_exclusive:
-            self.lock_button = IconButton(info_row, self.root, "unlock", self._toggle_lock, size=theme.ICON, width=26,
-                                          bg="BG", label="Bit-perfect")
+            self.lock_button = controls.RoundIconButton(self.head_icons, self.root, "unlock", self._toggle_lock,
+                                                        size=theme.ICON, diameter=HEAD_ICON_SLOT,
+                                                        width=HEAD_ICON_SLOT, bg="BG", label="Bit-perfect")
             self.lock_button.pack(side="right")
             self.lock_button.tip.text = self._lock_tip
-        # One square instead of a line of device detail: green = all good, amber = something
-        # is changing the sound, grey = fine but not bit-perfect. Hover for the detail.
-        square = theme.px(10)
-        self.status_square = tk.Frame(info_row, bg=theme.BG, width=square, height=square, cursor="hand2")
-        self.status_square.pack(side="right", padx=theme.pad(theme.GAP_MEDIUM, theme.GAP_SMALL))
-        self.status_square.bind("<Button-1>", lambda e: self.show_details())
+        # One dot instead of a line of device detail: green = all good, amber = something is
+        # changing the sound, grey = fine but not bit-perfect. Hover for the detail, click for Details.
+        self.status_dot = tk.Label(self.head_icons, bg=theme.BG, bd=0, cursor="hand2")
+        self.status_dot.pack(side="right", padx=theme.pad(0, theme.GAP_SMALL))
+        self.status_dot.bind("<Button-1>", lambda e: self.show_details())
         self._status_detail = ""
-        Tooltip(self.status_square, lambda: self._status_detail)
+        self._status_colour = "BG"
+        Tooltip(self.status_dot, lambda: self._status_detail)
+        self._paint_status_dot("BG")
         self._paint_lock()
+        overhang = theme.px(INFO_INK_INSET)
+        self.head_icons.update_idletasks()
+        ttk.Frame(info_row, width=max(1, self.head_icons.winfo_reqwidth() - overhang), height=1).pack(side="right")
+        self.head_icons.place(in_=info_row, relx=1.0, x=overhang, rely=0.5, anchor="e")
         self.format_label = ttk.Label(info_row, text="", style="Info.TLabel", anchor="w", cursor="hand2")
         self.format_label.pack(side="left", fill="x", expand=True)
         self.format_label.bind("<Button-1>", lambda e: self.show_details())
@@ -535,17 +552,24 @@ class PlayerWindow:
         self._art_job = None
 
         # (0.20.0) The seek bar: a drawn slider (controls.Slider, shared with the mini strip), the
-        # time so far under its left end and the time left under its right.
+        # time so far under its left end and the time left under its right. Its track runs exactly
+        # from content edge to content edge, lined up with the times and the search box: the slider
+        # is wider than the row by the track's inset each side (the knob may reach into the margin),
+        # so it sits over the row's first line rather than in it.
         seek_row = ttk.Frame(body)
         seek_row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
         self.seek_row = seek_row
-        self.seek = controls.Slider(seek_row, on_release=self._seek_released, on_drag=self._seek_dragged)
-        self.seek.pack(fill="x")
+        self.seek = controls.Slider(body, on_release=self._seek_released, on_drag=self._seek_dragged)
+        track = ttk.Frame(seek_row, height=int(self.seek.cget("height")))
+        track.pack(fill="x")
+        inset = round(self.seek.track_inset())
+        self.seek.place(in_=track, x=-inset, y=0, relwidth=1.0, width=2 * inset, relheight=1.0)
         times = ttk.Frame(seek_row)
         times.pack(fill="x")
-        self.pos_label = ttk.Label(times, text="0:00", style="Info.TLabel")
+        self.pos_label = ttk.Label(times, text="0:00", style="Info.TLabel", font=theme.numbers(theme.SIZE_SMALL))
         self.pos_label.pack(side="left")
-        self.remain_label = ttk.Label(times, text="0:00", style="Info.TLabel", anchor="e")
+        self.remain_label = ttk.Label(times, text="0:00", style="Info.TLabel", anchor="e",
+                                      font=theme.numbers(theme.SIZE_SMALL))
         self.remain_label.pack(side="right")
 
         # Transport: no volume slider here. It lives under the gear, and a badge
@@ -555,18 +579,22 @@ class PlayerWindow:
         self.transport.pack_propagate(False)
         buttons = tk.Frame(self.transport, bg=theme.BG)
         buttons.place(relx=0.5, rely=0.5, anchor="center")
-        # (0.20.0) The play button is a drawn green circle; the others light up with a soft round disc.
+        # (0.20.0) The play button is a drawn green circle; the others light up with a soft round
+        # disc. Previous and next are drawn, filled like play (no icon font needed); shuffle and
+        # repeat are line icons that turn green with a dot under them when on.
         self.shuffle_button = controls.RoundIconButton(buttons, self.root, "shuffle", self.toggle_shuffle,
                                                        size=theme.ICON_MEDIUM, diameter=32, width=36, bg="BG",
                                                        label=f"Shuffle ({keys.hint('shuffle')})")
         self.shuffle_button.pack(side="left", fill="y", padx=theme.pad(0, theme.GAP_SMALL))
-        controls.RoundIconButton(buttons, self.root, "prev", self.player.previous, size=theme.ICON_LARGE, diameter=36,
-                                 width=40, bg="BG", label=f"Previous ({keys.hint('previous')})").pack(side="left",
-                                                                                                    fill="y")
+        self.previous_button = controls.RoundIconButton(buttons, self.root, "prev", self.player.previous, diameter=36,
+                                                        width=40, bg="BG", drawn="prev",
+                                                        label=f"Previous ({keys.hint('previous')})")
+        self.previous_button.pack(side="left", fill="y")
         self.play_button = controls.PlayButton(buttons, self.toggle_play, label=f"Play / pause ({keys.hint('play')})")
         self.play_button.pack(side="left", padx=theme.px(theme.GAP_MEDIUM))
-        controls.RoundIconButton(buttons, self.root, "next", self.player.next, size=theme.ICON_LARGE, diameter=36,
-                                 width=40, bg="BG", label=f"Next ({keys.hint('next')})").pack(side="left", fill="y")
+        self.next_button = controls.RoundIconButton(buttons, self.root, "next", self.player.next, diameter=36,
+                                                    width=40, bg="BG", drawn="next", label=f"Next ({keys.hint('next')})")
+        self.next_button.pack(side="left", fill="y")
         self.repeat_button = controls.RoundIconButton(buttons, self.root, "repeat", self.cycle_repeat,
                                                       size=theme.ICON_MEDIUM, diameter=32, width=36, bg="BG",
                                                       label=f"Repeat ({keys.hint('repeat')})")
@@ -574,16 +602,23 @@ class PlayerWindow:
         self._paint_order_buttons()
         self.volume_badge = controls.PillButton(self.transport, "", self._open_settings, fill=None, fg="WARN",
                                                 outline="WARN", hover_fill="SURFACE_HI",
-                                                font=theme.font(theme.SIZE_SMALL), pad_x=theme.GAP, pad_y=1,
+                                                font=theme.font(theme.SIZE_SMALL), pad_x=theme.GAP_MEDIUM,
+                                                height=theme.CONTROL_H_SMALL,
                                                 label="Volume below 100% · click for Settings, or use the mouse "
                                                       "wheel over the buttons, or Ctrl+↑ / ↓")
         for widget in (self.transport, buttons, *buttons.winfo_children(), self.volume_badge):
             widget.bind("<MouseWheel>", self._wheel_volume)
 
         # The status line is packed first, from the bottom, so a short window squeezes the
-        # track list rather than pushing the status line out of sight.
-        self.status_label = ttk.Label(body, text="", style="Sub.TLabel", anchor="w")
-        self.status_label.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP, 0))
+        # track list rather than pushing the status line out of sight. It keeps one height, the
+        # body text's line, whatever it says (a name in another script can bring a taller fallback
+        # font), so the list above never jumps when a message comes or goes.
+        line = tkfont.nametofont("TkDefaultFont", root=self.root).metrics("linespace")
+        self.status_row = ttk.Frame(body, height=line)
+        self.status_row.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP, 0))
+        self.status_row.pack_propagate(False)
+        self.status_label = ttk.Label(self.status_row, text="", style="Sub.TLabel", anchor="w")
+        self.status_label.pack(fill="both", expand=True)
         self.status_label.bind("<Button-1>", self._status_clicked)
         # "Undo (Ctrl+Z)" at the right-hand end of the status line, while it's telling of a playlist
         # change that can be undone (placed over the line, so nothing else moves).
@@ -638,9 +673,11 @@ class PlayerWindow:
             anchor="w", pady=theme.pad(theme.GAP, theme.GAP_HAIR))
 
     def _setting(self, parent, title: str, description: str, variable: tk.BooleanVar, command=None):
-        """An on/off setting: a slider switch on the right, a line underneath saying what it does."""
+        """An on/off setting: a slider switch on the right, a line underneath saying what it does (wrapped
+        at the text column's real edge, which SettingRow follows)."""
+        column = SETTINGS_WIDTH - 2 * theme.GAP_WIDE - SettingRow.SWITCH_ROOM
         SettingRow(parent, self.root, title, description, variable, command,
-                   wrap=theme.px(212)).pack(fill="x", pady=theme.pad(theme.GAP, 0))
+                   guess=theme.px(column)).pack(fill="x", pady=theme.pad(theme.GAP, 0))
 
     def _pop_button(self, parent, text: str, command, label: str = "") -> controls.PillButton:
         """(0.21.0) A flat button in a pop-over (Settings): a soft grey pill, darker under the pointer —
@@ -656,7 +693,7 @@ class PlayerWindow:
         (0.21.0) It scrolls when it doesn't fit the window (it's ~1300 px tall at 150%
         scaling) — mouse wheel anywhere over it, and a slim scrollbar that shows only then. Its
         buttons are flat pills and the volume is the same drawn slider as the seek bar."""
-        pop = Popover(self.root, width=theme.px(310), scroll=True)
+        pop = Popover(self.root, width=theme.px(SETTINGS_WIDTH), scroll=True)
         self.settings_area = pop.area
         b = pop.body
         row = ttk.Frame(b, style="Pop.TFrame")
@@ -1574,10 +1611,16 @@ class PlayerWindow:
         return menu
 
     def _paint_order_buttons(self):
-        self.shuffle_button.set_colour("ACCENT" if self.player.shuffle else "MUTED")
+        self.shuffle_button.set_on(self.player.shuffle)
         mode = self.player.repeat
         self.repeat_button.configure(text=glyph(self.root, "repeat_one" if mode == "one" else "repeat"))
-        self.repeat_button.set_colour("MUTED" if mode == "off" else "ACCENT")
+        self.repeat_button.set_on(mode != "off")
+
+    def _paint_status_dot(self, role: str):
+        """The status dot in `role`'s colour (GOOD / WARN / MUTED; BG: nothing to say, no dot)."""
+        self._status_colour = role
+        self._status_photo = shapes.disc_photo(self.status_dot, theme.px(STATUS_DOT), role, "BG")
+        self.status_dot.configure(image=self._status_photo, bg=theme.BG)
 
     # -- clipping guard ------------------------------------------------------------
     def _headroom_db(self) -> float:
@@ -2386,7 +2429,7 @@ class PlayerWindow:
             if not self.up_next_label.winfo_ismapped():
                 # (Above the track list; with no tabs open the list is hidden: just above the status line.)
                 place = (dict(before=self.playlist.frame) if self.playlist.frame.winfo_manager()
-                         else dict(after=self.status_label))
+                         else dict(after=self.status_row))
                 self.up_next_label.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_SMALL, 0), **place)
         else:
             self.up_next_label.pack_forget()
@@ -3528,7 +3571,7 @@ class PlayerWindow:
             return
         # What everything except the cover and the list needs (their requested heights,
         # plus the gaps between them), so the sum is right even mid-resize.
-        parts = (self.bar, self.head_text, self.seek_row, self.transport, self.status_label)
+        parts = (self.bar, self.head_text, self.seek_row, self.transport, self.status_row)
         gaps = theme.px(48)  # body padding and the space between rows
         try:
             everything_else = sum(w.winfo_reqheight() for w in parts) + gaps
@@ -3611,21 +3654,22 @@ class PlayerWindow:
             self._packed = {w: {k: v for k, v in w.pack_info().items() if k != "in"} for w in parts}
             for w in parts:
                 w.pack_forget()
-            self.empty_view.pack(fill="both", expand=True, after=self.status_label)
+            self.empty_view.pack(fill="both", expand=True, after=self.status_row)
             return
         self.empty_view.pack_forget()
         for w in parts[:3]:   # above the status line, in their old order
-            w.pack(**self._packed[w], before=self.status_label)
-        after = self.up_next_label if self.up_next_label.winfo_manager() else self.status_label
+            w.pack(**self._packed[w], before=self.status_row)
+        after = self.up_next_label if self.up_next_label.winfo_manager() else self.status_row
         self.playlist.frame.pack(**self._packed[self.playlist.frame], after=after)
         self.art_size = 0   # size the cover afresh
         self.root.after_idle(self._fit_art)
 
     def _palette_changed(self, _palette):
         """After a palette change (theme.use): redraw what keeps its colours — the cover's
-        placeholder (a picture), the tab strip, the status line and square."""
-        self.bar.set_tabs([], -1, None)   # forget the drawn strip, so the next refresh rebuilds it
+        placeholder (a picture), the status dot and the buttons that show a state. (The tab strip
+        repaints itself.)"""
         self._refresh_tabs()
+        self._paint_status_dot(self._status_colour)
         if self._art_track is not None or self.art_size:
             self.art_size = 0
             self._fit_art()
@@ -3812,14 +3856,16 @@ class PlayerWindow:
             self._window_title = window_title
         self.media.show(self._media_now(track, status))  # Windows' media panel: the same song
 
-        # The status square: the colour says it all; hovering gives the detail.
+        # The status dot: the colour says it all; hovering gives the detail.
         if text:
-            colour = {"good": theme.GOOD, "warn": theme.WARN}.get(tone, theme.MUTED)
+            role = {"good": "GOOD", "warn": "WARN"}.get(tone, "MUTED")
             verdict = {"good": "All good", "warn": "Heads up"}.get(tone, "Fine")
             self._status_detail = f"{verdict}: {text.removeprefix('→ ')}"
         else:
-            colour, self._status_detail = theme.BG, ""
-        self.status_square.configure(bg=colour)
+            role, self._status_detail = "BG", ""
+        colour = theme.colour(role)
+        if role != self._status_colour:
+            self._paint_status_dot(role)
         playing_now = showing_playing and status.state is State.PLAYING
         self.play_button.set_playing(playing_now)
         # The seek bar belongs to the tab you're looking at too: on another tab it shows

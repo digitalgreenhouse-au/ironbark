@@ -31,15 +31,15 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageTk
 
-from . import theme
-from .tabbar import DISABLED_FADE, IconButton, Toggle, Tooltip, released_over
+from . import shapes, theme
+from .tabbar import DISABLED_FADE, IconButton, RoundIconButton, Toggle, Tooltip, released_over  # noqa: F401
 
-SUPERSAMPLE = 4
+SUPERSAMPLE = shapes.SUPERSAMPLE
 
 SLIDER_HEIGHT = 16      # px at 100%: the slider's strip (the bar itself is a quarter of that)
 PLAY_DIAMETER = 44      # px at 100%: the main window's play button
-COVER_RADIUS = 8        # px at 100%: the big cover's corners
-THUMB_RADIUS = 4        # px at 100%: a small cover's corners (the mini strip)
+COVER_RADIUS = theme.RADIUS_M   # px at 100%: the big cover's corners
+THUMB_RADIUS = theme.RADIUS_S   # px at 100%: a small cover's corners (the mini strip)
 
 # Shades worked out from the palette (theme.mix), so they follow Light / Dark without new roles.
 HOVER_LIGHTEN = 0.14    # a green fill under the pointer: this much toward ON_ACCENT
@@ -47,23 +47,9 @@ PRESS_DARKEN = 0.18     # …pressed (or a dark button under the pointer): this 
 PLACEHOLDER_INK = 0.45  # the placeholder's note: this far from SURFACE toward MUTED (quiet on purpose)
 
 
-def _cache(widget: tk.Misc) -> dict:
-    """Pictures made for this widget's Tk root (one dict per root, never shared between roots)."""
-    root = widget._root()   # Tk's own method: the interpreter's root window
-    images = getattr(root, "_dg_control_images", None)
-    if images is None:
-        images = root._dg_control_images = {}
-    return images
-
-
-def _photo(widget: tk.Misc, key: tuple, draw: Callable[[], Image.Image]) -> ImageTk.PhotoImage:
-    """A cached PhotoImage for `key`, drawn by `draw()` the first time."""
-    images = _cache(widget)
-    if key not in images:
-        if len(images) > 200:   # e.g. a badge re-sized many times: start afresh (widgets keep their own)
-            images.clear()
-        images[key] = ImageTk.PhotoImage(draw(), master=widget)
-    return images[key]
+# The per-root picture cache lives in shapes.py (shared with the tab strip).
+_cache = shapes.cache
+_photo = shapes.photo
 
 
 def _measuring_font(widget: tk.Misc, font) -> tkfont.Font:
@@ -81,8 +67,7 @@ def _measuring_font(widget: tk.Misc, font) -> tkfont.Font:
     return fonts[key]
 
 
-def _down(image: Image.Image, size: tuple[int, int]) -> Image.Image:
-    return image.resize(size, Image.Resampling.LANCZOS)
+_down = shapes.down
 
 
 # -- covers ------------------------------------------------------------------------------------
@@ -222,6 +207,12 @@ class Slider(tk.Canvas):
     @property
     def _radii(self) -> tuple[float, float]:
         return self._height * 0.3, self._height * 0.45   # at rest, under the pointer
+
+    def track_inset(self) -> float:
+        """How far in from each side the track's rounded ends are drawn (real px): room for the
+        knob's centre to sit on the ends. A slider that should look edge to edge with its
+        neighbours is made this much wider on each side."""
+        return self._radii[1] - max(1.0, self._height * SUPERSAMPLE * 0.125) / SUPERSAMPLE
 
     def set(self, value: float, maximum: float):
         """Show `value` of `maximum` (maximum 0: nothing to show — the track alone, no knob)."""
@@ -426,62 +417,19 @@ class PlayButton(_Pressable):
         self.configure(image=self._photo)
 
 
-class RoundIconButton(IconButton):
-    """An IconButton (glyph from the icon font, colours as theme roles) that lights up with a soft
-    round disc under the pointer instead of a square — the transport's shuffle / previous / next /
-    repeat. `diameter` px at 100%."""
-
-    def __init__(self, parent, root, name: str, command: Callable[[], None], diameter: int = 36,
-                 width: int = 40, **options):
-        self._diameter = max(12, theme.px(diameter))
-        self._pressed = False
-        self._hovering = False
-        super().__init__(parent, root, name, command, width=width, **options)
-        side = max(0, (theme.px(width) - self._diameter) // 2)
-        self.configure(width=0, height=0, padx=side, pady=0, bd=0, compound="center", cursor="hand2")
-        self.bind("<ButtonPress-1>", lambda e: self._press(True), add="+")
-        self.bind("<ButtonRelease-1>", lambda e: self._press(False), add="+")
-        theme.on_change(self._palette_changed)
-        self._paint(False)
-
-    def _press(self, down: bool):
-        self._pressed = down
-        self._paint(self._hovering)
-
-    def _palette_changed(self, _palette):
-        self._paint(self._hovering)
-
-    def _paint(self, hover: bool):
-        self._hovering = hover
-        if not hover:
-            self._pressed = False
-        d = self._diameter
-        bg = theme.colour(self._bg)
-        disc = (theme.SURFACE_DOWN if self._pressed else theme.SURFACE_HI) if hover else None
-
-        def draw() -> Image.Image:
-            k = SUPERSAMPLE
-            image = Image.new("RGB", (d * k, d * k), bg)
-            if disc:
-                ImageDraw.Draw(image).ellipse((0, 0, d * k - 1, d * k - 1), fill=disc)
-            return _down(image, (d, d))
-
-        photo = _photo(self, ("disc", d, bg, disc), draw)
-        self._photo = photo
-        self.configure(image=photo, bg=bg,
-                       fg=theme.colour(self._hover_fg if hover else ("ACCENT" if self.active else self._fg)))
-
-
 class PillButton(_Pressable):
     """A rounded pill with text — "Open your library", the volume badge. Colours are theme roles:
     `fill` (None: no fill, just the outline), `fg` (the text), `outline` (a thin ring, or None),
-    `hover_fill` (None: the fill a shade darker). `set_text()` re-sizes it to fit."""
+    `hover_fill` (None: the fill a shade darker). `set_text()` re-sizes it to fit. `height` (px at
+    100%, e.g. theme.CONTROL_H_SMALL): a fixed height, whatever the font; None: the text's line
+    plus `pad_y` above and below."""
 
     def __init__(self, parent, text: str, command: Callable[[], None], *, fill: str | None = "SELECT",
                  fg: str = "ON_ACCENT", outline: str | None = None, hover_fill: str | None = None,
                  font: tuple | None = None, bg: str = "BG", pad_x: int = theme.GAP_WIDE,
-                 pad_y: int = theme.GAP, label: str = "", fit: str = ""):
+                 pad_y: int = theme.GAP, label: str = "", fit: str = "", height: int | None = None):
         self._fill, self._fg, self._outline, self._hover_fill = fill, fg, outline, hover_fill
+        self._height = height
         self._fit = fit   # (0.22.0) never narrower than this text: a label that changes doesn't resize it
         self._font = font or theme.font(theme.SIZE_BODY)
         self._pad = (pad_x, pad_y)
@@ -529,7 +477,7 @@ class PillButton(_Pressable):
     def _paint(self):
         measure = self._measure
         w = max(measure.measure(self.text_value or " "), measure.measure(self._fit)) + 2 * theme.px(self._pad[0])
-        h = measure.metrics("linespace") + 2 * theme.px(self._pad[1])
+        h = theme.px(self._height) if self._height else measure.metrics("linespace") + 2 * theme.px(self._pad[1])
         colours = (theme.colour(self._bg), self.fill_colour(),
                    theme.colour(self._outline) if self._outline else None)
         ring = max(1, theme.px(1))

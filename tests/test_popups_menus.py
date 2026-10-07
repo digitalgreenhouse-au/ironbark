@@ -53,7 +53,7 @@ def test_new_colour_pairs_pass_wcag():
     """The tick on a highlighted menu row, the warning edge and the red ring are graphics (3:1)."""
     for palette in (theme.DARK, theme.LIGHT):
         roles = palette.roles()
-        for fg, bg in (("ACCENT_TEXT", "SURFACE_HI"), ("WARN", "SURFACE"), ("WARN", "BG"), ("DANGER", "SURFACE")):
+        for fg, bg in (("ACCENT_TEXT", "HOVER"), ("WARN", "SURFACE"), ("WARN", "BG"), ("DANGER", "SURFACE")):
             assert (fg, bg) in theme.GRAPHIC_PAIRS
             assert theme.contrast_ratio(roles[fg], roles[bg]) >= theme.AA_GRAPHICS, (palette.name, fg, bg)
 
@@ -199,6 +199,30 @@ def test_prompts_fit_a_narrow_window_and_follow_the_palette(root):
     prompt.press_cancel()
 
 
+def test_prompt_buttons_keep_a_gap_between_them(root):
+    prompt = Prompt(root, "Delete the playlist?", buttons=(("Keep", False), ("Maybe", None), ("Delete", True, "danger")),
+                    cancel=False)
+    _pump(root, 0.1)
+    boxes = [(b.winfo_x(), b.winfo_x() + b.winfo_width()) for b in prompt.buttons]
+    for (_left, right), (left, _right) in zip(boxes, boxes[1:]):
+        assert left - right >= theme.px(theme.GAP_MEDIUM)
+    assert boxes[-1][1] == prompt.buttons[-1].master.winfo_width()       # the last one ends on the edge
+    prompt.press_cancel()
+
+
+def test_a_warning_title_wraps_beside_its_sign(root):
+    title = "Bit-perfect plays at the file's own level, so turn the volume down first to protect your ears:"
+    prompt = Prompt(root, title, "Message", tone="warn", cover=True, buttons=(("I understand", True),))
+    _pump(root, 0.1)
+    wrap = prompt._width() - 2 * theme.px(theme.GAP_WIDE) - 2 * theme.px(popups.WARN_EDGE)
+    sign = prompt.sign.winfo_reqwidth() + theme.px(theme.GAP_MEDIUM)
+    assert int(prompt.title_label.cget("wraplength")) == wrap - prompt.sign.winfo_reqwidth() - theme.px(theme.GAP_MEDIUM)
+    head = prompt.title_label.master
+    assert sign + prompt.title_label.winfo_reqwidth() <= head.winfo_width()            # nothing cut off
+    assert prompt.title_label.winfo_x() + prompt.title_label.winfo_width() <= head.winfo_width()
+    prompt.press_default()
+
+
 def test_the_tag_editor_and_test_signal_questions_are_in_app(root):
     from ironbark.tag_window import ask
     from ironbark.testsignals_window import confirm_play
@@ -229,7 +253,7 @@ def test_menu_runs_commands_and_moves_with_the_keys(root):
     assert [r.keys.cget("text") for r in rows] == ["Enter", "Ctrl+Up", "Ctrl+W"]   # shortcuts shown
     assert rows[1].label.cget("fg") == rows[1].disabled_colour()                  # greyed out
     menu.press("Down")
-    assert menu.active_row is rows[0] and rows[0].cget("bg") == theme.SURFACE_HI
+    assert menu.active_row is rows[0] and rows[0].cget("bg") == theme.HOVER
     menu.press("Down")                                                            # skips the greyed one
     assert menu.active_row is rows[2]
     menu.press("Down")                                                            # round to the top
