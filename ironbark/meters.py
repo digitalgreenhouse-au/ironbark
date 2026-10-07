@@ -394,12 +394,12 @@ class MeterEngine:
 
 
 # -- Auto alignment ----------------------------------------------------------------
-def vu_levels(path, cancel: threading.Event | None = None) -> np.ndarray | None:
+def vu_levels(path, cancel: threading.Event | None = None, wait: bool | None = None) -> np.ndarray | None:
     """A file's level in 300 ms slices, the way a VU sees it: the full-wave average of the
     louder channel, as the dBFS of a sine that would read the same. Silence left out.
-    None if cancelled."""
+    None if cancelled. (`wait` as loudness.file_powers.)"""
     levels = []
-    with audiofile.open(path) as f:
+    with audiofile.open(path, cancel=cancel.is_set if cancel is not None else None, wait=wait) as f:
         window = max(1, int(f.samplerate * 0.3))
         for block in audiofile.blocks(f, window * 30, dtype="float32", always_2d=True):
             if cancel is not None and cancel.is_set():
@@ -450,7 +450,9 @@ def album_alignment(track: Path, on_first=lambda value: None,
     gathered = []
     for k, path in enumerate(files):
         try:
-            levels = vu_levels(path, cancel)
+            levels = vu_levels(path, cancel, wait=False)   # (a network album: only once its songs are here)
+        except audiofile.NotCached:
+            raise
         except (OSError, RuntimeError):
             continue  # a file that won't decode just doesn't count
         if levels is None:
@@ -498,7 +500,9 @@ def album_alignment_loudness(track: Path, on_first=lambda value, lufs: None,
     gathered = []
     for k, path in enumerate(files):
         try:
-            powers = file_powers(path, cancel)
+            powers = file_powers(path, cancel, wait=False)
+        except audiofile.NotCached:
+            raise
         except (OSError, RuntimeError):
             continue
         if powers is None:

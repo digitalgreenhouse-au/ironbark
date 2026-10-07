@@ -188,10 +188,11 @@ class WaitInfo:
 class _Stall:
     """Queued after the last music before a pause for the network (see _Session._commit). The
     callback plays exact zeros on it until the decoder has carried on from the cut."""
-    __slots__ = ("serial",)
+    __slots__ = ("serial", "silent_since")
 
     def __init__(self, serial: int):
         self.serial = serial
+        self.silent_since: float | None = None   # the first request answered with silence on it
 
 
 @dataclass
@@ -852,9 +853,12 @@ class _Session:
     def _begin_wait(self, source: _Source, wait: audiofile.Waiting, seek: bool = False):
         """A read of `source` gave up waiting for its bytes at `wait.frame`."""
         current = self.waiting
-        if current is not None and not seek:
+        resumed = current is not None and current.committed and self._resumed_serial >= current.serial
+        if current is not None and not seek and not resumed:
             current.reason = wait.reason   # (still the same pause: it carries on from the same spot)
             return
+        # A new wait (the decoder may already have carried on from the last pause, its marker still
+        # queued: that one is played past, and this one has its own spot to carry on from).
         self.waiting = WaitInfo(time.perf_counter(), wait.frame, wait.reason, seek=seek)
 
     def _wait_step(self, source: _Source, generation: int):
@@ -1041,8 +1045,7 @@ class _Session:
                     continue
                 self._pending = item   # stays on the marker: exact zeros until the music is back
                 outdata[filled:] = 0
-                if not filled:
-                    self._silent(now)
+                self._silent(now, block)   # (the rest of this request is silent already)
                 break
             if block is None:  # the end of the chain
                 if filled:
@@ -1103,25 +1106,32 @@ class _Session:
         no stall), else once the buffer has filled again (or the rest of the chain is queued)."""
         if self._resumed_serial < stall.serial:
             return False
-        wait = self.waiting
-        mine = wait is not None and wait.serial == stall.serial
-        silent = mine and wait.silent_since is not None
+        silent = stall.silent_since is not None
         if silent and not (self._draining or self._queue.qsize() >= self._queue_blocks - 1):
-            return False
-        if mine:
-            if silent and self._events and self._events[-1].kind == "network pause":
-                self._events[-1].silent += time.perf_counter() - wait.silent_since
-                self._events[-1].last = time.time()
+            return False   # (even if it ran out again meanwhile: one pause, not a stop-start)
+        if silent:
+            for event in reversed(self._events):
+                if event.kind == "network pause":
+                    event.silent += time.perf_counter() - stall.silent_since
+                    event.last = time.time()
+                    break
+        wait = self.waiting
+        if wait is not None and wait.serial == stall.serial:
             self.waiting = None
         return True
 
-    def _silent(self, now: float):
+    def _silent(self, now: float, stall: _Stall | None = None):
         """A request answered with silence while waiting for the network: no dropout, no level, and
         (the first time) a "network pause" in the playback report."""
         self.levels = (0.0,) * self.channels
+        first = stall is None or stall.silent_since is None
+        if stall is not None and stall.silent_since is None:
+            stall.silent_since = now
         wait = self.waiting
         if wait is not None and wait.silent_since is None:
             wait.silent_since = now
+            if not first:
+                return   # (the same silence, now waiting for later bytes: not a second pause)
             why = "the download stopped" if wait.reason == "failed" else "the network didn't keep up"
             self._event("network pause", f"{why}, so playback paused at a quiet sample until the music had "
                                          "downloaded (it plays from the copy on this computer)")
@@ -1230,9 +1240,9 @@ class _Session:
 
     @property
     def network_wait(self) -> WaitInfo | None:
-        """The pause for the network the listener hears (committed), if there is one."""
+        """The pause for the network the listener hears (committed, or already silent), if any."""
         wait = self.waiting
-        return wait if wait is not None and wait.committed else None
+        return wait if wait is not None and (wait.committed or wait.silent_since is not None) else None
 
     @property
     def local(self):
@@ -1890,12 +1900,10 @@ class Player:
                 state = State.STOPPED
                 position, duration = 0.0, (track.duration if track else 0.0)
             else:
-                # Silent, waiting for the network: paused, held at the spot it carries on from.
+                # Waiting for the network: paused, at the last sample heard (where it carries on).
                 wait = session.network_wait
                 state = State.PAUSED if session.paused or wait is not None else State.PLAYING
                 position, duration = session.position, session.duration
-                if wait is not None:
-                    position = wait.frame / session.samplerate
                 output = OutputInfo(session.device_name, session.samplerate, session.mixer_rate, session.exclusive,
                                     self.hardware_volume if session.exclusive else None, session.device_bits)
             message = self._message or (session.message if session else "")
@@ -2123,8 +2131,7 @@ class Player:
         bit-perfect mode other apps are silent while it's held), keep the spot, and carry on by
         itself — the same device, the same volume — if the network is back within AUTO_RESUME_S
         of the silence starting."""
-        wait = session.network_wait
-        position = wait.frame / session.samplerate if wait is not None else session.position
+        position = session.position   # (the last sample heard: where it carries on)
         silent_for = session.waiting_for(time.perf_counter())
         at, queued = self._current(), self.queued_now
         self._close_session()
@@ -2158,8 +2165,7 @@ class Player:
                 view = NetworkView("playing", not session.paused, at=session.position)
                 if wait is not None:
                     view.phase = "fetching" if wait.seek else "waiting"
-                    view.at = wait.frame / session.samplerate
-                    outlook = preparer.outlook(session.local, view.at)
+                    outlook = preparer.outlook(session.local, wait.frame / session.samplerate)
                     if outlook is not None and hasattr(outlook, "phase"):
                         view.percent, view.detail = outlook.percent, outlook.detail
                 view.copy = session.local.copy_state()

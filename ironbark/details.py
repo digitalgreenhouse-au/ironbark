@@ -146,10 +146,124 @@ def tone_of(text: str) -> str:
     return "plain"
 
 
+COPY_FAILED = "✗ This played from a copy that didn't match the original. Downloading it again."
+
+
+def copy_note(copy: str) -> str:
+    """What the proof's subject was, for a song played from the network playback cache: it's
+    checked against the copy on this computer, and that copy against the original."""
+    if copy == "verified":
+        return "checked against the cached copy · the copy matches the original"
+    if copy in ("downloading", "checking"):
+        return "checked against the cached copy · its match with the original is checked when the download finishes"
+    if copy == "stale":
+        return "checked against the cached copy (an older version: the file on the drive has changed since)"
+    return ""
+
+
+def network_line(network, mp3: bool = False) -> tuple[str, str]:
+    """(status line, tone) while a song from a network drive isn't simply playing: preparing,
+    waiting for the network, fetching after a seek, or let go of the device. ("", …) otherwise."""
+    if network is None or network.phase == "playing":
+        return "", "plain"
+    percent = network.percent
+    pct = f" {percent}%" if percent is not None else ""
+    if network.phase == "waiting":
+        then = "carries on by itself" if network.auto else "press play to carry on"
+        return f"Waiting for the network · paused at {fmt_clock(network.at)} · {then}", "warn"
+    if network.phase == "fetching":
+        if mp3:
+            return f"Fetching… an MP3 has to be read from the start up to here:{pct}", "plain"
+        return f"Fetching from {fmt_clock(network.at)}…{pct}", "plain"
+    if network.phase == "released":
+        if network.auto:
+            return ("Paused: the network isn't answering · it carries on by itself when it's back "
+                    "(or press play to try now)"), "warn"
+        return "Paused for the network · press play to carry on", "plain"
+    if not network.auto:
+        return f"Paused · the song keeps downloading{f' ({percent}%)' if percent is not None else ''}", "plain"
+    if network.phase == "checking":
+        return "Checking the download…", "plain"
+    if network.phase == "downloading":
+        return f"Downloading track…{pct}", "plain"
+    if network.detail.startswith("waiting for"):   # its server isn't answering
+        return f"Preparing track… {network.detail}", "warn"
+    return f"Preparing track…{pct}", "plain"
+
+
+def fmt_speed(speed: float | None) -> str:
+    return f"{speed / 1e6:.1f} MB/s (megabytes per second)" if speed else ""
+
+
+def network_hover(network) -> str:
+    """The status square's hover text for a song from a network drive (one line)."""
+    if network is None:
+        return ""
+    if network.phase != "playing":
+        return network.detail or network_line(network)[0]
+    if network.copy == "failed":
+        return COPY_FAILED
+    parts = ["Playing the local copy"]
+    if network.cached < 1.0:
+        speed = fmt_speed(network.speed)
+        parts.append(f"{network.cached:.0%} downloaded" + (f" at {speed}" if speed else ""))
+    elif network.copy == "verified":
+        parts.append("complete and checked")
+    if network.next_cached is not None:
+        parts.append(f"next song {network.next_cached:.0%}")
+    return " · ".join(parts)
+
+
+def source_rows(track, network) -> list[tuple[str, str]]:
+    """Now Playing's Source rows for a song on a network drive."""
+    folder = str(track.path.parent)
+    rows = [("Where", f"network drive {folder}")]
+    if network.phase == "playing":
+        rows.append(("Playing", "the copy on this computer (the cache)"))
+    else:
+        rows.append(("Playing", "not yet: " + (network_line(network)[0] or "it's downloading")))
+    size = f" of {fmt_size(track.size)}" if track.size else ""
+    downloaded = f"{network.cached:.0%}{size}"
+    if network.copy == "verified":
+        checks = network.checks.split("+")
+        checked = "the same size and date as on the drive"
+        if "decode" in checks:
+            checked += "; it plays to the end without an error"
+        if "flac-md5" in checks:
+            checked += "; the FLAC's own MD5 (Message Digest 5) fingerprint matches"
+        downloaded += f" · checked: {checked}"
+    elif network.copy == "checking":
+        downloaded += " · being checked"
+    elif network.copy == "failed":
+        downloaded = COPY_FAILED
+    elif network.copy == "stale":
+        downloaded = ("✗ Playing an older copy: the file on the drive has changed since; the new version "
+                      "is downloading")
+    rows.append(("Downloaded", downloaded))
+    speed = fmt_speed(network.speed)
+    if speed and network.cached < 1.0:
+        rows.append(("Speed", speed))
+    return rows
+
+
 def describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, trim: float,
                    lossy: bool = False, float_source: bool = False, bits: int = 0,
                    codec: str = "", level=None, fading: bool = False) -> tuple[str, str]:
-    """(text, tone) for what the player has sent, as checked against the file."""
+    """(text, tone) for what the player has sent, as checked against the file (for a song from
+    the network playback cache: against its copy on this computer, said so)."""
+    text, tone = _describe_proof(proof, output, gain, trim, lossy, float_source, bits, codec, level, fading)
+    copy = getattr(proof, "copy", "") if proof is not None else ""
+    if copy == "failed":
+        return f"{COPY_FAILED} {text}", "warn"
+    note = copy_note(copy)
+    if note and proof is not None and proof.sent > 0:
+        text = f"{text.replace('the file', 'the copy')} · {note}"
+    return text, tone
+
+
+def _describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, trim: float,
+                    lossy: bool = False, float_source: bool = False, bits: int = 0,
+                    codec: str = "", level=None, fading: bool = False) -> tuple[str, str]:
     if proof is None or proof.sent <= 0:
         return "Waiting for music…", "plain"
     if proof.mismatch_at is not None:
@@ -525,6 +639,11 @@ class NowPlayingWindow:
 
         self.file_frame = self._section(outer, "File")
         self.check_frame = self._section(outer, "Check")
+        # Source: where a song on a network drive is played from (the network playback cache). Made
+        # the first time one plays, so nothing changes here for music on this computer.
+        self._outer = outer
+        self.source_frame: ttk.Frame | None = None
+        self._source_shown: tuple | None = None
         self._fit_job = None
         self._fitted: tuple[int, int] | None = None   # the size _fit last gave the window
         self._settled = False                         # …and the window has reached it since
@@ -587,7 +706,7 @@ class NowPlayingWindow:
         """One label column for the whole window: every section's labels as wide as the longest
         label anywhere, so all the values start at the same place. Then fit the window."""
         frames = [w for w in (self.values["position"].master, self.values["sent"].master, self.file_frame,
-                              self.check_frame)]
+                              self.check_frame, self.source_frame) if w is not None]
         widest = max([theme.px(LABEL_MIN)] + [child.winfo_reqwidth() for frame in frames
                                               for child in frame.grid_slaves(column=0)
                                               if isinstance(child, ttk.Label)])
@@ -677,8 +796,13 @@ class NowPlayingWindow:
         self._index = None
 
         def work():
+            # (A song on a network drive: its complete copy on this computer, once there is one —
+            # never the network itself. Not remembered until then, so it's looked at again later.)
+            source = audiofile.local_copy(path)
+            if source is None:
+                return
             try:
-                index = builder(path)
+                index = builder(source)
             except Exception:  # noqa: BLE001 — no live bitrate is fine; the average still shows
                 index = None
             cache = self._index_cache
@@ -1043,6 +1167,25 @@ class NowPlayingWindow:
                 ("events", describe_events(status.events))):
             self.values[key].configure(text=text, style=self._style(key, tone))
         self._paint_windows_button()
+        self._show_source(status, track)
+
+    def _show_source(self, status, track):
+        """The Source section, for a song on a network drive: where it lives, that it plays from
+        the copy on this computer, and how that copy stands (downloaded, checked)."""
+        network = getattr(status, "network", None)
+        if network is None and self.source_frame is None:
+            return
+        rows = tuple(source_rows(track, network)) if network is not None else (("Where", "this computer"),)
+        if rows == self._source_shown:
+            return
+        self._source_shown = rows
+        if self.source_frame is None:
+            self.source_frame = self._section(self._outer, "Source")
+        for child in self.source_frame.winfo_children():
+            child.destroy()
+        for row, (label, value) in enumerate(rows):
+            self._row(self.source_frame, row, label, value)
+        self._align()
 
     # -- what Windows does ---------------------------------------------------
     def _start_windows_check(self):

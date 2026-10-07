@@ -467,7 +467,7 @@ def test_a_slow_cover_never_replaces_a_newer_one(monkeypatch):
 def test_the_clipping_guard_measures_only_what_is_wanted_and_survives_errors(monkeypatch):
     measured = []
 
-    def true_peak(path):
+    def true_peak(path, cancel=None):
         measured.append(path.name)
         if path.name == "odd.flac":
             raise KeyError("something unexpected")

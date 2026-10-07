@@ -246,11 +246,11 @@ def test_recovering_before_the_marker_is_reached_is_seamless(tmp_path, fake_card
     s = session_on(copy, prep)
     card = Card(s)
     card.play_while(lambda: s.waiting is None, keep=12)
-    for _ in range(200):                                       # down to the commit, slowly
+    for _ in range(200):                                       # down to the commit, at about a real card's pace
         if s.waiting.committed:
             break
         card.request()
-        time.sleep(0.01)
+        time.sleep(0.04)
     assert s.waiting.committed and s.waiting.silent_since is None
     serial = s.waiting.serial
     copy.arrive()
@@ -848,3 +848,46 @@ def test_nothing_waits_on_a_server_that_doesnt_answer(tmp_path, fake_card):
         share.open.set()
         p.stop()
         m.shutdown()
+
+
+def test_a_second_pause_soon_after_the_first_never_repeats_any_music(tmp_path, fake_card):
+    """The decoder carries on after a pause and runs out again before the card has played past the
+    first pause's marker: the second wait is its own, from its own spot, and nothing is heard twice."""
+    _, data, ref, _ = music(tmp_path, "a.wav", 5.0)
+    prep = FakePreparer()
+    copy = prep.add(FakeCopy(tmp_path / "cache", "a.wav", data))
+    copy.arrive(seconds=2.5)
+    s = session_on(copy, prep)
+    card = Card(s)
+    _, cut = stall_and_cut(card, copy)
+    first = s.waiting.serial
+    copy.arrive(seconds=cut / RATE + 2.0)    # twice the 1 s asked for (one recent pause), less than a buffer
+    assert wait_until(lambda: s._resumed_serial >= first, 3)
+    assert wait_until(lambda: s.waiting is not None and s.waiting.serial != first, 5)
+    assert s.waiting.frame > cut                                 # its own spot, past the first cut
+    for _ in range(10):
+        assert not card.request().any()                          # still the first pause: the buffer isn't full
+    assert s.network_wait is not None and s.position == pytest.approx(cut / RATE)
+    copy.arrive()
+    card.play_to_end()
+    got = card.audio
+    assert np.array_equal(got[got.any(axis=1)], ref)             # every sample once, in order
+    s.close()
+
+
+def test_a_sleep_timer_running_out_while_a_song_waits_for_the_network_still_ends_the_music(tmp_path, fake_card,
+                                                                                            quick_watch, monkeypatch):
+    from ironbark import sleep
+    monkeypatch.setattr(sleep, "FADE_SECONDS", 0.2)
+    p, prep, copy = preparing_player(tmp_path)
+    p.play(0)
+    clock = [0.0]
+    timer = sleep.SleepTimer(p, 1, clock=lambda: clock[0])
+    clock[0] = 61.0                                              # time's up while it waits
+    timer.tick(p.status())
+    assert timer.state == sleep.FADING and p.status().fading
+    assert wait_until(lambda: not p._preparing.auto, 5)        # the fade runs out: it won't start
+    copy.arrive()
+    prep.tick()
+    time.sleep(0.2)
+    assert p._session is None

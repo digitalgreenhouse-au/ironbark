@@ -546,9 +546,11 @@ class Manager:
 
     def _rule(self, item: Item, path, at: float, stalls: int = 0, force: bool = False):
         """(may start, need, measured) — the start rule of policy.py for this item at `at`."""
-        if self._playable_complete(item):
-            return True, 0.0, None
         complete_only = item.ext in COMPLETE_ONLY_EXTS or item.info.get("complete_only")
+        if self._playable_complete(item):
+            # (Apple Lossless is only ever opened by name: not until its copy has its final name.)
+            return item.state == READY or not complete_only, (0.0 if item.state == READY or not complete_only
+                                                              else None), None
         measured = self._measure(item, path, at)
         if complete_only or item.size is None or measured is None:
             return False, None, measured
