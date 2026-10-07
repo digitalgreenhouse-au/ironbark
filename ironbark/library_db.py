@@ -36,7 +36,9 @@ inside "Night") is tried; and where this Python's SQLite has no FTS5 at all, eve
 done that slower way.
 
 **Plays and favourites** are keyed by the file's key (audiofile.key: a CUE track is "file#3"),
-not by row, so they survive the track rows being rebuilt.
+not by row, so they survive the track rows being rebuilt. So are the **quality checks**
+(library_check.py: one per song, with the size and modified time of the file it read, so a file
+that changes is checked again).
 
 **Threads**: any thread may read; each gets its own connection (SQLite's write-ahead log, WAL,
 lets readers carry on while a writer writes). Only the indexer should write. A damaged file is set
@@ -66,7 +68,7 @@ from .library import (_DISC_FOLDER, Album, Track, is_music_name, natural_key, pl
                       sort_name, split_cue_images)
 
 FILE_NAME = "library.db"
-SCHEMA_VERSION = 1          # PRAGMA user_version: bump with a step in _UPGRADES (else the library tables are remade)
+SCHEMA_VERSION = 2          # PRAGMA user_version: bump with a step in _UPGRADES (else the library tables are remade)
 # The tag reader's version: bump it when read_track() learns something new, and every file read by
 # an older one is read again in the background (the library stays browsable meanwhile).
 READ_FORMAT = 1
@@ -201,6 +203,19 @@ CREATE INDEX IF NOT EXISTS plays_key ON plays(key, played_at);
 CREATE INDEX IF NOT EXISTS plays_when ON plays(played_at);
 CREATE TABLE IF NOT EXISTS favourites(key TEXT PRIMARY KEY, added REAL NOT NULL) WITHOUT ROWID;
 """
+# (Version 2) The whole-library quality check's results (library_check.py), one per song.
+_CHECK_TABLES = """
+CREATE TABLE IF NOT EXISTS checks(
+    key TEXT PRIMARY KEY,                               -- audiofile.key: the file, "#n" for a CUE track
+    size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,   -- the file as it was read (changed since: check again)
+    format INTEGER NOT NULL,                            -- which version of the check made it
+    checked REAL NOT NULL,                              -- when (seconds since 1970)
+    findings TEXT NOT NULL,                             -- what needs a look, worst first ("" = nothing)
+    true_peak REAL,                                     -- linear, 1.0 = full scale (the clipping guard's figure)
+    result TEXT NOT NULL) WITHOUT ROWID;                -- the whole result as JSON ("" = none to keep)
+CREATE INDEX IF NOT EXISTS checks_found ON checks(findings) WHERE findings != '';
+"""
+_TABLES += _CHECK_TABLES
 # The song search index: no text of its own (the rows are tracks.id), already-folded text in,
 # "unicode61" splitting it into words. No prefix index: three times the size for little speed.
 _FTS_TABLE = ("CREATE VIRTUAL TABLE IF NOT EXISTS song_fts USING fts5(" + ", ".join(FTS_COLUMNS)
@@ -209,11 +224,19 @@ _FTS_TRIGGER = ("CREATE TRIGGER IF NOT EXISTS tracks_unindexed AFTER DELETE ON t
                 "BEGIN DELETE FROM song_fts WHERE rowid = old.id; END")
 _LIBRARY_TABLES = ("song_fts", "tracks", "albums", "files", "folders", "roots", "meta")
 _KEPT_TABLES = {"plays": {"id", "key", "played_at", "seconds_heard", "completed"},
-                "favourites": {"key", "added"}}
+                "favourites": {"key", "added"},
+                "checks": {"key", "size", "mtime_ns", "format", "checked", "findings", "true_peak", "result"}}
+_CHECK_COLUMNS = "key, size, mtime_ns, format, checked, findings, true_peak, result"
 
 # Upgrades from one schema version to the next: {old version: fn(connection)}. A version with no
 # way up has its library tables made again (they're only a record of the music files).
-_UPGRADES: dict[int, Callable[[sqlite3.Connection], None]] = {}
+def _to_2(con: sqlite3.Connection) -> None:
+    """1 → 2: the quality check's table."""
+    for statement in _statements(_CHECK_TABLES):
+        con.execute(statement)
+
+
+_UPGRADES: dict[int, Callable[[sqlite3.Connection], None]] = {1: _to_2}
 
 _TRACK_FIELDS = ("cue_sheet", "cue_number", "cue_start", "cue_end", "title", "artist", "album", "album_artist",
                  "composer", "genre", "date", "year", "track_no", "disc_no", "duration", "sample_rate", "bits",
@@ -228,6 +251,8 @@ _TRACK_SELECT = ("SELECT r.path, d.rel, f.name, t.id, " + ", ".join(f"t.{n}" for
                  + " FROM tracks t JOIN files f ON f.id = t.file_id JOIN folders d ON d.id = f.folder_id"
                  " JOIN roots r ON r.id = d.root_id")
 _ALBUM_TRACKS = "SELECT t.album_id, " + _TRACK_SELECT[len("SELECT "):]   # (the album's id, then as _TRACK_SELECT)
+# As _TRACK_SELECT, then the file's size, modified time and missing_since (the quality check's list)
+_CHECK_SELECT = _TRACK_SELECT.replace(" FROM tracks t", ", f.size, f.mtime_ns, f.missing_since FROM tracks t", 1)
 
 
 # -- what a look at one folder found ---------------------------------------------------------------------
@@ -637,13 +662,14 @@ class LibraryDB:
     def _start_again(self, why: str) -> Path | None:
         """Set the file aside (library.db.damaged-dd-mm-yyyy) and start an empty one, keeping the
         library folders, plays and favourites that can still be read."""
-        roots, plays, favourites = self._salvage()
+        roots, plays, favourites, checks = self._salvage()
         aside = self._set_aside()
         self._prepare_file()
         with self._writing() as con:
             con.executemany("INSERT OR IGNORE INTO roots(path) VALUES (?)", [(r,) for r in roots])
             con.executemany("INSERT INTO plays(key, played_at, seconds_heard, completed) VALUES (?, ?, ?, ?)", plays)
             con.executemany("INSERT OR IGNORE INTO favourites(key, added) VALUES (?, ?)", favourites)
+            con.executemany(f"INSERT OR IGNORE INTO checks({_CHECK_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", checks)
         self.problem = (why + (f" as {aside.name}" if aside else "")
                         + ", and the library is being looked through again.")
         return aside
@@ -718,16 +744,16 @@ class LibraryDB:
         file went (None if there was no file)."""
         return self._start_again("The library database was damaged: it was set aside")
 
-    def _salvage(self) -> tuple[list, list, list]:
+    def _salvage(self) -> tuple[list, list, list, list]:
         found = []
         for sql in ("SELECT path FROM roots", "SELECT key, played_at, seconds_heard, completed FROM plays",
-                    "SELECT key, added FROM favourites"):
+                    "SELECT key, added FROM favourites", f"SELECT {_CHECK_COLUMNS} FROM checks"):
             try:
                 rows = self._con().execute(sql).fetchall()
             except sqlite3.Error:
                 rows = []
             found.append([row[0] for row in rows] if sql.startswith("SELECT path") else rows)
-        return found[0], found[1], found[2]
+        return found[0], found[1], found[2], found[3]
 
     @property
     def generation(self) -> int:
@@ -1336,6 +1362,49 @@ class LibraryDB:
     def favourites(self) -> list[str]:
         """Every favourite's key, newest first."""
         return [_from_db(row[0]) for row in self._con().execute("SELECT key FROM favourites ORDER BY added DESC, key")]
+
+    # -- the whole-library quality check (library_check.py) --
+    def check_songs(self) -> list[tuple[Track, int, int, bool]]:
+        """Every song, with its file's size and modified time as last seen and whether the file is
+        missing just now: what the quality check works through, folder by folder."""
+        with self._reading() as con:
+            return [(_track(row[:-3]), row[-3], row[-2], row[-1] is not None) for row in con.execute(
+                _CHECK_SELECT + " ORDER BY r.id, d.rel, f.name, t.cue_number")]
+
+    def check_states(self) -> dict[str, tuple[int, int, int]]:
+        """{song key: (size, modified ns, format)} for every stored check."""
+        return {_from_db(key): (size, mtime, fmt) for key, size, mtime, fmt in self._con().execute(
+            "SELECT key, size, mtime_ns, format FROM checks")}
+
+    def save_check(self, key, size: int, mtime_ns: int, format: int, findings: str, true_peak: float | None,
+                   result: str, when: float | None = None) -> None:
+        """Keep a song's check (in place of any before). `key`: audiofile.key of its path (or the path)."""
+        with self._writing(bump=False) as con:
+            con.execute(f"INSERT OR REPLACE INTO checks({_CHECK_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (_to_db(_key(key)), int(size), int(mtime_ns), int(format),
+                         time.time() if when is None else when, findings,
+                         None if true_peak is None else float(true_peak), result))
+
+    def check_of(self, key) -> tuple[int, int, int, float, str, float | None, str] | None:
+        """A song's stored check: (size, modified ns, format, when, findings, true peak, result JSON)."""
+        row = self._con().execute("SELECT size, mtime_ns, format, checked, findings, true_peak, result FROM checks"
+                                  " WHERE key = ?", (_to_db(_key(key)),)).fetchone()
+        return tuple(row) if row is not None else None
+
+    def flagged_checks(self) -> list[tuple[str, str, float, str]]:
+        """(key, findings, when, result JSON) of every stored check that found something."""
+        return [(_from_db(key), findings, checked, result) for key, findings, checked, result in self._con().execute(
+            "SELECT key, findings, checked, result FROM checks WHERE findings != ''")]
+
+    def forget_checks(self, keys: Iterable) -> int:
+        """Drop these songs' checks (songs gone from the library); how many there were."""
+        keys = [_to_db(_key(k)) for k in keys]
+        gone = 0
+        with self._writing(bump=False) as con:
+            for chunk in _chunks(keys):
+                gone += con.execute(f"DELETE FROM checks WHERE key IN ({', '.join('?' * len(chunk))})",
+                                    chunk).rowcount
+        return gone
 
     # -- moving over from library_index.json --
     def import_json_index(self, path: str | Path | None = None,

@@ -16,6 +16,11 @@
 - `tk_thread_rule`: a test using it fails if any thread started during the test calls into
   tkinter (a Tk call off Tk's own thread can abort the program): the list of (thread, what) it
   caught, checked empty at the end.
+- A test run reaches nothing system-wide: no window registers with Windows' media panel or the
+  taskbar, and no keyboard hook is installed (DG_LIVE_WINDOWS=1 allows the live checks that do).
+  And it runs at below-normal priority, so the computer's other programs come first.
+- Nothing a test deletes goes to the computer's real Recycle Bin (recycle.py): it's deleted, and
+  noted in `binned`.
 """
 from __future__ import annotations
 
@@ -56,9 +61,23 @@ def _use_hidden_desktop():
     return desktop    # kept for the life of the process: closing it would strand the windows
 
 
+def _below_normal_priority():
+    """Let the computer's other programs have the processor first (worker processes inherit it)."""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x00004000)   # BELOW_NORMAL_PRIORITY_CLASS
+
+
 _hidden_desktop = None
 if sys.platform == "win32" and os.environ.get("IRONBARK_TESTS_VISIBLE") != "1":
     _hidden_desktop = _use_hidden_desktop()
+if sys.platform == "win32":
+    _below_normal_priority()
+
+LIVE_WINDOWS = os.environ.get("DG_LIVE_WINDOWS") == "1"
 
 _numbers = itertools.count()
 
@@ -102,6 +121,48 @@ def _isolated_app_platform(monkeypatch):
     logging.getLogger(logs.PACKAGE_LOGGER).setLevel(logging.NOTSET)
     if not gc.isenabled():   # (a window left open by a test keeps it off)
         gc.enable()
+
+
+class _NoKeyboardHook:
+    """Stands in for mediakeys.KeyboardHook: a real one would see every keystroke on the computer."""
+
+    failed = False
+    thread_id = 0
+
+    def __init__(self, on_press):
+        self.on_press = on_press
+
+    def close(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _nothing_system_wide(monkeypatch):
+    """No test registers a window with Windows' media panel or the taskbar, or hooks the keyboard.
+    Tests that want those pieces put in stand-ins of their own (or are live checks)."""
+    if LIVE_WINDOWS:
+        return
+    from ironbark import mediakeys
+
+    monkeypatch.setattr(mediakeys, "start_windows", lambda hub, hwnd: None)
+    monkeypatch.setattr(mediakeys, "KeyboardHook", _NoKeyboardHook)
+
+
+binned: list[str] = []   # what tests "sent to the Recycle Bin" (deleted instead, and noted here)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_recycle_bin(monkeypatch):
+    """Nothing a test deletes goes to the computer's real Recycle Bin: it's deleted, and noted in
+    `binned`."""
+    from ironbark import recycle
+
+    def delete(full):
+        os.remove(full)
+        binned.append(full)
+
+    monkeypatch.setattr(recycle, "_shell_delete", delete)
+    monkeypatch.setattr(recycle, "_to_mac_bin", delete)
 
 
 @pytest.fixture

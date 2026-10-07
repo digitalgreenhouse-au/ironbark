@@ -92,7 +92,8 @@ DEFAULTS = {
     "media_controls": True,      # Settings → Window: media keys, Windows' media panel, taskbar buttons
     "detailed_logging": False,   # Settings → Window: the player's own notes in app.log too, not just problems
     "library_view": "albums",    # the Library's view: albums/artists/genres/years/composers/recent, or a song
-                                 # view: songs/most_played/recently_played/favourites
+                                 # view: songs/most_played/recently_played/favourites/needs_look
+    "library_check": "off",      # the whole-library quality check: "off", "on" (keeps new music checked) or "paused"
     "track_columns": [],         # optional track-list columns on show: "artist", "album"
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window
@@ -421,6 +422,7 @@ _CHECKS = {
     "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
     "library_folders": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
                                       else _BAD),
+    "library_check": lambda value: value if value in ("off", "on", "paused") else _BAD,
 }
 
 

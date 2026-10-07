@@ -3,12 +3,17 @@
 (0.22.0) The window has the main window's finish: Settings' section headings, flat pill buttons,
 one label column lined up across every section, green / amber values as the main window colours
 them (a ✓ line green, ✗ / ⚠ amber), live numbers in fixed-width digits (theme.numbers), and it
-scrolls (wheel, slim scrollbar) when it's taller than the screen instead of running off it."""
+scrolls (wheel, slim scrollbar) when it's taller than the screen instead of running off it.
+
+Check shows the library quality check's stored result at once when the song has been checked and
+its file hasn't changed since (`stored`, looked up on a worker), with a line saying when; a check
+made here is kept the same way (`remember`), so the library check needn't read the file again."""
 
 from __future__ import annotations
 
 import logging
 import math
+import os
 import sys
 import threading
 import time
@@ -425,6 +430,7 @@ class NowPlayingWindow:
     """Live stats for whatever is playing; follows the player from track to track."""
 
     _analysis_cache: dict[Path, Analysis] = {}
+    _stored_when: dict[Path, float] = {}   # results that came from the library check: when it made them
     _index_cache: dict[Path, FrameIndex | None] = {}
     _album_cache: dict[Path, AlbumResult] = {}  # album folder -> its DR and loudness
     # audio file -> the rip check of its disc (one folder can hold several discs, checked one at a time)
@@ -435,8 +441,13 @@ class NowPlayingWindow:
     def __init__(self, parent: tk.Misc, player: Player, geometry: str = "",
                  on_moved=lambda geometry: None, on_meters=None, on_pcm=None, on_spectrogram=None,
                  on_scope=None, on_compare=None, on_abx=None, on_testsignals=None, prefs: dict | None = None,
-                 on_clipping=None, on_lyrics=None):
+                 on_clipping=None, on_lyrics=None, stored=None, remember=None):
         self.player = player
+        # The library quality check's results: stored(path) → (Analysis, when) or None, and
+        # remember(track, result, (size, modified ns)); both run on a worker thread.
+        self.stored = stored
+        self.remember = remember
+        self._stored_found: Path | None = None   # a stored result came in for this song (shown on the tick)
         self.prefs = prefs if prefs is not None else {}  # read live: Settings → Allow network access
         self.on_moved = on_moved
         self.win = tk.Toplevel(parent, bg=theme.BG)
@@ -630,6 +641,8 @@ class NowPlayingWindow:
         self._cancel = threading.Event()
         self._analysis_state = None   # (the last track's check is cancelled; its watch stops)
         self._analysis = self._analysis_cache.get(track.path)
+        if self._analysis is None and self.stored is not None:
+            self._look_up_stored(track.path)
         self.title_label.configure(text=track.title)
         self.sub_label.configure(text=track.display_artist_album or track.path.parent.name)
         self._shown_db = []
@@ -670,6 +683,29 @@ class NowPlayingWindow:
         else:
             self._index = None  # constant bitrate, or no frame index for this format: average only
 
+    def _look_up_stored(self, path: Path):
+        """Ask (on a worker) for the library check's result for this song; the tick shows it."""
+        def work():
+            try:
+                found = self.stored(path)
+            except Exception:  # noqa: BLE001 — without it, the Check button is there as before
+                log.info("couldn't look up the stored check of %s", path, exc_info=True)
+                found = None
+            if found is not None:
+                result, when = found
+                self._analysis_cache.setdefault(path, result)
+                self._stored_when[path] = when
+                self._stored_found = path
+
+        threading.Thread(target=work, name="stored-check", daemon=True).start()
+
+    def _take_stored(self):
+        """(The tick.) A stored result for the song on show came in: shown, unless a check is running."""
+        path, self._stored_found = self._stored_found, None
+        if path is not None and path == self._track_path and self._analysis is None and self._analysis_state is None:
+            self._analysis = self._analysis_cache.get(path)
+            self._show_check()
+
     def _load_index(self, path: Path, builder):
         if path in self._index_cache:
             self._index = self._index_cache[path]
@@ -697,6 +733,10 @@ class NowPlayingWindow:
             playing = self.player.status().track
             rows = describe_analysis(self._analysis, playing.codec if playing else "FLAC",
                                      cue=playing is not None and playing.cue is not None)
+            when = self._stored_when.get(self._track_path) if self._track_path is not None else None
+            if when is not None:
+                rows.append(("Checked", f"{time.strftime('%d/%m/%Y', time.localtime(when))} by the library check "
+                                        "(the file hasn't changed since)"))
             for row, (label, value) in enumerate(rows):
                 # ✓ green, ✗ / ⚠ amber (tone_of); negative figures with the minus sign, as the live ones
                 self._row(self.check_frame, row, label, theme.figures(value))
@@ -925,8 +965,11 @@ class NowPlayingWindow:
 
         def work():
             try:
+                st = os.stat(audiofile.real_path(path))
                 result = analyse(path, track.bits, track.md5,
                                  progress=lambda p: state.__setitem__("progress", p), cancel=cancel)
+                if result is not None and self.remember is not None:
+                    self.remember(track, result, (st.st_size, st.st_mtime_ns))
             except (OSError, RuntimeError):  # won't even open: damaged from the start
                 result = Analysis(md5_ok=False, dr=None, peak_dbfs=float("-inf"), damaged_at=0.0,
                                   duration=track.duration)
@@ -935,6 +978,7 @@ class NowPlayingWindow:
                 result, state["error"] = None, f"{type(exc).__name__}: {exc}"
             if result is not None:
                 self._analysis_cache[path] = result
+                self._stored_when.pop(path, None)   # (checked here and now)
             state["done"] = True
 
         threading.Thread(target=work, name="analysis", daemon=True).start()
@@ -969,6 +1013,8 @@ class NowPlayingWindow:
         track = status.track
         if track is not None and track.path != self._track_path:
             self._on_track_change(track)
+        if self._stored_found is not None:
+            self._take_stored()
         if not toolwin.on_screen(self.win):
             return   # minimised: the live figures aren't drawn
 

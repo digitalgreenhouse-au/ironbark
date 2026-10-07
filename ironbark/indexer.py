@@ -185,6 +185,11 @@ class _Root:
 def _worker_start() -> None:
     """Each worker process, as it starts: lower its priority, so reading tags never takes the CPU
     from the player's own process."""
+    lower_priority()
+
+
+def lower_priority() -> None:
+    """This process at below-normal priority (a worker process: the library check's too)."""
     try:
         if sys.platform == "win32":
             import ctypes

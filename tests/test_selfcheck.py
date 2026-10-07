@@ -62,6 +62,27 @@ def test_the_window_check_leaves_the_settings_alone(tmp_path, monkeypatch):
     assert not real.parent.exists()              # nothing written where the user's settings live
 
 
+def test_the_window_check_registers_nothing_system_wide(monkeypatch):
+    """With the player's own defaults (media keys and new-music watching on), the check window
+    still never hands itself to Windows' media panel / taskbar / a keyboard hook."""
+    pytest.importorskip("tkinter")
+    from ironbark import mediakeys
+
+    started = []
+    monkeypatch.setattr(mediakeys, "start_windows", lambda hub, hwnd: started.append(hwnd))
+    assert settings.DEFAULTS["media_controls"] is True and settings.DEFAULTS["watch_music"] is True
+    try:
+        selfcheck._check_window()
+    except Exception as error:
+        if "display" in str(error).lower() or "TclError" in type(error).__name__:
+            pytest.skip(f"no display: {error}")
+        raise
+    finally:
+        theme.use(theme.DARK)
+        gc.collect()
+    assert started == []
+
+
 def test_command_line_option_exits_with_the_checks_result(monkeypatch):
     seen = []
     monkeypatch.setattr(selfcheck, "run", lambda report=None, hidden=False: seen.append((report, hidden)) or 3)

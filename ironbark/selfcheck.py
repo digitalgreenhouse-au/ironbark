@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import gc
 import io
+import json
 import shutil
 import sys
 import tempfile
@@ -56,7 +57,8 @@ def run(report_path: str | None = None, hidden: bool = False) -> int:
     for name, check in (("libsndfile", _check_sndfile), ("PortAudio", _check_portaudio),
                         ("Windows audio", _check_windows_audio), ("media controls", _check_media_controls),
                         ("secure connections", _check_network), ("library database", _check_library_db),
-                        ("library indexer", _check_indexer), ("icon files", _check_icons),
+                        ("library indexer", _check_indexer), ("library check", _check_library_check),
+                        ("icon files", _check_icons),
                         ("licences", _check_licences), ("single instance", _check_single_instance),
                         ("main window", _check_window)):
         try:
@@ -278,6 +280,39 @@ def _check_indexer() -> str:
         shutil.rmtree(home, ignore_errors=True)
 
 
+def _check_library_check() -> str:
+    """The whole-library quality check, on two songs made in an empty temporary folder: checked in a
+    worker process (as a library's are), one found clipped, both stored."""
+    import numpy as np
+    import soundfile as sf
+
+    from . import indexer, library_check, library_db
+
+    home = Path(tempfile.mkdtemp(prefix="ironbark-selfcheck-quality-"))
+    try:
+        root = home / "Music"
+        rng = np.random.default_rng(1)
+        quiet = (0.1 * rng.standard_normal((44100, 2))).clip(-0.9, 0.9)
+        loud = quiet.copy()
+        loud[22050: 22055] = 1.0
+        for name, data in (("Quiet", quiet), ("Loud", loud)):
+            (root / name).mkdir(parents=True)
+            sf.write(root / name / "01 Song.flac", data, 44100, format="FLAC", subtype="PCM_16")
+        with library_db.LibraryDB.open(home / library_db.FILE_NAME) as db:
+            indexer.Indexer(db).check([root])
+            checker = library_check.Checker(lambda: db, workers=1)
+            checker.start()
+            if not checker.idle(120) or checker.status.error:
+                raise RuntimeError(f"the check didn't finish: {checker.status}")
+            checker.close()
+            found = {hit.track.path.parent.name: look.words for hit, look in library_check.needs_look(db)}
+            if len(db.check_states()) != 2 or found != {"Loud": ("clipping",)}:
+                raise RuntimeError(f"the check found the wrong things: {found}")
+        return "2 songs checked in a worker process, the clipped one found, both stored"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def _check_icons() -> str:
     from . import appicon
 
@@ -343,6 +378,11 @@ def _check_window() -> str:
     real_settings_path = settings.settings_path   # settings, playlists, index, logs all follow it
     try:
         settings.settings_path = lambda: home / "settings.json"
+        # The check window registers nothing system-wide (Windows' media panel, the taskbar's
+        # buttons, a keyboard hook) and doesn't start looking for new music; "media controls"
+        # above checks those pieces are there without taking them over.
+        (home / "settings.json").write_text(
+            json.dumps({"media_controls": False, "watch_music": False}), encoding="utf-8")
         appicon.set_app_id()
         root = tk.Tk()
         errors = []    # errors in the window code (Tk would only print them)

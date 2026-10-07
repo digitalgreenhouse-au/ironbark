@@ -96,7 +96,8 @@ Windows SmartScreen warns about an unknown publisher.
 - **Lyrics** (L): from the song's tags or a `.lrc` / `.txt` file beside it, never from the internet;
   synced lyrics light up line by line.
 - **Playlists** are plain `.m3u8` files any player can open. Missing songs stay listed as "file not
-  found", so a playlist never quietly loses them.
+  found", so a playlist never quietly loses them. A deleted playlist goes to the Recycle Bin, and one
+  saved by an older player in an older text format is only rewritten once you've said so.
 - **Drag and drop** folders, songs and playlists from Explorer onto the player or onto a tab.
 - **Media keys and Windows' media panel**, with play / pause / next / previous on the taskbar preview.
 - **Keyboard:** playback, volume and window shortcuts work in every Ironbark window; **F1** lists
@@ -139,6 +140,12 @@ Windows SmartScreen warns about an unknown publisher.
   when the CD was ripped.
 - **Rip verification** (optional, online): compares a CD rip with the **AccurateRip** and
   **CUETools** databases. Off unless you switch on Settings → Network → *Allow network access*.
+- **The whole library at once** (Library → *Needs a look*, when you choose to start it): every song
+  gets the same check in the background, at low priority, and the view lists what needs a look —
+  damaged files, MD5 mismatches, lossy-source, upsampling and padded-bit-depth clues, clipping,
+  misnamed files, and HDCD / MQA / pre-emphasis for information. It says how long it will take
+  first, can be paused, and carries on where it left off; each result is kept, so Now Playing's
+  Check is instant for a song already checked, and new music is checked as it arrives.
 
 ### Measuring and listening tools
 

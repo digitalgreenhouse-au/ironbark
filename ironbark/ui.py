@@ -51,7 +51,13 @@ Volume levelling (Settings → Sound, off by default; levelling.py): each song's
 ahead of play beside the clipping guard's (`_apply_levelling`) and handed to the player per file.
 Stop after the current song and the sleep timer (sleep.py): in the track menu and the Up next list,
 and Ctrl+. / Ctrl+Shift+S, for this session only (`stop_after_current`, `set_sleep_timer`).
-Lyrics: key L (lyrics_window.py)."""
+Lyrics: key L (lyrics_window.py).
+
+The whole-library quality check (library_check.py, opt-in from the Library's Needs a look) runs on
+its own thread and worker processes; it carries on CHECK_AFTER_MS after start-up when it was left
+on, looks again when the watcher finds changed music, holds off while a blind test or test signals
+run, and stops with the player. Its stored results serve Now Playing's Check and the clipping
+guard's true peaks (`_stored_peak`)."""
 
 from __future__ import annotations
 
@@ -73,9 +79,9 @@ from typing import Callable
 from PIL import ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
-               dragdrop, experiments, keys, levelling, library_db, library_index, logs, loudness, mediakeys,
-               placement, playlists, popups, quick_search, settings, sleep, tag_editor, theme, tkgc, updates,
-               watcher)
+               dragdrop, experiments, keys, levelling, library_check, library_db, library_index, logs, loudness,
+               mediakeys, placement, playlists, popups, quick_search, recycle, settings, sleep, tag_editor, theme,
+               tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -115,6 +121,7 @@ WHEEL_NOTCH = 120 if sys.platform == "win32" else 1   # Tk's wheel delta for one
 QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
+CHECK_AFTER_MS = 60000  # a library quality check left on carries on this long after start-up
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
 THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
@@ -321,6 +328,9 @@ class PlayerWindow:
         # Favourite songs (♥): read from the library database on a worker, then kept here.
         self.favourites = Favourites(lambda: self._index().db)
         self.favourites.changed.append(self._favourites_changed)
+        # The whole-library quality check: off until chosen in the Library; the choice is kept.
+        self.checker = library_check.Checker(lambda: self._index().db, state=self.prefs.get("library_check", "off"),
+                                             on_state=lambda state: self.prefs.update(library_check=state))
         self._tag_window: TagWindow | None = None
         self._tag_history: TagHistoryWindow | None = None
         self._help: HelpWindow | None = None
@@ -467,6 +477,7 @@ class PlayerWindow:
             self.root.after(INDEX_AFTER_MS, self._refresh_index)
         self._update_new_albums()
         self._update_job = self.root.after(UPDATE_FIRST_MS, self._update_tick)
+        self._check_job = self.root.after(CHECK_AFTER_MS, self.checker.kick)   # (nothing unless it was left on)
         # Up and running: from here Python's cycle collector runs only on this thread (tkgc.py).
         self.collector = tkgc.Collector(root)
         self.collector.start()
@@ -1675,6 +1686,10 @@ class PlayerWindow:
                 continue
             if path in self._peaks or path not in self._peak_wanted:
                 continue
+            stored = self._stored_peak(path)
+            if stored is not None:   # (the library check read it already: known at once)
+                self._peaks[path] = stored
+                continue
             try:
                 self._peaks[path] = true_peak(path) or 0.0
             except (OSError, RuntimeError, ValueError):
@@ -1695,6 +1710,11 @@ class PlayerWindow:
             tags = self._gain_tags[path]
             need_lufs = path not in self._lufs and (tags is None or tags.track_gain is None)
             need_peak = path not in self._peaks
+            if need_peak:
+                stored = self._stored_peak(path)
+                if stored is not None:
+                    self._peaks[path] = stored
+                    need_peak = False
             if need_lufs or need_peak:
                 peak, lufs = levelling.measure(path, peak=need_peak, loudness=need_lufs)
                 if need_peak:
@@ -1730,6 +1750,36 @@ class PlayerWindow:
                 result = (None, None)
             if result is not None:   # (None: cancelled — asked again if it's wanted again)
                 self._album_lufs[folder] = result[0]
+
+    def _stored_peak(self, path: Path) -> float | None:
+        """(On a worker.) A song's true peak from the library quality check, when it has been checked
+        and its file hasn't changed since; None to measure it."""
+        try:
+            return library_check.stored_peak(self._index().db, path)
+        except Exception:   # (a database that can't be read just now: measured as before)
+            log.info("couldn't read the stored check of %s", path, exc_info=True)
+            return None
+
+    def _stored_check(self, path: Path):
+        """(On a short-lived worker, for Now Playing.) A song's stored check and when it was made, or None."""
+        db = self._index().db
+        try:
+            return library_check.stored(db, path)
+        except Exception:
+            log.info("couldn't read the stored check of %s", path, exc_info=True)
+            return None
+        finally:
+            db.release()
+
+    def _remember_check(self, track: Track, result, file) -> None:
+        """(On Now Playing's worker.) Keep its check, so the library check needn't read the file again."""
+        db = self._index().db
+        try:
+            library_check.remember(db, track, result, file)
+        except Exception:
+            log.info("couldn't keep the check of %s", track.path, exc_info=True)
+        finally:
+            db.release()
 
     def _want_album(self, folder: Path, track_path: Path):
         if folder == self._album_wanted:
@@ -1935,8 +1985,10 @@ class PlayerWindow:
             return
         added = f"Added {len(tracks)} song{'' if len(tracks) == 1 else 's'} to “{path.stem}”"
         if tab is not None and tab.tracks is not None:
-            self._save_playlist(path, tab.tracks + list(tracks))
-            self._set_notice(added)
+            if self._save_playlist(path, tab.tracks + list(tracks)):
+                self._set_notice(added)
+            return
+        if not self._may_rewrite(path):
             return
         self._writing_playlists.add(path)
         result: dict = {}
@@ -1965,9 +2017,28 @@ class PlayerWindow:
         threading.Thread(target=work, name="playlist-add", daemon=True).start()
         self.root.after(50, finish)
 
+    def _may_rewrite(self, path: Path) -> bool:
+        """A playlist another program saved in an older encoding (a Windows code page) is written back
+        as UTF-8, which could keep a misread name wrong for good: ask first. True to go ahead."""
+        encoding = playlists.fallback_encoding(path)
+        if not encoding:
+            return True
+        self._for_prompt()
+        return popups.confirm(
+            self.root, f"Save “{path.stem}” as UTF-8?",
+            f"This playlist was saved by another program in an older text format ({encoding}). Saving this "
+            "change writes it as UTF-8, which today's players read.",
+            detail=("If a song's name has letters that format can't hold, it may have been misread when the "
+                    "playlist was opened (the song shows as missing) — and it would be saved that way. "
+                    "Don't save leaves the file exactly as it is."),
+            ok="Save as UTF-8", cancel="Don't save", tone="warn")
+
     def _save_playlist(self, path: Path, tracks: list[Track]) -> bool:
         """Write the playlist, and update its tab (and the music, if it's playing from it). False
-        when it couldn't be written (the reason has been shown)."""
+        when it couldn't be written (the reason has been shown) or wasn't (a playlist in an older
+        encoding, left as it is)."""
+        if not self._may_rewrite(path):
+            return False
         try:
             playlists.write(path, tracks)
         except (OSError, ValueError) as exc:   # (ValueError: a name the file's encoding can't hold)
@@ -2113,23 +2184,56 @@ class PlayerWindow:
         self._refresh_tabs()
 
     def delete_playlist(self, index: int):
+        """Delete a playlist: to the Recycle Bin, so it can be restored — or, on a drive that has
+        none (a network drive, a USB stick), for good once that's been said."""
         tab = self.tabs[index]
-        name = Path(tab.path).stem
+        path = Path(tab.path)
+        name = path.stem
         self._for_prompt()
-        if not popups.confirm(self.root, f"Delete the playlist “{name}”?",
-                              "Only the playlist goes; the songs themselves aren't touched.",
-                              ok="Delete", danger=True):
-            return
-        if tab not in self.tabs:   # (closed while the box was up)
+        binned = recycle.can_recycle(path)
+        if binned:
+            asked = popups.confirm(self.root, f"Delete the playlist “{name}”?",
+                                   f"It goes to the {recycle.BIN_NAME}, so it can be restored from there. The songs "
+                                   "themselves aren't touched.", ok="Delete", danger=True)
+        else:
+            asked = popups.confirm(self.root, f"Delete the playlist “{name}” for good?",
+                                   f"It's on a drive with no {recycle.BIN_NAME} (a network drive or a USB stick), so "
+                                   "it can't be restored. The songs themselves aren't touched.",
+                                   ok="Delete for good", danger=True)
+        if not asked or tab not in self.tabs:   # (closed while the box was up)
             return
         index = self.tabs.index(tab)
         self.close_tab(index, remember=False)
-        try:
-            Path(tab.path).unlink()
-        except OSError as exc:
-            self._set_notice(f"Couldn't delete the playlist file: {exc}")
+        if not binned:
+            try:
+                path.unlink()
+            except OSError as exc:
+                self._set_notice(f"Couldn't delete the playlist file: {exc}")
+                return
+            self._set_notice(f"Deleted the playlist “{name}”")
             return
-        self._set_notice(f"Deleted the playlist “{name}”")
+        result: dict = {}
+
+        def work():   # (the shell's delete runs a message loop of its own: never on this thread)
+            try:
+                recycle.recycle(path)
+            except OSError as exc:
+                result["error"] = exc
+            finally:
+                result["done"] = True
+
+        def finish():
+            if "done" not in result:
+                self.root.after(50, finish)
+            elif "error" in result:
+                self._set_notice(f"Couldn't move the playlist to the {recycle.BIN_NAME} ({result['error']}): "
+                                 "it's still where it was", 10000)
+            else:
+                self._set_notice(f"Moved the playlist “{name}” to the {recycle.BIN_NAME}: restore it from there "
+                                 "to have it back", 10000)
+
+        threading.Thread(target=work, name="playlist-delete", daemon=True).start()
+        self.root.after(50, finish)
 
     # -- opening things ------------------------------------------------------
     def choose_folder(self):
@@ -2230,7 +2334,7 @@ class PlayerWindow:
                                 on_moved=lambda geometry: self.prefs.update(library_geometry=geometry),
                                 on_edit_tags=self.edit_album_tags, can_edit_tags=self._tag_editing,
                                 new_albums=lambda: self._new_albums, actions=self.song_actions(),
-                                on_add_tracks=self._add_tracks_to_current)
+                                on_add_tracks=self._add_tracks_to_current, checker=self.checker)
         self._library = self._with_keys(library, "library", library.key_handlers())
         if album is not None or search:
             library.show(album=album, search=search or None)
@@ -2630,6 +2734,9 @@ class PlayerWindow:
         changed = False
         for report in reports:
             changed = changed or not report.diff.nothing
+        if changed:
+            self.checker.kick()   # (new or changed music: checked as it arrives, when the check is on)
+        for report in reports:
             text = watcher.note(report, len(watcher.arrived(report, self._new_albums)))
             if text:
                 self._set_notice(text, NEW_MUSIC_NOTE_MS)
@@ -2949,7 +3056,7 @@ class PlayerWindow:
                 on_spectrogram=self.show_spectrogram,
                 on_scope=self.show_scope, on_compare=self.show_compare, on_abx=self.show_abx,
                 on_testsignals=self.show_testsignals, on_lyrics=self.show_lyrics,
-                prefs=self.prefs))
+                prefs=self.prefs, stored=self._stored_check, remember=self._remember_check))
 
     def show_meters(self):
         """VU, PPM, RMS and true-peak meters (one window at a time)."""
@@ -3016,6 +3123,7 @@ class PlayerWindow:
         else:
             path, position = self._playing_file()
             self._abx = self._with_keys(AbxWindow(self.root, self.player, self.prefs, path_a=path, start_s=position))
+            self._hold_check_while(self._abx.win, "abx")
 
     def show_testsignals(self):
         """Hardware test: test signals, THD+N, J-test, frequency response (one window at a time)."""
@@ -3023,6 +3131,14 @@ class PlayerWindow:
             self._testsignals.lift()
         else:
             self._testsignals = self._with_keys(TestSignalsWindow(self.root, self.player, self.prefs))
+            self._hold_check_while(self._testsignals.win, "testsignals")
+
+    def _hold_check_while(self, window: tk.Misc, reason: str):
+        """The library quality check holds off while a blind test or a measurement has this window open
+        (its worker processes would compete for the computer); it carries on once it closes."""
+        self.checker.hold(reason)
+        window.bind("<Destroy>", lambda e: self.checker.hold(reason, False) if e.widget is window else None,
+                    add="+")
 
     def show_help(self):
         """F1 / ?: every keyboard shortcut, with a filter box (one window at a time)."""
@@ -3774,6 +3890,7 @@ class PlayerWindow:
                     self._guarded(self._retry_tag_saves)
             if self._index_updated:
                 self._index_updated = False
+                self.checker.kick()   # (a tag edit changed the files: checked again)
                 if self._library is not None and self._library.win.winfo_exists():
                     self._guarded(self._library.reload)
             self._guarded(self._watch_reports)
@@ -4036,7 +4153,8 @@ class PlayerWindow:
             return
         try:
             for step in (self._save_on_close, self._stop_timers, self._stop_media, self.watcher.stop,
-                         self._record_last_play, self._stop_indexing, self.player.close, self._last_tag_tries):
+                         self._record_last_play, self._stop_indexing, self._stop_checking, self.player.close,
+                         self._last_tag_tries):
                 try:
                     step()
                 except Exception:
@@ -4053,8 +4171,12 @@ class PlayerWindow:
         """A look at the library under way stops after the folder in hand (the next start carries on)."""
         self._index().indexer.cancel()
 
+    def _stop_checking(self):
+        """The library quality check stops the songs in hand (stored results stay; it carries on next time)."""
+        self.checker.close(timeout=1.0)
+
     def _stop_timers(self):
-        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job):
+        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job, self._check_job):
             if job is not None:
                 self.root.after_cancel(job)
 

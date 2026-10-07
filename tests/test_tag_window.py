@@ -164,12 +164,14 @@ def test_edit_an_album_then_undo_it(root, music):
 
     history = TagHistoryWindow(root, {}, on_saved=saves.append, busy=lambda: set(),
                                confirm=lambda message, detail: True)
+    wait(root, lambda: history.loading is None)          # (read on a worker thread)
     assert len(history.entries) == 1 and history.tree.set("0", "what").startswith("Album and Year")
     history.tree.selection_set("0")
     root.update()
     history.undo()
     wait(root, lambda: len(saves) == 2)
     assert {library.read_track(t.path).album for t in tracks} == {"Album"}
+    wait(root, lambda: history.loading is None and len(history.entries) == 2)
     assert history.tree.set("1", "state") == "undone"
     history.close()
 

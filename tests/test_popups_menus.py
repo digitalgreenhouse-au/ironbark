@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import re
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ import pytest
 from ironbark import playlists, popups, tabbar, theme
 from ironbark.popups import Prompt, PopupMenu
 
+import conftest
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 PACKAGE = Path(__file__).resolve().parents[1] / "ironbark"
@@ -402,8 +404,32 @@ def test_playlist_name_prompt_checks_for_a_clash(make_window, tmp_path, monkeypa
     window.delete_playlist(window.current)
     assert playlists.path_for("Jazz").exists()
     answer_later(root, lambda p: p._chosen(0))
+    window.delete_playlist(window.current)          # (to the Recycle Bin, on a worker thread)
+    gone = playlists.path_for("Jazz")
+    deadline = time.monotonic() + 10
+    while (gone.exists() or "Recycle Bin" not in (window._notice or "")) and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.02)
+    assert not gone.exists() and not errors and str(gone) in conftest.binned
+    assert window._notice.startswith("Moved the playlist “Jazz” to the Recycle Bin")
+
+
+def test_a_playlist_on_a_drive_with_no_recycle_bin_is_deleted_for_good_only_when_said(make_window, tmp_path,
+                                                                                       monkeypatch):
+    from ironbark import recycle
+
+    window, root, player, errors = make_window()
+    monkeypatch.setattr(playlists, "folder", lambda: tmp_path / "Playlists")
+    monkeypatch.setattr(recycle, "can_recycle", lambda path: False)   # (a network drive, a USB stick)
+    path = playlists.path_for("Mix")
+    playlists.write(path, [])
+    window.open_tab("playlist", path)
+    asked = []
+    answer_later(root, lambda p: (asked.append((p.heading, [b.text_value for b in p.buttons])), p._chosen(0)))
     window.delete_playlist(window.current)
-    assert not playlists.path_for("Jazz").exists() and not errors
+    assert asked == [("Delete the playlist “Mix” for good?", ["Delete for good", "Cancel"])]
+    assert not path.exists() and str(path) not in conftest.binned and not errors
+    assert window._notice == "Deleted the playlist “Mix”"
 
 
 def test_protect_ears_is_an_unmissable_modal_box(make_window):

@@ -15,6 +15,13 @@ played** (from the plays the database counts); **Favourites** (♥: right-click 
 tab or in the search panel — and choose Add to favourites). A song plays in its album (Enter or a
 double-click: the album opens in a tab and plays from that song); right-click for the rest.
 
+**Needs a look** (the last song view): what the whole-library quality check (library_check.py) found —
+damaged files and MD5 mismatches, clues to a lossy or upsampled source or a padded bit depth,
+clipping, misnamed files, and for information HDCD / MQA / pre-emphasis — worst first, in Now
+Playing's words. The check is opt-in: "Check the whole library…" says how long it will take and
+asks first; then it runs in the background (Pause / Resume / Stop here), its progress in the status
+line of every view, and the list fills in as it goes.
+
 The list is a virtual_list.VirtualTree, so a library of any size lists as quickly as a small one:
 only the rows on show are in the Treeview. The Songs view reads its rows a page at a time on the
 query thread as they come into view. The album column shows the album's tag (its folder's name only
@@ -48,8 +55,8 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import (audiofile, browse, controls, indexer, keys, library_db, library_index, placement, popups, searchfold,
-               theme)
+from . import (audiofile, browse, controls, indexer, keys, library_check, library_db, library_index, placement, popups,
+               searchfold, theme)
 from .browse import album_label
 from .favourites import HEART
 from .library import Album, Track, sort_name
@@ -61,22 +68,24 @@ from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)
 SEARCH_DELAY_MS = 150   # the list follows the search box after a pause in typing, as the track list does
 TICK_MS = 100           # how often the window picks up the album list and the indexer's news
-SONG_VIEWS = ("songs", "most_played", "recently_played", "favourites")
+SONG_VIEWS = ("songs", "most_played", "recently_played", "favourites", "needs_look")
 VIEWS = browse.VIEWS + SONG_VIEWS
 VIEW_TITLES = {**browse.VIEW_TITLES, "songs": "Songs", "most_played": "Most played",
-               "recently_played": "Recently played", "favourites": "Favourites"}
+               "recently_played": "Recently played", "favourites": "Favourites", "needs_look": "Needs a look"}
 # Every column the list can show; each view shows some of them (DISPLAYED).
-COLUMNS = ("album", "artist", "year", "quality", "tracks", "added", "title", "time", "plays")
+COLUMNS = ("album", "artist", "year", "quality", "tracks", "added", "title", "time", "plays", "found")
 HEADINGS = {"album": "Album", "artist": "Artist", "year": "Year", "quality": "Quality", "tracks": "Tracks",
-            "added": "Added", "title": "Title", "time": "Time", "plays": "Plays"}
+            "added": "Added", "title": "Title", "time": "Time", "plays": "Plays", "found": "Found"}
 DISPLAYED = {"songs": ("title", "artist", "album", "year", "quality", "time"),
              "most_played": ("title", "artist", "album", "plays", "time"),
              "recently_played": ("title", "artist", "album", "added", "time"),
-             "favourites": ("title", "artist", "album", "year", "quality", "time")}
+             "favourites": ("title", "artist", "album", "year", "quality", "time"),
+             "needs_look": ("title", "artist", "album", "found")}
 ALBUM_COLUMNS = browse.COLUMNS
 # The sort each song view starts with ("": the order the list came in — newest favourite first).
 SONG_SORT = {"songs": ("title", False), "most_played": ("plays", True), "recently_played": ("added", True),
-             "favourites": ("", False)}
+             "favourites": ("", False), "needs_look": ("found", False)}
+CHECK_REREAD_S = 3.0     # Needs a look reads the check's new results at most this often while it runs
 SONG_LIMIT = 1000        # songs the Songs view's search lists (the best ones; the status says how many match)
 PLAYED_LIMIT = 500       # songs Most played / Recently played list
 PAGE = 200               # the Songs view's rows are read this many at a time
@@ -159,6 +168,8 @@ def _song_sort_key(column: str):
         return lambda pair: pair[0].track.duration
     if column in ("plays", "added"):
         return lambda pair: pair[1] or 0
+    if column == "found":
+        return library_check.worst_first
     return lambda pair: sort_name(pair[0].track.title)
 
 
@@ -192,7 +203,7 @@ class SongPages:
     def row(self, index: int) -> tuple:
         hit = self.hit(index)
         if hit is None:
-            return (f"s{self.ids[index]}", ("",) * 6 + ("…", "", ""), ("loading",))
+            return (f"s{self.ids[index]}", ("",) * 6 + ("…", "", "", ""), ("loading",))
         return self.make_row(hit, None)
 
     def index_of(self, key: str) -> int | None:
@@ -226,7 +237,8 @@ class LibraryWindow:
                  can_edit_tags: Callable[[], bool] = lambda: False,
                  new_albums: Callable[[], list[Path]] = lambda: [],
                  actions: Actions | None = None,
-                 on_add_tracks: Callable[[list[Track]], str] | None = None):
+                 on_add_tracks: Callable[[list[Track]], str] | None = None,
+                 checker: library_check.Checker | None = None):
         # The library folders (one, or several); on_root_changed(folders) when "Add folder…" adds one.
         self.roots: list[Path] = library_db.outermost([root_folder] if isinstance(root_folder, (str, Path))
                                                       else root_folder)
@@ -244,6 +256,7 @@ class LibraryWindow:
         self.new_albums = new_albums  # the new albums' folders (0.17.0), read fresh at every fill
         self.actions = actions or Actions()   # what a song's Play / Add to queue / … do (the player's)
         self.on_add_tracks = on_add_tracks    # songs onto the tab on show; returns what to say
+        self.checker = checker                # the whole-library quality check (the player's), if any
         self._new: set[Path] = set()
         self.on_moved = on_moved
         self.view = view if view in VIEWS else "albums"
@@ -275,6 +288,13 @@ class LibraryWindow:
         self._pages: SongPages | None = None
         self._page_serial = 0
         self._song_problem = ""
+        # The quality check: its results already listed (checker.changes), when they were last read,
+        # the status last painted, the buttons' look, and the "how long?" asked of the query thread.
+        self._check_seen = checker.changes if checker is not None else 0
+        self._check_read = 0.0
+        self._check_status = None
+        self._check_look: tuple | None = None
+        self._estimate_asked: int | None = None
 
         self.win = tk.Toplevel(parent, bg=theme.BG)
         self.win.title("Library")
@@ -326,15 +346,15 @@ class LibraryWindow:
         self.tree = self.list.tree
         self.scrollbar = self.list.scrollbar
         widths = {"album": 220, "artist": 140, "year": 48, "quality": 64, "tracks": 52, "added": 82, "title": 220,
-                  "time": 52, "plays": 52}
+                  "time": 52, "plays": 52, "found": 260}
         for column in COLUMNS:
             anchor = "e" if column in _NUMERIC else "w"
             self.tree.heading(column, text=HEADINGS[column], anchor=anchor,
                               command=lambda c=column: self.sort_by(c))
             self.tree.column(column, anchor=anchor, width=theme.px(widths[column]),
-                             stretch=column in ("album", "artist", "title"))
+                             stretch=column in ("album", "artist", "title", "found"))
         self.tree.column("#0", width=theme.px(22), stretch=False)  # the fold arrow of a group
-        self._fit = fit_columns(self.tree, {"album": 3, "artist": 2, "title": 3}, minimum=theme.px(60))
+        self._fit = fit_columns(self.tree, {"album": 3, "artist": 2, "title": 3, "found": 6}, minimum=theme.px(60))
         self._colour_tags()
         theme.on_change(self._palette_changed)
         self.drag: TreeDrag | None = None
@@ -364,6 +384,10 @@ class LibraryWindow:
         # (The button is packed first, so a long status line is cut short rather than pushing it out of sight.)
         self.load_all_button = controls.FlatButton(bottom, "Open all albums in a tab", self._load_all)
         self.load_all_button.pack(side="right")
+        # Needs a look's own: start the quality check (or resume it), and pause / stop it.
+        self.check_button = controls.FlatButton(bottom, "Check the whole library…", self._ask_check, kind="primary",
+                                                label="Read every song once, in the background, for what needs a look")
+        self.check_other = controls.FlatButton(bottom, "Pause", self._pause_check)
         self.status = ttk.Label(bottom, text="", style="Muted.TLabel", anchor="w")
         self.status.pack(side="left", fill="x", expand=True)
 
@@ -450,6 +474,9 @@ class LibraryWindow:
             if answer.kind.startswith("page:"):
                 pages = self._take_page(answer) or pages
                 continue
+            if answer.kind == "estimate":
+                self._take_estimate(answer)
+                continue
             if answer.kind == "songs":
                 news = self._take_songs(answer) or news
                 continue
@@ -479,6 +506,7 @@ class LibraryWindow:
         if (self.view in SONG_VIEWS and self._songs_have is None and self._songs_asked is None
                 and not self._song_problem and self._refresh is None):
             self._want_songs()
+        news = self._follow_check() or news
         if news or job is not None:
             self._paint_status()
         self._tick_job = self.win.after(TICK_MS, self._tick)
@@ -550,6 +578,8 @@ class LibraryWindow:
         self._paint_views()
         if view in SONG_VIEWS:
             self._songs_have = None   # (plays and favourites change while the window is open: read afresh)
+        if view == "needs_look" and self.checker is not None:
+            self._check_seen, self._check_read = self.checker.changes, time.monotonic()
         self._fill()
 
     def _colour_tags(self):
@@ -559,6 +589,7 @@ class LibraryWindow:
         self.tree.tag_configure("new", foreground=theme.ACCENT_TEXT)   # a new album: green until opened
         self.tree.tag_configure("loading", foreground=theme.MUTED)
         self.tree.tag_configure("note", foreground=theme.MUTED)
+        self.tree.tag_configure("information", foreground=theme.MUTED)   # Needs a look: nothing wrong, just said
 
     def _palette_changed(self, _palette):
         """Treeview row colours and the view words keep their colours: redo them."""
@@ -628,7 +659,7 @@ class LibraryWindow:
         name = album_label(album)
         name = NEW_DOT + name if album.path in self._new else name
         return (name, album.artist, album.year or "", album.quality, album.track_count, added_text(album.added),
-                "", "", "")
+                "", "", "", "")
 
     def _fill(self):
         if self._fill_job is not None:   # (this shows the search as it stands: a pending one would only repeat it)
@@ -641,6 +672,7 @@ class LibraryWindow:
         self.tree.configure(displaycolumns=DISPLAYED[self.view] if songs else ALBUM_COLUMNS)
         self.search.hint.configure(text="Search every song: title, artist, album, composer…" if songs
                                    else "Search albums, artists, years, genres")
+        self._paint_check()
         if songs:
             self.load_all_button.pack_forget()
             self.open_button.configure(text="Play")
@@ -680,7 +712,7 @@ class LibraryWindow:
                 count = len(albums)
                 folded = not words and group.name in closed
                 songs = sum(a.track_count for a in albums)
-                rows.append((parent, (group.name, count_text(count, "album"), "", "", songs, "", "", "", ""),
+                rows.append((parent, (group.name, count_text(count, "album"), "", "", songs, "", "", "", "", ""),
                              ("group",), CLOSED_MARK if folded else OPEN_MARK))
                 items.append(("group", group.name))
                 self._groups[parent] = group.name
@@ -725,6 +757,8 @@ class LibraryWindow:
         if self.view == "favourites":
             favourites = self.actions.favourites
             return ("favourites", frozenset(favourites.keys()) if favourites is not None else frozenset())
+        if self.view == "needs_look":
+            return ("needs_look", self._check_seen)   # (read again as the check stores more)
         return (self.view,)
 
     def _want_songs(self):
@@ -746,6 +780,8 @@ class LibraryWindow:
             fn, args = _most_played, (db,)
         elif wanted[0] == "recently_played":
             fn, args = _recently_played, (db,)
+        elif wanted[0] == "needs_look":
+            fn, args = library_check.needs_look, (db,)
         else:
             fn, args = _favourite_songs, (db, wanted[1])
         self._songs_asked = self._queries.ask("songs", lambda: (wanted, fn(*args)), interrupt=True)
@@ -777,8 +813,9 @@ class LibraryWindow:
         where the list is — by default, when the songs on show were for what the view still wants
         (the same list read again after the library changed, or a sort or search of a short list)."""
         wanted = self._wanted()
-        if keep is None:
-            keep = wanted == self._songs_listed
+        if keep is None:   # (Needs a look read again as the check goes on: the same list, grown)
+            keep = wanted == self._songs_listed or (wanted[0] == "needs_look" and self._songs_listed is not None
+                                                    and self._songs_listed[0] == "needs_look")
         self.tree.configure(show="headings")
         self._fit()
         self._rows.clear()
@@ -808,7 +845,7 @@ class LibraryWindow:
             if self.view != "songs":
                 words = searchfold.words(self._query())
                 if words:
-                    pairs = [pair for pair in pairs if all(w in searchfold.haystack(pair[0].track) for w in words)]
+                    pairs = [pair for pair in pairs if all(w in self._song_text(pair) for w in words)]
             column, reverse = self.sort
             chosen = self.view != "songs" or "songs" in self._sorts   # (search results: best first, unless sorted)
             if column and chosen:
@@ -819,13 +856,22 @@ class LibraryWindow:
         self._paint_status()
         self._paint_buttons()
 
+    def _song_text(self, pair: tuple) -> str:
+        """What a song view's search looks through: the song's names (and in Needs a look, what was found)."""
+        text = searchfold.haystack(pair[0].track)
+        if isinstance(pair[1], library_check.Look):
+            text += " " + searchfold.fold(pair[1].text)
+        return text
+
     def _song_row(self, hit: SongHit, extra) -> tuple:
         favourites = self.actions.favourites
         title, artist, album, year, quality, clock = song_values(hit, favourite=favourites is not None
                                                                  and hit.track in favourites)
         added = added_text(extra) if self.view == "recently_played" and extra else ""
         plays = extra if self.view == "most_played" and extra else ""
-        return (f"s{hit.id}", (album, artist, year, quality, "", added, title, clock, plays), ())
+        found = extra.text if isinstance(extra, library_check.Look) else ""
+        return (f"s{hit.id}", (album, artist, year, quality, "", added, title, clock, plays, found),
+                ("information",) if isinstance(extra, library_check.Look) and extra.information_only else ())
 
     def _ask_page(self, page: int, ids: list[int]):
         serial = self._page_serial
@@ -865,6 +911,8 @@ class LibraryWindow:
                 return f"The best {len(value.rows):,} of {count_text(value.total, 'song', value.capped)}"
             return count_text(value.total, "song")
         shown = len(self._items)
+        if self.view == "needs_look":
+            return self._needs_look_text(value, shown)
         if not value:
             return {"most_played": "Nothing played yet: a song counts once half of it has been heard",
                     "recently_played": "Nothing played yet: a song counts once half of it has been heard",
@@ -875,6 +923,156 @@ class LibraryWindow:
         return {"most_played": f"The {count_text(shown, 'song')} played most",
                 "recently_played": f"The {count_text(shown, 'song')} played last",
                 "favourites": count_text(shown, "favourite")}[self.view]
+
+    # -- the quality check ("Needs a look") ------------------------------------------------------------
+    def _needs_look_text(self, value: list, shown: int) -> str:
+        """Needs a look's status line: the check's progress, then what it found (worst first)."""
+        status = self.checker.status if self.checker is not None else None
+        if not value:
+            if status is None or status.state == "off":
+                found = ("“Check the whole library…” reads every song once, in the background, and lists here "
+                         "what needs a look")
+            elif status.finished:
+                found = "Every song checked: nothing needs a look"
+            else:
+                found = "Nothing needs a look so far"
+        else:
+            what = library_check.summary(library_check.counts(look for _hit, look in value))
+            if self._query() and shown < len(value):
+                found = f"{shown:,} of {len(value):,} songs: {what}"
+            else:
+                found = f"{count_text(len(value), 'song')} {'needs' if len(value) == 1 else 'need'} a look: {what}"
+        note = self._check_note()
+        return f"{note} · {found}" if note else found
+
+    def _check_note(self) -> str:
+        """Where the quality check has got to, for the status line ("" when there's nothing to say)."""
+        if self.checker is None:
+            return ""
+        status = self.checker.status
+        of = f"{status.done:,} of {count_text(status.total, 'song')}" if status.total else ""
+        if status.state == "paused":
+            return f"Quality check paused at {of}" if of else "Quality check paused"
+        if status.state != "on":
+            return ""
+        if status.error:
+            return f"The quality check stopped ({status.error}): it tries again in a few minutes"
+        if status.held:
+            return "Quality check waiting for the measurement to finish"
+        if status.running:
+            left = f" · {library_check.duration_text(status.seconds_left)} left" if status.seconds_left else ""
+            return f"Checking quality: {of}{left}" if of else "Checking quality…"
+        if status.finished and self.view == "needs_look":
+            return f"Every song checked ({count_text(status.total, 'song')})"
+        return ""
+
+    def _follow_check(self) -> bool:
+        """(The tick.) Take in the quality check's progress; whether there was any. Needs a look reads
+        its results again (at most every CHECK_REREAD_S) as more are stored."""
+        checker = self.checker
+        if checker is None:
+            return False
+        news = False
+        if checker.status is not self._check_status:
+            self._check_status = checker.status
+            self._paint_check()
+            news = True
+        if (self.view == "needs_look" and checker.changes != self._check_seen and self._songs_asked is None
+                and time.monotonic() - self._check_read >= CHECK_REREAD_S):
+            self._check_seen, self._check_read = checker.changes, time.monotonic()
+            self._want_songs()
+        return news
+
+    def _paint_check(self):
+        """Needs a look's buttons, as the check stands: Check the whole library… (off); Pause (on);
+        Resume and Stop (paused); Stop checking new music (on, every song checked)."""
+        checker = self.checker
+        if self.view != "needs_look" or checker is None:
+            look = None
+        else:
+            status = checker.status
+            look = (status.state, status.finished, self._estimate_asked is not None)
+        if look == self._check_look:
+            return
+        self._check_look = look
+        self.check_button.pack_forget()
+        self.check_other.pack_forget()
+        if look is None:
+            return
+        state, finished, estimating = look
+        if state in ("off", "paused"):
+            self.check_button.configure(text="Check the whole library…" if state == "off" else "Resume",
+                                        command=self._ask_check if state == "off" else self._resume_check,
+                                        state="disabled" if estimating else "normal")
+            self.check_button.pack(side="right", before=self.status)
+        if state != "off":
+            self.check_other.configure(text="Stop checking new music" if state == "on" and finished
+                                       else "Pause" if state == "on" else "Stop",
+                                       command=self._pause_check if state == "on" and not finished
+                                       else self._stop_check)
+            self.check_other.pack(side="right", before=self.status, padx=theme.pad(0, theme.GAP))
+
+    def _ask_check(self):
+        """"Check the whole library…": how much there is to read is worked out on the query thread,
+        then the question (with how long it takes) is asked."""
+        if self.checker is None or self._estimate_asked is not None:
+            return
+        self._estimate_asked = self._queries.ask("estimate", library_check.plan, self.index.db)
+        self._paint_check()
+        self._say("Working out how long the check takes…")
+
+    def _take_estimate(self, answer):
+        if answer.ask != self._estimate_asked:
+            return
+        self._estimate_asked = None
+        self._paint_check()
+        if answer.error is not None:
+            self._say(f"Couldn't read the library: {answer.error}")
+            return
+        self.win.after_idle(self._confirm_check, answer.value)   # (asked outside the tick)
+
+    def _confirm_check(self, plan: library_check.Plan):
+        if not self.win.winfo_exists() or self.checker is None or self.checker.state != "off":
+            return
+        count = len(plan.songs)
+        if count:
+            already = (f" {count_text(plan.done, 'song')} {'is' if plan.done == 1 else 'are'} checked already."
+                       if plan.done else "")
+            seconds = library_check.estimate(plan.songs, self.checker.workers)
+            if not popups.confirm(
+                    self.win, "Check every song in the library?",
+                    f"{count_text(count, 'song')} ({library_check.music_text(plan.music_s)} of music) "
+                    f"{'is' if count == 1 else 'are'} read once each, to find damaged files, clues to a lossy or "
+                    f"upsampled source or a padded bit depth, and clipping.{already}",
+                    detail=(f"That takes {library_check.duration_text(seconds)} on a computer like this one "
+                            "(it's measured as it goes; a network drive can be slower). It runs in the background "
+                            "at low priority, so you can keep listening. Pause it any time: it carries on where it "
+                            "left off, after a restart too. New music is checked as it arrives."),
+                    ok="Start checking", cancel="Not now"):
+                self._paint_status()
+                return
+        self.checker.start()
+        self._paint_check()
+        self._paint_status()
+
+    def _resume_check(self):
+        if self.checker is not None:
+            self.checker.resume()
+            self._paint_check()
+            self._paint_status()
+
+    def _pause_check(self):
+        if self.checker is not None:
+            self.checker.pause()
+            self._paint_check()
+            self._paint_status()
+
+    def _stop_check(self):
+        """Stop (or stop checking new music): what's been found stays listed."""
+        if self.checker is not None:
+            self.checker.stop()
+            self._paint_check()
+            self._paint_status()
 
     # -- type to jump ------------------------------------------------------------------------------
     def _jump(self, typed: str) -> int | None:
@@ -929,6 +1127,9 @@ class LibraryWindow:
                 text += f" · {self.index.last_diff.error} just now, so these may be out of date"
             elif self.index.last_diff is not None and not self.index.last_diff.nothing:
                 text += f" · updated: {self.index.last_diff.note()}"
+            note = self._check_note()
+            if note:   # (before the folder's name too, which can be long)
+                text = f"{note} · {text}"
             new = len(self._new)
             if new:  # first, so a long folder name can't push it out of sight
                 text = f"{new} new album{'' if new == 1 else 's'} · {text}"
