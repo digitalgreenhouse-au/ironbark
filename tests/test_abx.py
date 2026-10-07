@@ -2,6 +2,7 @@
 end), the log, lining up the excerpts, the switching (audition.py) through a stand-in sound card,
 the player letting go of the device (Player.suspend) — and the window (skipped without a display).
 No real sound device is opened anywhere here."""
+import gc
 import random
 import time
 import tkinter as tk
@@ -325,6 +326,8 @@ def root():
     theme.apply(r)
     yield r
     r.destroy()
+    del r
+    gc.collect()   # here, on the main thread (Tk objects freed on another thread abort Python)
 
 
 class WindowPlayer:
@@ -381,3 +384,51 @@ def test_abx_window_runs_a_whole_test_without_sound(root, tmp_path, monkeypatch,
     assert "8 of 8 right. You heard a difference" in win.result_label.cget("text")
     win.close()
     assert not win.playing and FakeStream.made[-1].closed
+
+
+def wait_loaded(win, seconds=20):
+    deadline = time.time() + seconds
+    while win._loading is not None and time.time() < deadline:
+        time.sleep(0.05)
+        win._tick()
+        win.win.after_cancel(win._job)
+
+
+def test_abx_keys_play_nothing_old_while_a_new_excerpt_loads_or_after_it_fails(root, tmp_path, no_device):
+    from ironbark.abx_window import AbxWindow
+    x = music(15)
+    a, b, six = tmp_path / "a.wav", tmp_path / "b.wav", tmp_path / "six.wav"
+    sf.write(a, x, RATE, subtype="FLOAT")
+    sf.write(b, x * 0.9, RATE, subtype="FLOAT")
+    sf.write(six, music(15, channels=6), RATE, subtype="FLOAT")
+    player = WindowPlayer()
+    win = AbxWindow(root, player, {"abx_length": 5}, path_a=a, start_s=6.0, stream_factory=FakeStream)
+    win._set_file("B", b)
+    win.load()
+    wait_loaded(win)
+    assert win.pair is not None and win.audition is not None
+    win._set_file("B", six)                                 # B can't be paired with A (6 channels)
+    win.load()
+    win.hear("A")                                           # key a, while the new excerpt loads
+    assert player.suspended == 0 and not win.playing
+    wait_loaded(win)
+    assert "Couldn't load the excerpt" in win.level_label.cget("text")
+    win.hear("A")                                           # …and after it failed
+    win.hear("B")
+    assert player.suspended == 0 and not win.playing and len(FakeStream.made) == 0
+    win.match.set(False)
+    win._gains_changed()                                    # (raised AttributeError: no pair)
+    win.close()
+
+
+def test_abx_starts_from_a_cue_track_not_its_whole_file(root, tmp_path, no_device):
+    from ironbark.abx_window import AbxWindow
+    from ironbark.audiofile import CuePath, CueRange
+    image = tmp_path / "image.wav"
+    sf.write(image, music(60), RATE, subtype="FLOAT")
+    second = CuePath(str(image), cue=CueRange(sheet=str(tmp_path / "image.cue"), number=2, start=40 * RATE, end=None))
+    win = AbxWindow(root, WindowPlayer(), {"abx_length": 5}, path_a=second, start_s=5.0, stream_factory=FakeStream)
+    assert win._duration == pytest.approx(20.0, abs=0.01)  # the track, not the 60 s file
+    assert win.start_s == pytest.approx(2.5)                # 5 s in, a 5 s excerpt around it
+    assert win.rows["A"].path == second and "image.wav · track 2" in win.rows["A"].label.cget("text")
+    win.close()

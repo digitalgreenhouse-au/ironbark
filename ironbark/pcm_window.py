@@ -15,6 +15,8 @@ Shown in decimal, hex or binary. A stereo stream is 88,200+ numbers a second, fa
 to read, so each refresh pushes a few consecutive samples from the moment being heard onto
 the top of a stack (newest on top, older ones moving down), with a dim line saying how many
 went past unshown in between. Freeze holds one whole block (about 93 ms) to scroll through.
+The stack is rebuilt only when something changed (paused: left alone, so a value can be
+selected and copied), and nothing is drawn while the window is minimised.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from __future__ import annotations
 import collections
 import queue
 import struct
+import threading
 import time
 import tkinter as tk
 from tkinter import font as tkfont
@@ -29,7 +32,7 @@ from tkinter import ttk
 
 import numpy as np
 
-from . import controls, placement, spectrum, theme
+from . import controls, placement, spectrum, theme, toolwin
 from .details import describe_bits
 
 REFRESH_MS = 120
@@ -73,6 +76,43 @@ def fmt_float(value: float, base: str) -> str:
 def fmt_time(frame: int, rate: int) -> str:
     seconds = frame / rate
     return f"{int(seconds // 60)}:{seconds % 60:09.6f}"
+
+
+class BitCounter:
+    """Counts the bits of each block once it's heard, on a thread of its own (a hi-res block takes
+    milliseconds, too long for the window's thread). The strip is drawn from what has been counted
+    so far: read `scope`, `block` and `news` under `lock`. Holds nothing of Tk's, so its thread
+    never keeps a closed window alive."""
+
+    def __init__(self):
+        self.scope = spectrum.BitScope()
+        self.lock = threading.Lock()
+        self.blocks: queue.Queue = queue.Queue()   # blocks to count, in order
+        self.block = None    # the newest block counted (its bits, channels, path)
+        self.news = True     # something counted that the strip doesn't show yet
+        self._stop = threading.Event()
+        threading.Thread(target=self._run, name="bitscope", daemon=True).start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                block = self.blocks.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            wait = block["dac_time"] - time.perf_counter()
+            if wait > 0 and self._stop.wait(wait):
+                return
+            bits = block["bits"]
+            values = to_file_value(block["source"], bits) if bits else None
+            with self.lock:
+                if bits:
+                    self.scope.add(values, bits, block["rate"], block["path"])
+                if bits or self.block is None or self.block["bits"] != bits:
+                    self.news = True
+                self.block = block
 
 
 class PcmWindow:
@@ -119,9 +159,8 @@ class PcmWindow:
         self.scope_info.pack(fill="x")
         self.scope_info.bind("<Configure>",
                              lambda e: self.scope_info.configure(wraplength=max(200, e.width - 8)))
-        self.scope = spectrum.BitScope()
-        self._scope_wait: collections.deque = collections.deque(maxlen=64)  # blocks not yet heard
-        self._scope_block = None   # the newest block counted (its bits, channels, path)
+        self.counter = BitCounter()
+        self.scope = self.counter.scope
 
         self.info = ttk.Label(self.win, style="Muted.TLabel", padding=theme.pad(10, 0, 10, 6), justify="left")
         self.info.pack(fill="x")
@@ -158,6 +197,9 @@ class PcmWindow:
         self.blocks: collections.deque = collections.deque(maxlen=48)
         self.history: collections.deque = collections.deque(maxlen=HISTORY_GROUPS)  # (block, start, count)
         self.frozen: dict | None = None
+        self._idle = True          # nothing new heard (paused or stopped)
+        self._painted = None       # what the live stack on show was made from (see _paint_live)
+        self._keep_going = toolwin.KeepGoing(self.win)
         self.win.bind("<Configure>", self._moved, add="+")
         self._job = self.win.after(REFRESH_MS, self._tick)
 
@@ -167,22 +209,9 @@ class PcmWindow:
             while True:
                 block = self.feed.get_nowait()
                 self.blocks.append(block)
-                self._scope_wait.append(block)
+                self.counter.blocks.put(block)
         except queue.Empty:
             pass
-
-    def _feed_scope(self) -> bool:
-        """Count the bits of every block now heard. True if anything new was counted."""
-        now = time.perf_counter()
-        fed = False
-        while self._scope_wait and self._scope_wait[0]["dac_time"] <= now:
-            block = self._scope_wait.popleft()
-            self._scope_block = block
-            bits = block["bits"]
-            if bits:
-                self.scope.add(to_file_value(block["source"], bits), bits, block["rate"], block["path"])
-                fed = True
-        return fed
 
     def _current(self):
         """The block being heard right now, and the index of the latest sample heard in it."""
@@ -199,8 +228,15 @@ class PcmWindow:
     def _tick(self):
         if not self.win.winfo_exists():
             return
+        with self._keep_going:
+            self._step()
+        self._job = self.win.after(REFRESH_MS, self._tick)
+
+    def _step(self):
         self._drain()
-        if self._feed_scope() or self._scope_block is None:
+        shown = toolwin.on_screen(self.win)   # minimised: the data is kept, nothing is drawn
+        if shown and self.counter.news:
+            self.counter.news = False
             self._paint_scope()
         if self.frozen is None:
             block, latest = self._current()
@@ -210,11 +246,16 @@ class PcmWindow:
                 last = self.history[-1] if self.history else None
                 if last is None or last[0] is not block or last[1] != start:  # (paused: nothing new)
                     self.history.append(group)
+            self._idle = block is None
+            if not shown:
+                return
             if self.text.yview()[0] > 0.001:
-                self.info.configure(text="Scrolled down: live updates wait until you're back at the top.")
+                text = "Scrolled down: live updates wait until you're back at the top."
+                if self.info.cget("text") != text:
+                    self.info.configure(text=text)
+                self._painted = None   # (back at the top: shown afresh)
             else:
-                self._paint_live(block is None)
-        self._job = self.win.after(REFRESH_MS, self._tick)
+                self._paint_live(self._idle)
 
     # -- display -----------------------------------------------------------------
     def _toggle_freeze(self):
@@ -235,7 +276,7 @@ class PcmWindow:
         if self.frozen is not None:
             self._paint_frozen()
         else:
-            self._paint_live(False)
+            self._paint_live(self._idle)
 
     def _formatter(self, block):
         """(values, cell(value) -> text, description) for a block in the chosen view and base."""
@@ -265,7 +306,13 @@ class PcmWindow:
 
     def _paint_live(self, idle: bool):
         """The stack: the newest samples on top, older ones pushed down; a dim line marks the
-        samples that went past between refreshes without being shown."""
+        samples that went past between refreshes without being shown. Left as it is when nothing
+        changed since it was made."""
+        newest = self.history[-1] if self.history else (None, None, 0)
+        key = (id(newest[0]), newest[1], len(self.history), self.base.get(), self.view.get(), idle)
+        if key == self._painted:
+            return
+        self._painted = key
         if not self.history:
             self._show([], "Nothing playing. Start the music and the numbers appear here as they're heard, "
                            "newest on top.")
@@ -295,6 +342,7 @@ class PcmWindow:
                           f"second. Showing {kind}.")
 
     def _paint_frozen(self):
+        self._painted = None   # (the live stack is shown afresh on Resume)
         block = self.frozen
         _, _, kind = self._formatter(block)
         rate, n = block["rate"], len(block["sent"])
@@ -305,8 +353,10 @@ class PcmWindow:
     def _show(self, lines, info: str):
         self.info.configure(text=info)
         rows = [row for kind, row in lines if kind == "row"]
-        channels = len(rows[0][2]) if rows else 2
-        widths = [max([len(r[2][c]) for r in rows] + [5]) for c in range(channels)]
+        # Older rows may be from a track with fewer channels (mono, then stereo): each column is
+        # as wide as the rows that have it.
+        channels = max((len(r[2]) for r in rows), default=2)
+        widths = [max([len(r[2][c]) for r in rows if c < len(r[2])] + [5]) for c in range(channels)]
         names = ["Left", "Right"] if channels == 2 else [f"Ch {i + 1}" for i in range(channels)]
         head = f"{'Frame':>10}  {'Time':>12}  " + "  ".join(f"{n:>{w}}" for n, w in zip(names, widths))
         for widget, content in ((self.header, [("head", head)]), (self.text, lines)):
@@ -331,7 +381,12 @@ class PcmWindow:
         second; a short grey stub = used earlier in this track but not lately; empty = never used."""
         c = self.scope_canvas
         c.delete("all")
-        block = self._scope_block
+        with self.counter.lock:   # (counted on its own thread: take what's there now, all together)
+            block = self.counter.block
+            shares, key = self.scope.shares(), self.scope.key
+            ever = (None if self.scope.ever is None
+                    else np.concatenate([self.scope.ever_negative[:, None], self.scope.ever], axis=1))
+            used = self.scope.bits_in_use()
         if block is None:
             self.scope_info.configure(text="Bitscope: nothing heard yet.")
             return
@@ -339,12 +394,10 @@ class PcmWindow:
         if not bits:
             self.scope_info.configure(text="Bitscope: this file has floating-point samples, so no fixed bits to show.")
             return
-        shares = self.scope.shares()
-        if shares is None or self.scope.key is None or self.scope.key[1] != bits:
+        if shares is None or key is None or key[1] != bits or ever is None:
             return
         negative, size = shares
         channels = size.shape[0]
-        ever = np.concatenate([self.scope.ever_negative[:, None], self.scope.ever], axis=1)
         share = np.concatenate([negative[:, None], size], axis=1)      # channels × bits, sign first
         w = max(100, c.winfo_width())
         small = theme.font(theme.SIZE_SMALL)
@@ -371,7 +424,6 @@ class PcmWindow:
             if b == 0 or number % every == 0 or number == bits:
                 c.create_text(left + (b + 0.5) * slot, y, text="±" if b == 0 else str(number), anchor="n",
                               fill=theme.MUTED, font=small)
-        used = self.scope.bits_in_use()
         track = f"Since this track began: {used} of {bits} bits used. " if used else ""
         result = self.analysis_for(block["path"])
         whole = f"Whole file: {describe_bits(result)}" if result is not None and describe_bits(result) else             "Whole file: not checked yet (Now Playing → Check)."
@@ -391,6 +443,7 @@ class PcmWindow:
     def close(self):
         if self._job:
             self.win.after_cancel(self._job)
+        self.counter.stop()
         self.player.unmonitor(self.feed)
         self.win.destroy()
         self.on_close()

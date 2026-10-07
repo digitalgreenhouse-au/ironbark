@@ -11,9 +11,11 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from . import compare, controls, placement, theme
+from . import audiofile, compare, controls, placement, theme
+from .library import AUDIO_EXTENSIONS
 
-AUDIO_TYPES = [("Audio files", "*.flac *.wav *.mp3"), ("All files", "*.*")]
+# Every kind of file the player plays (AIFF, Apple Lossless, Ogg… as well as FLAC, WAV, MP3).
+AUDIO_TYPES = [("Audio files", " ".join(f"*{suffix}" for suffix in sorted(AUDIO_EXTENSIONS))), ("All files", "*.*")]
 TONES = {"good": "GoodValue.TLabel", "warn": "WarnValue.TLabel", "plain": "TLabel"}
 
 
@@ -39,8 +41,8 @@ class FileRow:
         self.path = path
         if path is None:
             self.label.configure(text="(none)", style="Muted.TLabel")
-        else:
-            self.label.configure(text=f"{path.name}\n{path.parent}", style="TLabel")
+        else:   # (a CUE sheet track: "Album.flac · track 3")
+            self.label.configure(text=f"{audiofile.display_name(path)}\n{path.parent}", style="TLabel")
 
 
 class CompareWindow:
@@ -83,8 +85,9 @@ class CompareWindow:
         self._outcome = None        # a Comparison, or an error message
         self._job = None
         self.result: compare.Comparison | None = None
-        self.rows["A"].set(Path(path_a) if path_a else None)
-        self.rows["B"].set(Path(path_b) if path_b else None)
+        # The paths themselves: a CUE sheet track's path carries which part of the file it is.
+        for letter, path in (("A", path_a), ("B", path_b)):
+            self.rows[letter].set(None if not path else path if isinstance(path, Path) else Path(path))
         self._refresh_button()
         self.win.bind("<Configure>", self._moved, add="+")
 

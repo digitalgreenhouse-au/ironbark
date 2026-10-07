@@ -13,7 +13,8 @@
   chopped at full scale, brought back down) and B = clean (the same loop turned down just below
   its true peak), loudness-matched; or just the difference (what the chop takes away, boosted).
   Uses audition.py like the ABX test: the player pauses and lets go of the device while you
-  listen, and plays on the player's output at its volume. Not bit-perfect, and it says so.
+  listen, and plays on the player's output at its volume. Not bit-perfect, and it says so. Another
+  window that plays its own sound (ABX, Test signals) stops this one first, and the other way round.
 
 The maths is in clipping.py; this file only shows it.
 """
@@ -21,6 +22,7 @@ The maths is in clipping.py; this file only shows it.
 from __future__ import annotations
 
 import collections
+import logging
 import math
 import queue
 import threading
@@ -31,8 +33,10 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
-from . import audition, clipping, controls, experiments, placement, theme
+from . import audition, clipping, controls, experiments, placement, theme, toolwin
 from .engine import State
+
+log = logging.getLogger(__name__)
 
 EXPERIMENT = "clip_audition"
 REFRESH_MS = 100
@@ -146,13 +150,14 @@ class ClipWindow:
         self.versions: clipping.Versions | None = None
         self._versions_for = None      # (path, over time) the versions were made for
         self._loading: threading.Thread | None = None
-        self._loaded = None
+        self._loaded = None            # ((path, over time), Versions or why not), from the thread
         self._last: str | None = None
         self._message = ""
         for key, letter in (("a", "A"), ("b", "B"), ("d", "D")):
             self.win.bind(key, lambda e, l=letter: self.hear(l))
         self.win.bind("<space>", lambda e: self.stop() if self.playing else self.hear(self._last or "A"))
 
+        self._keep_going = toolwin.KeepGoing(self.win)
         theme.on_change(self._palette_changed)
         self.win.bind("<Configure>", self._moved, add="+")
         self._sync_listen()
@@ -389,6 +394,10 @@ class ClipWindow:
         self.scan_path, self.scan_result, self.chosen = path, None, None
         self._scan_progress, self._scan_failed = 0.0, False
         self._strip_key = None
+        # Hear it: the last song's loop goes with it (one still being made is dropped when it's ready).
+        self._stop_audition()
+        self.audition = self.versions = self._versions_for = None
+        self._message = ""
         if path is None:
             return
 
@@ -396,6 +405,10 @@ class ClipWindow:
             try:
                 result = clipping.scan(path, cancel, progress=lambda p: setattr(self, "_scan_progress", p))
             except (OSError, RuntimeError, ValueError):
+                result = None
+                self._scan_failed = not cancel.is_set()
+            except Exception:  # noqa: BLE001 — said in the window ("couldn't be read"), never "Reading…" for ever
+                log.exception("reading the whole song for overs")
                 result = None
                 self._scan_failed = not cancel.is_set()
             if result is not None and not cancel.is_set():
@@ -412,16 +425,17 @@ class ClipWindow:
         c = self.strip
         result = self.scan_result
         if result is None:
-            c.delete("all")
-            self._strip_key = None
             if self._scan_failed:
                 text = "This file couldn't be read."
             elif self.scan_path is not None:
                 text = f"Reading the whole song… {self._scan_progress:.0%}"
             else:
                 text = "Nothing playing."
-            self.summary.configure(text=text, style="Muted.TLabel")
-            self.chosen_label.configure(text="")
+            if self._strip_key is not None or self.summary.cget("text") != text:   # (only when it changed)
+                c.delete("all")
+                self._strip_key = None
+                self.summary.configure(text=text, style="Muted.TLabel")
+                self.chosen_label.configure(text="")
             return
         x0, y0, width, height = self._strip_geometry()
         key = (id(result), id(self.chosen), width, height, theme.current.name)
@@ -584,16 +598,23 @@ class ClipWindow:
 
         def work():
             try:
-                self._loaded = clipping.listening_versions(path, over.at)
+                result = clipping.listening_versions(path, over.at)
             except (OSError, RuntimeError, ValueError) as exc:
-                self._loaded = f"Couldn't read the loop: {exc}"
+                result = f"Couldn't read the loop: {exc}"
+            except Exception as exc:  # noqa: BLE001 — said in the window; another over can still be tried
+                log.exception("making the clipping A/B loop")
+                result = f"Couldn't make the loop: {exc}"
+            self._loaded = (want, result)
 
         self._loading = threading.Thread(target=work, name="clip-versions", daemon=True)
         self._loading.start()
 
     def _take_versions(self):
-        loaded, self._loaded = self._loaded, None
+        (want, loaded), self._loaded = self._loaded, None
         self._loading = None
+        if want[0] != self.scan_path:     # made for the song before: not wanted any more
+            self._prepare_versions()
+            return
         if isinstance(loaded, str):
             self._message = loaded
             return
@@ -615,7 +636,8 @@ class ClipWindow:
         self._last, self._message = letter, ""
         self.audition.switcher.volume = self.player.volume ** 2
         if not self.playing:
-            self.player.suspend()   # the player pauses and lets go of the device while you listen
+            toolwin.take_sound(self)   # another window's sound stops first
+            self.player.suspend()      # the player pauses and lets go of the device while you listen
             try:
                 self.audition.play(SLOTS[letter])
             except Exception as exc:  # noqa: BLE001 — a device that won't open is a message, not a crash
@@ -631,6 +653,13 @@ class ClipWindow:
     def stop(self):
         self._stop_audition()
         self._refresh_listen()
+
+    def sound_taken(self):
+        """Another window started its own sound: this one stops, and says why."""
+        if self.playing:
+            self._stop_audition()
+            self._message = "Stopped: another window is playing"
+            self._refresh_listen()
 
     def describe_levels(self) -> tuple[str, bool]:
         """(text, fine?) about A's and B's levels as heard."""
@@ -691,14 +720,22 @@ class ClipWindow:
         self._job = None
         if not self.win.winfo_exists():
             return
+        with self._keep_going:
+            self._step()
+        self._job = self.win.after(REFRESH_MS, self._tick)
+
+    def _step(self):
         self._drain()
         status = self.player.status()
         path = status.track.path if status.track is not None else None
         if path != self.scan_path:
             self._start_scan(path)
-        self._draw_live()
-        self.readout.configure(text=self._readouts())
-        self._draw_strip()
+        if toolwin.on_screen(self.win):   # minimised: the overs are still found, nothing is drawn
+            self._draw_live()
+            readout = self._readouts()
+            if self.readout.cget("text") != readout:
+                self.readout.configure(text=readout)
+            self._draw_strip()
         self._sync_listen()
         self._prepare_versions()     # (does nothing unless the experiment is on and the loop needs making)
         if self._loaded is not None:
@@ -709,7 +746,6 @@ class ClipWindow:
                 self._stop_audition()
                 self._message = "Stopped: the player started playing again"
         self._refresh_listen()
-        self._job = self.win.after(REFRESH_MS, self._tick)
 
     # -- window --------------------------------------------------------------------------------
     def _palette_changed(self, _palette=None):
@@ -738,6 +774,7 @@ class ClipWindow:
         if self._job:
             self.win.after_cancel(self._job)
         self._stop_audition()
+        toolwin.give_back_sound(self)
         self.player.unmonitor(self.feed)
         self._live_photo = self._strip_photo = None   # its pictures go with the window, on this thread
         self.win.destroy()
