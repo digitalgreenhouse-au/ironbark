@@ -29,6 +29,22 @@ files are decoded as floats and converted by `to_int32`, the same way for every 
 An MP3 with no length header (no Xing / Info / VBRI frame) has its length estimated from its
 first frame, and libsndfile won't decode past that estimate: a VBR one can stop early.
 `mp3_shortfall` spots that by counting the frames.
+
+An .m4a cut short (its index lists packets past the end of the file) raises "damaged" at the
+first read that runs off the end, instead of handing on the noise libsndfile decodes from the
+missing packets.
+
+Music on a network drive can be played from a copy on this computer (the network playback cache,
+ironbark/netcache). Nothing here changes until that is installed (`set_resolver`). Then:
+- The player opens a `LocalTrack`: a plain local file, or one pinned version of one cached copy.
+  A copy still downloading is read through a waiting reader (netcache.growing.GrowingFile) with
+  a `Gate` shared by every reader of one handle; `_Guarded` checks the gate after every decoder
+  call. A call during which a read gave up (the bytes didn't come in time) has its output thrown
+  away and raises `Waiting` with the frame to carry on from; that handle is dead from then on and a
+  fresh one is opened when the bytes are there. (A decoder fed part of what it asked for decodes
+  noise without an error — measured on ALAC — so its output is never trusted after a give-up.)
+- Any other reader that opens a network path by name gets the complete, checked copy only
+  (`NotCached` while there is none), so every whole-file tool works unchanged.
 """
 
 from __future__ import annotations
@@ -37,8 +53,10 @@ import io
 import os
 import struct
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from typing import Callable
 
 import numpy as np
 import soundfile as sf
@@ -50,10 +68,133 @@ LOSSY_SUBTYPES = {"VORBIS", "OPUS"}
 FLOAT_SUBTYPES = {"FLOAT", "DOUBLE"}
 ALAC_BITS = {"ALAC_16": 16, "ALAC_20": 20, "ALAC_24": 24, "ALAC_32": 32}
 SEEK_CHUNK = 65536  # frames read at a time while a Vorbis seek reads its way to the spot
+OPEN_PATIENCE_S = 0.25   # how long opening a downloading copy waits for bytes it needs
 
 
 class Unsupported(RuntimeError):
     """A music file the player can recognise but not decode."""
+
+
+class Waiting(Exception):
+    """A copy still downloading didn't have the bytes a decoder call needed in time. That call's
+    output has been thrown away and the handle is dead: open a fresh one at `frame` once more of
+    the copy is there. Deliberately not an OSError / RuntimeError / ValueError, so no damage
+    handler can mistake waiting for the network for a damaged file."""
+
+    def __init__(self, frame: int, reason: str):
+        super().__init__(f"waiting for the network at frame {frame} ({reason})")
+        self.frame = frame     # track-relative frame to carry on from
+        self.reason = reason   # "patience" | "cancel" | "failed"
+
+
+class NotCached(OSError):
+    """A whole-file reader asked for a network song that has no complete copy here yet, and
+    couldn't (or wasn't allowed to) wait for one."""
+
+    def __init__(self, message: str, progress: float | None = None, reason: str = ""):
+        super().__init__(message)
+        self.progress = progress   # fraction downloaded, when known
+        self.reason = reason
+
+
+class DownloadFailed(OSError):
+    """The song's source is gone or refused (deleted, not audio…): no copy until it's asked for again."""
+
+
+@dataclass(eq=False)
+class Gate:
+    """What every raw reader of one opened handle on a downloading copy shares: how long a read
+    may wait for bytes (`patience`, turned into `deadline` before each decoder call), whether
+    something newer wants the handle (`cancel()`), and — once any read gave up — why. A gate that
+    has given up never opens again: the handle is dead."""
+    patience: float = OPEN_PATIENCE_S
+    deadline: float = 0.0
+    cancel: Callable[[], bool] | None = None
+    gave_up: str = ""        # "" | "patience" | "cancel" | "failed"
+    waiting: bool = False    # a read is waiting for the network right now
+    furthest: int = 0        # the furthest byte any of its reads has needed
+    wakers: list = field(default_factory=list)   # wake a waiting read (so it looks at cancel again)
+    spans: list = field(default_factory=list)    # the byte ranges its reads have needed, merged: [[start, end], …]
+
+    def start_call(self) -> None:
+        self.deadline = time.monotonic() + self.patience
+
+    def note(self, start: int, end: int) -> None:
+        """Record that a read needed bytes [start, end) (kept merged and in order)."""
+        spans = self.spans
+        if spans and spans[-1][0] <= start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
+            return
+        spans.append([start, end])
+        if len(spans) > 1 and spans[-2][0] > start:
+            spans.sort()
+            merged = [spans[0]]
+            for s, e in spans[1:]:
+                if s <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], e)
+                else:
+                    merged.append([s, e])
+            spans[:] = merged
+
+    def wake(self) -> None:
+        for waker in list(self.wakers):
+            waker()
+
+
+@dataclass(frozen=True, eq=False)
+class LocalTrack:
+    """What the player plays: a local file (`item` None), or one version (`gen`) of one copy in
+    the network playback cache. `source` is the identity, exactly as the play list holds it.
+    Every handle of one play — playback, its reopens, the proof's second decode — opens the same
+    LocalTrack, so they all read the same bytes. `item` is netcache's (opaque here)."""
+    source: object
+    item: object = None
+    gen: int = 0
+
+    @staticmethod
+    def plain(path) -> "LocalTrack":
+        return path if isinstance(path, LocalTrack) else LocalTrack(path)
+
+    @property
+    def remote(self) -> bool:
+        return self.item is not None
+
+    def ready_path(self):
+        """The file to open by name: the local file, or the complete copy (as a CuePath for a CUE
+        track). None while the copy is still downloading."""
+        if self.item is None:
+            return self.source
+        return self.item.ready_path(self.gen, self.source)
+
+    def reader(self, gate: Gate, role: str = "play") -> io.RawIOBase:
+        """A new waiting reader on the downloading copy."""
+        return self.item.reader(self.gen, gate, role)
+
+    def acquire(self) -> None:
+        """While held, this version of the copy is never evicted or deleted."""
+        if self.item is not None:
+            self.item.acquire(self.gen)
+
+    def release(self) -> None:
+        if self.item is not None:
+            self.item.release(self.gen)
+
+    def copy_state(self) -> str:
+        """"" (a local file), "downloading", "checking", "verified", "failed" or "stale"."""
+        return "" if self.item is None else self.item.copy_state(self.gen)
+
+
+# The network playback cache's hooks (netcache.install sets them; None = not installed).
+_resolver = None        # (path, cancel=, wait=) -> LocalTrack | None (None: open it as a local file)
+_info_hook = None       # (path) -> Info | None: what's already known of a network song, with no I/O
+_partial_folder = ""    # part-downloaded files, never opened by name
+
+
+def set_resolver(resolve, *, info=None, partial_folder=None) -> None:
+    """Install (or, with None, remove) the network playback cache's hooks."""
+    global _resolver, _info_hook, _partial_folder
+    _resolver, _info_hook = resolve, (info if resolve is not None else None)
+    _partial_folder = os.path.normcase(os.fspath(partial_folder)) if resolve is not None and partial_folder else ""
 
 
 # -- CUE sheet tracks ---------------------------------------------------------------
@@ -98,6 +239,62 @@ def _make_cue_path(path: str, cue: CueRange) -> CuePath:
     return CuePath(path, cue=cue)
 
 
+class UrlPath(_BasePath):
+    """A web address (http:// or https://) in a playlist. Not played yet: it's listed as missing
+    and written back exactly as it was. str() is the address itself; name / suffix / stem come
+    from its last part, decoded; it equals only the very same address. It never stands for a file
+    on this computer: it says it isn't there without asking the disk, and opening it to decode is
+    refused (Unsupported)."""
+
+    def __init__(self, *args, url: str):
+        super().__init__(*args)
+        self.url = url
+
+    @classmethod
+    def parse(cls, url: str) -> "UrlPath":
+        from urllib.parse import unquote, urlsplit
+        parts = urlsplit(url)
+        # A stand-in path of the host and the decoded parts, so name / suffix / stem mean something.
+        segments = [unquote(s).replace("\\", "_").replace("/", "_") for s in parts.path.split("/") if s]
+        return cls(parts.netloc.replace(":", "_") or "web", *segments, url=url)
+
+    def with_segments(self, *pathsegments):
+        return Path(*pathsegments)
+
+    def __str__(self):
+        return self.url
+
+    def __eq__(self, other):
+        if isinstance(other, UrlPath):
+            return self.url == other.url
+        return False if isinstance(other, PurePath) else NotImplemented
+
+    def __hash__(self):
+        return hash(("url", self.url))
+
+    def __repr__(self):
+        return f"UrlPath({self.url!r})"
+
+    def __reduce__(self):
+        return (UrlPath.parse, (self.url,))
+
+    def stat(self, *, follow_symlinks=True):
+        raise FileNotFoundError(f"{self.url} is a web address, not a file on this computer")
+
+    def exists(self, *, follow_symlinks=True):
+        return False
+
+    def is_file(self):
+        return False
+
+    def is_dir(self):
+        return False
+
+
+def is_web_address(text: str) -> bool:
+    return text[:8].lower().startswith(("http://", "https://"))
+
+
 def cue_of(path) -> CueRange | None:
     return getattr(path, "cue", None)
 
@@ -130,6 +327,11 @@ def sniff(path) -> str:
             head = f.read(64)
     except OSError:
         return ""
+    return sniff_head(head)
+
+
+def sniff_head(head: bytes) -> str:
+    """`sniff`, from a file's first 64 bytes."""
     if m4a.is_mp4(head):
         return "mp4"
     if head.startswith(b"OggS") and head[28:33] == b"\x7fFLAC":
@@ -187,6 +389,14 @@ def set_cancel(f, cancel) -> None:
         hook(cancel)
 
 
+def set_patience(f, seconds: float) -> None:
+    """How long each decoder call on a downloading copy may wait for bytes before giving up
+    (raising Waiting). Nothing for other files."""
+    hook = getattr(f, "set_patience", None)
+    if hook is not None:
+        hook(seconds)
+
+
 # -- opening ------------------------------------------------------------------------
 class _Wrapped:
     """The parts of soundfile.SoundFile the player uses, passed through to `inner`."""
@@ -218,11 +428,16 @@ class _Wrapped:
 
 
 class _ExactSeek(_Wrapped):
-    """Vorbis: seeks by reading (see the module note), so every seek lands on the exact sample."""
+    """Vorbis: seeks by reading (see the module note), so every seek lands on the exact sample.
+    A seek back starts again from the top with `reopen()` (a fresh decoder on the same bytes);
+    given a path, that's the file opened again."""
 
-    def __init__(self, inner: sf.SoundFile, path: str):
+    def __init__(self, inner: sf.SoundFile, reopen):
         super().__init__(inner)
-        self._path = path
+        if not callable(reopen):
+            path = os.fspath(reopen)
+            reopen = lambda: sf.SoundFile(path)   # noqa: E731
+        self._reopen = reopen
         self._pos = 0
         self._cancel = None
 
@@ -241,7 +456,7 @@ class _ExactSeek(_Wrapped):
         target = max(0, min(int(target), self.frames))
         if target < self._pos:
             self._inner.close()
-            self._inner = sf.SoundFile(self._path)
+            self._inner = self._reopen()
             self._pos = 0
         while self._pos < target:
             if self._cancel is not None and self._cancel():
@@ -288,8 +503,69 @@ class _Range(_Wrapped):
         return block
 
 
+class _Guarded(_Wrapped):
+    """The outermost layer of a handle on a downloading copy (so its frames are the track's).
+    Before each decoder call it gives the readers their deadline; after every call it looks at the
+    gate: if a read gave up during the call, whatever the decoder produced is thrown away (it may
+    have decoded missing bytes as audio) and `Waiting` is raised with the frame to carry on from —
+    the position before a read, or a seek's target. The handle is then dead: every later read or
+    seek raises the same Waiting; close() always works. A decoder error during a call in which a
+    read gave up is waiting too (FLAC and MP3 raise when their bytes stop)."""
+
+    def __init__(self, inner, gate: Gate):
+        super().__init__(inner)
+        self._gate = gate
+        self._dead: tuple[int, str] | None = None
+
+    frames = property(lambda self: self._inner.frames)
+    gate = property(lambda self: self._gate)
+
+    def tell(self) -> int:
+        return self._dead[0] if self._dead else self._inner.tell()
+
+    def set_patience(self, seconds: float):
+        self._gate.patience = max(0.0, float(seconds))
+
+    def set_cancel(self, cancel):
+        self._gate.cancel = cancel
+        set_cancel(self._inner, cancel)
+        self._gate.wake()
+
+    def _call(self, frame: int, call, *args, **kwargs):
+        if self._dead is not None:
+            raise Waiting(*self._dead)
+        gate = self._gate
+        gate.start_call()
+        try:
+            result = call(*args, **kwargs)
+        except Exception as error:
+            if gate.gave_up:
+                self._dead = (frame, gate.gave_up)
+                raise Waiting(frame, gate.gave_up) from error
+            raise
+        if gate.gave_up:
+            self._dead = (frame, gate.gave_up)
+            raise Waiting(frame, gate.gave_up)
+        return result
+
+    def read(self, frames: int = -1, dtype: str = "float64", always_2d: bool = False, **kwargs):
+        before = self.tell()
+        return self._call(before, self._inner.read, frames, dtype=dtype, always_2d=always_2d, **kwargs)
+
+    def seek(self, frames: int, whence: int = io.SEEK_SET) -> int:
+        if self._dead is None:
+            base = {io.SEEK_SET: 0, io.SEEK_CUR: self._inner.tell(), io.SEEK_END: self.frames}[whence]
+            target = max(0, min(int(base + frames), self.frames))
+        else:
+            target = self._dead[0]
+        return self._call(target, self._inner.seek, frames, whence)
+
+
 class _StreamFile(sf.SoundFile):
-    """A SoundFile reading from a file object it owns (closed with it)."""
+    """A SoundFile reading from a file object it owns (closed with it). If a read or seek finds the
+    file cut short there (an .m4a whose index runs past its end), that call raises "damaged", so
+    what the decoder made of the missing bytes is never handed on. (libsndfile's open looks past
+    the end of the audio too; that's harmless, so the open doesn't count.)"""
 
     def __init__(self, stream):
         self._stream = stream
@@ -299,6 +575,21 @@ class _StreamFile(sf.SoundFile):
             stream.close()
             raise
 
+    def _checked(self, call, *args, **kwargs):
+        if not hasattr(self._stream, "short"):
+            return call(*args, **kwargs)
+        self._stream.short = False
+        result = call(*args, **kwargs)
+        if self._stream.short:
+            raise RuntimeError("this file is damaged here: it ends before its own index says it does")
+        return result
+
+    def read(self, *args, **kwargs):
+        return self._checked(super().read, *args, **kwargs)
+
+    def seek(self, *args, **kwargs):
+        return self._checked(super().seek, *args, **kwargs)
+
     def close(self):
         try:
             super().close()
@@ -306,7 +597,7 @@ class _StreamFile(sf.SoundFile):
             self._stream.close()
 
 
-def _open_file(path):
+def _open_file(path, exact_opus: bool = False):
     real = os.fspath(path)
     kind = sniff(real)
     if kind == "mp4":
@@ -321,15 +612,15 @@ def _open_file(path):
         raise Unsupported("FLAC inside an Ogg file can't be played (its decoder doesn't support it) — "
                           "a normal .flac copy of it will play")
     f = sf.SoundFile(real)
-    if f.subtype == "VORBIS":
+    # Opus seeks land the same way on every handle, so local files keep them; a cached copy reads
+    # forward instead, as it must while it's downloading, so all its handles decode alike.
+    if f.subtype == "VORBIS" or (exact_opus and f.subtype == "OPUS"):
         return _ExactSeek(f, real)
     return f
 
 
-def open(path):  # noqa: A001 — mirrors soundfile.SoundFile; always called as audiofile.open
-    """Open a music file (or one CUE track of it) for decoding. Use as a context manager, or
-    close() it. Raises soundfile's errors, OSError, or Unsupported (a RuntimeError)."""
-    f = _open_file(path)
+def _open_path(path, exact_opus: bool = False):
+    f = _open_file(path, exact_opus)
     cue = cue_of(path)
     if cue is None:
         return f
@@ -338,6 +629,113 @@ def open(path):  # noqa: A001 — mirrors soundfile.SoundFile; always called as 
     except BaseException:
         f.close()
         raise
+
+
+def _is_partial(path) -> bool:
+    if not _partial_folder:
+        return False
+    here = os.path.normcase(os.path.abspath(os.fspath(path)))
+    return here.startswith(_partial_folder.rstrip("\\/") + os.sep)
+
+
+def open(path, *, cancel=None, wait=None, patience=None, role="play"):  # noqa: A001 — mirrors soundfile.SoundFile
+    """Open a music file (or one CUE track of it) for decoding. Use as a context manager, or
+    close() it. Raises soundfile's errors, OSError, or Unsupported (a RuntimeError).
+
+    With the network playback cache installed: a `LocalTrack` opens the complete copy, or a
+    downloading one through the waiting readers (Waiting when bytes don't come in time; `patience`
+    sets how long the open itself may wait; `role` says who reads it — "play", "proof", "probe" or
+    "verify"). A network path opens its complete, checked copy only
+    — waiting for it (up to a limit, or until `cancel()`) unless `wait` is False or this is the
+    window's own thread, else NotCached; DownloadFailed when the source is gone."""
+    if isinstance(path, UrlPath):
+        raise Unsupported("it's a web address: playing music from the internet isn't supported yet")
+    if isinstance(path, LocalTrack):
+        ready = path.ready_path()
+        if ready is None:
+            return _open_growing(path, cancel=cancel, patience=patience, role=role)
+        return _open_path(ready, exact_opus=path.remote)
+    if _resolver is not None:
+        if _is_partial(path):
+            raise Unsupported("this is a part-downloaded file in the music cache")
+        local = _resolver(path, cancel=cancel, wait=wait)
+        if local is not None:
+            local.acquire()   # (so the copy can't be cleared away between here and the open)
+            try:
+                return _open_path(local.ready_path(), exact_opus=True)
+            finally:
+                local.release()
+    return _open_path(path)
+
+
+def _open_growing(t: LocalTrack, *, cancel=None, patience=None, role="play"):
+    """A handle on a copy still downloading (see the module note): every raw reader of it shares
+    one Gate, and `_Guarded` is outermost. Apple Lossless is never opened this way (it plays only
+    from a complete copy: a short read decodes as loud noise)."""
+    gate = Gate(patience=OPEN_PATIENCE_S if patience is None else patience, cancel=cancel)
+    gate.start_call()
+    raw = t.reader(gate, role)
+    try:
+        head = raw.read(64)
+        if gate.gave_up:
+            raise Waiting(0, gate.gave_up)
+        kind = sniff_head(head)
+        if kind == "mp4":
+            raise Unsupported("an Apple Lossless (.m4a) song plays only once its copy has downloaded completely")
+        if kind == "oggflac":
+            raise Unsupported("FLAC inside an Ogg file can't be played (its decoder doesn't support it) — "
+                              "a normal .flac copy of it will play")
+        raw.seek(0)
+    except BaseException:
+        raw.close()
+        raise
+    try:
+        f = _StreamFile(raw)
+    except Exception as error:
+        if gate.gave_up:
+            raise Waiting(0, gate.gave_up) from error
+        raise
+    outer = f
+    try:
+        if gate.gave_up:
+            raise Waiting(0, gate.gave_up)
+        if f.subtype in LOSSY_SUBTYPES:   # Vorbis and Opus: read forward to a spot, exactly
+            outer = _ExactSeek(f, reopen=lambda: _StreamFile(t.reader(gate, role)))
+        cue = cue_of(t.source)
+        if cue is not None:
+            gate.start_call()
+            try:
+                outer = _Range(outer, cue.start, cue.end)
+            except Exception as error:
+                if gate.gave_up:
+                    raise Waiting(0, gate.gave_up) from error
+                raise
+            if gate.gave_up:
+                raise Waiting(0, gate.gave_up)
+    except BaseException:
+        outer.close()
+        raise
+    return _Guarded(outer, gate)
+
+
+def open_finished(path):
+    """Open a finished download that is being checked before it's put in place (the cache's own
+    check, which may read a part-downloaded file by name). Otherwise exactly `open`."""
+    return _open_path(path, exact_opus=True)
+
+
+def local_copy(path):
+    """The file to read for `path` without decoding it (frame indexes): the path itself when it's
+    on this computer, the complete copy of a network song, or None while there isn't one."""
+    if isinstance(path, LocalTrack):
+        return path.ready_path()
+    if _resolver is None:
+        return path
+    try:
+        local = _resolver(path, cancel=None, wait=False)
+    except (NotCached, DownloadFailed):
+        return None
+    return path if local is None else local.ready_path()
 
 
 @dataclass
@@ -353,9 +751,20 @@ class Info:
         return self.frames / self.samplerate if self.samplerate else 0.0
 
 
-def info(path) -> Info:
-    """Like soundfile.info, for every format (and CUE track) open() reads."""
-    with open(path) as f:
+def info(path, *, cancel=None, wait=None, header: bool = False) -> Info:
+    """Like soundfile.info, for every format (and CUE track) open() reads. A network song the
+    cache has already looked into is answered from what it found, without reading anything.
+    `header`: only the format is wanted, as a library scan wants it (on a worker thread) — a
+    network song is then read where it is, just its opening bytes as the library reads its tags,
+    never fetched whole into the cache for it."""
+    if _info_hook is not None and not isinstance(path, LocalTrack):
+        known = _info_hook(path)
+        if known is not None:
+            return known
+    if header and not isinstance(path, (LocalTrack, UrlPath)):
+        with _open_path(path) as f:
+            return Info(f.format, f.subtype, f.samplerate, f.channels, f.frames)
+    with open(path, cancel=cancel, wait=wait) as f:
         return Info(f.format, f.subtype, f.samplerate, f.channels, f.frames)
 
 
@@ -388,7 +797,13 @@ def mp3_shortfall(f, path) -> tuple[int, int] | None:
     """For an MP3 with no length header: (frames libsndfile will decode, frames the file holds)
     when the first falls short — libsndfile stops at its estimate, so the rest can't be played or
     measured. None for anything else. `f` is the file opened with `open(path)`. The frames are
-    counted once per file (a few tens of ms) and remembered."""
+    counted once per file (a few tens of ms) and remembered. For a cached copy (a LocalTrack) it's
+    counted on the complete copy; None while that is still downloading (the cache's own check
+    counts it then)."""
+    if isinstance(path, LocalTrack):
+        path = path.ready_path()
+        if path is None:
+            return None
     if not is_mp3(f) or cue_of(path) is not None:
         return None
     real = os.fspath(path)

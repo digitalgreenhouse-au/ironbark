@@ -542,11 +542,14 @@ class MenuRow(tk.Frame):
     (0.21.0) Also: `enabled=False` greys it out (shown, but does nothing); `check` True / False
     gives it a tick column (a switchable item such as a track-list column); `closes=False` keeps
     the pop-over open when it's chosen (a submenu's way in); `on_hover(row)` tells the menu the
-    pointer is on it, so the mouse and the arrow keys share one highlight (`set_active`)."""
+    pointer is on it, so the mouse and the arrow keys share one highlight (`set_active`).
+    `lead` (even "") gives it a narrow column at the left, `lead_width` characters wide, for a small
+    mark (Up next: how much of a network song is downloaded) drawn in `lead_fg` (a colour)."""
 
     def __init__(self, parent, text: str, command: Callable[[], None], shortcut: str = "", *,
                  enabled: bool = True, check: bool | None = None, closes: bool = True,
-                 on_hover: Callable[["MenuRow"], None] | None = None):
+                 on_hover: Callable[["MenuRow"], None] | None = None, lead: str | None = None, lead_fg: str = "",
+                 lead_width: int = 5):
         super().__init__(parent, bg=theme.SURFACE, cursor="hand2")
         self.command = command
         self.enabled = enabled
@@ -562,6 +565,12 @@ class MenuRow(tk.Frame):
             self.tick.pack(side="left")
             parts.append(self.tick)
         self.checked = check
+        self.lead = None
+        if lead is not None:
+            self.lead = tk.Label(self, text=lead, bg=theme.SURFACE, fg=lead_fg or theme.MUTED,
+                                 font=theme.font(theme.SIZE_SMALL), anchor="w", padx=0, width=lead_width)
+            self.lead.pack(side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
+            parts.append(self.lead)
         self.label = tk.Label(self, text=text, bg=theme.SURFACE, fg=theme.TEXT, font=theme.font(theme.SIZE_BODY),
                               anchor="w", padx=theme.px(theme.GAP_MEDIUM), pady=theme.px(theme.GAP))
         self.label.pack(side="left", fill="x", expand=True)

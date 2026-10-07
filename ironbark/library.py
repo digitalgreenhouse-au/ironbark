@@ -907,7 +907,7 @@ def find_albums(root: str | Path) -> list[Album]:
     for path, count in counts.items():
         album = Album(path=path, name=path.name, track_count=count, codecs=tuple(sorted(codecs[path])))
         try:
-            info = audiofile.info(first_file[path])
+            info = audiofile.info(first_file[path], header=True)   # (a header: never a whole song fetched for it)
             album.sample_rate, album.bits = info.samplerate, _SUBTYPE_BITS.get(info.subtype, (0, False))[0]
         except (sf.LibsndfileError, OSError, RuntimeError):
             log.debug("couldn't read the format of %s", first_file[path], exc_info=True)

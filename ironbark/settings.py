@@ -102,6 +102,13 @@ DEFAULTS = {
     "theme": "dark",             # Settings → Window → Theme: "dark", "light" or "system" (follow Windows)
     "mini_mode": False,          # the window was last left as the mini strip (it opens that way again)
     "mini_geometry": "",         # where (and how big) the mini strip was last left
+    # Network playback (the Experimental "Network playback cache"): songs on network drives play from a copy
+    "net_mode": "intelligent",   # "intelligent", "fast" (start after the initial buffer) or "complete"
+    "net_buffer": 30,            # the initial buffer, in seconds: 10, 30, 60 or 300
+    "net_predownload": "next",   # "off", "next", "next2" or "queue": how far ahead songs download while one plays
+    "net_keep": "limit",         # "none", "session" (until playback finishes), "day" or "limit" (until full)
+    "net_cache_gb": 10,          # the most the cache holds, in GB (0 = no limit)
+    "net_verify": True,          # check each finished download (a FLAC's own MD5 fingerprint too)
     "geometry": "",
 }
 
@@ -383,6 +390,15 @@ def _same_kind(value, default):
     return value
 
 
+def _one_of(*allowed):
+    """A check: the value must be one of these exactly (true / false never pass for a number)."""
+    def check(value):
+        if isinstance(value, bool) or value not in allowed:
+            return _BAD
+        return value
+    return check
+
+
 def _tabs(value):
     """Open tabs: each must say its kind and path as text. A tab that doesn't is dropped on its
     own; a resume point, search or extras of the wrong kind are dropped from their tab."""
@@ -420,6 +436,11 @@ _CHECKS = {
     "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
     "library_folders": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
                                       else _BAD),
+    "net_mode": _one_of("intelligent", "fast", "complete"),
+    "net_buffer": _one_of(10, 30, 60, 300),
+    "net_predownload": _one_of("off", "next", "next2", "queue"),
+    "net_keep": _one_of("none", "session", "day", "limit"),
+    "net_cache_gb": _one_of(1, 5, 10, 25, 50, 0),
 }
 
 

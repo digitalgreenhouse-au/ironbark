@@ -211,6 +211,7 @@ GRAPHIC_PAIRS = (
     ("ACCENT_TEXT", "SURFACE_HI"),                             # (0.21.0) a menu tick on the highlighted row
     ("WARN", "SURFACE"), ("WARN", "BG"),                       # (0.21.0) a warning box's edge and sign
     ("DANGER", "SURFACE"),                                     # (0.21.0) the red ring round "Delete"
+    ("MUTED", "BORDER"),                                       # a network song's downloaded band on the seek bar
 )
 
 

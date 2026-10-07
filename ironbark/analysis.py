@@ -297,8 +297,9 @@ class TruePeak:
 def true_peak(path: str | Path, cancel: threading.Event | None = None) -> float | None:
     """The highest point of the reconstructed waveform (8x), as a linear level (1.0 = full
     scale). Loud masters often peak *between* samples above 1.0, and a converter then clips:
-    heard as crackle or small pops. None if cancelled. The clipping guard's measurement."""
-    with audiofile.open(path) as f:
+    heard as crackle or small pops. None if cancelled. The clipping guard's measurement. (A song on
+    a network drive: its complete copy, waited for until `cancel` is set: audiofile.NotCached.)"""
+    with audiofile.open(path, cancel=cancel.is_set if cancel is not None else None) as f:
         meter = TruePeak(f.channels)
         for block in audiofile.blocks(f, f.samplerate * 5, dtype="float32", always_2d=True):
             if cancel is not None and cancel.is_set():

@@ -335,9 +335,10 @@ class Programme:
 
 # -- whole files ----------------------------------------------------------------------
 def file_powers(path, cancel: threading.Event | None = None,
-                progress: Callable[[float], None] | None = None) -> np.ndarray | None:
-    """A file's power steps from start to end (None if cancelled)."""
-    with audiofile.open(path) as f:
+                progress: Callable[[float], None] | None = None, wait: bool | None = None) -> np.ndarray | None:
+    """A file's power steps from start to end (None if cancelled). `wait` False: a song on a network
+    drive with no complete copy here yet raises audiofile.NotCached at once (nothing is fetched)."""
+    with audiofile.open(path, cancel=cancel.is_set if cancel is not None else None, wait=wait) as f:
         meter = Loudness(f.samplerate, f.channels)
         total = max(1, f.frames)
         done = 0
@@ -354,12 +355,17 @@ def file_powers(path, cancel: threading.Event | None = None,
 def album_loudness(paths: Iterable, cancel: threading.Event | None = None,
                    progress: Callable[[float], None] | None = None) -> tuple[float | None, float | None] | None:
     """(integrated LUFS, LRA) of an album played straight through: every track's power steps
-    measured together, as one programme. None if cancelled."""
+    measured together, as one programme. None if cancelled. Songs on a network drive are measured
+    only from their complete copies here (nothing is fetched for it): audiofile.NotCached while one
+    isn't, so a part of an album is never taken for the whole of it."""
     paths = list(paths)
     gathered = []
     for k, path in enumerate(paths):
         try:
-            powers = file_powers(path, cancel, (lambda p, k=k: progress((k + p) / len(paths))) if progress else None)
+            powers = file_powers(path, cancel, (lambda p, k=k: progress((k + p) / len(paths))) if progress else None,
+                                 wait=False)
+        except audiofile.NotCached:
+            raise
         except (OSError, RuntimeError):
             continue  # a file that won't decode just doesn't count
         if powers is None:

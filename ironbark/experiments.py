@@ -36,6 +36,10 @@ EXPERIMENTS: tuple[Experiment, ...] = (
                "Clipping window: loop a few seconds around an over and switch between an ordinary "
                "converter (chopped at full scale) and clean. Plays sound of its own; not bit-perfect.",
                "0.24.0"),
+    Experiment("network_cache", "Network playback cache",
+               "Songs on network drives play from a copy on this computer: a short \"Preparing…\" first, "
+               "then they keep playing if the network drops. Takes effect when Ironbark next starts.",
+               "0.32.0"),
 )
 
 

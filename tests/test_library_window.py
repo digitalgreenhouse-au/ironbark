@@ -194,13 +194,13 @@ def test_up_next_line_and_list(root):
     status = tk.Label(body)
     status.pack(side="bottom")
     w = SimpleNamespace(player=player, root=root, scale=1.0, _up_next_key=None, prefs={}, _notice="",
-                        sleep_timer=None)
+                        sleep_timer=None, _netcache=None, _marks_shown=[])
     w.playlist = PlaylistView(body, on_play=lambda i: None)
     w.up_next_label = tk.Label(body)
     w.up_next_pop = Popover(root, width=300)
     w._set_notice = lambda text, ms=0: setattr(w, "_notice", text)
-    for name in ("_paint_up_next", "_fill_up_next", "_show_up_next", "_up_next_top", "_unqueue", "_queue_tracks",
-                 "stop_after_current", "_sleep_menu", "_menu"):
+    for name in ("_paint_up_next", "_fill_up_next", "_up_next_marks", "_show_up_next", "_up_next_top", "_unqueue",
+                 "_queue_tracks", "stop_after_current", "_sleep_menu", "_menu"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
     root.deiconify()
     root.geometry("320x400")

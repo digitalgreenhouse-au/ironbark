@@ -58,6 +58,9 @@ class SleepTimer:
             if self.remaining() > 0:
                 return
             playing = getattr(status.state, "value", status.state) == "playing"
+            network = getattr(status, "network", None)
+            if network is not None and network.auto:
+                playing = True   # (waiting for the network, about to play by itself: it still has to stop)
             if not playing:
                 self.state = DONE   # nothing playing when the time is up: nothing to do
             elif status.output is not None and status.output.exclusive:

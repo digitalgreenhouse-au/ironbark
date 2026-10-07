@@ -147,8 +147,9 @@ def read_tags(path) -> GainTags | None:
 def measure(path, peak: bool = True, loudness: bool = True,
             cancel: threading.Event | None = None) -> tuple[float | None, float | None] | None:
     """(true peak, integrated LUFS) of a file in one read; either is None when not asked for (or,
-    for loudness, when the file is silent). None if cancelled."""
-    with audiofile.open(path) as f:
+    for loudness, when the file is silent). None if cancelled. (A song on a network drive: its
+    complete copy, waited for until `cancel` is set: audiofile.NotCached.)"""
+    with audiofile.open(path, cancel=cancel.is_set if cancel is not None else None) as f:
         meter = TruePeak(f.channels) if peak else None
         levels = Loudness(f.samplerate, f.channels) if loudness else None
         for block in audiofile.blocks(f, f.samplerate * 5, dtype="float32", always_2d=True):
