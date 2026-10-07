@@ -235,7 +235,9 @@ class PlayerWindow:
         self._about: AboutWindow | None = None
         # The one playlist change Ctrl+Z can undo: (notice, what undoing says, undo, still possible?)
         self._undo: tuple | None = None
-        self._muted_from: float | None = None   # the volume before Ctrl+Shift+↓ muted it
+        # The volume before Ctrl+Shift+↓ muted it, and what it was heard through (_ear_setup); None
+        # once the level has been changed any other way.
+        self._muted_from: tuple[float, tuple] | None = None
         self._tag_waiting: list[tag_editor.TagSave] = []  # saves with songs waiting for the player to move on
         self._index_updated = False  # set by the thread that re-reads edited files into the index
         self._notice = ""            # a UI message that overrides the player's for a while
@@ -672,6 +674,7 @@ class PlayerWindow:
 
     def _volume_slid(self, value: float):
         """The Settings volume slider moved (while dragging, and let go)."""
+        self._muted_from = None   # (a level chosen since: unmuting no longer goes back to the old one)
         self.player.set_volume(value / 100)
         self.volume_var.set(self.player.volume * 100)   # (the slider ignores this while it's being dragged)
         self._update_volume_text()
@@ -726,7 +729,7 @@ class PlayerWindow:
             "repeat": call("cycle_repeat"),
             "volume": lambda key: self._step_volume(side(key)),
             "mute": call("toggle_mute"),
-            "full_volume": lambda: self._set_volume(1.0),
+            "full_volume": call("full_volume"),
             "new_tab": call("open_new_menu"),
             "close_tab": lambda: self.close_tab(self.current) if self.tabs else None,
             "reopen_tab": call("reopen_tab"),
@@ -764,7 +767,7 @@ class PlayerWindow:
             "undo": call("undo"),
             "rename": call("rename_playlist_on_show"),
             "edit_tags": call("edit_selected_tags"),
-        })
+        }, held=lambda: bool(popups.Prompt.stack))   # (no key acts while a question box waits)
         self.keys.attach(self.root, "main")
         self.keys.mark(self.playlist.tree, "list")
 
@@ -816,23 +819,56 @@ class PlayerWindow:
         if duration > 0:
             self._seek_to(duration * fraction)
 
-    def _set_volume(self, volume: float, notice: str = ""):
+    def _set_volume(self, volume: float, notice: str = "", ms: int = 1500):
         """The volume from a key: the Settings slider follows, and the status line says it."""
+        self._muted_from = None
         self.player.set_volume(volume)
         self.volume_var.set(self.player.volume * 100)
-        self._set_notice(notice or f"Volume {volume_words(self.player.volume)}", 1500)
+        self._set_notice(notice or f"Volume {volume_words(self.player.volume)}", ms)
 
     def _step_volume(self, steps: int):
         """Ctrl+↑ / ↓: a step up or down (as a notch of the mouse wheel over the transport)."""
         self._set_volume(self.player.volume + steps * VOLUME_STEP)
 
+    def _ears_at_risk(self) -> bool:
+        """Bit-perfect on a device that can't turn itself down (or that the player couldn't confirm
+        can): the player's volume is all there is between the file and the ears (see _protect_ears)."""
+        return bool(self.exclusive.get()) and not self.player.hardware_volume
+
+    def _ear_setup(self) -> tuple:
+        """What the level is heard through: a level kept from one setup isn't safe to bring back in another."""
+        return bool(self.exclusive.get()), self.player.output_device, self.player.hardware_volume
+
+    def full_volume(self):
+        """Ctrl+Shift+↑: volume 100% (untouched). Where the player's volume is the only one (bit-perfect
+        on a device without its own), that's the file at full level into the headphones: asked first."""
+        if self.player.volume < 1.0 and self._ears_at_risk():
+            reason = ("This device has no volume control of its own" if self.player.hardware_volume is False
+                      else "The player couldn't confirm this device has a volume control of its own")
+            self._for_prompt()
+            if not popups.confirm(self.root, "Turn the volume up to 100%?",
+                                  f"{reason}, and bit-perfect goes round the Windows volume: the music will "
+                                  f"play at full level (the volume is {volume_words(self.player.volume)} now).",
+                                  detail="Turn your headphone or amp volume down first.", ok="Turn it up",
+                                  tone="warn"):
+                return
+        self._set_volume(1.0)
+
     def toggle_mute(self):
-        """Ctrl+Shift+↓: silence; again, back to the level it was (the default level if it was 0 already)."""
+        """Ctrl+Shift+↓: silence; again, back to the level it was (the default level if it was 0
+        already). Never straight back up past the safe level where that would be loud: bit-perfect
+        on a device that can't turn itself down, switched on (or another device chosen) since."""
         if self.player.volume > 0:
-            self._muted_from = self.player.volume
+            remembered = (self.player.volume, self._ear_setup())
             self._set_volume(0.0, f"Muted · {keys.hint('mute')} again to unmute")
+            self._muted_from = remembered
+            return
+        level, setup = self._muted_from or (settings.DEFAULTS["volume"], None)
+        if level > SAFE_VOLUME and self._ears_at_risk() and setup != self._ear_setup():
+            self._set_volume(SAFE_VOLUME, f"Unmuted at {SAFE_VOLUME:.0%}: this device can't turn itself down in "
+                                          f"bit-perfect mode — raise it slowly", 6000)
         else:
-            self._set_volume(self._muted_from or settings.DEFAULTS["volume"])
+            self._set_volume(level)
 
     def _queue_selected(self, front: bool):
         """Ctrl+Enter / Ctrl+Shift+Enter in the track list: the selected song (an album header: its
@@ -882,10 +918,12 @@ class PlayerWindow:
         def possible() -> bool:
             return self._tab_index(tab) >= 0 and tab.tracks is after
 
-        def undo():
-            if self._save_playlist(Path(tab.path), before) and select_back is not None \
-                    and self._tab_index(tab) == self.current:
+        def undo() -> bool:
+            if not self._save_playlist(Path(tab.path), before):
+                return False
+            if select_back is not None and self._tab_index(tab) == self.current:
                 self.playlist.select(select_back)
+            return True
 
         self._remember_edit(notice, undone, undo, possible)
         if select is not None and tracks:
@@ -904,22 +942,25 @@ class PlayerWindow:
                                 lambda: (self.player.play_next(queued), self._paint_up_next()), lambda: True)
 
     def undo(self):
-        """Ctrl+Z / Undo in the status line: put the last playlist change back (once)."""
+        """Ctrl+Z / Undo in the status line: put the last playlist change back (once). If the playlist
+        file couldn't be written (the drive gone, say — the reason has been shown), it can be tried again."""
         if self._undo is None:
             self._set_notice("Nothing to undo", 2500)
             return
         _notice, undone, undo, possible = self._undo
-        self._undo = None
         if not possible():
+            self._undo = None
             self._set_notice("Can't undo: the playlist has changed since", 5000)
             return
-        undo()
+        if undo() is False:
+            return
+        self._undo = None
         self._set_notice(undone, 3000)
 
     def _paint_undo_link(self):
         """Undo shows at the end of the status line while the line tells of a change it can undo."""
         show = self._undo is not None and self._notice == self._undo[0] and not self.mini_mode
-        if show and not self.undo_link.winfo_ismapped():
+        if show and not self.undo_link.winfo_manager():
             self.undo_link.place(in_=self.status_label, relx=1.0, rely=0.5, anchor="e")
         elif not show and self.undo_link.winfo_manager():
             self.undo_link.place_forget()
@@ -1679,9 +1720,13 @@ class PlayerWindow:
 
     def open_library(self, view: str | None = None):
         """The Library window (one at a time): an open one is brought to the front as it was, search
-        and all (Ctrl+L). `view`: show that view (e.g. "recent" for new music)."""
+        and all (Ctrl+L) — unless the library folder has been changed in Settings since: then it's
+        made afresh for the new folder. `view`: show that view (e.g. "recent" for new music)."""
         if view is not None:
             self.prefs["library_view"] = view
+        if (self._library is not None and self._library.win.winfo_exists()
+                and Path(self._library.root_folder) != self._library_root()):
+            self._library.close()
         if self._library is not None and self._library.win.winfo_exists():
             if view is not None:
                 self._library.set_view(view)
@@ -1762,6 +1807,8 @@ class PlayerWindow:
             if self._tag_window.saving is not None:
                 self._tag_window.lift()
                 self._set_notice("Still saving the last tag edit…")
+                return
+            if not self._tag_window.may_discard():   # (edits typed there, not saved: asked first)
                 return
             self._tag_window.close()
         window = TagWindow(self.root, tracks, self.prefs, on_saved=self._tags_saved,
@@ -2227,6 +2274,7 @@ class PlayerWindow:
         if not steps:
             return
         self._wheel_delta -= steps * WHEEL_NOTCH
+        self._muted_from = None   # (a level chosen since: unmuting no longer goes back to the old one)
         self.player.set_volume(self.player.volume + steps * VOLUME_STEP)
         self.volume_var.set(self.player.volume * 100)
         self._set_notice(f"Volume {volume_words(self.player.volume)}", 1500)
@@ -3126,8 +3174,12 @@ class PlayerWindow:
         """Close the player. A tag save under way is first asked to stop after the file in hand
         (a file is never left half swapped, nor its checked copy left beside it), and songs being
         added to a playlist are written; then every step of closing runs, even if one before it
-        fails, and the window always closes."""
+        fails, and the window always closes. Edits typed in Edit tags and not saved are asked about
+        first (Ctrl+Q can be pressed in that window too): kept, the player stays open."""
         if self._closing:   # already on its way
+            return
+        tags = self._tag_window
+        if tags is not None and tags.saving is None and tags.win.winfo_exists() and not tags.may_discard():
             return
         self._closing = True
         self._close_when_saved(time.monotonic() + QUIT_WAIT_MS / 1000)

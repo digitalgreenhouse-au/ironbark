@@ -7,7 +7,8 @@ removed. Save (the button, or Ctrl+S — Enter only moves to the next field, so 
 files by accident) asks first ("Save changes to 12 files?"), then tag_editor does the careful part
 on its own thread: old tags to the history, each file copied, changed, checked sample for sample,
 swapped in. A song that's playing waits until the player moves on. Esc, Cancel or the window's ×
-with edits not yet saved ask "Discard changes?" first.
+with edits not yet saved ask "Discard changes?" first (Enter keeps editing), and so do quitting the
+player and Edit tags of other songs (`may_discard`).
 
 Tag history: every save, newest first; Undo puts the old tags back the same careful way.
 """
@@ -114,7 +115,9 @@ class TagWindow:
         self.win.bind("<Escape>", lambda e: self.request_close())
         self.win.bind("<Configure>", self._moved, add="+")
         self.confirm = confirm or ask(self.win, "Save")
-        self.confirm_discard = confirm_discard or ask(self.win, "Discard")
+        # (Discard is the risky answer: Enter keeps editing, only a click on Discard drops the edits.)
+        self.confirm_discard = confirm_discard or (lambda message, detail: popups.confirm(
+            self.win, message, detail, ok="Discard", cancel="Keep editing", danger=True))
         self.choose_picture = choose_picture or (lambda: filedialog.askopenfilename(
             parent=self.win, title="Choose the cover picture", filetypes=PICTURE_TYPES))
 
@@ -248,7 +251,8 @@ class TagWindow:
         return {"save_tags": lambda: self.save()}
 
     def _state(self) -> tuple:
-        return tuple(var.get() for var in self.vars.values()), id(self.cover_change)
+        # (The cover as itself, compared by value: an id() could be reused by the next one chosen.)
+        return tuple(var.get() for var in self.vars.values()), self.cover_change
 
     def dirty(self) -> bool:
         """Typed over a field, or chose a new cover (or none), since the tags were read or saved?"""
@@ -379,12 +383,18 @@ class TagWindow:
         self.win.deiconify()
         self.win.lift()
 
+    def may_discard(self) -> bool:
+        """May the window go? Yes with nothing typed to lose (or a save on its way); with edits not
+        yet saved, only if the answer is Discard (the window comes to the front to ask)."""
+        if self.saving is not None or not self.dirty():
+            return True
+        self.lift()
+        return bool(self.confirm_discard("Discard changes?", "Your edits haven't been saved to the files."))
+
     def request_close(self):
         """Esc, Cancel or the window's ×: with edits not yet saved, ask before dropping them."""
-        if self.saving is None and self.dirty() and not self.confirm_discard(
-                "Discard changes?", "Your edits haven't been saved to the files."):
-            return
-        self.close()
+        if self.may_discard():
+            self.close()
 
     def close(self):
         if self.saving is not None:  # never left half done: stop after the file in hand

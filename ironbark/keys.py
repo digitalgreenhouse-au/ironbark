@@ -16,7 +16,13 @@ action if the window (or the widget with the keyboard) is in its scope:
 While a text box has the keyboard (a search box, a tag field), single keys, Enter, Delete and
 the arrows are the box's: only Ctrl / Alt shortcuts and the function keys act — and not the
 ones text boxes use themselves (Ctrl+←/→ jump by words, Ctrl+Z undoes, Ctrl+A/C/V/X). So Ctrl+Space
-still plays or pauses from inside a search box.
+still plays or pauses from inside a search box. Something read-only that takes the keyboard (the PCM
+stream's columns, a licence, a choice list) isn't a text box: every key acts there. Tk's entries
+also delete to the end of the line on Ctrl+K (an Emacs habit); Ctrl+K is the table's (search), so
+that's taken out — it would wipe the rest of what was typed before the search opened.
+
+While an in-app question box is waiting for an answer (`held`), no shortcut acts, in any window:
+the box is modal, and a key in another window mustn't act behind it.
 
 Lists (ttk.Treeview) move their selection on the arrow keys with *any* modifier held, and fold on
 Space / Enter; the keys the table gives those meanings (Ctrl+↑ = volume, Alt+↑ = move a song,
@@ -210,8 +216,14 @@ def works_while_typing(key: Key) -> bool:
 
 
 def is_text_box(widget) -> bool:
-    """Something you type into: an entry (search boxes, tag fields, a combobox), a text area."""
-    return isinstance(widget, (tk.Entry, ttk.Entry, tk.Text, tk.Spinbox, ttk.Spinbox))
+    """Something you type into: an entry (search boxes, tag fields), a text area. Not a read-only
+    text area (state "disabled": the PCM stream's columns, a licence — clicked, it still takes the
+    keyboard on Windows) nor a choice list (a read-only combobox): nothing can be typed there."""
+    if isinstance(widget, tk.Text):
+        return str(widget.cget("state")) != "disabled"
+    if isinstance(widget, ttk.Combobox):
+        return not widget.instate(("readonly",))
+    return isinstance(widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox))
 
 
 def build_map(actions=ACTIONS) -> dict[Key, list[Action]]:
@@ -284,16 +296,22 @@ class Keys:
 
     `attach(window, scope, handlers)` once per window when it's made: the window answers the "app"
     keys and its own scope's, with `handlers` for those; `mark(widget, scope)` gives one widget a
-    scope of its own (the main track list is "list")."""
+    scope of its own (the main track list is "list"). While `held()` is true (a question box is
+    waiting), no key acts."""
 
-    def __init__(self, root: tk.Misc, handlers: dict[str, Callable] | None = None):
+    def __init__(self, root: tk.Misc, handlers: dict[str, Callable] | None = None,
+                 held: Callable[[], bool] | None = None):
         self.root = root
         self.handlers: dict[str, Callable] = dict(handlers or {})
+        self.held = held or (lambda: False)
         self.map = build_map()
         self._windows: dict[str, tuple[frozenset, dict[str, Callable]]] = {}
         self._widgets: dict[str, str] = {}
         self._passed: tuple | None = None   # a key a list's own binding looked at and let go on
         root.bind_class(TAG, "<KeyPress>", self._dispatch)
+        # A ttk entry's Ctrl+K deletes to the end of the line before the table's Ctrl+K (search)
+        # acts: an empty script removes that class binding (Ctrl+K then types nothing, as any Ctrl key).
+        root.bind_class("TEntry", "<Control-Key-k>", "")
 
     # -- windows -------------------------------------------------------------------------------
     def attach(self, window: tk.Misc, scope: str = "app", handlers: dict[str, Callable] | None = None):
@@ -423,6 +441,8 @@ class Keys:
 
     def run(self, widget, keysym: str, state: int) -> bool:
         """Carry out the key's action, if it has one here. True when it acted."""
+        if self.held():
+            return False
         found = self.resolve(widget, keysym, state)
         if found is None:
             return False

@@ -562,3 +562,179 @@ def test_help_and_about_follow_the_theme(make_window):
         assert _colours_in_use(win) & _only_in(theme.DARK, theme.LIGHT) == set()
     assert str(window._help.tree.tag_configure("group", "foreground")).lower() == theme.LIGHT.ACCENT_TEXT.lower()
     assert not errors
+
+
+# -- the edge cases: read-only boxes, question boxes, loud jumps, unsaved edits, failed saves ------
+def _loaded_tag_window(window, root, **kwargs):
+    from ironbark.tag_window import TagWindow
+
+    tags = TagWindow(root, window.tabs[0].tracks, window.prefs, on_saved=lambda save: None, busy=set,
+                     confirm=lambda message, detail: False, **kwargs)
+    window._with_keys(tags, "tags", tags.key_handlers())
+    for _ in range(40):
+        _pump(root, 0.05)
+        if tags._baseline is not None:
+            break
+    assert tags._baseline is not None
+    return tags
+
+
+def test_read_only_boxes_dont_stop_the_keys(make_window):
+    from tkinter import ttk
+
+    window, root, player, errors = make_window()
+    window.show_pcm()
+    window.show_meters()
+    _pump(root, 0.3)
+    # The PCM stream's columns are a read-only text area: clicked, it has the keyboard, but nothing
+    # can be typed there, so Space still plays / pauses and ← still seeks.
+    text = window._pcm.text
+    assert str(text.cget("state")) == "disabled" and not keys.is_text_box(text)
+    assert _resolved(window, text, "Space") == "play" and _resolved(window, text, "Left") == "seek"
+    # A choice list (a read-only combobox) likewise.
+    boxes, stack = [], [window._meters.win]
+    while stack:
+        widget = stack.pop()
+        stack.extend(widget.winfo_children())
+        if isinstance(widget, ttk.Combobox):
+            boxes.append(widget)
+    assert boxes and all(_resolved(window, box, "N") == "next" for box in boxes)
+    # Boxes that are typed into keep their single keys.
+    assert keys.is_text_box(window.playlist.entry) and _resolved(window, window.playlist.entry, "N") is None
+    text.configure(state="normal")
+    assert keys.is_text_box(text) and _resolved(window, text, "Space") is None
+    text.configure(state="disabled")
+    assert not errors
+
+
+def test_ctrl_k_in_a_search_box_keeps_what_was_typed(make_window):
+    window, root, player, errors = make_window()
+    entry = window.playlist.entry
+    window.playlist.query.set("abcdef")
+    _focus(root, entry)
+    entry.icursor(2)
+    entry.event_generate("<Control-Key-k>")                 # (Tk's entries deleted to the end of the line)
+    _pump(root, 0.3)
+    assert window.playlist.query.get() == "abcdef"
+    assert window._library is not None and window._library.win.winfo_exists()   # …and the search opened
+    assert not errors
+
+
+def test_no_key_acts_while_a_question_box_waits(make_window):
+    from ironbark import popups
+
+    window, root, player, errors = make_window()
+    window.show_meters()
+    _pump(root, 0.2)
+    box = popups.Prompt(root, "A question", "Over the player window", buttons=(("OK", True), ("Cancel", False)))
+    _pump(root, 0.05)
+    for text in ("N", "Ctrl+Q", "Ctrl+Shift+Up", "Delete"):
+        assert not _run(window, window._meters.win, text), text   # (not even in another window)
+    assert player.calls == [] and not window._closing
+    box.answer(True)
+    assert _run(window, window._meters.win, "N") and player.calls == ["next"]
+    assert not errors
+
+
+def test_full_volume_and_unmute_never_jump_loud_in_bit_perfect(make_window, monkeypatch):
+    from ironbark import popups, ui
+
+    window, root, player, errors = make_window()
+    asked = []
+    answer = {"yes": False}
+    monkeypatch.setattr(popups, "confirm", lambda *a, **k: asked.append(a[1]) or answer["yes"])
+    # Bit-perfect on a device without its own volume: the player's volume is the only one.
+    window.exclusive.set(True)
+    player.hardware_volume = False
+    player.set_volume(ui.SAFE_VOLUME)
+    _run(window, root, "Ctrl+Shift+Up")
+    assert asked == ["Turn the volume up to 100%?"] and player.volume == ui.SAFE_VOLUME   # asked: not turned up
+    answer["yes"] = True
+    _run(window, root, "Ctrl+Shift+Up")
+    assert player.volume == 1.0
+    _run(window, root, "Ctrl+Shift+Down")                   # muted and back, the same device: the same level
+    _run(window, root, "Ctrl+Shift+Down")
+    assert player.volume == 1.0 and len(asked) == 2
+    # Muted with the Windows mixer in charge; bit-perfect on (no device volume) meanwhile: unmuting
+    # comes back at the safe level, not at full scale.
+    window.exclusive.set(False)
+    _run(window, root, "Ctrl+Shift+Down")
+    assert player.volume == 0.0
+    window.exclusive.set(True)
+    _run(window, root, "Ctrl+Shift+Down")
+    assert player.volume == ui.SAFE_VOLUME and window._notice.startswith("Unmuted at 30%")
+    # Without bit-perfect, no question: 100% straight away.
+    window.exclusive.set(False)
+    _run(window, root, "Ctrl+Shift+Up")
+    assert player.volume == 1.0 and len(asked) == 2
+    assert not errors
+
+
+def test_an_undo_that_cant_be_written_can_be_tried_again(make_window, tmp_path, monkeypatch):
+    from ironbark import playlists, popups
+
+    window, root, player, errors, tab, songs = _playlist_window(make_window, tmp_path)
+    told = []
+    monkeypatch.setattr(popups, "tell", lambda window, title, message="", **k: told.append(title))
+    window.playlist.select(1)
+    assert _run(window, window.playlist.tree, "Delete") and tab.tracks == [songs[0], songs[2]]
+    real = playlists.write
+
+    def unplugged(path, tracks):
+        raise OSError("The device is not ready")
+    monkeypatch.setattr(playlists, "write", unplugged)
+    _run(window, root, "Ctrl+Z")
+    assert told == ["Couldn't save the playlist"] and not window._notice.startswith("Put")
+    assert tab.tracks == [songs[0], songs[2]] and window._undo is not None   # nothing changed: kept to try again
+    monkeypatch.setattr(playlists, "write", real)
+    _run(window, root, "Ctrl+Z")
+    assert tab.tracks == songs and window._notice == "Put “Song 2” back"
+    assert not errors
+
+
+def test_discarding_tag_edits_asks_first_even_when_quitting(make_window):
+    from ironbark import popups
+
+    window, root, player, errors = make_window(experiments={"tag_editor": True})
+    # The real question: Enter keeps editing (only a click on Discard drops the edits).
+    tags = _loaded_tag_window(window, root)
+    assert tags.may_discard()                               # nothing typed: no question
+    tags.vars["title"].set("Typed, not saved")
+    root.after(150, lambda: popups.Prompt.stack[-1].press_default())
+    tags.request_close()
+    assert tags.win.winfo_exists() and tags.dirty()
+    tags.close()
+    # Quitting asks too: Ctrl+Q works in Edit tags, and closing the player would drop the edits.
+    asked, answer = [], {"discard": False}
+    tags = _loaded_tag_window(window, root, confirm_discard=lambda message, detail: asked.append(message)
+                              or answer["discard"])
+    window._tag_window = tags
+    tags.vars["title"].set("Typed, not saved")
+    assert _run(window, tags.entries["title"], "Ctrl+Q")   # Ctrl+Q from inside Edit tags…
+    assert asked == ["Discard changes?"] and not window._closing and tags.win.winfo_exists()   # …kept
+    # Edit tags of another song (E) while edits wait: asked too, and the window stays as it was.
+    window.edit_tags(window.tabs[0].tracks)
+    assert window._tag_window is tags and tags.vars["title"].get() == "Typed, not saved"
+    assert asked == ["Discard changes?"] * 2
+    answer["discard"] = True
+    window.quit()
+    assert window._closing and asked == ["Discard changes?"] * 3
+    assert not errors
+
+
+def test_ctrl_l_opens_the_new_folder_after_the_library_folder_changed(make_window, tmp_path):
+    window, root, player, errors = make_window()
+    window.open_library()
+    _pump(root, 0.3)
+    first = window._library
+    elsewhere = tmp_path / "Other music"
+    elsewhere.mkdir()
+    window._set_library_folder(elsewhere)                   # (Settings → Library → Change…)
+    _run(window, root, "Ctrl+L")
+    _pump(root, 0.2)
+    assert window._library is not first and not first.win.winfo_exists()
+    assert window._library.root_folder == elsewhere
+    second = window._library
+    _run(window, root, "Ctrl+L")                            # the same folder: brought forward, as it was
+    assert window._library is second
+    assert not errors
