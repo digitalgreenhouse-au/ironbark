@@ -504,7 +504,8 @@ class TabBar(tk.Frame):
         if chrome.CUSTOM:
             if wide and self.max_btn is None:
                 self.max_btn = CaptionButton(self, self.root, "restore" if self._zoomed else "max",
-                                             lambda: self.on_maximise(), label="Maximise")
+                                             lambda: self.on_maximise(),
+                                             label="Restore" if self._zoomed else "Maximise")
             caption = theme.px(theme.CAPTION_W)
             if self.max_btn is not None:
                 if wide:
@@ -849,7 +850,8 @@ class TabBar(tk.Frame):
         self.tooltip._hide()
         i = self._slot_at(event.x, event.y)
         if i is None:
-            chrome.start_move(self.root)
+            if not chrome.is_fullscreen(self.root):   # (full screen stays put: double-click, F11 or Esc leave it)
+                chrome.start_move(self.root)
             return
         if i == self._x_shown and self._on_x(i, event.x, event.y):
             self._x_pressed = i
@@ -1401,13 +1403,16 @@ class Popover(tk.Frame):
             row.on_hover = self.hover
 
     def hide(self):
+        # The keyboard goes back where it was only if it's still in the panel: closed by a click on
+        # something that takes the keyboard itself (the list, the search box), it stays there.
+        keyboard_here = self._has_keyboard()
         self.place_forget()
         if isinstance(self.anchor_widget, IconButton):
             self.anchor_widget.set_active(False)
         if Popover.open_one is self:
             Popover.open_one = None
         before, self._focus_before = self._focus_before, None
-        if (self.keys_on or self.controls_on) and before is not None:
+        if (self.keys_on or self.controls_on) and before is not None and keyboard_here:
             try:
                 if before.winfo_exists():
                     before.focus_set()     # the keyboard goes back where it was (e.g. the track list)
@@ -1417,6 +1422,14 @@ class Popover(tk.Frame):
             self.on_hide()
         if self.transient:
             self.after_idle(self._destroy_quietly)
+
+    def _has_keyboard(self) -> bool:
+        """Is the keyboard (in this window) on the panel or something inside it?"""
+        try:
+            here, me = str(self.tk.call("focus", "-lastfor", self)), str(self)
+        except tk.TclError:
+            return True
+        return here == me or here.startswith(me + ".")
 
     def _destroy_quietly(self):
         try:

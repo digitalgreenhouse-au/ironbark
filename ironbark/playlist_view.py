@@ -371,7 +371,9 @@ class PlaylistView:
         if wide:
             self.header.pack(fill="x", pady=theme.pad(0, theme.GAP), before=self.table)
             self.search.pack(in_=self.header, side="left", fill="x", expand=True)
-            self.search.lift()
+            # Just above the header row it's packed in, not above everything: Tab follows the
+            # stacking order, so raising it past the list would put the list first.
+            self.search.lift(self.header)
             self._search_pad = -1
             self._fit_search()
         else:

@@ -231,6 +231,42 @@ def test_settings_takes_the_keyboard_tabs_round_it_and_gives_it_back(make_window
     assert errors == []
 
 
+def _click(widget, x: int = 20, y: int = 10):
+    widget.event_generate("<ButtonPress-1>", x=x, y=y, rootx=widget.winfo_rootx() + x,
+                          rooty=widget.winfo_rooty() + y)
+    widget.event_generate("<ButtonRelease-1>", x=x, y=y, rootx=widget.winfo_rootx() + x,
+                          rooty=widget.winfo_rooty() + y)
+
+
+def test_a_click_that_closes_a_panel_keeps_the_keyboard_where_it_clicked(make_window):
+    """Settings or a right-click menu closed by a click on the list or the search box: the keyboard
+    stays there (Space then plays, letters type) rather than jumping back to where it was before."""
+    from ironbark.tabbar import Popover
+
+    window, root, _player, errors = make_window()
+    _pump(root, 0.3)
+    entry, tree = window.playlist.entry, window.playlist.tree
+    entry.focus_set()
+    window._open_settings()
+    _pump(root, 0.2)
+    assert root.focus_lastfor() is window.settings_pop
+    _click(tree, 40, 40)
+    _pump(root, 0.2)
+    assert not window.settings_pop.is_open and root.focus_lastfor() is tree
+    window._track_menu([0], SimpleNamespace(x_root=tree.winfo_rootx() + 40, y_root=tree.winfo_rooty() + 40))
+    _pump(root, 0.2)
+    assert Popover.open_one is not None and root.focus_lastfor() is Popover.open_one
+    _click(entry)
+    _pump(root, 0.2)
+    assert Popover.open_one is None and root.focus_lastfor() is entry
+    window._open_settings()                                               # closed from the keyboard:
+    _pump(root, 0.2)
+    root.event_generate("<Escape>")
+    _pump(root, 0.1)
+    assert root.focus_lastfor() is entry                                  # back where it was
+    assert errors == []
+
+
 def test_settings_sits_below_the_strip_at_the_windows_edge(make_window):
     window, root, _player, errors = make_window()
     _pump(root, 0.3)

@@ -473,6 +473,8 @@ class PlayerWindow:
         self._layout_job = None
         self._plan: layout.Plan | None = None
         self._heights: layout.Heights | None = None   # measured once per layout (_measure_heights)
+        self._measured: dict[str, layout.Heights] = {}   # each wide layout's heights when last measured
+        self._opening_size: tuple[int, int] | None = None   # (real px) the size it opens at, before it shows
         self._head_full = ("Nothing playing", "Open your library: Ctrl+L")   # title and artist line, uncut
         self._head_texts = ("", "")    # the caption and the format line
         self._head_cut = (False, False)  # whether a wide window shows the title / artist line shortened
@@ -3740,6 +3742,7 @@ class PlayerWindow:
         fitted to the new size."""
         if event.widget is not self.root:
             return
+        self._opening_size = None   # (shown: its own size from now on)
         self.bar.paint_max(chrome.is_fullscreen(self.root) or self.root.state() == "zoomed")
         if self.mini_mode or self._mini_settings_from is not None:
             return
@@ -3755,6 +3758,8 @@ class PlayerWindow:
         back from the mini strip). size: the window's size to go by (real px), before it's shown."""
         if self.mini_mode or self._mini_settings_from is not None:
             return
+        if size is not None:
+            self._opening_size = size   # (fitted to it while the window can't be measured yet)
         tier = self._choose_tier(size)
         if tier != self._tier:
             self._apply_layout(tier)
@@ -3850,11 +3855,23 @@ class PlayerWindow:
         the measured heights — never the panes themselves — so nothing feeds back."""
         if self.mini_mode or self._tier == layout.COLUMN:
             return
-        width, height = self.root.winfo_width(), self.root.winfo_height()
+        # Until the window has been shown and told its size, Tk calls it 200 px square: go by the
+        # size it opens at instead (or its first paint would be laid out for that).
+        width, height = self._opening_size or (self.root.winfo_width(), self.root.winfo_height())
         if width < 10 or height < 10:
             return
         if self._heights is None:
-            self._heights = self._measure_heights()
+            # Measuring makes Tk lay out and paint the window as it is at that moment, so it's first
+            # fitted with the heights this layout had last time (or typical ones): that paint already
+            # shows the panes in place, not a list across the whole window with nothing beside it.
+            self._heights = self._measured.get(self._tier) or layout.DEFAULT_HEIGHTS[self._tier]
+            self._fit_plan(width, height)
+            self._heights = self._measured[self._tier] = self._measure_heights()
+        self._fit_plan(width, height)
+
+    def _fit_plan(self, width: int, height: int):
+        """Fit the panes, the cover's slot and the title to a window `width` × `height` real px, planned
+        from the heights in hand."""
         scale = _layout_scale()
         plan = layout.plan(width / scale, height / scale, self._tier, self.show_art.get(), self._heights)
         old, self._plan = self._plan, plan
@@ -4450,7 +4467,8 @@ class PlayerWindow:
         self._index().indexer.cancel()
 
     def _stop_timers(self):
-        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job):
+        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job, self._layout_job,
+                    self._art_job):
             if job is not None:
                 self.root.after_cancel(job)
 

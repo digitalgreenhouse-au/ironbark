@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from ironbark import chrome, layout, playlist_view, settings, theme
+from ironbark import chrome, layout, playlist_view, settings, tabbar, theme
 from ironbark.engine import State, Status
 from ironbark.library import Track
 from ironbark.tabbar import Popover
@@ -510,6 +510,114 @@ def test_full_screen_from_maximised_goes_back_to_maximised_and_z_leaves_it(make_
     assert not chrome.is_fullscreen(root)
     window.toggle_mini()
     _pump(root, 0.3)
+    assert not errors
+
+
+# -- the keyboard's order, and what a switch paints -------------------------------------------------
+def _tab_order(window) -> list[str]:
+    """The widgets Tab goes through from the strip's + button, in order (by name on the window)."""
+    names = {str(window.playlist.entry): "search", str(window.playlist.tree): "list",
+             str(window.volume_badge): "badge", str(window.play_button): "play", str(window.seek): "seek"}
+    order, widget, seen = [], window.bar.add_btn, set()
+    while widget is not None and str(widget) not in seen:
+        seen.add(str(widget))
+        if str(widget) in names:
+            order.append(names[str(widget)])
+        widget = widget.tk_focusNext()
+    return order
+
+
+def test_tab_goes_from_the_search_box_to_the_list_in_every_layout(make_window):
+    window, root, player, errors = _open(make_window, size=(420, 900))
+    narrow = _tab_order(window)
+    assert narrow == ["seek", "play", "badge", "search", "list"]
+    _resize(root, 1920, 1080)
+    assert _tab_order(window) == narrow          # the search box sits above the list in the wide window too
+    _resize(root, 420, 900)
+    assert _tab_order(window) == narrow          # and a trip to a wide size leaves the order as it was
+    assert not errors
+
+
+def _layout_state(window) -> dict:
+    return dict(left=window.left.winfo_width(), stack=window.stack.winfo_ismapped(),
+                stack_w=window.stack.winfo_width(), art=window.art_box.winfo_height())
+
+
+def test_a_switch_paints_the_panes_already_in_place(make_window):
+    """Measuring a new layout makes Tk lay out and paint it: by then the panes must already have
+    (about) their final sizes, or the window flashes a list across its whole width, with no cover or
+    transport, as it crosses a breakpoint."""
+    window, root, player, errors = _open(make_window, size=(420, 900))
+    painted = []
+    measure = window._measure_heights
+
+    def measuring():
+        root.update_idletasks()
+        painted.append(_layout_state(window))
+        return measure()
+
+    window._measure_heights = measuring
+    for size in ((1920, 1080), (420, 900), (1300, 900), (1920, 1080)):
+        painted.clear()
+        _resize(root, *size)
+        final = _layout_state(window)
+        for state in painted:
+            if window._tier == layout.COLUMN:
+                continue
+            assert state["stack"], size
+            for key in ("left", "stack_w", "art"):
+                assert abs(state[key] - final[key]) <= theme.px(24), (size, key, state, final)
+    assert not errors
+
+
+def test_a_wide_window_is_planned_for_its_own_size_before_it_shows(make_window, monkeypatch):
+    """Before it's first shown Tk calls a window 200 px square: a wide window opening is planned for
+    the size it opens at, so its cover is fetched for the right slot from the start."""
+    from ironbark.ui import PlayerWindow
+
+    planned = []
+    settle = PlayerWindow._settle_size
+
+    def settling(self, geometry):
+        planned.append(self._plan)
+        settle(self, geometry)
+
+    monkeypatch.setattr(PlayerWindow, "_settle_size", settling)
+    window, root, player, errors = _open(make_window)
+    assert window._tier == layout.SPLIT_L
+    assert planned[0] == window._plan and planned[0].slot == layout.COVER_MAX
+    assert not errors
+
+
+@pytest.mark.skipif(not chrome.CUSTOM, reason="the strip moves the window itself on Windows only")
+def test_pressing_the_strip_in_full_screen_leaves_the_window_where_it_is(make_window, monkeypatch):
+    window, root, player, errors = _open(make_window, size=(1280, 800))
+    moves = []
+    monkeypatch.setattr(chrome, "start_move", lambda w: moves.append(w))
+    canvas = window.bar.canvas
+    empty = (canvas.winfo_width() // 2, theme.px(theme.ROW_Y))
+    assert window.bar._slot_at(*empty) is None
+    window.bar._pressed(SimpleNamespace(x=empty[0], y=empty[1], x_root=0, y_root=0))
+    assert len(moves) == 1                       # a window drag, as ever…
+    window.toggle_full_screen()
+    _pump(root, 0.3)
+    window.bar._pressed(SimpleNamespace(x=empty[0], y=empty[1], x_root=0, y_root=0))
+    assert len(moves) == 1                       # …but not out of full screen
+    window._leave_full_screen()
+    _pump(root, 0.3)
+    assert not errors
+
+
+@pytest.mark.skipif(not chrome.CUSTOM, reason="the strip draws its own window buttons on Windows only")
+def test_the_maximise_button_made_while_maximised_says_restore(make_window):
+    window, root, player, errors = _open(make_window, size=(420, 900), maximised=True)
+    if root.state() != "zoomed" or window._tier == layout.COLUMN:
+        pytest.skip("this screen is too narrow for a wide window when maximised")
+    button = window.bar.max_btn
+    assert button.cget("text") == tabbar.glyph(root, "restore") and button.tip.text == "Restore"
+    button.command()
+    _pump(root, 0.4)
+    assert root.state() == "normal"
     assert not errors
 
 

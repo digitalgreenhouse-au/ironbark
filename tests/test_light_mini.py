@@ -220,6 +220,7 @@ def make_window(tmp_path, monkeypatch):
     song = music / "01 Song.flac"
     sf.write(song, np.zeros((44100, 2), dtype=np.int16), 44100, subtype="PCM_16")
     made = []
+    scale_before = theme._scale   # (theme.px's scaling: put back at the end, like Tk's own)
 
     def make(*, scaling: float | None = None, **prefs):
         """scaling: lay the window out as at that display scaling (1.0 = 100%, 1.5 = 150%)."""
@@ -257,6 +258,9 @@ def make_window(tmp_path, monkeypatch):
         except tk.TclError:
             pass
     theme.use(theme.DARK)
+    # theme.px goes by the scaling of the last window styled: a window laid out as at 150% would
+    # otherwise leave every later test's sizes half as big again (a tab strip on a plain root, say).
+    theme._scale = scale_before
     del made[:]
     gc.collect()   # on this thread (Tk objects freed on another thread abort Python)
 
