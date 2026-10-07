@@ -127,7 +127,7 @@ def test_ask_text_keeps_the_box_open_until_the_name_is_fine(root):
 
 
 def test_confirm_and_tell(root):
-    answer_later(root, lambda p: p.press_default())
+    answer_later(root, lambda p: p._chosen(0))                # a click on Delete (Enter answers No)
     assert popups.confirm(root, "Delete it?", ok="Delete", danger=True) is True
     answer_later(root, lambda p: p.press_cancel())
     assert popups.confirm(root, "Delete it?", ok="Delete", danger=True) is False
@@ -393,11 +393,14 @@ def test_playlist_name_prompt_checks_for_a_clash(make_window, tmp_path, monkeypa
     window.new_playlist()
     assert notes == ["There's already a playlist called “Rock”."]
     assert playlists.path_for("Jazz").exists() and window.tabs[window.current].title == "Jazz"
-    # Delete it: the in-app confirm; Esc keeps it, Delete removes it.
+    # Delete it: the in-app confirm; Esc and Enter keep it, a click on Delete removes it.
     answer_later(root, lambda p: p.press_cancel())
     window.delete_playlist(window.current)
     assert playlists.path_for("Jazz").exists()
     answer_later(root, lambda p: p.press_default())
+    window.delete_playlist(window.current)
+    assert playlists.path_for("Jazz").exists()
+    answer_later(root, lambda p: p._chosen(0))
     window.delete_playlist(window.current)
     assert not playlists.path_for("Jazz").exists() and not errors
 

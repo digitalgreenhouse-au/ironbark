@@ -88,8 +88,10 @@ def test_browse_views_sorting_and_search(root, music):
     assert column(w, "album") == ["Dance", "Pop", "No genre"]
     assert column(w, "album", w.tree.get_children()[1]) == ["21", "Hits"]
     w.search_var.set("adele")
+    w._flush_search()                # (the list follows the box after a pause in typing)
     assert column(w, "album") == ["Pop"] and column(w, "album", w.tree.get_children()[0]) == ["21"]
     w.search_var.set("dance")      # Dance's own name matches (all of it); Hits is also Pop
+    w._flush_search()
     assert column(w, "album") == ["Dance", "Pop"] and column(w, "album", w.tree.get_children()[1]) == ["Hits"]
     w.search_var.set("")
     w.set_view("recent")

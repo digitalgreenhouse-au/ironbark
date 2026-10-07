@@ -37,6 +37,7 @@ WARN_EDGE = 2            # px at 100%: a warning box's amber edge
 FLASH_MS = 110           # a click outside the box: its edge flashes, twice, this long each
 MENU_MIN_WIDTH = 190     # px at 100%: a right-click menu's narrowest
 MENU_TEXT = 44           # characters: longer item names (a song, a playlist) are cut with …
+PROMPT_TAG = "DGPrompt"  # the bindtag every prompt's widgets carry in place of their window's
 
 Answer = object
 
@@ -49,7 +50,8 @@ class Prompt(tk.Frame):
     unless it's "danger"); Esc / closing answers `cancel`. `entry`: show a text box with this text
     (selected), and answer the typed text (stripped) for the default button; `validate(text)` returns
     a problem to show under the box ("There's already a playlist called …") or None. `tone`
-    "warn" + `cover=True` for warnings that must not be missed.
+    "warn" + `cover=True` for warnings that must not be missed. Enter never presses a "danger"
+    button: in such a box the default is the button that answers `cancel`, and it stays plain.
 
     Call `wait()` for the answer, or (tests) `press_default()` / `press_cancel()` / `answer(value)`."""
 
@@ -66,7 +68,7 @@ class Prompt(tk.Frame):
             self.cover.place(x=0, y=0, relwidth=1, relheight=1)
             self.cover.lift()
         edge = theme.px(WARN_EDGE) if tone == "warn" else 1
-        self.edge_colour = theme.WARN if tone == "warn" else theme.BORDER
+        self.edge_role = "WARN" if tone == "warn" else "BORDER"   # a role: the flash follows a palette change
         super().__init__(window, bg=theme.SURFACE, highlightthickness=edge, highlightbackground=self.edge_colour,
                          highlightcolor=self.edge_colour)
         self.heading, self.tone = title, tone
@@ -74,7 +76,7 @@ class Prompt(tk.Frame):
         self.result: Answer = cancel
         self.done = False
         self._done_var = tk.IntVar(self, value=0)
-        self.tag = f"DGPrompt{id(self)}"
+        self.tag = PROMPT_TAG
         width = self._width()
         wrap = width - 2 * theme.px(theme.GAP_WIDE) - 2 * edge
         body = tk.Frame(self, bg=theme.SURFACE)
@@ -100,6 +102,7 @@ class Prompt(tk.Frame):
             self.detail_label.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self.entry = self.problem_label = None
         self.text = tk.StringVar(self, value=entry or "")
+        self._text_trace = None
         if entry is not None:
             self.entry = ttk.Entry(body, textvariable=self.text)
             self.entry.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
@@ -107,16 +110,20 @@ class Prompt(tk.Frame):
             self.entry.icursor("end")
             self.problem_label = tk.Label(body, text="", bg=theme.SURFACE, fg=theme.DANGER, anchor="w",
                                           justify="left", font=theme.font(theme.SIZE_SMALL), wraplength=wrap)
-            self.text.trace_add("write", lambda *_: self.show_problem(""))   # typing clears it
+            self._text_trace = self.text.trace_add("write", lambda *_: self.show_problem(""))   # typing clears it
 
         row = tk.Frame(body, bg=theme.SURFACE)
         row.pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
         self.buttons: list[PillButton] = []
         self.values: list[Answer] = []
-        self.default = default
         specs = [tuple(b) + (("plain",) if len(b) == 2 else ()) for b in buttons]
+        danger = any(kind == "danger" for _label, _value, kind in specs)
+        if specs[default][2] == "danger":   # Enter (also the key that chose the menu item) must be safe
+            default = next((i for i, (_label, value, kind) in enumerate(specs)
+                            if value == cancel and kind != "danger"), default)
+        self.default = default
         for index, (label, value, kind) in reversed(list(enumerate(specs))):
-            if kind == "plain" and index == default:
+            if kind == "plain" and index == default and not danger:   # (no green go-ahead beside Delete)
                 kind = "primary"
             button = PillButton(row, label, lambda v=value, i=index: self._chosen(i), bg="SURFACE",
                                 **self._button_style(kind))
@@ -124,15 +131,20 @@ class Prompt(tk.Frame):
             self.buttons.insert(0, button)
             self.values.insert(0, value)
 
-        # Keys and clicks: the box's widgets get their own tag *instead of* the window's, so the
+        # Keys and clicks: the box's widgets get the prompts' tag *instead of* the window's, so the
         # player's shortcuts (Ctrl+W, n, Space…) and the pop-overs' click-outside don't act while
-        # it's up. Enter / Esc / Tab are handled here; typing still works (each widget keeps its class).
-        for key in ("<Return>", "<KP_Enter>"):
-            self.bind_class(self.tag, key, lambda e: self.press_default() or "break")
-        self.bind_class(self.tag, "<Escape>", lambda e: self.press_cancel() or "break")
-        for key in ("<Tab>", "<Shift-Tab>"):
-            self.bind_class(self.tag, key, lambda e: "break")
-        self.bind_class(self.tag, "<ButtonPress>", self._pressed)
+        # it's up. Enter / Esc / Tab are handled there; typing still works (each widget keeps its
+        # class). The tag is bound once for all prompts: a class binding lasts as long as Tk does,
+        # so one made per box (with the box in its function) would keep every box ever shown alive.
+        root = self._root()
+        if not getattr(root, "_dg_prompt_keys_bound", False):
+            root._dg_prompt_keys_bound = True
+            for key in ("<Return>", "<KP_Enter>"):
+                self.bind_class(PROMPT_TAG, key, lambda e: Prompt._dispatch(e, Prompt.press_default) or "break")
+            self.bind_class(PROMPT_TAG, "<Escape>", lambda e: Prompt._dispatch(e, Prompt.press_cancel) or "break")
+            for key in ("<Tab>", "<Shift-Tab>"):
+                self.bind_class(PROMPT_TAG, key, lambda e: "break")
+            self.bind_class(PROMPT_TAG, "<ButtonPress>", lambda e: Prompt._dispatch(e, Prompt._pressed, e))
         self._retag(self)
         if self.cover is not None:
             self._retag(self.cover)
@@ -149,6 +161,30 @@ class Prompt(tk.Frame):
             window.bind("<Configure>", lambda e: Prompt._window_resized(e, window), add="+")
         Prompt.stack.append(self)
         self._take_over()
+
+    @property
+    def edge_colour(self) -> str:
+        """The box's edge colour in the palette now (amber for a warning)."""
+        return theme.colour(self.edge_role)
+
+    @staticmethod
+    def _owner(widget) -> "Prompt | None":
+        """The prompt on show that a widget with the prompts' tag belongs to (its cover counts)."""
+        for prompt in reversed(Prompt.stack):
+            if widget is prompt.cover:
+                return prompt
+        while isinstance(widget, tk.Misc):
+            if isinstance(widget, Prompt):
+                return widget
+            widget = widget.master
+        return None
+
+    @staticmethod
+    def _dispatch(event, action, *args):
+        """A key or click on a prompt's widget: `action` on the prompt it belongs to."""
+        prompt = Prompt._owner(event.widget)
+        if prompt is not None and not prompt.done:
+            action(prompt, *args)
 
     # -- layout -------------------------------------------------------------------------------
     def _width(self) -> int:
@@ -215,7 +251,7 @@ class Prompt(tk.Frame):
         def blink(n: int):
             if not self.winfo_exists():
                 return
-            colour = bright if n % 2 == 0 else self.edge_colour
+            colour = bright if n % 2 == 0 else self.edge_colour   # (the palette's, if it has changed since)
             self.configure(highlightbackground=colour, highlightcolor=colour)
             if n + 1 < times * 2:
                 self.after(FLASH_MS, blink, n + 1)
@@ -277,8 +313,20 @@ class Prompt(tk.Frame):
             Prompt.stack[-1]._take_over()
 
     def _destroyed(self, event):
-        if event.widget is self and not self.done:   # its window closed under it: that's a cancel
+        if event.widget is not self:
+            return
+        if not self.done:   # its window closed under it: that's a cancel
             self.answer(self.cancel_value)
+        # Let go of the box's Tk variables here, on Tk's thread: an answered box is freed by Python's
+        # cycle collector (its widgets and their masters), which may run on any thread, and a Tk
+        # variable freed there fails ("main thread is not in main loop").
+        if self._text_trace is not None:
+            try:
+                self.text.trace_remove("write", self._text_trace)
+            except tk.TclError:
+                pass
+            self._text_trace = None
+        self.text = self._done_var = None
 
     @staticmethod
     def _window_resized(event, window):
@@ -289,7 +337,7 @@ class Prompt(tk.Frame):
 
     def wait(self) -> Answer:
         """Wait (Tk keeps running) until the box is answered; return the answer."""
-        if not self.done:
+        if not self.done and self._done_var is not None:
             try:
                 self.wait_variable(self._done_var)
             except tk.TclError:
@@ -307,9 +355,11 @@ def ask_text(window: tk.Misc, title: str, message: str = "", *, initial: str = "
 
 def confirm(window: tk.Misc, title: str, message: str = "", *, detail: str = "", ok: str = "OK",
             cancel: str = "Cancel", danger: bool = False, tone: str = "plain", cover: bool = False) -> bool:
-    """A yes / no question. Enter = `ok`, Esc = `cancel`. True for ok."""
+    """A yes / no question. Enter = `ok`, Esc = `cancel`. True for ok. `danger` (Delete…): `ok` is
+    ringed in red and Enter answers `cancel` — only a click on `ok` goes ahead."""
     return bool(Prompt(window, title, message, detail=detail, tone=tone, cover=cover, cancel=False,
-                       buttons=((ok, True, "danger" if danger else "primary"), (cancel, False))).wait())
+                       buttons=((ok, True, "danger" if danger else "primary"), (cancel, False)),
+                       default=1 if danger else 0).wait())
 
 
 def tell(window: tk.Misc, title: str, message: str = "", *, detail: str = "", tone: str = "plain",

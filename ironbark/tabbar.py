@@ -60,6 +60,15 @@ TOOLTIP_WRAP = 320       # px at 100%: a tooltip's longest line (less in a narro
 TOOLTIP_MIN_WRAP = 160   # px at 100%: …but never narrower than this
 
 
+def released_over(event, widget: tk.Misc) -> bool:
+    """Was the mouse button let go over `widget`? Tk sends the release to whatever took the press,
+    wherever the pointer has gone since, so a press that slides off a control and is let go
+    elsewhere must not count as a click on it (as with any Windows button). Screen coordinates,
+    because the release may be bound on a part of the control (a row's words), not on the control."""
+    x, y = event.x_root - widget.winfo_rootx(), event.y_root - widget.winfo_rooty()
+    return 0 <= x < widget.winfo_width() and 0 <= y < widget.winfo_height()
+
+
 class Tooltip:
     """A small label that appears after hovering a moment. `text` may be a function, so it
     can describe the current state (e.g. what the status square means right now).
@@ -75,14 +84,26 @@ class Tooltip:
         widget.bind("<Enter>", self._schedule, add="+")
         widget.bind("<Leave>", self._hide, add="+")
         widget.bind("<ButtonPress>", self._hide, add="+")
+        widget.bind("<Destroy>", self._forget, add="+")
+
+    def _forget(self, event):
+        """The widget has gone: no tip for it, and let go of it. Buttons keep their tooltip
+        (`self.tip`), so holding on to the button too would make a cycle that only Python's cycle
+        collector frees, on whatever thread it happens to run, and a Tk object freed on another
+        thread fails."""
+        if event.widget is self.widget:
+            self._hide()
+            self.widget = None
 
     def _schedule(self, _event=None):
         self._cancel()
-        self._job = self.widget.after(TOOLTIP_DELAY_MS, self._show)
+        if self.widget is not None:
+            self._job = self.widget.after(TOOLTIP_DELAY_MS, self._show)
 
     def _cancel(self):
         if self._job:
-            self.widget.after_cancel(self._job)
+            if self.widget is not None:
+                self.widget.after_cancel(self._job)
             self._job = None
 
     def wrap(self) -> int:
@@ -93,6 +114,8 @@ class Tooltip:
 
     def _show(self):
         self._job = None
+        if self.widget is None:
+            return
         text = self.text() if callable(self.text) else self.text
         if not text or not self.widget.winfo_exists():
             return
@@ -119,7 +142,10 @@ class Tooltip:
     def _hide(self, _event=None):
         self._cancel()
         if self._tip is not None:
-            self._tip.destroy()
+            try:
+                self._tip.destroy()
+            except tk.TclError:   # (already gone with its widget)
+                pass
             self._tip = None
 
 
@@ -242,6 +268,9 @@ class TabBar(tk.Frame):
         while len(self._tab_widgets) > n:          # fewer tabs: drop the spare slots
             self._tab_widgets.pop().destroy()
         if not n:
+            # Tk leaves a frame at its old size when its last child goes, so + would float where
+            # the tabs ended (or past the strip's end): shrink it to nothing.
+            self.tabs_frame.configure(width=1)
             return
         width = self.winfo_width()
         buttons = [self.settings_btn]
@@ -318,7 +347,7 @@ class TabBar(tk.Frame):
         small = (icon[0], theme.TAB_CLOSE) if icon else theme.font(theme.TAB_CLOSE)
         close = tab.close = tk.Label(tab, text=glyph(self.root, "x"), font=small, fg=theme.MUTED, cursor="hand2",
                                      padx=theme.px(3))
-        close.bind("<ButtonRelease-1>", lambda e: self.on_close(index))
+        close.bind("<ButtonRelease-1>", lambda e: released_over(e, close) and self.on_close(index))
         close.bind("<Enter>", lambda e: close.configure(fg=theme.TEXT))
         close.bind("<Leave>", lambda e: close.configure(fg=theme.MUTED))
         state = {"job": None}
@@ -340,7 +369,9 @@ class TabBar(tk.Frame):
             if not tab.winfo_exists():
                 return
             x, y = self.winfo_pointerxy()
-            under = str(self.winfo_containing(x, y) or "")
+            # Tk's path, not winfo_containing's widget: that fails on a part of Tk's own that
+            # Python has no object for (an open drop-down list).
+            under = str(self.tk.call("winfo", "containing", "-displayof", self, x, y))
             if under == str(tab) or under.startswith(str(tab) + "."):
                 return  # still over the tab (or its close button)
             if state["job"] is not None:
@@ -426,7 +457,8 @@ class Toggle(tk.Label):
         self._app_root, self._bg = root, bg  # (not _root: that name is a Tk method); bg: a theme role
         super().__init__(parent, bg=theme.colour(bg), bd=0, cursor="hand2")
         self.variable, self.command = variable, command
-        self.bind("<ButtonRelease-1>", lambda e: self.toggle())
+        self._photo = None
+        self.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self.toggle())
         self._trace = variable.trace_add("write", lambda *_: self._draw())
         self.bind("<Destroy>", lambda e: self._untrace(), add="+")
         theme.on_change(self._palette_changed)   # the picture is Pillow-drawn: redraw it in new colours
@@ -442,6 +474,7 @@ class Toggle(tk.Label):
             self.variable.trace_remove("write", self._trace)
         except tk.TclError:
             pass
+        self._photo = None   # (destroyed: its picture is let go here, on Tk's thread)
 
     def _palette_changed(self, _palette):
         self.configure(bg=theme.colour(self._bg))
@@ -449,7 +482,10 @@ class Toggle(tk.Label):
 
     def _draw(self):
         if self.winfo_exists():
-            self.configure(image=self._image(bool(self.variable.get())))
+            # Kept here as well as in the cache it came from: a shared cache may be cleared, and
+            # Tk deletes a picture once Python lets go of it.
+            self._photo = self._image(bool(self.variable.get()))
+            self.configure(image=self._photo)
 
     def _image(self, on: bool):
         w, h = self._size
@@ -494,7 +530,7 @@ class SettingRow(tk.Frame):
             about.pack(fill="x")
             parts.append(about)
         for w in parts:
-            w.bind("<ButtonRelease-1>", lambda e: self.toggle.toggle())
+            w.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self.toggle.toggle())
 
 
 DISABLED_FADE = 0.45   # (0.21.0) a greyed-out menu item: its text this far from MUTED toward the background
@@ -537,7 +573,7 @@ class MenuRow(tk.Frame):
         for w in parts:
             w.bind("<Enter>", lambda e: self._entered())
             w.bind("<Leave>", lambda e: self.set_active(False))
-            w.bind("<ButtonRelease-1>", lambda e: self._run())
+            w.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self._run())
         theme.on_change(self._palette_changed)
         if not enabled:
             self.set_enabled(False)

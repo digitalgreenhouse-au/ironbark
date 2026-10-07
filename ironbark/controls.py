@@ -32,7 +32,7 @@ from typing import Callable
 from PIL import Image, ImageDraw, ImageTk
 
 from . import theme
-from .tabbar import DISABLED_FADE, IconButton, Toggle, Tooltip
+from .tabbar import DISABLED_FADE, IconButton, Toggle, Tooltip, released_over
 
 SUPERSAMPLE = 4
 
@@ -64,6 +64,21 @@ def _photo(widget: tk.Misc, key: tuple, draw: Callable[[], Image.Image]) -> Imag
             images.clear()
         images[key] = ImageTk.PhotoImage(draw(), master=widget)
     return images[key]
+
+
+def _measuring_font(widget: tk.Misc, font) -> tkfont.Font:
+    """A Font to measure text in (a pill's width): one per Tk root and font, shared by every
+    button. A Font of each button's own is deleted, with a Tk call, whenever its button is
+    freed, which can happen on any thread (Python's cycle collector) — and Tk calls belong on
+    the main one."""
+    root = widget._root()
+    fonts = getattr(root, "_dg_measure_fonts", None)
+    if fonts is None:
+        fonts = root._dg_measure_fonts = {}
+    key = tuple(font) if isinstance(font, list) else font
+    if key not in fonts:
+        fonts[key] = tkfont.Font(root=root, font=font)
+    return fonts[key]
 
 
 def _down(image: Image.Image, size: tuple[int, int]) -> Image.Image:
@@ -169,8 +184,12 @@ class Slider(tk.Canvas):
     that grows under the pointer. Click anywhere to jump there, or drag. `on_drag(value)` hears
     every movement (for showing the time being dragged to), `on_release(value)` the final one.
 
-    The seek bars (main window, mini strip) use it; `set(value, maximum)` is ignored while it's
-    being dragged, so the knob stays under the pointer."""
+    The seek bars (main window, mini strip) use it; `set(value, maximum)` is held back while it's
+    being dragged, so the knob stays under the pointer, and shown when the drag ends. If the
+    maximum changed meanwhile (the next song started), letting go doesn't seek: the spot was
+    chosen in a song that has gone."""
+
+    BUTTON1 = 0x100   # Tk's event state bit: the left button is held down
 
     def __init__(self, parent, *, on_release: Callable[[float], None],
                  on_drag: Callable[[float], None] | None = None, bg: str = "BG", height: int = SLIDER_HEIGHT):
@@ -183,15 +202,20 @@ class Slider(tk.Canvas):
         self.maximum = 0.0
         self.dragging = False
         self.hover = False
+        self._held: tuple[float, float] | None = None   # the latest set() while dragged
         self._drawn = None        # what's on show: (width, knob x, hover, colours)
         self._photo = None
         self._item = self.create_image(0, 0, anchor="nw")
         self.bind("<Configure>", lambda e: self._draw())
         self.bind("<Enter>", lambda e: self._hover(True))
-        self.bind("<Leave>", lambda e: self._hover(False))
+        self.bind("<Leave>", self._left)
         self.bind("<ButtonPress-1>", self._press)
         self.bind("<B1-Motion>", self._move)
         self.bind("<ButtonRelease-1>", self._release)
+        # A drag whose release went elsewhere (a box took the mouse mid-drag): the pointer moving
+        # with the button up, or the bar being hidden, ends it — or the bar would stop following.
+        self.bind("<Motion>", lambda e: self._drag_lost())
+        self.bind("<Unmap>", lambda e: self._drag_lost())
         theme.on_change(self._palette_changed)
 
     # The knob's sizes and the track's thickness, as shares of the strip's height.
@@ -202,6 +226,7 @@ class Slider(tk.Canvas):
     def set(self, value: float, maximum: float):
         """Show `value` of `maximum` (maximum 0: nothing to show — the track alone, no knob)."""
         if self.dragging:
+            self._held = (value, maximum)   # shown when the drag ends
             return
         if (value, maximum) != (self.value, self.maximum):
             self.value, self.maximum = value, maximum
@@ -219,10 +244,16 @@ class Slider(tk.Canvas):
         self.hover = on
         self._draw()
 
+    def _left(self, event):
+        if self.dragging and not event.state & self.BUTTON1:
+            self._drag_lost()
+        self._hover(False)
+
     def _press(self, event):
         if self.maximum <= 0:
             return
         self.dragging = True
+        self._held = None
         self.value = self._value_at(event.x)
         self._draw()
         if self.on_drag:
@@ -237,10 +268,25 @@ class Slider(tk.Canvas):
 
     def _release(self, event):
         if self.dragging:
+            held = self._held
+            if held is not None and held[1] != self.maximum:   # another song now: no seek
+                self._drag_lost()
+                return
             self.dragging = False
+            self._held = None
             self.value = self._value_at(event.x)
             self._draw()
             self.on_release(self.value)
+
+    def _drag_lost(self):
+        """End a drag without acting on it, and show what set() said meanwhile."""
+        if not self.dragging:
+            return
+        self.dragging = False
+        held, self._held = self._held, None
+        if held is not None:
+            self.value, self.maximum = held
+        self._draw()
 
     def _palette_changed(self, _palette):
         self.configure(bg=theme.colour(self._bg))
@@ -306,9 +352,10 @@ class _Pressable(tk.Label):
         """(0.22.0) Once destroyed, let go of the command: it's often a method of the window that made
         the button, and holding it would keep that window alive until Python's cycle collector runs —
         possibly on another thread, where a Tk variable's clean-up fails ("main thread is not in main
-        loop")."""
+        loop"). Its picture goes too, here on Tk's thread: deleting a picture is a Tk call."""
         if event.widget is self:
             self.command = lambda: None
+            self._photo = None
 
     def _state(self, **changes):
         for name, value in changes.items():
@@ -442,7 +489,7 @@ class PillButton(_Pressable):
         self.enabled = True
         super().__init__(parent, command, bg, label, text=text, compound="center", font=self._font,
                          fg=theme.colour(fg))
-        self._measure = tkfont.Font(root=self, font=self._font)
+        self._measure = _measuring_font(self, self._font)
         self._paint()
 
     def set_text(self, text: str):
@@ -551,8 +598,23 @@ class ScrollArea(tk.Frame):
         self.inner.bind("<Configure>", lambda e: self._content_changed(), add="+")
         self.canvas.bind("<Configure>", self._resized, add="+")
         # The wheel works over every widget inside: each gets this tag in its bindtags (bind_wheel).
-        self.wheel_tag = f"DGScroll{id(self)}"
-        self.bind_class(self.wheel_tag, "<MouseWheel>", self._wheel)
+        # One tag for every scroll panel, bound once: a class binding lasts as long as Tk does, so
+        # one per panel (a menu is made per right-click) would keep each panel alive for good.
+        self.wheel_tag = "DGScroll"
+        root = self._root()
+        if not getattr(root, "_dg_scroll_bound", False):
+            root._dg_scroll_bound = True
+            self.bind_class(self.wheel_tag, "<MouseWheel>", ScrollArea._wheel_anywhere)
+
+    @staticmethod
+    def _wheel_anywhere(event):
+        """The wheel over a widget inside some scroll panel: that panel scrolls."""
+        widget = event.widget
+        while isinstance(widget, tk.Misc):
+            if isinstance(widget, ScrollArea):
+                return widget._wheel(event)
+            widget = widget.master
+        return None
 
     def _resized(self, event):
         self.canvas.itemconfigure(self._window, width=event.width)   # the content is as wide as the panel
@@ -758,7 +820,7 @@ class ChoiceRow(tk.Frame):
             bar = tk.Frame(cell, height=max(2, theme.px(2)), bg=theme.colour(bg))
             bar.pack(fill="x")
             for widget in (cell, label, bar):
-                widget.bind("<ButtonRelease-1>", lambda e, v=value: self.choose(v))
+                widget.bind("<ButtonRelease-1>", lambda e, v=value, c=cell: released_over(e, c) and self.choose(v))
                 widget.bind("<Enter>", lambda e, v=value: self._hovered(v))
                 widget.bind("<Leave>", lambda e: self._hovered(None))
             self.labels[value], self.bars[value] = label, bar
@@ -863,7 +925,7 @@ class Switch(tk.Frame):
                               anchor="w", padx=theme.px(theme.GAP_MEDIUM), bd=0)
         self.label.pack(side="left")
         for widget in (self, self.label):
-            widget.bind("<ButtonRelease-1>", lambda e: self.toggle.toggle())
+            widget.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self.toggle.toggle())
         self.bind("<Destroy>", self._forget_command, add="+")
         theme.on_change(self._palette_changed)
 
@@ -951,6 +1013,7 @@ class SearchBox(ttk.Frame):
             except tk.TclError:
                 pass
             self.on_clear, self.query = (lambda: None), None
+            self._magnifier_photo = self._clear_photo = None   # (pictures: let go on Tk's thread)
 
     def _palette_changed(self, _palette):
         if self.winfo_exists():
@@ -965,7 +1028,9 @@ class SearchBox(ttk.Frame):
         self.clear_button.configure(image=self._clear_photo, bg=theme.SURFACE)
 
     def update_hint(self):
-        if self.query.get() or self.entry.focus_get() is self.entry:
+        # Tk's focus path, not focus_get(): that fails on a part of Tk's own Python has no object
+        # for (an open drop-down list takes the focus), and the hint would stay hidden.
+        if self.query.get() or str(self.entry.tk.call("focus")) == str(self.entry):
             self.hint.place_forget()
         else:
             self.hint.place(x=self._hint_x, rely=0.5, anchor="w")

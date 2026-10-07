@@ -31,6 +31,7 @@ from .library import Album
 from .playlist_view import TreeDrag, _fold, fit_columns
 
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)
+SEARCH_DELAY_MS = 150   # the list follows the search box after a pause in typing, as the track list does
 HEADINGS = {"album": "Album", "artist": "Artist", "year": "Year", "quality": "Quality", "tracks": "Tracks",
             "added": "Added"}
 
@@ -77,6 +78,8 @@ class LibraryWindow:
         self._groups: dict[str, str] = {}      # tree row id -> group name
         self.index = library_index.shared(root_folder)
         self._refresh: dict | None = None      # a refresh running in the background
+        self._fill_job = None                  # a search waiting for a pause in typing
+        self._folds: dict[str, str] = {}       # text -> folded, for searching (cleared with each new album list)
 
         self.win = tk.Toplevel(parent, bg=theme.BG)
         self.win.title("Library")
@@ -96,7 +99,7 @@ class LibraryWindow:
         # window when it's already empty.
         self.search = controls.SearchBox(top, "Search albums, artists, years, genres", on_clear=self._clear_search)
         self.search_var = self.search.query
-        self.search_var.trace_add("write", lambda *_: self._fill())
+        self._search_trace = self.search_var.trace_add("write", lambda *_: self._search_changed())
         controls.FlatButton(top, "Rescan", self.rescan, label="Look for added or changed music now").pack(
             side="right", padx=theme.pad(theme.GAP, 0))
         controls.FlatButton(top, "Change folder…", self._change_root,
@@ -175,15 +178,38 @@ class LibraryWindow:
         self.load_all_button = controls.FlatButton(bottom, "Load all into playlist", self._load_all)
         self.load_all_button.pack(side="right")
 
+        self.win.bind("<Destroy>", self._destroyed, add="+")
         search.focus_set()
         self._load()
+
+    def _destroyed(self, event):
+        """Closed (Esc, a choice, or the window's ×): let go of what would keep this window alive or
+        must be freed on Tk's thread. The search box's variable carries this window's search in a
+        trace, which Tk would hold for good; the window's own Tk variable and font are dropped
+        here, not left to Python's cycle collector, which may run on any thread (a Tk object
+        freed there fails)."""
+        if event.widget is not self.win:
+            return
+        if self._fill_job is not None:
+            self.win.after_cancel(self._fill_job)
+            self._fill_job = None
+        if self.search_var is not None:
+            try:
+                self.search_var.trace_remove("write", self._search_trace)
+            except tk.TclError:
+                pass
+        self.search_var = self.view_var = None
+        self._bold = None
+        self.albums, self._shown = [], []
+        self._rows.clear()
+        self._folds.clear()
 
     # -- the index -------------------------------------------------------------------------------
     def _load(self):
         """Show what the index already knows at once; bring it up to date in the background
         (only changed files are read). The first time ever, every file is read once."""
         self.index = library_index.shared(self.root_folder)
-        self.albums = self.index.albums() if self.index.entries else []
+        self._set_albums(self.index.albums() if self.index.entries else [])
         self.win.title(f"Library — {self.root_folder.name or self.root_folder}")
         self._fill()
         if not self.index.refreshed:  # not yet checked this session
@@ -215,7 +241,7 @@ class LibraryWindow:
             return
         self._refresh = None
         if job["folder"] == self.root_folder:
-            self.albums = self.index.albums()
+            self._set_albums(self.index.albums())
             self._fill()
 
     def rescan(self):
@@ -224,8 +250,19 @@ class LibraryWindow:
     def reload(self):
         """Show the index again (after a tag edit updated it), keeping the view, sort and search."""
         if self.win.winfo_exists() and self._refresh is None:
-            self.albums = self.index.albums()
+            self._set_albums(self.index.albums())
             self._fill()
+
+    def _set_albums(self, albums: list[Album]):
+        self.albums = albums
+        self._folds.clear()   # (the search's folded texts were for the albums before)
+
+    def _fold_text(self, text: str) -> str:
+        """`_fold`, remembered: a search pause would otherwise fold every album's text again."""
+        folded = self._folds.get(text)
+        if folded is None:
+            folded = self._folds[text] = _fold(text)
+        return folded
 
     # -- views and sorting ---------------------------------------------------------------------------
     def set_view(self, view: str):
@@ -273,6 +310,20 @@ class LibraryWindow:
                 self.tree.item(row, tags=(["hover"] + tags) if on else tags)
         self.hovered = iid
 
+    def _search_changed(self):
+        if self._fill_job is not None:
+            self.win.after_cancel(self._fill_job)
+        self._fill_job = self.win.after(SEARCH_DELAY_MS, self._search_now)   # wait for a pause in typing
+
+    def _search_now(self):
+        self._fill_job = None
+        self._fill()
+
+    def _flush_search(self):
+        """Words typed but not yet searched for: search now, so a quick Enter or Down acts on them."""
+        if self._fill_job is not None:
+            self._fill()
+
     def _clear_search(self):
         """The search box's × or Esc: empty it (Esc in an empty box closes the window, as before)."""
         if self.search_var.get():
@@ -302,6 +353,9 @@ class LibraryWindow:
         return (name, album.artist, album.year or "", album.quality, album.track_count, added_text(album.added))
 
     def _fill(self):
+        if self._fill_job is not None:   # (this shows the search as it stands: a pending one would only repeat it)
+            self.win.after_cancel(self._fill_job)
+            self._fill_job = None
         words = [_fold(w) for w in self.search_var.get().split()]
         column, reverse = self.sort
         self._new = set(self.new_albums())
@@ -317,10 +371,10 @@ class LibraryWindow:
         shown: dict[Path, Album] = {}
         closed = self._closed.setdefault(self.view, set())
         for g, group in enumerate(browse.group_albums(self.albums, self.view)):
-            if words and grouped and all(w in _fold(group.name) for w in words):
+            if words and grouped and all(w in self._fold_text(group.name) for w in words):
                 albums = group.albums  # the artist / genre / year itself matches: all of it
             else:
-                albums = [a for a in group.albums if not words or browse.matches(a, words, _fold)]
+                albums = [a for a in group.albums if not words or browse.matches(a, words, self._fold_text)]
             if not albums:
                 continue
             albums = browse.sort_albums(albums, column, reverse)
@@ -443,6 +497,7 @@ class LibraryWindow:
         self.close()
 
     def _focus_list(self):
+        self._flush_search()
         rows = list(self._rows)
         if rows:
             self.tree.focus_set()
@@ -463,6 +518,7 @@ class LibraryWindow:
             self._choose(album)
 
     def _choose_first(self):
+        self._flush_search()
         if self._rows:
             self._choose(next(iter(self._rows.values())))
 
