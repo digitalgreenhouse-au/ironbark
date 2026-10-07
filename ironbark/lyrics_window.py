@@ -5,9 +5,10 @@ Synced lyrics (.lrc, ID3 SYLT) light up line by line as the song plays and scrol
 line being sung in the middle; plain lyrics just scroll. With none, the window says so and where
 it looked.
 
-`LyricsView` is the panel itself (a frame: it can sit in any window); `LyricsWindow` is the
-window that holds one and follows the player. Lyrics are read on a worker; the window only polls
-for them (and for the play position) from Tk's own timer.
+`LyricsView` is the panel itself (a frame: it can sit in any window); `LyricsFollower` keeps one on
+the playing song; `LyricsWindow` is the window that holds one and follows the player. A wide main
+window docks the same view and follower in its right pane (the view switch's "Lyrics"). Lyrics are
+read on a worker; the follower only polls for them (and for the play position) from Tk's own timer.
 """
 
 from __future__ import annotations
@@ -46,6 +47,21 @@ class LyricsView(tk.Frame):
         self.text.bind("<Configure>", lambda e: self._keep_in_view())
         self.lyrics: lyrics.Lyrics | None = None
         self.current = -1
+        self._bg = bg
+        theme.on_change(self._palette_changed)
+
+    def _palette_changed(self, _palette):
+        """Light / Dark switched: the text's own colours (tags aren't widget options theme.use can see)."""
+        if not self.winfo_exists():
+            return
+        bg = theme.colour(self._bg)
+        self.configure(bg=bg)
+        self.text.configure(bg=bg, fg=theme.TEXT)
+        self.text.tag_configure("line", foreground=theme.TEXT)
+        self.text.tag_configure("sung", foreground=theme.MUTED)
+        self.text.tag_configure("current", foreground=theme.ACCENT_TEXT)
+        self.text.tag_configure("note", foreground=theme.MUTED)
+        self.text.tag_configure("empty", foreground=theme.TEXT)
 
     def _write(self, pieces: list[tuple[str, str]]):
         self.text.configure(state="normal")
@@ -111,6 +127,60 @@ class LyricsView(tk.Frame):
         self.text.yview_moveto(max(0.0, (before - rows / 2 + 1) / total))
 
 
+class LyricsFollower:
+    """Keeps a LyricsView on the song playing: each new song's lyrics are read on a worker (`reader`),
+    then the line being sung lights up as it plays. `on_song(title, line)` hears the song's title
+    and a line under it — its artist and album while the lyrics are looked for, then where they came
+    from ("From Song.lrc beside the song · synced"); ("Nothing playing", "") with no song. Call
+    `follow(visible)` from a timer: it never waits."""
+
+    def __init__(self, view: LyricsView, player, reader=lyrics.find, on_song=lambda title, line: None):
+        self.view, self.player, self.reader, self.on_song = view, player, reader, on_song
+        self._path = None          # the song whose lyrics are on show (or being read)
+        # path -> its lyrics (or None) from the workers. By path, so a slow read of an earlier song
+        # finishing late can't take the place of the song playing now.
+        self._found: dict = {}
+        view.idle()
+
+    def follow(self, visible: bool = True):
+        """One step: a new song's lyrics asked for, lyrics that have come shown, and (`visible`) the
+        line being sung lit up."""
+        status = self.player.status()
+        track = status.track
+        path = track.path if track is not None else None
+        if path != self._path:
+            self._path = path
+            self._found.clear()
+            if track is None:
+                self.on_song("Nothing playing", "")
+                self.view.idle()
+                return
+            self.on_song(track.title, track.display_artist_album or audiofile.display_name(path))
+            self.view.loading()
+            self._read(path)
+        if path in self._found:
+            found = self._found.pop(path)
+            self.view.show(found, lyrics.where_looked(path))
+            if found is not None:
+                kind = "synced" if found.synced else "words only"
+                self.on_song(track.title, f"From {found.source} · {kind}")
+        if visible:
+            self.view.follow(status.position)
+
+    def _read(self, path):
+        """Read the lyrics on a worker; `follow` picks them up (the worker never touches Tk)."""
+        reader = self.reader
+
+        def work():
+            try:
+                found = reader(path)
+            except Exception:  # noqa: BLE001 — unreadable: shown as none found
+                found = None
+            self._found[path] = found
+
+        threading.Thread(target=work, name="lyrics", daemon=True).start()
+
+
 class LyricsWindow:
     def __init__(self, parent: tk.Misc, player, prefs: dict, reader=lyrics.find):
         self.player, self.prefs, self.reader = player, prefs, reader
@@ -131,12 +201,7 @@ class LyricsWindow:
         self.source_label.pack(fill="x")
         self.view = LyricsView(self.win)
         self.view.pack(fill="both", expand=True)
-        self.view.idle()
-
-        self._path = None          # the song whose lyrics are on show (or being read)
-        # path -> its lyrics (or None) from the workers, picked up by _tick. By path, so a slow read
-        # of an earlier song finishing late can't take the place of the song playing now.
-        self._found: dict = {}
+        self.follower = LyricsFollower(self.view, player, reader, self._song_shown)
         self._keep_going = toolwin.KeepGoing(self.win)
         self.win.bind("<Configure>", self._moved, add="+")
         self._job = self.win.after(REFRESH_MS, self._tick)
@@ -147,42 +212,11 @@ class LyricsWindow:
         self._job = self.win.after(REFRESH_MS, self._tick)
 
     def _follow(self):
-        status = self.player.status()
-        track = status.track
-        path = track.path if track is not None else None
-        if path != self._path:
-            self._path = path
-            self._found.clear()
-            if track is None:
-                self.title_label.configure(text="Nothing playing")
-                self.source_label.configure(text="")
-                self.view.idle()
-                return
-            self.title_label.configure(text=track.title)
-            self.source_label.configure(text=track.display_artist_album or audiofile.display_name(path))
-            self.view.loading()
-            self._read(path)
-        if path in self._found:
-            found = self._found.pop(path)
-            self.view.show(found, lyrics.where_looked(path))
-            if found is not None:
-                kind = "synced" if found.synced else "words only"
-                self.source_label.configure(text=f"From {found.source} · {kind}")
-        if toolwin.on_screen(self.win):
-            self.view.follow(status.position)
+        self.follower.follow(toolwin.on_screen(self.win))
 
-    def _read(self, path):
-        """Read the lyrics on a worker; `_follow` picks them up (the worker never touches Tk)."""
-        reader = self.reader
-
-        def work():
-            try:
-                found = reader(path)
-            except Exception:  # noqa: BLE001 — unreadable: shown as none found
-                found = None
-            self._found[path] = found
-
-        threading.Thread(target=work, name="lyrics", daemon=True).start()
+    def _song_shown(self, title: str, line: str):
+        self.title_label.configure(text=title)
+        self.source_label.configure(text=line)
 
     def _moved(self, event):
         if event.widget is self.win:

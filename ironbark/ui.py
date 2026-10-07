@@ -54,6 +54,16 @@ frames (`_apply_layout`), never rebuilt; the narrow window is laid out exactly a
 shows the cover at its own size at most (a smaller one on a mat), a caption over the title, a count in
 the list's header row, and a maximise button on the strip. F11 is full screen on any size (borderless,
 on the same window: chrome.enter_fullscreen); F11, Esc, double-clicking the strip or Z leave it.
+The right pane's view switch (Tracks · Up next · Lyrics, remembered for the session) shows the tab's
+list, Up next docked (up_next_view.py) or the playing song's lyrics (lyrics_window's view and
+follower, as in the Lyrics window); beside the search box, This tab | Whole library: the whole
+library's results (quick_search.py, docked) show in the list's place as you type (`_show_view`).
+
+The status line (`_show_status`) never moves anything above it: it keeps one line's height. A message
+too wide for it is split at a space (never inside a word) and its first part shown on a second line
+drawn just above the status line, over the foot of whatever is there, for as long as the message lasts;
+past two lines it ends in "…". Hovering it gives the whole message. The longest messages (the network
+playback cache's, the sleep timer's) are worded to fit the narrow window's one line.
 
 Volume levelling (Settings → Sound, off by default; levelling.py): each song's gain is worked out
 ahead of play beside the clipping guard's (`_apply_levelling`) and handed to the player per file.
@@ -89,8 +99,8 @@ from PIL import Image, ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
                dragdrop, experiments, keys, layout, levelling, library_check, library_db, library_index, logs,
-               loudness, mediakeys, placement, playlists, popups, quick_search, recycle, settings, shapes, sleep,
-               tag_editor, theme, tkgc, updates, watcher)
+               loudness, mediakeys, placement, playlist_view, playlists, popups, quick_search, recycle, settings,
+               shapes, sleep, tag_editor, theme, tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -103,7 +113,7 @@ from .favourites import Favourites
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
 from .library_window import LibraryWindow, adding_folder
-from .lyrics_window import LyricsWindow
+from .lyrics_window import LyricsFollower, LyricsView, LyricsWindow
 from .meter_window import MeterWindow
 from .meters import album_files
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
@@ -115,6 +125,7 @@ from .tag_window import TagHistoryWindow, TagWindow
 from .playlist_view import PlaylistView, _fold
 from .quick_search import QuickSearch
 from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
+from .up_next_view import UpNextView, count_text as up_next_count
 
 log = logging.getLogger(__name__)
 
@@ -160,6 +171,8 @@ UPDATE_FIRST_MS = 30000    # Check for updates: the first look this long after s
 UPDATE_EVERY_MS = 3600000  # …then this often (updates.due decides whether a day has passed)
 UPDATE_NOTE_MS = 30000     # how long "Ironbark X.Y.Z is available" stays in the status line
 COVER_SETTLE_MS = 120      # while the window is resized, the cover is fetched afresh once it pauses this long
+CRASH_NOTE_MS = 60000      # how long "Ironbark closed unexpectedly last time" stays in the status line
+CRASH_NOTICE = f"{APP_NAME} closed unexpectedly last time"
 
 # The now-playing text in each layout (layout.py): larger in the wider windows.
 TITLE_STYLES = {layout.COLUMN: "Display.TLabel", layout.SPLIT: "Display.TLabel",
@@ -172,12 +185,61 @@ INFO_STYLES = {layout.COLUMN: "Info.TLabel", layout.SPLIT: "Info.TLabel", layout
 NOW_PLAYING = "NOW PLAYING"
 CAPTIONS = {"album": "ALBUM", "folder": "FOLDER", "library": "LIBRARY", "playlist": "PLAYLIST", "files": "FILES"}
 KIND_NAMES = {"album": "Album", "folder": "Folder", "library": "Library", "playlist": "Playlist", "files": "Files"}
+# What the two internet switches say they do (Settings → Network, Settings → Help): what goes out, and
+# what doesn't need them.
+NETWORK_ACCESS_TEXT = ("Lets Ironbark use the internet itself: rip verification's look-ups (AccurateRip and "
+                       "CUETools DB; the CUETools DB look-up isn't encrypted, so others on your network can see "
+                       "which disc is looked up) and Check for updates (Help, below). Music on network drives "
+                       "(\\\\server\\share, or a mapped drive like Z:) and OneDrive plays without it: Windows "
+                       "fetches those files, as it does for any program.")
+UPDATE_CHECK_TEXT = (f"Once a day, asks digitalgreenhouse.com.au whether a newer {APP_NAME} is out. The request "
+                     f"names this {APP_NAME}'s version, and the website sees your computer's internet address, as "
+                     "any website does; nothing else goes with it. Needs Allow network access (Network, above).")
 
 
 def _layout_scale() -> float:
     """Windows' display scaling for working out the layout: theme.scale() to the nearest percent
     (Tk measures 96.05 dots an inch at 100%, which would put a 1920 px window just under 1920)."""
     return round(theme.scale(), 2)
+
+
+def split_status(text: str, width: int, measure: Callable[[str], int]) -> tuple[str, str]:
+    """A status message for a line `width` px wide (`measure(text)` gives its width): ("", text)
+    when it fits; else (first line, second line), split at a space — never inside a word — and the
+    second shortened with "…" after a whole word if even two lines can't hold it. Only a single word
+    wider than the whole line (a long path) is cut inside: after a slash where it has one."""
+    if not text or width <= 0 or measure(text) <= width:
+        return "", text
+    words = text.split(" ")
+    taken = 0
+    while taken < len(words) and measure(" ".join(words[:taken + 1])) <= width:
+        taken += 1
+    if taken == 0:   # the first word alone is too wide for a line
+        upper, rest = _cut_word(words[0], width, measure)
+        lower = " ".join([rest] + words[1:]).strip()
+    else:
+        upper, lower = " ".join(words[:taken]), " ".join(words[taken:])
+    if measure(lower) <= width:
+        return upper, lower
+    rest = lower.split(" ")
+    while len(rest) > 1 and measure(" ".join(rest) + "…") > width:
+        rest.pop()
+    lower = " ".join(rest)
+    if measure(lower + "…") > width:   # (one long word left)
+        lower = _cut_word(lower, width - measure("…"), measure)[0]
+    return upper, lower.rstrip(" ·:,;") + "…"
+
+
+def _cut_word(word: str, width: int, measure: Callable[[str], int]) -> tuple[str, str]:
+    """(the most of `word` that fits in `width` px, the rest): after its last slash that fits if it
+    has one, else after the last character that fits."""
+    end = len(word)
+    while end > 1 and measure(word[:end]) > width:
+        end -= 1
+    slash = max(word.rfind("\\", 0, end), word.rfind("/", 0, end))
+    if slash > 0:
+        end = slash + 1
+    return word[:end], word[end:]
 
 
 def plural(count: int, word: str) -> str:
@@ -522,6 +584,21 @@ class PlayerWindow:
         self._cover_tip = ""           # a wide window's cover tooltip: its own size, and how it's shown
         self._art_image = None         # the last cover fetched, for a quick stand-in while resizing
         self._art_hidden = False       # a wide window too short for a cover: the cover box is put away
+        # A wide window's right pane, for this session: its view ("tracks", "up_next", "lyrics") and
+        # what the search box searches ("tab" or "library"); the docked views are made when first shown.
+        self.view = "tracks"
+        self.search_scope = "tab"
+        self._up_next_view: UpNextView | None = None
+        self._lyrics_view: LyricsView | None = None
+        self._lyrics_follower: LyricsFollower | None = None
+        self._lyrics_line = ""         # where the docked lyrics came from (the pane's count line)
+        self._inline: QuickSearch | None = None   # the whole library's results, docked under the search box
+        # The status line: the whole message, and what's on show (see _show_status).
+        self._status_text = ""
+        self._status_fitted: tuple | None = None
+        self._status_cut = False
+        # A notice with a link at the end of the status line: (notice, link words, what a click does).
+        self._notice_link: tuple[str, str, Callable[[], None]] | None = None
 
         self._build()
         self._bind_keys()
@@ -564,6 +641,11 @@ class PlayerWindow:
         self._named: list[tuple[str, ...]] = [tuple(paths)] if paths else []
         if settings.problem:   # a damaged settings file was set aside at start: said once
             self._set_notice(settings.problem, 12000)
+        from . import crash
+
+        if crash.take_unexpected_exit():   # the last run ended in a crash: said once, with the way to report it
+            self._notice_link = (CRASH_NOTICE, "Save diagnostics…", lambda: self.save_diagnostics())
+            self._set_notice(CRASH_NOTICE, CRASH_NOTE_MS)
         self._poll_job = self.root.after(POLL_MS, self._poll)
         self.favourites.load()
         if self.watch_music.get():
@@ -743,15 +825,20 @@ class PlayerWindow:
         self.status_label = ttk.Label(self.status_row, text="", style="Sub.TLabel", anchor="w")
         self.status_label.pack(fill="both", expand=True)
         self.status_label.bind("<Button-1>", self._status_clicked)
-        # "Undo (Ctrl+Z)" at the right-hand end of the status line, while it's telling of a playlist
-        # change that can be undone (placed over the line, so nothing else moves).
+        self.status_label.bind("<Configure>", lambda e: self._fit_status(), add="+")
+        Tooltip(self.status_label, lambda: self._status_text if self._status_cut else "")
+        # A link at the right-hand end of the status line: "Undo (Ctrl+Z)" while it's telling of a
+        # playlist change that can be undone, "Save diagnostics…" after an unexpected close (placed
+        # over the line, so nothing else moves).
         self.undo_link = ttk.Label(body, text=f"Undo ({keys.hint('undo')})", style="UpNext.TLabel", cursor="hand2")
-        self.undo_link.bind("<Button-1>", lambda e: self.undo())
+        self.undo_link.bind("<Button-1>", lambda e: self._link_clicked())
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu,
-                                     on_search_library=lambda query: self.find_in_library(query),
-                                     is_favourite=lambda track: track in self.favourites)
+                                     on_search_library=lambda query: self._search_whole_library(query),
+                                     is_favourite=lambda track: track in self.favourites,
+                                     on_view=self.set_view, on_scope=self.set_search_scope,
+                                     on_library_key=self._library_key)
         self.playlist.set_columns(self.prefs.get("track_columns") or ())
         self.playlist.set_wide_columns(self.prefs.get("wide_track_columns") or ())
         # "Up next (3) · Song": shown above the status line only while songs are queued; click
@@ -761,6 +848,11 @@ class PlayerWindow:
         self._up_next_key = None
         self._marks_shown: list = []   # the Up next pop-over's network-song marks as last drawn
         self.up_next_pop = Popover(self.root, width=theme.px(300), keys=True, padding=(0, theme.GAP_LARGE))
+        # A message too long for the status line: its first part, on a line of its own just above the
+        # status line (placed over whatever is there, so nothing moves; see _show_status).
+        self.status_more = ttk.Label(body, text="", style="Sub.TLabel", anchor="sw")
+        self.status_more.bind("<Button-1>", self._status_clicked)
+        Tooltip(self.status_more, lambda: self._status_text if self._status_cut else "")
         self._pack_column()
 
         # (0.20.0) The empty window (no tabs open): instead of "Nothing playing", a quiet ♫, one
@@ -933,10 +1025,7 @@ class PlayerWindow:
                       self.watch_music, self._toggle_watch)
 
         self._caption(b, "Network")
-        network_row = self._setting(b, "Allow network access", "Lets rip verification look up checksums online "
-                                    "(AccurateRip, CUETools DB). The CUETools DB lookup isn't encrypted, so "
-                                    "others on the network can see which disc is looked up. Otherwise only Check "
-                                    "for updates (Help, below) uses the internet.",
+        network_row = self._setting(b, "Allow network access", NETWORK_ACCESS_TEXT,
                                     self.allow_network, self._network_changed)
         # Network playback (only while its Experimental switch is on): how songs on network drives
         # are fetched into the copy on this computer they play from.
@@ -1146,17 +1235,14 @@ class PlayerWindow:
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self.diagnostics_button = self._pop_button(row, "Save diagnostics…", self.save_diagnostics,
                                                    "Save a .zip to send with a problem report: versions, sound "
-                                                   "outputs, logs and settings (folder names left out). Nothing "
-                                                   "is sent anywhere.")
+                                                   "outputs, logs and settings (the names of folders, tabs, "
+                                                   "playlists and outputs left out). Nothing is sent anywhere.")
         self.diagnostics_button.pack(side="left")
         self._pop_button(row, "Open log folder", self._open_log_folder,
                          "Where crash.log and app.log are kept").pack(side="right")
         self._setting(box, "Detailed logging", "Notes more of what the player does in its log, to help track "
                       "down a problem. Off normally.", self.detailed_logging, self._detailed_logging_changed)
-        self._setting(box, "Check for updates", "Once a day, asks digitalgreenhouse.com.au whether a newer "
-                      f"{APP_NAME} is out. The site sees only your internet address and this version number. "
-                      "Needs Allow network access (Network, above).",
-                      self.check_updates, self._updates_changed)
+        self._setting(box, "Check for updates", UPDATE_CHECK_TEXT, self.check_updates, self._updates_changed)
 
     def _from_settings(self, show):
         """A Settings button that opens a window: Settings closes first (the mini strip's grown
@@ -1307,9 +1393,12 @@ class PlayerWindow:
         self.new_menu.toggle(self.bar.add_btn, self._below_strip())
 
     def search_this_tab(self):
-        """Ctrl+F: the track list's search box."""
+        """Ctrl+F: the track list's search box (a wide window: its Tracks view, searching this tab)."""
         if self.mini_mode:
             self.toggle_mini()
+        if self._tier != layout.COLUMN and (self.view != "tracks" or self.search_scope != "tab"):
+            self.search_scope = "tab"
+            self.set_view("tracks")
         self.playlist.focus_search()
 
     def settings_from_key(self):
@@ -1572,13 +1661,33 @@ class PlayerWindow:
         self._undo = None
         self._set_notice(undone, 3000)
 
+    def _status_link(self) -> tuple[str, Callable[[], None]] | None:
+        """The link at the end of the status line now, if any: (its words, what a click does) — Undo
+        while the line tells of a change it can undo, or a notice's own link."""
+        if self.mini_mode:
+            return None
+        if self._undo is not None and self._notice == self._undo[0]:
+            return f"Undo ({keys.hint('undo')})", self.undo
+        link = self._notice_link
+        if link is not None and self._notice == link[0]:
+            return link[1], link[2]
+        return None
+
     def _paint_undo_link(self):
-        """Undo shows at the end of the status line while the line tells of a change it can undo."""
-        show = self._undo is not None and self._notice == self._undo[0] and not self.mini_mode
-        if show and not self.undo_link.winfo_manager():
-            self.undo_link.place(in_=self.status_label, relx=1.0, rely=0.5, anchor="e")
-        elif not show and self.undo_link.winfo_manager():
+        """The status line's link (Undo, Save diagnostics…) at its end while it applies."""
+        link = self._status_link()
+        if link is not None:
+            if str(self.undo_link.cget("text")) != link[0]:
+                self.undo_link.configure(text=link[0])
+            if not self.undo_link.winfo_manager():
+                self.undo_link.place(in_=self.status_label, relx=1.0, rely=0.5, anchor="e")
+        elif self.undo_link.winfo_manager():
             self.undo_link.place_forget()
+
+    def _link_clicked(self):
+        link = self._status_link()
+        if link is not None:
+            link[1]()
 
     # -- tabs ----------------------------------------------------------------
     def _restore_tabs(self, folder: str | None):
@@ -1620,6 +1729,8 @@ class PlayerWindow:
         interrupt: play it even so (it was asked for by name: "Open with", a double-click)."""
         if kind == "album":
             self._mark_opened(Path(str(path)))
+        if self._tier != layout.COLUMN and self.view != "tracks":   # (the tab asked for: its list on show)
+            self.set_view("tracks")
         if play and not interrupt and self.player.status().state is not State.STOPPED:
             play = False
             self._set_notice(f"Opened “{Path(str(path)).name}” · the music playing carries on: press play "
@@ -1963,8 +2074,8 @@ class PlayerWindow:
             return
         self.sleep_timer = sleep.SleepTimer(self.player, minutes)
         exclusive = self.exclusive.get()
-        detail = (" (bit-perfect: it stops at the end of the song playing then, no fade)" if exclusive
-                  and minutes != sleep.ALBUM else "")
+        detail = (" · bit-perfect: stops after that song, no fade" if exclusive and minutes != sleep.ALBUM
+                  else "")
         self._set_notice(f"Sleep timer: {sleep.choice_label(minutes).lower()}{detail}", 4000)
 
     def _tick_sleep(self, status):
@@ -2985,7 +3096,9 @@ class PlayerWindow:
                 self._fill_up_next()   # (a network song's download moved on)
             return
         self._up_next_key = key
-        if queue:
+        if queue and self._up_next_docked():   # (the list itself is on show in the right pane)
+            self.up_next_label.pack_forget()
+        elif queue:
             first = queue[0]
             artist = f" — {first.artist}" if first.artist else ""
             self.up_next_label.configure(text=f"Up next ({len(queue)}) · {first.title}{artist}")
@@ -3072,12 +3185,15 @@ class PlayerWindow:
             self.up_next_pop.place_configure(y=self._up_next_top())
             self.up_next_pop.wire_rows()
 
-    def _up_next_marks(self, queue) -> list[tuple[str, str, str]]:
-        """For each song shown in Up next: (mark, tone, meaning) — how much of a network song is
-        on this computer (the network playback cache); ("", "", "") for a song on this computer."""
+    def _up_next_marks(self, queue, shown: int = UP_NEXT_SHOWN) -> list[tuple[str, str, str]]:
+        """For each song shown in Up next (the first `shown`): (mark, tone, meaning) — how much of a
+        network song is on this computer (the network playback cache); ("", "", "") for a song on
+        this computer."""
         manager = self._netcache
+        if manager is None:
+            return [("", "", "")] * min(len(queue), shown)
         marks = []
-        for track in queue[:UP_NEXT_SHOWN]:
+        for track in queue[:shown]:
             try:
                 progress = manager.progress(track.path) if manager is not None else None
             except Exception:   # noqa: BLE001 — only a mark
@@ -3109,10 +3225,23 @@ class PlayerWindow:
             self._set_notice(note, 8000)
 
     def _remove_library_folder(self, folder: Path):
+        """Settings → Library → Remove: asked first (Enter and Esc keep it). Its music files stay
+        where they are; its albums leave the Library until it's added back."""
         folders = [f for f in self._library_roots() if f != folder]
-        if folders:
-            self._set_library_folders(folders)
-            self._set_notice(f"Took “{folder}” out of the Library (its music files are untouched)", 6000)
+        if not folders:
+            return
+        self._for_prompt()
+        name = folder.name or str(folder)
+        remove = popups.Prompt(
+            self.root, f"Take “{name}” out of the Library?",
+            "Its albums leave the Library and its searches. The music files stay where they are, and your "
+            "plays and favourites are kept for when the folder is added back.", detail=str(folder),
+            buttons=(("Remove", True), ("Keep", False)), default=1, cancel=False).wait()
+        folders = [f for f in self._library_roots() if f != folder]   # (as they are now: the box waited)
+        if not remove or not folders or folder not in self._library_roots():
+            return
+        self._set_library_folders(folders)
+        self._set_notice(f"Took “{folder}” out of the Library (its music files are untouched)", 6000)
 
     def _set_library_folders(self, folders: list[Path]):
         """The library folders are now these. The look under way for the old ones is stopped first
@@ -3209,6 +3338,8 @@ class PlayerWindow:
         download page."""
         if self._undo is not None and self._notice == self._undo[0]:
             self.undo()
+        elif self._notice_link is not None and self._notice == self._notice_link[0]:
+            self._notice_link[2]()
         elif self._notice.startswith("Closed"):
             self.reopen_tab()
         elif self._notice.startswith("New music"):
@@ -3945,11 +4076,13 @@ class PlayerWindow:
         if not destination:
             return
         prefs = json.loads(json.dumps(self.prefs))   # (a copy of its own for the thread)
+        names = self._private_names()
         result: dict = {}
 
         def work():
             try:
-                result["path"] = diagnostics.write_zip(Path(destination), prefs, settings.settings_path().parent)
+                result["path"] = diagnostics.write_zip(Path(destination), prefs, settings.settings_path().parent,
+                                                       names=names)
             except Exception as error:   # reported in the window
                 log.warning("couldn't save diagnostics", exc_info=True)
                 result["error"] = error
@@ -3957,6 +4090,13 @@ class PlayerWindow:
         self._set_notice("Saving diagnostics…", 0)
         threading.Thread(target=work, name="diagnostics", daemon=True).start()
         self.root.after(100, self._finish_diagnostics, result)
+
+    def _private_names(self) -> dict[str, list[str]]:
+        """Names the diagnostics leave out besides paths: the open tabs' titles (album and folder
+        names) and their searches, and every playlist's name."""
+        return {"tab": [tab.title for tab in self.tabs if tab.kind != "playlist"],
+                "playlist": [path.stem for path in self._known_playlists()],
+                "search": [tab.query for tab in self.tabs if tab.query]}
 
     def _finish_diagnostics(self, result: dict):
         if not result:
@@ -4219,7 +4359,7 @@ class PlayerWindow:
     def _place_up_next(self):
         """The Up next line (only while songs are queued): above the track list, or with no tab open,
         just above the status line."""
-        if not self.player.up_next():
+        if not self.player.up_next() or self._up_next_docked():
             return
         place = (dict(before=self.playlist.frame) if self.playlist.frame.winfo_manager()
                  else dict(after=self.status_row))
@@ -4316,8 +4456,11 @@ class PlayerWindow:
             self.kind_label.pack_forget()
             info_row.pack_configure(fill="x", anchor="center")
         self.playlist.set_tier(tier)
+        if self._up_next_view is not None:
+            self._up_next_view.set_tier(tier)
         self.bar.set_wide(wide, layout.TAB_MAX[tier])
         self._cover_tip = ""
+        self._show_view()
 
     def _measure_heights(self) -> layout.Heights:
         """The heights a wide layout is planned from (logical px), measured with its styles on."""
@@ -4337,7 +4480,9 @@ class PlayerWindow:
             seek=logical(self.seek_row.winfo_reqheight() + theme.px(theme.GAP_MEDIUM)),
             transport=logical(self.transport.winfo_reqheight() + theme.px(theme.GAP_SMALL) + theme.px(theme.GAP)),
             chrome=logical(chrome_h),
-            list_head=logical(self.playlist.header.winfo_reqheight() + theme.px(theme.GAP)),
+            list_head=logical(self.playlist.header.winfo_reqheight() + theme.px(theme.GAP)
+                              + (self.playlist.search_row.winfo_reqheight() + theme.px(theme.GAP)
+                                 if self.playlist.search_row.winfo_manager() else 0)),
             heading=base.heading,
             row=logical(float(row)) if row else base.row)
 
@@ -4478,6 +4623,175 @@ class PlayerWindow:
             parts.append(plural(albums, "album"))
         parts.append(fmt_time(seconds))
         return " · ".join(p for p in parts if p)
+
+    # -- a wide window's right pane: Tracks · Up next · Lyrics ----------------------------------------------
+    def set_view(self, view: str):
+        """The right pane's view switch: "tracks" (the tab's list, or the whole library's results),
+        "up_next" or "lyrics". Kept for the session: the narrow window always shows the list, and a
+        wide one goes back to this view."""
+        if view not in dict(playlist_view.VIEWS):
+            return
+        self.view = view
+        self.playlist.set_view(view)
+        self._show_view()
+
+    def set_search_scope(self, scope: str):
+        """This tab | Whole library, beside the search box (a wide window)."""
+        if scope in dict(playlist_view.SCOPES):
+            self.search_scope = scope
+            self._show_view()
+
+    def _up_next_docked(self) -> bool:
+        return self._tier != layout.COLUMN and self.view == "up_next"
+
+    def _show_view(self):
+        """Put the right pane's view on show, and the others away: the tab's list, the whole library's
+        results (under the search box), Up next or the lyrics. The narrow window: the list, always."""
+        playlist = self.playlist
+        wide = self._tier != layout.COLUMN
+        view = self.view if wide else "tracks"
+        library = wide and view == "tracks" and self.search_scope == "library"
+        playlist.set_view(self.view)
+        playlist.set_scope("library" if library else "tab")
+        if wide:
+            playlist.show_search_row(view == "tracks")
+        if wide and view == "up_next" and self._up_next_view is None:
+            self._up_next_view = self._make_up_next_view()
+        if wide and view == "lyrics" and self._lyrics_view is None:
+            self._make_lyrics_view()
+        if library and self._inline is None:
+            self._inline = QuickSearch(self.root, self._index, self.song_actions(), host=playlist.frame,
+                                       query=playlist.query, entry=playlist.entry, scroll_parent=self.body,
+                                       on_close=self._inline_closed)
+        inline = self._inline.panel if self._inline is not None else None
+        shown = {"up_next": self._up_next_view, "lyrics": self._lyrics_view}.get(view) or (
+            inline if library else playlist.table)
+        for widget in (playlist.table, inline, self._up_next_view, self._lyrics_view):
+            if widget is not None and widget is not shown and widget.winfo_manager():
+                widget.pack_forget()
+        if not shown.winfo_manager():
+            shown.pack(fill="both", expand=True)
+        if self._inline is not None and library != self._inline.is_open:
+            if library:
+                self._inline.open()
+            else:
+                self._inline.close(tell=False)
+        self._up_next_key = None   # (the Up next line: not while the list itself is docked)
+        self._paint_up_next()
+        self._paint_docks()
+
+    def _make_up_next_view(self) -> UpNextView:
+        def play(position: int):
+            self.player.play_queued(position)
+            self._paint_up_next()
+
+        def sleep_menu(widget):
+            self._sleep_menu(self._menu()).popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
+
+        dock = UpNextView(self.playlist.frame, scroll_parent=self.body, on_play=play, on_remove=self._unqueue,
+                          on_clear=self.clear_up_next, on_stop_after=self.stop_after_current, on_sleep_menu=sleep_menu)
+        dock.set_tier(self._tier)
+        return dock
+
+    def _make_lyrics_view(self):
+        """The lyrics docked: the Lyrics window's own view and follower, the text lined up with the pane."""
+        view = LyricsView(self.playlist.frame)
+        view.text.configure(padx=0, pady=theme.px(theme.GAP_SMALL))
+        self._lyrics_view = view
+        self._lyrics_follower = LyricsFollower(view, self.player, on_song=self._lyrics_shown)
+
+    def _lyrics_shown(self, _title: str, line: str):
+        """The docked lyrics' song changed, or its lyrics came: where they came from, for the count line."""
+        self._lyrics_line = line if line.startswith("From ") else ""
+
+    def _paint_docks(self):
+        """Up next or the lyrics, while docked, as they are now."""
+        if self._tier == layout.COLUMN:
+            return
+        if self.view == "up_next" and self._up_next_view is not None:
+            queue = self.player.up_next()
+            timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
+            sleep_label = f"Sleep timer: {sleep.choice_label(timer.target).lower()}" if timer else "Sleep timer…"
+            self._up_next_view.show(queue, self._up_next_marks(queue, shown=200),
+                                    self.player.stop_after == "song", sleep_label)
+        elif self.view == "lyrics" and self._lyrics_follower is not None:
+            self._lyrics_follower.follow(True)
+
+    def _view_count(self, shown: Tab | None) -> str:
+        """The right pane's count line: the tab's ("Album · 13 songs · 51:57"), Up next's, or where the
+        lyrics came from. (The whole library's results say their own count under them.)"""
+        if self.view == "up_next":
+            queue = self.player.up_next()
+            return up_next_count(len(queue), sum(t.duration or 0 for t in queue))
+        if self.view == "lyrics":
+            return self._lyrics_line
+        if self.search_scope == "library":
+            return ""
+        return self._tab_count(shown) if shown is not None else ""
+
+    def _search_whole_library(self, query: str):
+        """The track list's "Search the whole library" row: a wide window's own box searches the library
+        (the results in the list's place); the narrow one opens the search panel."""
+        if self._tier != layout.COLUMN and self.view == "tracks":
+            self.set_search_scope("library")   # (the box keeps the words: they're searched at once)
+            self.playlist.entry.focus_set()
+        else:
+            self.find_in_library(query)
+
+    def _library_key(self, how: str):
+        """A key in the track list's box while it searches the whole library: ↓ into the results, Enter
+        (and Shift / Ctrl / Alt+Enter) on the first one, as in the search panel."""
+        inline = self._inline
+        if inline is None or not inline.is_open:
+            return
+        if how == "down":
+            inline._into_results()
+        else:
+            inline._act(how, first=True)
+
+    def _inline_closed(self):
+        """A song played or an album opened from the docked results: back to the tab's list, the box
+        emptied (the tab asked for is the one on show now)."""
+        self.playlist.query.set("")
+        self.search_scope = "tab"
+        self._show_view()
+
+    # -- the status line -----------------------------------------------------------------------------
+    def _show_status(self, text: str):
+        """The status line says `text`: one line, or — too wide for it — two (see the module notes)."""
+        self._status_text = text
+        self._fit_status()
+
+    def _fit_status(self):
+        text = self._status_text
+        width = self.status_label.winfo_width()
+        link = (self.undo_link.winfo_reqwidth() + theme.px(theme.GAP_LARGE)) if self.undo_link.winfo_manager() else 0
+        key = (text, width, link)
+        if key == self._status_fitted:
+            return
+        self._status_fitted = key
+        if width <= 1:   # (not laid out yet: the next <Configure> fits it)
+            upper, lower = "", text
+        else:
+            font = ttk.Style(self.root).lookup("Sub.TLabel", "font") or "TkDefaultFont"
+            upper, lower = split_status(text, width - link, controls._measuring_font(self.root, font).measure)
+        self._status_cut = bool(upper) or lower != text
+        if str(self.status_label.cget("text")) != lower:
+            self.status_label.configure(text=lower)
+        if upper:
+            self.status_more.configure(text=upper)
+            # Its line sits right on top of the status line; behind it, the gap above the status line is
+            # covered too — and the Up next line when it's just above, rather than cutting it in half.
+            reach = self.status_row.winfo_reqheight() + theme.px(theme.GAP)
+            above = self.up_next_label
+            if above.winfo_ismapped():
+                distance = self.status_row.winfo_rooty() - above.winfo_rooty()
+                if 0 < distance <= 3 * reach:
+                    reach = max(reach, distance)
+            self.status_more.place(in_=self.status_row, x=0, y=-reach, relwidth=1.0, height=reach)
+            self.root.tk.call("raise", str(self.status_more))   # (over the list's foot, whatever came after)
+        elif self.status_more.winfo_manager():
+            self.status_more.place_forget()
 
     # -- cover art -------------------------------------------------------------
     def _fit_art(self):
@@ -4854,12 +5168,12 @@ class PlayerWindow:
         self.seek.set_band(band)
         if not self.seek.dragging:
             self._show_times(position, duration)
-        self.status_label.configure(text=self._notice or status.message or network_text or self._sleep_line(status)
-                                    or elsewhere)
         self._paint_undo_link()
-        # The mini strip shows the same as the top of the full window.
+        self._show_status(self._notice or status.message or network_text or self._sleep_line(status) or elsewhere)
         if self._tier != layout.COLUMN:
-            self.playlist.set_count(self._tab_count(shown) if shown is not None else "")
+            self._paint_docks()
+            self.playlist.set_count(self._view_count(shown))
+        # The mini strip shows the same as the top of the full window.
         self._mini_state = dict(title=self._head_full[0], artist=self._head_full[1],
                                 position=position, duration=duration, playing=playing_now,
                                 status_colour=role, status_detail=self._status_detail, notice=self._notice,

@@ -18,8 +18,12 @@ In a wide window (layout.py's split tiers, `set_tier`) the list has the window's
 its own column setting (`set_wide_columns`): Artist, Album and Format show by themselves wherever
 the tier has room — except a column whose value is the same on every row of the tab (`varies`,
 worked out once per list), so one album shows # · Title · Time and a playlist everything. A header
-row above the list holds the search box and the tab's song count (`set_count`); the rows are
-roomier, and from 1920 logical px the text is larger.
+row above the list holds the view switch — Tracks · Up next · Lyrics (`view_switch`; the window
+shows Up next or the lyrics in the list's place: `on_view`) — and the tab's song count (`set_count`);
+under it the search box, with a choice beside it: This tab | Whole library (`scope_choice`). With
+Whole library the words typed search every song, album and artist instead of the tab, and the
+window shows those results in the list's place (`on_scope`; the keys typed in the box that act on
+results go to `on_library_key`). The rows are roomier, and from 1920 logical px the text is larger.
 
 The list's keys (Enter plays, Ctrl+Enter / Ctrl+Shift+Enter queue, Delete removes, Alt+↑ / ↓
 move a song) are in the keyboard table (keys.py); the window binds them, using `activate`,
@@ -65,6 +69,10 @@ DRAG_START = 6  # px at 100%: move this far with the button down and a press bec
 PLAYING_MARK = "♪"   # (0.20.0) in the # column of the playing song
 FAVOURITE_MARK = "♥"
 SEARCH_LIBRARY = "Search the whole library (Ctrl+Shift+F)"
+# A wide window's view switch and search choice: (value, words).
+VIEWS = (("tracks", "Tracks"), ("up_next", "Up next"), ("lyrics", "Lyrics"))
+SCOPES = (("tab", "This tab"), ("library", "Whole library"))
+SEARCH_HINTS = {"tab": "Search songs, artists, albums", "library": "Search every song, album and artist"}
 
 
 def _clock(seconds: float) -> str:
@@ -206,8 +214,13 @@ class PlaylistView:
                  on_drag: Callable[[list[int], int, int, str], None] = lambda rows, x, y, phase: None,
                  on_heading_menu: Callable[[tk.Event], None] = lambda event: None,
                  on_search_library: Callable[[str], None] | None = None,
-                 is_favourite: Callable[[Track], bool] = lambda track: False):
+                 is_favourite: Callable[[Track], bool] = lambda track: False,
+                 on_view: Callable[[str], None] = lambda view: None,
+                 on_scope: Callable[[str], None] = lambda scope: None,
+                 on_library_key: Callable[[str], None] = lambda how: None):
         self.on_play = on_play
+        self.on_view, self.on_scope, self.on_library_key = on_view, on_scope, on_library_key
+        self.scope = "tab"                  # what the box searches: "tab", or "library" (a wide window only)
         self.on_heading_menu = on_heading_menu
         self.on_search_library = on_search_library
         self.is_favourite = is_favourite
@@ -236,13 +249,19 @@ class PlaylistView:
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
         self.frame = frame
-        # A wide window's header row: the search box (moved in) and the tab's count on the right.
-        # Made before the search box: a widget packed into a frame other than its parent must be
-        # above that frame in Tk's stacking order. Not packed in the narrow window.
+        # A wide window's header row: the view switch on the left and the tab's count on the right;
+        # under it the search row, the search box (moved in) with This tab | Whole library beside
+        # it. Made before the search box: a widget packed into a frame other than its parent must be
+        # above that frame in Tk's stacking order. Neither is packed in the narrow window.
         self.header = ttk.Frame(frame)
+        self.view_var = tk.StringVar(frame, value="tracks")
+        self.view_switch = controls.ChoiceRow(self.header, VIEWS, self.view_var,
+                                              command=lambda: self.on_view(self.view_var.get()))
+        self.view_switch.pack(side="left")
         self.count_label = ttk.Label(self.header, text="", style="Sub.TLabel", anchor="e")
-        self.count_label.pack(side="right")
+        self.count_label.pack(side="right", padx=theme.pad(theme.GAP_WIDE, 0))
         self.header.bind("<Configure>", lambda e: self._fit_search(), add="+")
+        self.search_row = ttk.Frame(frame)
         self._search_pad = 0
 
         # (0.20.0) A magnifier inside the box on the left, and a × on the right while there's
@@ -255,6 +274,15 @@ class PlaylistView:
         self.query.trace_add("write", lambda *_: self._query_changed())
         self.entry.bind("<Down>", lambda e: self._focus_results())
         self.entry.bind("<Return>", lambda e: self._play_first_result())
+        # Searching the whole library: Enter's other meanings act on its first result, as in the
+        # search panel (play next, add to Up next, open the album). Searching the tab, they're Enter.
+        for key, how in (("<Shift-Return>", "next"), ("<Control-Return>", "queue"), ("<Alt-Return>", "album")):
+            self.entry.bind(key, lambda e, h=how: self._library_key(h) or self._play_first_result())
+        # This tab | Whole library, beside the box in a wide window (made after the box: Tab reaches
+        # the box first).
+        self.scope_var = tk.StringVar(frame, value="tab")
+        self.scope_choice = controls.ChoiceRow(frame, SCOPES, self.scope_var,
+                                               command=lambda: self.on_scope(self.scope_var.get()))
 
         table = ttk.Frame(frame)
         table.pack(fill="both", expand=True)
@@ -368,6 +396,42 @@ class PlaylistView:
             self._pack_header(wide)
         self._update_shown()
 
+    def set_view(self, view: str):
+        """The view switch shows this view chosen (the window shows the view itself)."""
+        if self.view_var.get() != view:
+            self.view_var.set(view)
+
+    def show_search_row(self, on: bool):
+        """The search row under the header: shown with the Tracks view, put away with the others."""
+        if on and not self.search_row.winfo_manager():
+            self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP), after=self.header)
+            self._search_pad = -1
+            self._fit_search()
+        elif not on and self.search_row.winfo_manager():
+            self.search_row.pack_forget()
+
+    def set_scope(self, scope: str):
+        """What the box searches: "tab" (this tab's songs, filtered in place) or "library" (the
+        window shows the whole library's results instead of the list). Back to the tab, the tab is
+        filtered by what's in the box."""
+        if scope == self.scope:
+            return
+        self.scope = scope
+        if self.scope_var.get() != scope:
+            self.scope_var.set(scope)
+        self.hint.configure(text=SEARCH_HINTS[scope])
+        if scope == "tab":
+            self._render()
+        elif self._search_job:
+            self.tree.after_cancel(self._search_job)
+            self._search_job = None
+
+    def _library_key(self, how: str):
+        if self.scope != "library":
+            return None
+        self.on_library_key(how)
+        return "break"
+
     def _update_shown(self):
         """Show the optional columns the setting, the tier and the rows call for."""
         before = self.shown
@@ -389,30 +453,40 @@ class PlaylistView:
         self._fit()
 
     def _pack_header(self, wide: bool):
-        """The search box in the header row (a wide window), or on its own above the list."""
+        """The header row and the search row (a wide window), or the search box on its own above the
+        list."""
         self.search.pack_forget()
+        self.scope_choice.pack_forget()
         if wide:
-            self.header.pack(fill="x", pady=theme.pad(0, theme.GAP), before=self.table)
-            self.search.pack(in_=self.header, side="left", fill="x", expand=True)
-            # Just above the header row it's packed in, not above everything: Tab follows the
-            # stacking order, so raising it past the list would put the list first.
-            self.search.lift(self.header)
+            self.header.pack(fill="x", pady=theme.pad(0, theme.GAP), before=self.search_row
+                             if self.search_row.winfo_manager() else self.table)
+            if not self.search_row.winfo_manager():
+                self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP), after=self.header)
+            self.search.pack(in_=self.search_row, side="left", fill="x", expand=True)
+            self.scope_choice.pack(in_=self.search_row, side="left", padx=theme.pad(theme.GAP_LARGE, 0))
+            # Just above the row they're packed in, not above everything: Tab follows the stacking
+            # order, so raising them past the list would put the list first.
+            self.search.lift(self.search_row)
+            self.scope_choice.lift(self.search)
             self._search_pad = -1
             self._fit_search()
         else:
             self.header.pack_forget()
+            self.search_row.pack_forget()
+            if not self.table.winfo_manager():   # (a wide window was showing something else in its place)
+                self.table.pack(fill="both", expand=True)
             self.search.pack(in_=self.frame, fill="x", pady=theme.pad(0, theme.GAP), before=self.table)
 
     def _fit_search(self):
-        """In the header row the search box grows with the list up to SEARCH_MAX, the count keeping
-        its room on the right."""
-        if self.tier == layout.COLUMN:
+        """In the search row the box grows with the list up to SEARCH_MAX, This tab | Whole library
+        right beside it."""
+        if self.tier == layout.COLUMN or not self.search_row.winfo_manager():
             return
-        room = self.header.winfo_width() - self.count_label.winfo_reqwidth()
-        pad = max(theme.px(theme.GAP_WIDE), room - theme.px(SEARCH_MAX))
+        room = self.header.winfo_width() - self.scope_choice.winfo_reqwidth() - theme.px(theme.GAP_LARGE)
+        pad = max(0, room - theme.px(SEARCH_MAX))
         if abs(pad - self._search_pad) > 2:
             self._search_pad = pad
-            self.search.pack_configure(padx=(0, pad))
+            self.search_row.pack_configure(padx=(0, pad))
 
     def set_count(self, text: str):
         """The tab's count in a wide window's header row, e.g. "Album · 13 songs · 51:57"."""
@@ -574,9 +648,14 @@ class PlaylistView:
 
     def clear_search(self):
         self.query.set("")
-        self.tree.focus_set()
+        if self.scope == "library":   # (the list isn't on show: the keyboard stays in the box)
+            self.entry.focus_set()
+        else:
+            self.tree.focus_set()
 
     def _query_changed(self):
+        if self.scope == "library":   # (the window's results follow the box; the tab stays as it is)
+            return
         if self._search_job:
             self.tree.after_cancel(self._search_job)
         self._search_job = self.tree.after(SEARCH_DELAY_MS, self._search_now)  # wait for a pause in typing
@@ -592,6 +671,8 @@ class PlaylistView:
             self._render()
 
     def _focus_results(self):
+        if self._library_key("down"):
+            return
         self._flush_search()
         rows = self._songs
         if rows:
@@ -600,6 +681,8 @@ class PlaylistView:
             self.tree.focus(rows[0])
 
     def _play_first_result(self):
+        if self._library_key("play"):
+            return
         self._flush_search()
         rows = self._songs
         if rows:

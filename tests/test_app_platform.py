@@ -602,7 +602,7 @@ def test_diagnostics_zip_holds_the_logs_and_versions_with_folders_left_out(tmp_p
              "tabs": [{"kind": "folder", "path": "D:\\Music\\Abba", "extras": ["E:\\Rips\\x.flac"]}],
              "vu_auto": {"D:\\Music\\Abba": -18.0}, "experiments": {"tag_editor": True}}
     zip_path = diagnostics.write_zip(tmp_path / "out" / "d.zip", prefs, folder,
-                                     outputs=lambda: "Default output: Speakers\n", home=home)
+                                     outputs=lambda: ("Speakers", ["Speakers"]), home=home)
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
         read = lambda name: archive.read(name).decode("utf-8")  # noqa: E731

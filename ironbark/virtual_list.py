@@ -95,7 +95,7 @@ class VirtualTree:
     is configured here first, so it wins over the owner's tags). `margin=True`: the scrollbar sits
     in the margin right of the list instead (controls.AutoScrollbar.in_margin), so the list keeps its
     full width and its words line up with what's above it; `parent` must then be the frame whose
-    padding is that margin.
+    padding is that margin, or `scroll_parent` names that frame (a list deeper inside it).
 
     Callbacks: on_select(index | None) when the selection moves; on_activate(index) on a
     double-click of an ordinary row; on_toggle(index) to fold or open a group heading; on_jump(text)
@@ -109,7 +109,7 @@ class VirtualTree:
                  on_jump: Callable[[str], int | None] | None = None,
                  on_top_edge: Callable[[], None] | None = None,
                  fonts: dict[str, object] | None = None, playing_column: str | None = None,
-                 playing_mark: str = "♪", margin: bool = False):
+                 playing_mark: str = "♪", margin: bool = False, scroll_parent: tk.Misc | None = None):
         self.on_select, self.on_activate, self.on_toggle = on_select, on_activate, on_toggle
         self.on_jump, self.on_top_edge = on_jump, on_top_edge
         self.fonts = dict(fonts or {})       # tag -> the font its rows are drawn in (measured for "…")
@@ -128,7 +128,8 @@ class VirtualTree:
         self.frame = ttk.Frame(parent)
         # height=4: ask for little, then grow into whatever room the window gives the list.
         self.tree = ttk.Treeview(self.frame, columns=tuple(columns), show=show, selectmode="browse", height=4)
-        self.scrollbar = controls.AutoScrollbar(parent if margin else self.frame, command=self._scrolled)
+        self.scrollbar = controls.AutoScrollbar((scroll_parent or parent) if margin else self.frame,
+                                                command=self._scrolled)
         self.tree.configure(yscrollcommand=self._tk_scrolled)
         self.tree.pack(side="left", fill="both", expand=True)
         if margin:

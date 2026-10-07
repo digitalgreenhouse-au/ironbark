@@ -282,7 +282,7 @@ def test_a_slow_read_of_an_earlier_song_doesnt_take_the_place_of_this_ones(root,
     for path in (b.path, a.path):                     # B's read ends first, then A's — no tick between
         release[path].set()
         deadline = time.monotonic() + 5
-        while path not in win._found and time.monotonic() < deadline:
+        while path not in win.follower._found and time.monotonic() < deadline:
             time.sleep(0.01)
     wait(root, lambda: win.view.lyrics is SYNCED)
     win.close()

@@ -19,7 +19,8 @@ instead of pressing a button (they used to fill the strip's whole height).
 
 One look with the full window: play is the same drawn green button (smaller), previous and next
 the same drawn glyphs, the other buttons round discs under the pointer, and the status a small
-drawn dot — so there is one play button style in the app, not three.
+drawn dot — so there is one play button style in the app, not three. Each button's tooltip names
+its key too, from the one key table (keys.py), as the full window's do.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import sys
 import tkinter as tk
 from typing import Callable
 
-from . import chrome, controls, shapes, theme
+from . import chrome, controls, keys, shapes, theme
 from .tabbar import RoundIconButton, Tooltip
 
 DEFAULT_SIZE = (380, 76)    # px at 100%: the strip's size the first time it's opened
@@ -98,12 +99,12 @@ class MiniView(tk.Frame):
             return RoundIconButton(self, root, name, command, size=theme.ICON_SMALL, diameter=SMALL_BUTTON,
                                    width=SMALL_BUTTON, bg="BG", label=label, **options)
 
-        self.close_button = small("close", on_quit, "Close", hover="CLOSE_HOVER", pressed="CLOSE_HOVER",
+        self.close_button = small("close", on_quit, f"Close ({keys.hint('quit')})", hover="CLOSE_HOVER", pressed="CLOSE_HOVER",
                                   hover_fg="ON_ACCENT")
         self.close_button.pack(side="right", padx=(0, theme.px(theme.GAP)))
-        self.full_button = small("full", on_full, "Full player (Z)")
+        self.full_button = small("full", on_full, f"Full player ({keys.hint('mini')})")
         self.full_button.pack(side="right", padx=(0, theme.px(theme.GAP_HAIR)))
-        self.settings_button = small("settings", on_settings, "Settings")
+        self.settings_button = small("settings", on_settings, f"Settings ({keys.hint('settings')})")
         self.settings_button.pack(side="right", padx=(0, theme.px(theme.GAP_HAIR)))
         self.status_dot = tk.Label(self, bg=theme.BG, bd=0, cursor="hand2")
         self.status_dot.pack(side="right", padx=theme.pad(theme.GAP, theme.GAP))
@@ -114,12 +115,12 @@ class MiniView(tk.Frame):
         Tooltip(self.status_dot, lambda: self._status_detail)
         self._paint_status("BG")
         self.next_button = RoundIconButton(self, root, "next", on_next, diameter=BUTTON, width=BUTTON, bg="BG",
-                                           drawn="next", label="Next")
+                                           drawn="next", label=f"Next ({keys.hint('next')})")
         self.next_button.pack(side="right")
-        self.play_button = controls.PlayButton(self, on_play, diameter=PLAY_DIAMETER, label="Play / pause")
+        self.play_button = controls.PlayButton(self, on_play, diameter=PLAY_DIAMETER, label=f"Play / pause ({keys.hint('play')})")
         self.play_button.pack(side="right", padx=max(0, theme.px(theme.GAP_SMALL) - self.play_button.margin))
         self.previous_button = RoundIconButton(self, root, "prev", on_previous, diameter=BUTTON, width=BUTTON,
-                                               bg="BG", drawn="prev", label="Previous")
+                                               bg="BG", drawn="prev", label=f"Previous ({keys.hint('previous')})")
         self.previous_button.pack(side="right")
 
         # The rest: title, artist (or a passing note), the seek bar.

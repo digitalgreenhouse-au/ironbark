@@ -10,14 +10,22 @@ Every error is written to crash.log first (__main__ does that, and app.log gets 
 
 Never a stream of boxes: one at a time, each kind of error once a session, at most MAX_BOXES a
 session and no more often than once every MIN_GAP_S; the rest are only logged.
+
+After a crash: a clean exit is noted at the end of crash.log (`clean_exit_line`), so at the next start
+an entry written after the last one — an error, or the dump of a crash — means Ironbark closed
+unexpectedly (`closed_unexpectedly`). The window then says so once in its status line, with a link
+to Save diagnostics… (`take_unexpected_exit`). A log from before clean exits were noted says nothing:
+it starts noting them (TRACKING) and only what comes after counts.
 """
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import platform
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -42,6 +50,52 @@ MESSAGE = ("Part of Ironbark hit a problem it didn't expect. The music carries o
 DETAIL = "The details are saved in the log. Copy them to paste into a problem report."
 COPY, FOLDER, CLOSE = "copy", "folder", "close"
 SHORT_FOLDER_LABEL = "Log folder"   # "Open log folder", where the box is too narrow for it
+
+# crash.log's lines about how Ironbark closed: a clean exit, and where noting them began (a log from
+# before they were noted, or a new one).
+TRACKING = f"--- {APP_NAME} notes how it closes from here ---"
+_CLEAN = re.compile(rf"^--- {re.escape(APP_NAME)} closed normally \d\d/\d\d/\d{{4}} .*---$")
+_STARTED = re.compile(r"^--- .+ started \d\d/\d\d/\d{4} .*---$")
+_unexpected = False   # the last run ended in a crash (found at start: note_last_run)
+
+
+def clean_exit_line(now: datetime.datetime | None = None) -> str:
+    """The line written at the end of crash.log as Ironbark closes normally."""
+    return f"--- {APP_NAME} closed normally {(now or datetime.datetime.now()):%d/%m/%Y %H:%M:%S} ---"
+
+
+def _marks_exit(line: str) -> bool:
+    line = line.strip()
+    return line == TRACKING or bool(_CLEAN.match(line))
+
+
+def tracks_exits(text: str) -> bool:
+    """Whether crash.log's text notes how Ironbark closes (a clean exit, or where noting them began)."""
+    return any(_marks_exit(line) for line in text.splitlines())
+
+
+def closed_unexpectedly(text: str) -> bool:
+    """crash.log's text, read as Ironbark starts: did it close unexpectedly after its last clean exit?
+    Yes when anything but a start line follows the last clean exit (an error, a crash's dump). A log
+    that has never noted a clean exit can't tell: no."""
+    lines = text.splitlines()
+    last = max((i for i, line in enumerate(lines) if _marks_exit(line)), default=None)
+    if last is None:
+        return False
+    return any(line.strip() and not _STARTED.match(line.strip()) for line in lines[last + 1:])
+
+
+def note_last_run(text: str) -> None:
+    """At start-up, before this run writes anything to crash.log: remember whether the last run crashed."""
+    global _unexpected
+    _unexpected = closed_unexpectedly(text)
+
+
+def take_unexpected_exit() -> bool:
+    """Did the last run crash? Answered once (the window says so once)."""
+    global _unexpected
+    found, _unexpected = _unexpected, False
+    return found
 
 
 @dataclass(frozen=True)

@@ -155,6 +155,8 @@ OTHER_KEYS: tuple[tuple[str, str, str], ...] = (
     ("A – Z · 0 – 9", "Library list: jump to the first name starting with what you type", "Library & search"),
     ("Menu key · Shift+F10", "The selected row's right-click menu", "Tabs & lists"),
     ("Esc", "Close a menu or window (a search box: clear it first)", "Windows & tools"),
+    ("Tab · Shift+Tab", "A question box: go from button to button (Enter presses the one ringed in green)",
+     "Windows & tools"),
     ("A · B · X · Space", "ABX window: hear A, B or X · stop or replay", "Windows & tools"),
     ("A · B · D · Space", "Clipping (Hear it on): hear A, B or D · stop or replay", "Windows & tools"),
 )

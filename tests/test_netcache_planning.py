@@ -417,5 +417,5 @@ def test_a_wait_while_the_server_is_just_slow_says_so(tmp_path, managers):
     assert m._slower(item, 45.0) == ""                         # not answering at all: said another way
     slow = NetworkView("waiting", True, None, m._slower(item, 45.0) or "the download is slower than the music: "
                        "building up 45 s", at=134.0)
-    assert network_line(slow) == ("Waiting for the network · paused at 2:14 · the download is slower than the "
-                                  "music: building up 45 s", "warn")
+    assert network_line(slow) == ("The network is slower than the music · paused at 2:14 · building up 45 s",
+                                  "warn")

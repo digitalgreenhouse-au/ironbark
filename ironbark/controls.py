@@ -611,16 +611,26 @@ class PillButton(Focusable, _Pressable):
         if self.focused:
             outline, line = theme.ACCENT, keyfocus.ring_width()
         colours = (theme.colour(self._bg), self.fill_colour(), outline)
+        # A filled pill with the keyboard: the ring stands off the fill by a hair of the background,
+        # so it shows on a green pill too (on an unfilled one it simply is the rim).
+        gap = max(1, theme.px(1)) if self.focused and colours[1] else 0
 
         def draw() -> Image.Image:
             k = SUPERSAMPLE
             image = Image.new("RGB", (w * k, h * k), colours[0])
-            ImageDraw.Draw(image).rounded_rectangle(
-                (0, 0, w * k - 1, h * k - 1), radius=h * k // 2, fill=colours[1] or colours[0],
-                outline=colours[2], width=line * k if colours[2] else 0)
+            pen = ImageDraw.Draw(image)
+            if gap:
+                pen.rounded_rectangle((0, 0, w * k - 1, h * k - 1), radius=h * k // 2, fill=colours[0],
+                                      outline=colours[2], width=line * k)
+                inset = (line + gap) * k
+                pen.rounded_rectangle((inset, inset, w * k - 1 - inset, h * k - 1 - inset),
+                                      radius=(h * k - 2 * inset) // 2, fill=colours[1])
+            else:
+                pen.rounded_rectangle((0, 0, w * k - 1, h * k - 1), radius=h * k // 2, fill=colours[1] or colours[0],
+                                      outline=colours[2], width=line * k if colours[2] else 0)
             return _down(image, (w, h))
 
-        self._photo = _photo(self, ("pill", w, h, line) + colours, draw)
+        self._photo = _photo(self, ("pill", w, h, line, gap) + colours, draw)
         fg = theme.colour(self._fg) if self.enabled else theme.mix("MUTED", self._fill or self._bg, DISABLED_FADE)
         self.configure(image=self._photo, fg=fg, bg=colours[0])
 

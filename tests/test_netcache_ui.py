@@ -45,7 +45,7 @@ def test_the_status_line_says_where_a_network_song_has_got_to():
     assert network_line(view())[0] == "Preparing track…"
     assert network_line(view(detail="waiting for \\\\192.168.80.173 (not answering) · starts by itself when "
                                     "it's back")) == (
-        "Preparing track… waiting for \\\\192.168.80.173 (not answering) · starts by itself when it's back", "warn")
+        "Preparing track… \\\\192.168.80.173 isn't answering · starts when it's back", "warn")
     assert network_line(view("downloading", percent=34))[0] == "Downloading track… 34%"
     assert network_line(view("checking"))[0] == "Checking the download…"
     assert network_line(view(auto=False, percent=34))[0] == "Paused · the song keeps downloading (34%)"
@@ -55,8 +55,9 @@ def test_the_status_line_says_where_a_network_song_has_got_to():
     assert network_line(view("fetching", percent=61, at=192.0))[0] == "Fetching from 3:12… 61%"
     assert network_line(view("fetching", percent=64), mp3=True)[0] == (
         "Fetching… an MP3 has to be read from the start up to here: 64%")
-    assert network_line(view("released"))[0] == ("Paused: the network isn't answering · it carries on by itself "
-                                                 "when it's back (or press play to try now)")
+    assert network_line(view("released"))[0] == ("Paused: the network isn't answering · carries on by itself "
+                                                 "when it's back")
+    assert network_hover(view("released")).endswith("(or press play to try now)")   # (the fuller words)
 
 
 def test_the_hover_and_now_playings_source_rows():
@@ -102,16 +103,16 @@ def test_the_window_shows_the_intent_to_play_while_a_song_waits(make_window):
     shown["network"] = view(percent=34)
     window._refresh_view()
     assert window.play_button.playing is True                  # it starts by itself: the transport shows pause
-    assert window.status_label.cget("text") == "Preparing track… 34%"
+    assert window._status_text == "Preparing track… 34%"
     assert "Preparing track… 34%" in window._status_detail
     shown["network"] = view(auto=False, percent=34)
     window._refresh_view()
     assert window.play_button.playing is False
-    assert window.status_label.cget("text") == "Paused · the song keeps downloading (34%)"
+    assert window._status_text == "Paused · the song keeps downloading (34%)"
     shown["network"] = view("waiting", at=134.0)
     window._refresh_view()
     assert window.play_button.playing is True
-    assert window.status_label.cget("text") == "Waiting for the network · paused at 2:14 · carries on by itself"
+    assert window._status_text == "Waiting for the network · paused at 2:14 · carries on by itself"
     assert window._media_state(player.status()) == "paused"   # Windows' media panel: nothing is sounding
     assert errors == []
 

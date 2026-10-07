@@ -166,26 +166,33 @@ def copy_note(copy: str) -> str:
     return ""
 
 
+RELEASED_HINT = " (or press play to try now)"   # the status dot's hover adds this to the released line
+
+
 def network_line(network, mp3: bool = False) -> tuple[str, str]:
     """(status line, tone) while a song from a network drive isn't simply playing: preparing,
-    waiting for the network, fetching after a seek, or let go of the device. ("", …) otherwise."""
+    waiting for the network, fetching after a seek, or let go of the device. ("", …) otherwise.
+    Short enough for one status line in the narrow window; the cache's own fuller words
+    (`network.detail`) are the status dot's hover."""
     if network is None or network.phase == "playing":
         return "", "plain"
     percent = network.percent
     pct = f" {percent}%" if percent is not None else ""
     if network.phase == "waiting":
-        then = "carries on by itself" if network.auto else "press play to carry on"
+        at = fmt_clock(network.at)
         if network.auto and network.detail.startswith("the download is slower"):
-            then = network.detail   # (its server answers, just more slowly than the music plays)
-        return f"Waiting for the network · paused at {fmt_clock(network.at)} · {then}", "warn"
+            # (its server answers, just more slowly than the music plays: "…: building up 45 s")
+            building = network.detail.partition(": ")[2] or "building up"
+            return f"The network is slower than the music · paused at {at} · {building}", "warn"
+        then = "carries on by itself" if network.auto else "press play to carry on"
+        return f"Waiting for the network · paused at {at} · {then}", "warn"
     if network.phase == "fetching":
         if mp3:
             return f"Fetching… an MP3 has to be read from the start up to here:{pct}", "plain"
         return f"Fetching from {fmt_clock(network.at)}…{pct}", "plain"
     if network.phase == "released":
         if network.auto:
-            return ("Paused: the network isn't answering · it carries on by itself when it's back "
-                    "(or press play to try now)"), "warn"
+            return "Paused: the network isn't answering · carries on by itself when it's back", "warn"
         return "Paused for the network · press play to carry on", "plain"
     if not network.auto:
         return f"Paused · the song keeps downloading{f' ({percent}%)' if percent is not None else ''}", "plain"
@@ -193,8 +200,9 @@ def network_line(network, mp3: bool = False) -> tuple[str, str]:
         return "Checking the download…", "plain"
     if network.phase == "downloading":
         return f"Downloading track…{pct}", "plain"
-    if network.detail.startswith("waiting for"):   # its server isn't answering
-        return f"Preparing track… {network.detail}", "warn"
+    if network.detail.startswith("waiting for"):   # its server isn't answering: "waiting for <server> (not …"
+        server = network.detail[len("waiting for "):].partition(" (not answering)")[0].strip() or "its server"
+        return f"Preparing track… {server} isn't answering · starts when it's back", "warn"
     return f"Preparing track…{pct}", "plain"
 
 
@@ -250,7 +258,10 @@ def network_hover(network) -> str:
     if network is None:
         return ""
     if network.phase != "playing":
-        return network.detail or network_line(network)[0]
+        if network.detail:
+            return network.detail
+        line = network_line(network)[0]
+        return line + RELEASED_HINT if network.phase == "released" and network.auto else line
     if network.copy == "failed":
         return COPY_FAILED
     parts = ["Playing the local copy"]

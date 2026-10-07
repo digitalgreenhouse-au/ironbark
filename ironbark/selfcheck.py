@@ -380,9 +380,15 @@ def _check_window() -> str:
         settings.settings_path = lambda: home / "settings.json"
         # The check window registers nothing system-wide (Windows' media panel, the taskbar's
         # buttons, a keyboard hook) and doesn't start looking for new music; "media controls"
-        # above checks those pieces are there without taking them over.
+        # above checks those pieces are there without taking them over. Its library is an empty
+        # folder of its own, so it never starts reading the user's Music folder (a big one would
+        # start worker processes), and the network playback cache stays off.
+        music = home / "Music"
+        music.mkdir()
         (home / "settings.json").write_text(
-            json.dumps({"media_controls": False, "watch_music": False}), encoding="utf-8")
+            json.dumps({"media_controls": False, "watch_music": False, "library_folders": [str(music)],
+                        "library_folder": str(music), "library_check": "off",
+                        "experiments": {"network_cache": False}}), encoding="utf-8")
         appicon.set_app_id()
         root = tk.Tk()
         errors = []    # errors in the window code (Tk would only print them)

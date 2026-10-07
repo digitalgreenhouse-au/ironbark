@@ -766,6 +766,9 @@ def test_settings_lists_the_library_folders(make_window, tmp_path):  # noqa: F81
     assert [button for _text, button in shown()] == ["Remove", "Remove"]
     assert window.prefs["library_folders"] == [str(first), str(other)] and window.prefs["library_folder"] == str(first)
     assert window._index().roots == [first, other]
+    from ironbark.popups import Prompt
+
+    root.after(100, lambda: Prompt.stack[-1]._chosen(0))   # it asks first: Remove
     window._remove_library_folder(other)
     _pump(root, 0.3)
     assert [button for _text, button in shown()] == ["Change…"] and window._index().roots == [first]

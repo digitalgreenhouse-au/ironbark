@@ -110,7 +110,10 @@ Windows SmartScreen warns about an unknown publisher.
 - **Mini player** (Z): a small strip that stays on top, with its own position.
 - **Wide windows:** maximise it, or make it wider, and it splits in two — the cover and controls on
   the left, the track list the full height on the right, with larger type. Covers are never
-  enlarged past their own pixels. **F11** is full screen (Esc leaves it).
+  enlarged past their own pixels. **F11** is full screen (Esc leaves it). Above the list, *Tracks ·
+  Up next · Lyrics* switches the right pane between the tab's songs, Up next and the playing song's
+  lyrics, and *This tab | Whole library* beside the search box searches every song in the library
+  right there.
 - **Light or dark** themes (or follow Windows); both meet the WCAG AA contrast guidelines. A quiet,
   rounded look: browser-style tabs, pill buttons, rounded fields and lists, and menus with a rounded
   highlight.
@@ -171,12 +174,16 @@ Windows SmartScreen warns about an unknown publisher.
 ### When something goes wrong
 
 - A clear message with **Copy details** and **Open log folder**, never a flood of boxes.
+- After Ironbark closed unexpectedly, the next start says so once in the status line, with a
+  *Save diagnostics…* link.
 - Settings → Help → **Save diagnostics…** saves a zip for a problem report (versions, sound outputs,
-  logs and settings, with folder names left out) on your computer. It is never sent anywhere.
+  logs and settings, with the names of folders, tabs, playlists and sound outputs left out) on your
+  computer. It is never sent anywhere.
 - Settings → Help → **About Ironbark**: the version, every bundled component's licence, and a *Copy
   version info* button.
 - Settings → Help → **Check for updates** (off by default, and only while network access is
-  allowed) mentions a newer version in the status line. It never downloads or installs anything.
+  allowed) mentions a newer version in the status line. The request names the Ironbark version,
+  and the website sees your computer's internet address. It never downloads or installs anything.
 
 ### Experimental (Settings → Experimental, off until you switch them on)
 
@@ -259,6 +266,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+Q | Quit Ironbark |
 | F11 | Full screen and back (Esc leaves it too) |
 | Esc | Close a menu or window (a search box: clear it first) |
+| Tab · Shift+Tab | A question box: go from button to button (Enter presses the one ringed in green) |
 | A · B · X · Space | ABX window: hear A, B or X · stop or replay |
 | A · B · D · Space | Clipping (Hear it on): hear A, B or D · stop or replay |
 
@@ -291,25 +299,30 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 
 ## Privacy
 
-Ironbark doesn't collect or send anything about you or your music. Nothing uses the internet until
-you switch on Settings → Network → *Allow network access*. Then only two features can:
+Ironbark doesn't collect anything about you or your music. Nothing uses the internet until you
+switch on Settings → Network → *Allow network access*. Then only two features can:
 
 - **Rip verification**: when you press *Verify rip online*, it sends only the disc's IDs and track
-  layout to AccurateRip and CUETools DB.
-- **Check for updates** (Settings → Help, its own switch, also off by default): once a day it reads
-  one small file from digitalgreenhouse.com.au saying what the latest version is. The site sees
-  only your internet address and the Ironbark version, as any website would. Nothing is downloaded
-  or installed: a newer version is only mentioned in the status line.
+  layout to AccurateRip and CUETools DB. The CUETools DB look-up isn't encrypted, so others on your
+  network can see which disc is looked up.
+- **Check for updates** (Settings → Help, its own switch, also off by default): once a day it asks
+  digitalgreenhouse.com.au for one small file saying what the latest version is. The request names
+  the Ironbark version, and the website sees your computer's internet address, as any website you
+  visit does; nothing else goes with it. Nothing is downloaded or installed: a newer version is only
+  mentioned in the status line.
 
 Lyrics, the rip-log check and the library's song search all work offline, from files on your
-computer. The network playback cache (Experimental) only talks to the network drives your music is
-already on; it never uses the internet.
+computer. Music on network drives (`\\server\share`, or a mapped drive like Z:) and OneDrive plays
+without network access: Windows fetches those files, as it does for any program. The network
+playback cache (Experimental) only talks to the network drives your music is already on; it never
+uses the internet.
 
 Settings, playlists and the logs are kept on your computer (on Windows, in `%APPDATA%\Ironbark`),
 and the library database, with your play counts and favourites, beside them (on Windows, in
 `%LOCALAPPDATA%\Ironbark`). If something goes wrong, Settings → Help → *Save diagnostics…* saves a
 zip on your computer that you can choose to attach to a problem report (versions, sound outputs,
-logs and settings, with folder names left out); it is never sent anywhere.
+logs and settings, with the names of folders, tabs, playlists and sound outputs left out); it is
+never sent anywhere.
 
 ## Feedback
 
