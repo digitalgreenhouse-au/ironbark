@@ -37,7 +37,10 @@ tracks only; leadout = end of the whole disc.
 **CUETools DB** (CUEToolsDB.cs, CDRepair.cs, AccurateRip.cs `CTDBCRC`):
 - Lookup: http://db.cuetools.net/lookup2.php?version=3&ctdb=1&fuzzy=1&metadata=none&toc=…, the
   TOC as the start sector of every track (data tracks prefixed "-") then the leadout, joined
-  with ":". (CUETools itself uses plain http for this address.)
+  with ":". (CUETools itself uses plain http for this address, so this one request is
+  unencrypted: anyone on the network path can see which disc is looked up. The window says so.
+  The certificate of the https address db.cuetools.net doesn't carry that name, so it can't
+  simply be switched over.)
 - Answer: XML `<ctdb><entry id crc32 confidence toc trackcrcs …/></ctdb>`; total = the sum of
   every entry's confidence.
 - Checksums are the ordinary CRC-32 (zlib's) of the 16-bit little-endian interleaved audio,
@@ -70,7 +73,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import ssl
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -93,9 +98,16 @@ LEAD_IN = 150                # the 2 s every CD starts with; CDTOC tags and CDDB
 AR_URL = ("https://www.accuraterip.com/accuraterip/{a:x}/{b:x}/{c:x}/"
           "dBAR-{n:03d}-{id1:08x}-{id2:08x}-{cddb:08x}.bin")
 CTDB_URL = "http://db.cuetools.net/lookup2.php?version=3&ctdb=1&fuzzy=1&metadata=none&toc={toc}"
-TIMEOUT = 20                 # seconds per request
+TIMEOUT = 20                 # seconds the server may stay silent (connecting, or between data)
+DEADLINE = 30                # seconds for a whole answer, however slowly it trickles in
 MAX_BYTES = 4 << 20          # an answer bigger than this isn't what we asked for
+CHUNK = 64 << 10             # bytes read at a time, so a slow answer can be given up on
+MAX_CONFIDENCE = 1_000_000   # a CTDB confidence above this (or below 0) isn't a real count of rips
 BLOCK = 1 << 18              # samples read at a time
+CD_MAX_TRACKS = 99           # the most tracks a CD can hold (the Red Book CD standard)
+CD_MAX_SECTORS = 80 * 60 * 75   # 80 minutes: past the Red Book's longest disc (79:59.74)
+LOG_MAX = 4 << 20            # a .log bigger than this isn't a rip log (those are a few KB) …
+LOG_READ = 1 << 20           # … and only its first megabyte is read
 
 _urlopen = urllib.request.urlopen   # tests replace this; nothing else in the player goes online
 
@@ -386,16 +398,58 @@ class NotARip(Exception):
 
 def disc_files(track: Path) -> list[Path]:
     """The disc a track belongs to: the audio files in its own folder (a "CD2" folder is its own
-    disc), in play order."""
+    disc), in play order. When the folder holds more than one disc, only the track's own (see
+    `_discs`)."""
+    return _disc_and_others(track)[0]
+
+
+# "1-01 Title.flac", "2_03.flac", "CD2-05 …": a disc number before the track number.
+_DISC_PREFIX = re.compile(r"^\s*(?:(?:cd|disc|disk)\s*)?(\d{1,2})\s*[-_.]\s*\d{1,3}(?!\d)", re.IGNORECASE)
+
+
+def _discs(tracks: list) -> list[list]:
+    """The folder's tracks (library Tracks, in play order) split into discs: by DISCNUMBER tag
+    when the files carry more than one disc number; otherwise by a disc number at the start of
+    the file names, when every file has one and they aren't all the same. One group when
+    neither (a single disc)."""
+    def from_name(track):
+        found = _DISC_PREFIX.match(audiofile.real_path(track.path).name)
+        return int(found.group(1)) if found else None
+
+    tagged = [t.disc_no for t in tracks]
+    named = [from_name(t) for t in tracks]
+    if len(set(tagged) - {None}) > 1:
+        keys = tagged
+    elif None not in named and len(set(named)) > 1:
+        keys = named
+    else:
+        return [tracks]
+    groups: dict = {}
+    for key, t in zip(keys, tracks):
+        groups.setdefault(key, []).append(t)
+    return list(groups.values())
+
+
+def _disc_and_others(track: Path) -> tuple[list[Path], list[Path]]:
+    """(the audio files of the track's disc, the folder's other audio files), real files in
+    play order (a CUE image once)."""
     from .library import AUDIO_EXTENSIONS, _in_play_order
-    folder = Path(track).parent
+    real_track = audiofile.real_path(track)
+    folder = real_track.parent
     paths = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
-    files: list[Path] = []
-    for t in _in_play_order(folder, paths):  # a CUE image is listed as its tracks: check the file
-        real = audiofile.real_path(t.path)
-        if real not in files:
-            files.append(real)
-    return files
+    ours: list[Path] = []
+    others: list[Path] = []
+    for group in _discs(_in_play_order(folder, paths)):
+        files: list[Path] = []
+        for t in group:   # a CUE image is listed as its tracks: check the file
+            real = audiofile.real_path(t.path)
+            if real not in files:
+                files.append(real)
+        if real_track in files and not ours:
+            ours = files
+        else:
+            others += [f for f in files if f not in others]
+    return ours, [f for f in others if f not in ours]
 
 
 def _side_files(folder: Path, suffix: str) -> list[Path]:
@@ -430,34 +484,49 @@ def find_rip(track: Path) -> Rip:
     inside the file (one-file rips), a CDTOC tag, the ripper's log (EAC / XLD), a .cue sheet,
     and last the files' own lengths. The first one that fits the files wins; the ones that
     didn't are listed in the notes. Raises NotARip when nothing can be checked. One track of a CUE
-    image checks the whole image (the disc)."""
+    image checks the whole image (the disc). In a folder holding several discs only the track's
+    own disc is used, and files of another kind beside the rip (an MP3 copy, a hi-res bonus
+    track) are left out and named in the notes."""
     track = audiofile.real_path(track)
     folder = track.parent
     try:
-        files = disc_files(track)
+        files, other_discs = _disc_and_others(track)
     except OSError as error:
         raise NotARip(f"couldn't read the folder ({error})") from error
     files = files if track in files else [track]
-    lengths = []
-    for path in files:
-        try:
-            info = audiofile.info(path)
-        except (sf.LibsndfileError, OSError, RuntimeError) as error:
-            raise NotARip(f"couldn't read {path.name}") from error
-        if path.suffix.lower() == ".mp3" or info.format == "MP3":
-            raise NotARip("MP3 files can't be checked: they aren't an exact copy of a CD")
-        if info.samplerate != cuesheet.CD_RATE or info.channels != 2 or info.subtype != "PCM_16":
-            bits = {"PCM_24": 24, "PCM_32": 32, "PCM_16": 16, "FLOAT": 32}.get(info.subtype, 0)
-            raise NotARip(f"{path.name} isn't CD audio ({bits or '?'}-bit, {info.samplerate / 1000:g} kHz, "
-                          f"{info.channels} channel{'s' if info.channels != 1 else ''}); rip checks are for "
-                          "CD rips (16-bit, 44.1 kHz, stereo)")
-        lengths.append(info.frames)
+    info = _read_info(track)
+    problem = _not_cd_audio(track, info)
+    if problem:                # the chosen track itself must be CD audio …
+        raise NotARip(problem)
+    lengths, skipped = [], []
+    for path in files:         # … but the folder may also hold copies in other formats
+        if path == track:
+            lengths.append(info.frames)
+            continue
+        other = _read_info(path) if path.suffix.lower() == track.suffix.lower() else None
+        if other is None or _not_cd_audio(path, other):
+            skipped.append(path)
+        else:
+            lengths.append(other.frames)
+    files = [f for f in files if f not in skipped]
+    if len(files) > CD_MAX_TRACKS:
+        raise NotARip(f"{len(files)} files belong together here, more than the {CD_MAX_TRACKS} tracks a CD "
+                      "can hold; if the folder holds several discs, tag each file's disc number "
+                      "(DISCNUMBER) or put each disc in its own folder")
+    notes = []
+    if other_discs:
+        notes.append(f"the folder holds more than one disc; only this track's disc was checked "
+                     f"({len(files)} of {len(files) + len(other_discs) + len(skipped)} files)")
+    if skipped:
+        names = ", ".join(p.name for p in skipped[:3])
+        names += f" and {len(skipped) - 3} more" if len(skipped) > 3 else ""
+        notes.append(f"left out, not the same kind of CD-audio file as this track: {names}")
 
     tried: list[str] = []
 
     def accept(result: Rip | str) -> Rip | None:
         if isinstance(result, Rip):
-            result.notes = [f"tried first: {t}" for t in tried] + result.notes
+            result.notes = notes + [f"tried first: {t}" for t in tried] + result.notes
             return result
         tried.append(result)
         return None
@@ -492,7 +561,10 @@ def find_rip(track: Path) -> Rip:
     # 3. The ripper's log.
     for log in _side_files(folder, ".log"):
         try:
-            text = cuesheet.decode(log.read_bytes()[:1 << 20])
+            if log.stat().st_size > LOG_MAX:   # not a rip log: those are a few kilobytes
+                continue
+            with log.open("rb") as file:
+                text = cuesheet.decode(file.read(LOG_READ))
         except OSError:
             continue
         for toc in tocs_from_log(text, source=f"the rip log ({_where(log, folder)})"):
@@ -500,13 +572,22 @@ def find_rip(track: Path) -> Rip:
                 rip = accept(fit(toc, files, lengths))
                 if rip:
                     return rip
-    # 4. A .cue sheet.
+    # 4. A .cue sheet (not one written for another disc's files in the same folder).
+    def stems(paths):
+        return {Path(p.name.lower()).stem for p in paths}
+
+    elsewhere = stems(other_discs + skipped) - stems(files)
     for cue in _side_files(folder, ".cue"):
         try:
             sheet = cuesheet.read(cue)
         except OSError:
             continue
-        rip = accept(rip_from_cue(sheet, files, lengths, f"the cue sheet ({_where(cue, folder)})"))
+        source = f"the cue sheet ({_where(cue, folder)})"
+        named = {Path(cuesheet._base(name)).stem for name in sheet.files}
+        if named & elsewhere:
+            tried.append(f"{source} is for other files in the folder")
+            continue
+        rip = accept(rip_from_cue(sheet, files, lengths, source))
         if rip:
             return rip
     # 5. The files' own lengths.
@@ -515,10 +596,34 @@ def find_rip(track: Path) -> Rip:
         reasons = "; ".join(tried)
         raise NotARip("no track layout found, and the files aren't cut on CD sectors, so it can't be "
                       "rebuilt" + (f" ({reasons})" if reasons else ""))
+    if toc.leadout > CD_MAX_SECTORS:
+        raise NotARip(f"no track layout found, and the files last {toc.leadout / 75 / 60:.0f} minutes, more "
+                      "than a CD can hold (80 minutes), so they can't be one disc; if the folder holds "
+                      "several discs, tag each file's disc number (DISCNUMBER) or put each disc in its "
+                      "own folder")
     rip = accept(fit(toc, files, lengths))
     if rip is None:
         raise NotARip("; ".join(tried))
     return rip
+
+
+def _read_info(path: Path):
+    try:
+        return audiofile.info(path)
+    except (sf.LibsndfileError, OSError, RuntimeError) as error:
+        raise NotARip(f"couldn't read {path.name}") from error
+
+
+def _not_cd_audio(path: Path, info) -> str:
+    """Why this file isn't an exact copy of CD audio, or "" when it is."""
+    if path.suffix.lower() == ".mp3" or info.format == "MP3":
+        return "MP3 files can't be checked: they aren't an exact copy of a CD"
+    if info.samplerate != cuesheet.CD_RATE or info.channels != 2 or info.subtype != "PCM_16":
+        bits = {"PCM_24": 24, "PCM_32": 32, "PCM_16": 16, "FLOAT": 32}.get(info.subtype, 0)
+        return (f"{path.name} isn't CD audio ({bits or '?'}-bit, {info.samplerate / 1000:g} kHz, "
+                f"{info.channels} channel{'s' if info.channels != 1 else ''}); rip checks are for "
+                "CD rips (16-bit, 44.1 kHz, stereo)")
+    return ""
 
 
 def _cdtoc_tag(path: Path) -> str:
@@ -614,16 +719,37 @@ def checksums(rip: Rip, cancel: threading.Event | None = None, progress=lambda p
 
 
 # -- the databases -------------------------------------------------------------------
-def fetch(url: str, prefs: dict | None) -> bytes | None:
+class Cancelled(Exception):
+    """The check was cancelled (its window closed) while waiting for an answer."""
+
+
+def fetch(url: str, prefs: dict | None, cancel: threading.Event | None = None) -> bytes | None:
     """GET one address. None = not found (404). Refuses unless network access is allowed —
-    checked here, at the one place this program goes online, not just in the window."""
+    checked here, at the one place this program goes online, not just in the window. Gives up
+    after DEADLINE seconds (TimeoutError) and stops when `cancel` is set (Cancelled), checked
+    between pieces of the answer."""
     if not network_allowed(prefs):
         raise NetworkOff("network access is off (Settings → Network)")
+    if cancel is not None and cancel.is_set():
+        raise Cancelled()
     request = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME.replace(' ', '-')}/{__version__}"})
+    deadline = time.monotonic() + DEADLINE
     try:
         with _urlopen(request, timeout=TIMEOUT) as response:
-            return response.read(MAX_BYTES)
+            read = getattr(response, "read1", response.read)   # read1: whatever has arrived
+            data = bytearray()
+            while len(data) < MAX_BYTES:
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"no complete answer in {DEADLINE} s")
+                piece = read(min(CHUNK, MAX_BYTES - len(data)))
+                if not piece:
+                    break
+                data += piece
+            return bytes(data)
     except urllib.error.HTTPError as error:
+        error.close()   # its connection, now rather than whenever it's garbage-collected
         if error.code == 404:
             return None
         raise
@@ -675,9 +801,12 @@ def parse_ctdb(data: bytes) -> list[CtdbEntry]:
             continue
         try:
             crcs = element.get("trackcrcs")
+            confidence = int(element.get("confidence", "0"))
+            if not 0 <= confidence <= MAX_CONFIDENCE:   # not a count of rips: a broken or forged answer
+                continue
             entries.append(CtdbEntry(
                 id=element.get("id", ""), crc32=int(element.get("crc32", "0"), 16),
-                confidence=int(element.get("confidence", "0")), toc=element.get("toc", ""),
+                confidence=confidence, toc=element.get("toc", ""),
                 trackcrcs=[int(c, 16) for c in crcs.split()] if crcs else None))
         except ValueError:
             continue
@@ -753,6 +882,11 @@ def compare_ctdb(sums: Checksums, entries: list[CtdbEntry], toc: Toc, tracks: li
 def _reason(error: Exception) -> str:
     if isinstance(error, urllib.error.HTTPError):
         return f"the server answered {error.code}"
+    if isinstance(error, ssl.SSLCertVerificationError) or isinstance(
+            getattr(error, "reason", None), ssl.SSLCertVerificationError):
+        return ("couldn't confirm the server is the real one: its certificate couldn't be checked on "
+                "this computer (Windows may be missing the root certificate it needs, or something on "
+                "the network is intercepting secure connections)")
     if isinstance(error, urllib.error.URLError):
         return f"couldn't connect ({error.reason})"
     if isinstance(error, TimeoutError):
@@ -762,31 +896,45 @@ def _reason(error: Exception) -> str:
     return str(error) or type(error).__name__
 
 
-def look_up(rip: Rip, sums: Checksums, prefs: dict | None) -> Verification:
-    """Ask both databases (two requests: the AccurateRip .bin and one CTDB lookup) and compare."""
+def _pressings_for(toc: Toc, data: bytes) -> list[ArPressing]:
+    """The AccurateRip answer's chunks for this disc. Every chunk of a real answer repeats the
+    disc's IDs and track count; an answer with none of those (a proxy's or portal's page that
+    happened to parse) is refused rather than read as "no track matches"."""
+    wanted = toc.accuraterip_ids()
+    pressings = [p for p in parse_accuraterip(data)
+                 if (p.id1, p.id2, p.cddb) == wanted and len(p.tracks) == toc.audio_count]
+    if not pressings:
+        raise ValueError("the answer isn't about this disc")
+    return pressings
+
+
+def look_up(rip: Rip, sums: Checksums, prefs: dict | None,
+            cancel: threading.Event | None = None) -> Verification:
+    """Ask both databases (two requests: the AccurateRip .bin and one CTDB lookup) and compare.
+    Raises Cancelled if `cancel` is set on the way."""
     result = Verification(rip=rip, sums=sums,
                           tracks=[TrackCheck(number=k + 1) for k in range(rip.toc.audio_count)])
     try:
-        data = fetch(rip.toc.accuraterip_url(), prefs)
+        data = fetch(rip.toc.accuraterip_url(), prefs, cancel)
         if data is None:
             result.ar_status = "not found"
         else:
-            pressings = parse_accuraterip(data)
+            pressings = _pressings_for(rip.toc, data)
             result.ar_status, result.ar_pressings = "found", len(pressings)
             compare_accuraterip(sums, pressings, result.tracks)
-    except NetworkOff:
+    except (NetworkOff, Cancelled):
         raise
     except Exception as error:  # noqa: BLE001 — any failure is reported, never a crash
         result.ar_status, result.ar_error = "error", _reason(error)
     try:
-        data = fetch(rip.toc.ctdb_url(), prefs)
+        data = fetch(rip.toc.ctdb_url(), prefs, cancel)
         entries = parse_ctdb(data) if data else []
         if not entries:
             result.ctdb_status = "not found"
         else:
             result.ctdb_status = "found"
             result.ctdb_total, result.ctdb_disc = compare_ctdb(sums, entries, rip.toc, result.tracks)
-    except NetworkOff:
+    except (NetworkOff, Cancelled):
         raise
     except Exception as error:  # noqa: BLE001
         result.ctdb_status, result.ctdb_error = "error", _reason(error)
@@ -808,7 +956,10 @@ def verify(track: Path, prefs: dict | None, cancel: threading.Event | None = Non
         return Verification(problem=f"couldn't read the files ({error})")
     if sums is None:
         return None
-    return look_up(rip, sums, prefs)
+    try:
+        return look_up(rip, sums, prefs, cancel)
+    except Cancelled:
+        return None
 
 
 # -- wording ---------------------------------------------------------------------------
@@ -879,6 +1030,10 @@ def describe(v: Verification) -> list[tuple[str, str, str]]:
         rows.append(("CUETools DB", "Not in the CUETools database (nothing to compare with)", "plain"))
     elif v.ctdb_status == "error":
         rows.append(("CUETools DB", f"Couldn't check: {v.ctdb_error}", "warn"))
+    if not toc.certain and "not found" in (v.ar_status, v.ctdb_status):
+        rows.append(("", "Note: the layout was rebuilt from the files' lengths. If it isn't the disc's "
+                     "real one (a hidden gap before track 1, a data track, or files from more than one "
+                     "disc), the disc is looked up under the wrong ID and isn't found", "plain"))
     # Per track, only when something didn't match everywhere it could
     found_ar, found_ct = v.ar_status == "found", v.ctdb_status == "found"
     if (found_ar and any(not t.ar_confidence for t in tracks)) or (found_ct and any(not t.ctdb_confidence for t in tracks)):
@@ -892,5 +1047,6 @@ def describe(v: Verification) -> list[tuple[str, str, str]]:
             parts.append(f"{t.number}: {' '.join(bits)}")
         rows.append(("Per track", " · ".join(parts), "plain"))
     rows.append(("Disc ID", f"AccurateRip {toc.accuraterip_id()} · CTDB {toc.ctdb_tocid()}", "plain"))
-    rows.append(("", "Compared at this rip's own offset; only the disc's IDs and track layout were sent", "muted"))
+    rows.append(("", "Compared at this rip's own offset; only the disc's IDs and track layout were sent "
+                 "(to the CUETools DB unencrypted, as CUETools itself sends them)", "muted"))
     return rows
