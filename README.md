@@ -34,7 +34,11 @@ git clone https://github.com/digitalgreenhouse-au/ironbark.git
 cd ironbark
 uv run ironbark                          # opens your last album, or lets you choose one
 uv run ironbark "D:\Music\Some Album"    # or open a folder directly
+uv run ironbark "D:\Music\Song.flac"     # a file plays at once (playlists and CUE sheets too)
 ```
+
+Only one Ironbark runs at a time: starting it again, or opening files with it, hands them to the one
+already open and brings it to the front.
 
 Run the tests with `uv run pytest`. `uv run ironbark --self-check` checks that a copy works
 (sound libraries, icons, the main window) without playing anything or saving anything.
@@ -50,7 +54,8 @@ needed on the PC it's installed on), runs the packaged `Ironbark.exe --self-chec
 `Ironbark-Setup-X.Y.Z.exe` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) (if installed),
 a portable zip and `SHA256SUMS.txt`, all in `dist\windows\`. The installer installs for the
 current user only (no administrator prompt), into `%LOCALAPPDATA%\Programs\Ironbark`; uninstalling
-keeps your settings unless you choose to remove them. The builds are not yet code-signed, so
+keeps your settings unless you choose to remove them. An optional, unticked task adds Ironbark to
+Explorer's *Open with* list for music files, playlists and CUE sheets (it never becomes the default). The builds are not yet code-signed, so
 Windows SmartScreen warns about an unknown publisher.
 
 ## Features
@@ -146,11 +151,19 @@ The measuring windows are listed in the table above.
 
 ## Privacy
 
-Ironbark doesn't collect or send anything about you or your music. The only feature that uses the
-internet is **rip verification**, which is off by default; when you switch it on and press
-*Verify rip online*, it sends only the disc's IDs and track layout to AccurateRip and CUETools DB.
-Settings, playlists and the library index are kept on your computer (on Windows, in
-`%APPDATA%\Ironbark`).
+Ironbark doesn't collect or send anything about you or your music. Nothing uses the internet until
+you switch on Settings → Network → *Allow network access*. Then only two features can:
+
+- **Rip verification**: when you press *Verify rip online*, it sends only the disc's IDs and track
+  layout to AccurateRip and CUETools DB.
+- **Check for updates** (its own switch, also off by default): once a day it reads one small file
+  from digitalgreenhouse.com.au saying what the latest version is. Nothing about you is sent, and
+  nothing is downloaded or installed: a newer version is only mentioned in the status line.
+
+Settings, playlists, the library index and the logs are kept on your computer (on Windows, in
+`%APPDATA%\Ironbark`). If something goes wrong, Settings → *Save diagnostics…* makes a zip you can
+choose to attach to a problem report (versions, sound outputs, logs and settings, with folder names
+left out); it is never sent automatically.
 
 ## Feedback
 

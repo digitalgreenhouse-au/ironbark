@@ -10,16 +10,22 @@
 - Performance benchmarks are marked `perf` and only run with `--perf`
   (`uv run pytest -q -p no:cacheprovider --perf -m perf`): they build big synthetic libraries
   and take a while.
+- Every test runs as if it were the only copy of the player: nothing a test does can show a
+  Windows message box, reach a player that's really running, or leave the log or the cycle
+  collector set up for the next test.
 - `tk_thread_rule`: a test using it fails if any thread started during the test calls into
   tkinter (a Tk call off Tk's own thread can abort the program): the list of (thread, what) it
   caught, checked empty at the end.
 """
 from __future__ import annotations
 
+import gc
 import itertools
+import logging
 import os
 import sys
 import threading
+import uuid
 
 import pytest
 
@@ -79,6 +85,23 @@ def pytest_collection_modifyitems(config, items):
 def _private_cache_folder(monkeypatch, tmp_path_factory):
     folder = tmp_path_factory.getbasetemp() / "cache" / str(next(_numbers))
     monkeypatch.setattr(settings, "_cache_base", lambda: folder)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_app_platform(monkeypatch):
+    from ironbark import crash, instance, logs
+
+    key = f"IronbarkTest-{uuid.uuid4().hex[:12]}"   # a mutex / pipe of this test's own
+    monkeypatch.setattr(instance, "default_key", lambda: key)
+    monkeypatch.setattr(crash, "native_box", lambda title, text: crash.CLOSE)
+    monkeypatch.setattr(crash, "tell_native", lambda *args, **kwargs: None)
+    crash.reset()
+    yield
+    crash.reset()
+    logs.shutdown()
+    logging.getLogger(logs.PACKAGE_LOGGER).setLevel(logging.NOTSET)
+    if not gc.isenabled():   # (a window left open by a test keeps it off)
+        gc.enable()
 
 
 @pytest.fixture

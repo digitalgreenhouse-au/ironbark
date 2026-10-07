@@ -8,11 +8,16 @@ be understood at all is set aside as `settings.json.damaged-<date-time>` and the
 What the player can always make again (the library database) lives apart from the settings, in
 `cache_folder()`: on Windows that's the local, non-roaming AppData folder, so it never travels
 with a roaming profile or sits on a network share.
+
+The file says which format it's in (`settings_version`). One from an older version of the player is
+brought up to date step by step at load (MIGRATIONS); one written by a *newer* version is copied
+aside first (`settings.json.v<N>.bak`), because this version will save over it in its own format.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import shutil
@@ -23,7 +28,14 @@ from pathlib import Path
 
 from . import APP_NAME, OLD_APP_NAME
 
+log = logging.getLogger(__name__)
+
+# The settings file's format. Raise it, with a step in MIGRATIONS, whenever a setting changes its
+# meaning or shape (renamed, split, a different kind of value): files from before are converted.
+SETTINGS_VERSION = 1
+
 DEFAULTS = {
+    "settings_version": SETTINGS_VERSION,
     "last_folder": "",
     "last_album_only": False,  # last folder was opened from the Library (just that album)
     "last_mode": "",       # "folder", "album" (from the Library) or "library" (Load all)
@@ -72,7 +84,10 @@ DEFAULTS = {
     "repeat": "off",             # "off", "all" (the album / playlist) or "one" (the same song)
     "experiments": None,         # Settings → Experimental switches: {key: bool} (see experiments.py)
     "allow_network": False,      # Settings → Network: rip verification may look up checksums online
+    "check_updates": False,      # Settings → Network: once a day, ask whether a newer version is out (updates.py)
+    "update_checked": 0.0,       # when that was last asked (seconds since 1970; 0 = never)
     "media_controls": True,      # Settings → Window: media keys, Windows' media panel, taskbar buttons
+    "detailed_logging": False,   # Settings → Window: the player's own notes in app.log too, not just problems
     "library_view": "albums",    # the Library's browse view: albums/artists/genres/years/composers/recent
     "track_columns": [],         # optional track-list columns on show: "artist", "album"
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
@@ -192,7 +207,8 @@ def _point_paths_at(path: Path, old: Path, new: Path) -> None:
 
 
 def load() -> dict:
-    """The saved settings over the defaults (a bad file: see the module notes)."""
+    """The saved settings over the defaults (a bad file, or one from another version: see the
+    module notes)."""
     path = settings_path()
     data = dict(DEFAULTS)
     try:
@@ -204,7 +220,7 @@ def load() -> dict:
     else:
         _keep_backup(path, text)
     if saved is not None:
-        data.update(_checked(saved))
+        data.update(_checked(_migrated(saved, path)))
     if not data["library_folders"] and data["library_folder"]:
         data["library_folders"] = [data["library_folder"]]   # (saved before there could be several)
     return data
@@ -281,6 +297,57 @@ def _recover(path: Path) -> dict | None:
                + ("The last good copy is in use." if saved is not None else "The player started with its "
                                                                              "standard settings."))
     return saved
+
+
+# -- the file's format ---------------------------------------------------------------------------------
+def _to_1(saved: dict) -> dict:
+    """Format 1, the first numbered one: the same settings as before; only the number is new."""
+    return saved
+
+
+# {format: the step from it to the next}. A step takes the saved values (a dict of its own) and
+# returns them in the next format; it runs on files straight from disk, so it must cope with values
+# of any kind (they're checked against DEFAULTS afterwards).
+MIGRATIONS = {0: _to_1}
+
+
+def _version_of(saved: dict) -> int:
+    version = saved.get("settings_version", 0)
+    return version if isinstance(version, int) and not isinstance(version, bool) and version >= 0 else 0
+
+
+def _migrated(saved: dict, path: Path) -> dict:
+    """The saved values in this version's format. A file from a newer version is copied aside first
+    (it's about to be saved over in this version's format); its settings this version knows are used
+    as they are, and the ones it doesn't are kept."""
+    global problem
+    version = _version_of(saved)
+    if version > SETTINGS_VERSION:
+        kept = _keep_newer_copy(path, version)
+        if kept is not None and not problem:
+            problem = (f"These settings were saved by a newer version of {APP_NAME}. A copy was kept as "
+                       f"{kept.name} before this version saves over them.")
+    while version < SETTINGS_VERSION:
+        step = MIGRATIONS.get(version)
+        if step is not None:
+            try:
+                saved = step(dict(saved))
+            except Exception:  # noqa: BLE001 — a step that fails leaves the values as they were
+                log.exception("settings: converting from format %d failed", version)
+                break
+        version += 1
+    return {**saved, "settings_version": SETTINGS_VERSION}
+
+
+def _keep_newer_copy(path: Path, version: int) -> Path | None:
+    """Copy a newer version's settings file aside (settings.json.v<N>.bak, the latest such copy)."""
+    copy = path.with_name(f"{path.name}.v{version}.bak")
+    try:
+        write_file(copy, path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        log.warning("settings: couldn't keep a copy of a newer version's settings", exc_info=True)
+        return None
+    return copy
 
 
 # -- the kind of value each setting holds --------------------------------------------------------------

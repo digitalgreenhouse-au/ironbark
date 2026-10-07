@@ -31,11 +31,30 @@ def tell(text: str) -> None:
     ctypes.WinDLL("user32").MessageBoxW(None, text, "Ironbark", 0x10)   # MB_ICONERROR
 
 
+def check_folder(folder: str) -> None:
+    """The player loads its sound libraries only once it knows it will open a window (a launch that
+    hands its files to the copy already open never does), and then a failure is shown as a general
+    "couldn't start". So the deepest of them is loaded here first: a folder too deep for Windows is
+    named plainly, whichever launch meets it."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    try:
+        ctypes.WinDLL(os.path.join(folder, DEEPEST))
+    except OSError as error:
+        if path_too_long(error, folder):
+            tell(TOO_DEEP.format(folder=folder))
+            sys.exit(1)
+        # (anything else: the player's own start-up reports it, with its details)
+
+
 def run() -> None:
     # A process started by multiprocessing runs its task here and exits, instead of opening a
     # second player. (Does nothing in the program's own process.)
     multiprocessing.freeze_support()
     folder = os.path.dirname(os.path.abspath(sys.executable))
+    check_folder(folder)
     try:
         from ironbark.__main__ import main
     except OSError as error:

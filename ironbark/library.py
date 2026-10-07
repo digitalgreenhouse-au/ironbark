@@ -13,6 +13,7 @@ files uses those instead, so nothing is listed twice.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import re
 import struct
@@ -32,6 +33,8 @@ from .tagio.mp4 import MP4File
 from .tagio.mpeg import MP3File
 from .tagio.ogg import OggOpusFile, OggVorbisFile
 from .tagio.riff import AiffFile, WaveFile
+
+log = logging.getLogger(__name__)
 
 _UNREADABLE = (TagError, OSError, IndexError, struct.error)  # a damaged file: listed with what's known
 
@@ -256,6 +259,7 @@ def read_track(path: Path) -> Track:
         try:
             actual = _FAMILY_BY_FORMAT.get(sf.info(str(path)).format, "")
         except (sf.LibsndfileError, OSError, RuntimeError):
+            log.debug("libsndfile couldn't say what %s holds", path, exc_info=True)
             actual = ""
     family = actual or by_name
     if family == "Ogg":
@@ -285,6 +289,7 @@ def _contents(path: Path) -> tuple[str, bool] | None:
                     return "FLAC", False
                 return ("MP3" if _mpeg_frame(after) else ""), False
     except OSError:
+        log.debug("couldn't read the start of %s", path, exc_info=True)
         return None
     if head.startswith(b"fLaC"):
         return "FLAC", False
@@ -706,6 +711,7 @@ def _sheets_in(folder: Path) -> list[cuesheet.CueSheet]:
         try:
             sheets.append(cuesheet.read(cue))
         except OSError:
+            log.info("couldn't read the CUE sheet %s", cue, exc_info=True)
             continue
     return sheets
 
@@ -904,7 +910,7 @@ def find_albums(root: str | Path) -> list[Album]:
             info = audiofile.info(first_file[path])
             album.sample_rate, album.bits = info.samplerate, _SUBTYPE_BITS.get(info.subtype, (0, False))[0]
         except (sf.LibsndfileError, OSError, RuntimeError):
-            pass
+            log.debug("couldn't read the format of %s", first_file[path], exc_info=True)
         albums.append(album)
 
     # Same folder name in two places (e.g. a backup copy): say where each one lives.
