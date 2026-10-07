@@ -234,7 +234,7 @@ _STATUS = {"playing": STATUS_PLAYING, "paused": STATUS_PAUSED, "stopped": STATUS
 CLSID_TASKBAR_LIST = "{56FDF344-FD6D-11D0-958A-006097C9A090}"
 IID_TASKBAR_LIST3 = "{EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF}"
 THB_ICON, THB_TOOLTIP, THB_FLAGS = 0x2, 0x4, 0x8
-THBF_ENABLED, THBF_DISABLED = 0x0, 0x1
+THBF_ENABLED, THBF_DISABLED, THBF_HIDDEN = 0x0, 0x1, 0x8
 THBN_CLICKED = 0x1800
 WM_COMMAND = 0x0111
 THUMB_BUTTONS = {1: PREVIOUS, 2: TOGGLE, 3: NEXT}   # button id -> command
@@ -419,11 +419,27 @@ def _dll(name: str):
     return _DLLS[name]
 
 
+_APARTMENTS = {0: "single-threaded", 1: "multithreaded", 2: "neutral", 3: "main single-threaded"}  # APTTYPE
+
+
+def _apartment() -> str:
+    """Which COM apartment this thread is in (CoGetApartmentType), for the log."""
+    kind, qualifier = ctypes.c_int(-1), ctypes.c_int(0)
+    try:
+        failed = _dll("ole32").CoGetApartmentType(ctypes.byref(kind), ctypes.byref(qualifier))
+    except (AttributeError, OSError):
+        return "unknown"
+    return "no" if failed else _APARTMENTS.get(kind.value, f"unknown ({kind.value})")
+
+
 class _HString:
     """A WinRT string (HSTRING) for passing in; freed on exit."""
 
     def __init__(self, text: str):
-        self.text = text or ""
+        # A file name can hold half of a UTF-16 pair (Windows allows it), which can't be encoded:
+        # it becomes the replacement character U+FFFD, so the text always reaches Windows and the
+        # length below stays right.
+        self.text = (text or "").encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
         self.handle = ctypes.c_void_p()
 
     def __enter__(self):
@@ -541,6 +557,9 @@ class Smtc:
 
     def show(self, now: NowPlaying, previous: NowPlaying | None, cover: bytes | None):
         if not now.same_song(previous):
+            # The window's controls are one object shared by every instance on it: an earlier
+            # instance that closed late may have switched them off.
+            self.smtc.put_IsEnabled(True)
             self.updater.ClearAll()
             if now.state != "closed":
                 music, music2 = self._music()
@@ -599,7 +618,12 @@ class Smtc:
             self.smtc.put_PlaybackStatus(STATUS_CLOSED)
             self.smtc.put_IsEnabled(False)
         finally:
-            self._thumbnail = None
+            # Let go of every COM object here, on the thread that made them, before it leaves COM.
+            # The handler points back at this object (on_button), so without breaking that loop
+            # they'd wait for the garbage collector, on whichever thread it happens to run.
+            if self._handler is not None:
+                self._handler.on_button = lambda button: None
+            self._handler = self._streams = self._thumbnail = None
             self.updater = self.smtc = None
 
 
@@ -635,10 +659,19 @@ class ThumbBar:
         return array
 
     def add(self, playing: bool, enabled: bool) -> bool:
-        """Add the buttons (once per taskbar button; again after Explorer restarts)."""
+        """Put the buttons up (once per taskbar button; again after Explorer restarts). Windows
+        lets a window add its buttons only once and never removes them, so when they're already
+        there (Media controls switched off and on again) adding may fail or be ignored: the
+        update that follows shows them either way."""
+        hwnd = ctypes.c_void_p(self.hwnd)
+        buttons = self._buttons(playing, enabled)
         try:
-            self.taskbar.ThumbBarAddButtons(ctypes.c_void_p(self.hwnd), 3, self._buttons(playing, enabled))
-        except Exception as exc:  # COMError / OSError: the taskbar button may not exist yet
+            self.taskbar.ThumbBarAddButtons(hwnd, 3, buttons)
+        except Exception as exc:  # COMError / OSError: already there, or no taskbar button yet
+            log.info("taskbar buttons not added (%s); showing the existing ones", exc)
+        try:
+            self.taskbar.ThumbBarUpdateButtons(hwnd, 3, buttons)
+        except Exception as exc:  # the taskbar button may not exist yet
             log.info("taskbar buttons not added yet: %s", exc)
             return False
         self.added, self.playing = True, (playing, enabled)
@@ -651,10 +684,21 @@ class ThumbBar:
         self.playing = (playing, enabled)
 
     def close(self):
-        for icon in self.icons.values():
-            _dll("user32").DestroyIcon(ctypes.c_void_p(icon))
-        self.icons = {}
-        self.taskbar = None
+        """Hide the buttons (Windows keeps a window's buttons until the window closes, so they'd
+        stay under the thumbnail doing nothing), then free their icons."""
+        try:
+            if self.added and self.taskbar is not None:
+                w = _winrt()
+                hidden = (w.THUMBBUTTON * 3)()
+                for ident, slot in enumerate(hidden, start=1):
+                    slot.dwMask, slot.iId, slot.dwFlags = THB_FLAGS, ident, THBF_HIDDEN
+                self.taskbar.ThumbBarUpdateButtons(ctypes.c_void_p(self.hwnd), 3, hidden)
+        finally:
+            for icon in self.icons.values():
+                _dll("user32").DestroyIcon(ctypes.c_void_p(icon))
+            self.icons = {}
+            self.taskbar = None
+            self.added = False
 
 
 def _light_taskbar() -> bool:
@@ -773,8 +817,9 @@ class KeyboardHook:
     def __init__(self, on_command: Callable[[str], None]):
         self.on_command = on_command
         self.thread_id = 0
-        self.ok = threading.Event()
+        self.ok = threading.Event()        # set once the hook is in place (or failed)
         self.failed = False
+        self._closing = threading.Event()
         self._thread = threading.Thread(target=self._run, name="media-keys-hook", daemon=True)
         self._thread.start()
         self.ok.wait(2.0)
@@ -819,14 +864,18 @@ class KeyboardHook:
             self.ok.set()
             return
         self.ok.set()
-        message = wt.MSG()
-        while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:  # until WM_QUIT
-            user32.TranslateMessage(ctypes.byref(message))
-            user32.DispatchMessageW(ctypes.byref(message))
+        if not self._closing.is_set():   # (closed while starting: the hook comes straight off)
+            message = wt.MSG()
+            while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:  # until WM_QUIT
+                user32.TranslateMessage(ctypes.byref(message))
+                user32.DispatchMessageW(ctypes.byref(message))
         user32.UnhookWindowsHookEx(hook)
 
     def close(self):
-        if self.thread_id and not self.failed:
+        """Take the hook off. Safe while the hook thread is still starting: either it hears
+        WM_QUIT once it's running, or it sees `_closing` as soon as the hook is in."""
+        self._closing.set()
+        if self.ok.wait(2.0) and self.thread_id and not self.failed:
             _dll("user32").PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0)
             self._thread.join(1.0)
 
@@ -834,9 +883,24 @@ class KeyboardHook:
 class WindowsMedia:
     """The Windows backend for MediaKeys: SMTC + taskbar buttons on a worker thread, the window
     hook on the Tk thread, and the keyboard hook if SMTC isn't available. Create and close it on
-    the Tk thread; `show` may be called from there too (it only queues)."""
+    the Tk thread; `show` may be called from there too (it only queues).
+
+    Windows hands every instance for one window the same media-controls object, so a new
+    instance's worker waits for the previous one's to finish closing (Media controls switched
+    off and quickly on again) — otherwise the old worker's late close would switch the new one
+    off."""
+
+    CLOSE_WAIT = 2.0     # seconds close() waits for the worker (it finishes on its own after that)
+    FOLLOW_WAIT = 30.0   # seconds a new worker waits for the window's previous one
+
+    _workers: dict[int, threading.Thread] = {}   # hwnd -> the latest worker for that window
 
     def __init__(self, hub: MediaKeys, hwnd: int, keyboard_fallback: bool = True, use_hook=True):
+        # comtypes sets up COM for whichever thread imports it first, as a single-threaded
+        # apartment. Importing it here, on the Tk thread, keeps that off the worker, which
+        # needs the multithreaded one.
+        import comtypes  # noqa: F401
+
         self.hub, self.hwnd = hub, hwnd
         self.keyboard_fallback = keyboard_fallback
         self.smtc_ok = threading.Event()
@@ -854,18 +918,20 @@ class WindowsMedia:
                 self.problems.append(f"taskbar buttons: {exc}")
                 log.warning("media controls: window hook not installed (%s); no taskbar buttons", exc)
         self._thread = threading.Thread(target=self._run, name="media-controls", daemon=True)
+        self._before = WindowsMedia._workers.get(hwnd)
+        WindowsMedia._workers[hwnd] = self._thread
         self._thread.start()
 
     def show(self, now: NowPlaying):
         self._jobs.put(("show", now))
 
     def close(self):
+        """The worker closes everything it opened (the keyboard hook too), even when that takes
+        longer than this waits."""
         if self.window_hook is not None:
             self.window_hook.remove()
         self._jobs.put(("close", None))
-        self._thread.join(2.0)
-        if self.keyboard is not None:
-            self.keyboard.close()
+        self._thread.join(self.CLOSE_WAIT)
 
     def read_back(self, timeout: float = 2.0) -> dict | None:
         """Ask the worker what Windows' media controls hold now (tests / live check)."""
@@ -880,10 +946,18 @@ class WindowsMedia:
     def _run(self):
         import comtypes
 
+        if self._before is not None:
+            self._before.join(self.FOLLOW_WAIT)
+            if self._before.is_alive():
+                log.warning("media controls: the previous instance is still closing; starting anyway")
+            self._before = None
         try:
             comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
-        except OSError:
-            pass
+            joined = True
+        except OSError as exc:
+            joined = False
+            log.warning("media controls: couldn't join the multithreaded COM apartment (%s); this thread "
+                        "is in the %s apartment", exc, _apartment())
         try:
             try:
                 self.smtc = Smtc(self.hwnd, self.hub.press)
@@ -907,20 +981,22 @@ class WindowsMedia:
             log.exception("media controls: worker stopped")
         finally:
             self.started.set()
-            for part in (self.smtc, self.thumbs):
+            for part in (self.smtc, self.thumbs, self.keyboard):
                 if part is not None:
                     try:
                         part.close()
                     except Exception:
                         log.exception("media controls: closing failed")
-            self.smtc = self.thumbs = None
-            try:
-                comtypes.CoUninitialize()
-            except OSError:
-                pass
+            self.smtc = self.thumbs = self.keyboard = None
+            if joined:
+                try:
+                    comtypes.CoUninitialize()
+                except OSError:
+                    pass
 
     def _serve(self):
-        shown: NowPlaying | None = None
+        shown: NowPlaying | None = None       # what Windows' media panel holds now
+        latest: NowPlaying | None = None      # what it was last asked to show
         cover_for: Path | None = None
         cover: bytes | None = None
         while True:
@@ -935,23 +1011,29 @@ class WindowsMedia:
                 continue
             if kind == "taskbar":
                 if self.thumbs is not None:
-                    playing, enabled = shown is not None and shown.state == "playing", \
-                        shown is not None and shown.state != "closed"
+                    playing, enabled = latest is not None and latest.state == "playing", \
+                        latest is not None and latest.state != "closed"
                     self.thumbs.add(playing, enabled)
                 continue
             now: NowPlaying = value
-            try:
-                if self.smtc is not None:
+            latest = now
+            if self.smtc is not None:
+                try:
                     if now.path != cover_for:
                         cover_for, cover = now.path, cover_png(now.path)
                     self.smtc.show(now, shown, cover)
-                if self.thumbs is not None:
+                    shown = now
+                except Exception:
+                    # Not shown: the next change sends this song's details again in full.
+                    shown = None
+                    log.exception("media controls: update failed")
+            if self.thumbs is not None:
+                try:
                     if not self.thumbs.added:
                         self.thumbs.add(now.state == "playing", now.state != "closed")
                     self.thumbs.update(now.state == "playing", now.state != "closed")
-            except Exception:
-                log.exception("media controls: update failed")
-            shown = now
+                except Exception:
+                    log.exception("media controls: taskbar buttons update failed")
 
 
 def start_windows(hub: MediaKeys, hwnd: int) -> WindowsMedia | None:

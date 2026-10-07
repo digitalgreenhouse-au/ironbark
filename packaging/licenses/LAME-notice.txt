@@ -1,0 +1,51 @@
+LAME 3.100 (libmp3lame) - built into _internal\_soundfile_data\libsndfile_x64.dll in Ironbark's
+Windows build (libsndfile, bundled with soundfile, includes it for MP3 encoding; Ironbark itself
+only plays MP3s). Licence: GNU Library General Public License version 2, or (at your option) any
+later version, as the notice below from LAME's library source says. The GNU Lesser General Public
+License version 2.1, a later version of it, is in libsndfile-COPYING.txt in this folder; the
+version 2 text is at https://www.gnu.org/licenses/old-licenses/lgpl-2.0.txt. How to get the source
+code is in THIRD_PARTY_LICENSES.md.
+Sources (copied 07/10/2026): LAME 3.100's README and libmp3lame/lame.c, as published at
+https://sources.debian.org/src/lame/3.100-6/README/ and
+https://sources.debian.org/src/lame/3.100-6/libmp3lame/lame.c/ (LAME's own site:
+https://lame.sourceforge.io)
+====================================================================================================
+
+From README:
+
+                          LAME 3.xx
+                   LAME Ain't an MP3 Encoder
+                      http://lame.sf.net
+                          May 2011
+
+Originally developed by Mike Cheng (www.uq.net.au/~zzmcheng) and was
+latter developed by Mark Taylor (www.mp3dev.org). Currently maintained
+by The LAME Project.
+
+This code is distributed under the GNU LIBRARY GENERAL PUBLIC LICENSE
+(LGPL, see www.gnu.org), version 2.
+
+From libmp3lame/lame.c:
+
+ *      LAME MP3 encoding engine
+ *
+ *      Copyright (c) 1999-2000 Mark Taylor
+ *      Copyright (c) 2000-2005 Takehiro Tominaga
+ *      Copyright (c) 2000-2017 Robert Hegemann
+ *      Copyright (c) 2000-2005 Gabriel Bouvigne
+ *      Copyright (c) 2000-2004 Alexander Leidinger
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Library General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Library General Public License for more details.
+ *
+ * You should have received a copy of the GNU Library General Public
+ * License along with this library; if not, write to the
+ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
+ * Boston, MA 02111-1307, USA.

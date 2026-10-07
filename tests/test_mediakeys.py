@@ -4,12 +4,17 @@ test window. The full SMTC round trip with Windows (it shows up in Windows' medi
 moment) only runs when DG_LIVE_WINDOWS=1 is set — it was run by hand for 0.13.0."""
 
 import ctypes
+import dataclasses
 import gc
 import os
+import queue
+import subprocess
 import sys
+import textwrap
 import threading
 import time
 import tkinter as tk
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -230,6 +235,172 @@ def test_keyboard_hook_starts_and_stops_cleanly():
     assert not hook.failed and hook.thread_id
     hook.close()
     assert not hook._thread.is_alive()
+
+
+# -- switching off and on, and things going wrong (stand-ins for Windows' objects) ------------
+class FakeTaskbar:
+    """Stands in for ITaskbarList3: records what the buttons are set to."""
+
+    def __init__(self, add_fails=False):
+        self.calls, self.add_fails = [], add_fails
+
+    def ThumbBarAddButtons(self, hwnd, count, buttons):
+        self.calls.append(("add", [(b.iId, b.dwMask, b.dwFlags) for b in buttons]))
+        if self.add_fails:   # Windows lets a window add its buttons only once
+            raise OSError("the buttons were added before")
+
+    def ThumbBarUpdateButtons(self, hwnd, count, buttons):
+        self.calls.append(("update", [(b.iId, b.dwMask, b.dwFlags) for b in buttons]))
+
+
+def thumb_bar(taskbar):
+    bar = object.__new__(mediakeys.ThumbBar)   # without CoCreateInstance: the taskbar is a stand-in
+    bar.hwnd, bar.taskbar, bar.added, bar.playing = 0, taskbar, False, None
+    bar.icons = {name: mediakeys._hicon(mediakeys.button_icon(name, 16))
+                 for name in ("previous", "play", "pause", "next")}
+    return bar
+
+
+@windows
+def test_taskbar_buttons_hide_when_switched_off_and_come_back_working():
+    first = FakeTaskbar()
+    bar = thumb_bar(first)
+    assert bar.add(True, True)
+    bar.close()   # Media controls off: the buttons can't be removed from the window, so they hide
+    kind, slots = first.calls[-1]
+    assert kind == "update" and [s[0] for s in slots] == [1, 2, 3]
+    assert all(mask == mediakeys.THB_FLAGS and flags == mediakeys.THBF_HIDDEN for _, mask, flags in slots)
+    assert bar.icons == {} and bar.taskbar is None and not bar.added
+    again = FakeTaskbar(add_fails=True)   # switched on again: the window already has its buttons
+    bar = thumb_bar(again)
+    assert bar.add(False, True) and bar.added
+    assert again.calls[-1][0] == "update" and all(flags == mediakeys.THBF_ENABLED for *_, flags in again.calls[-1][1])
+    bar.update(True, True)   # and play / pause follows the player again
+    assert len(again.calls) == 3 and again.calls[-1][0] == "update"
+    bar.close()
+
+
+@windows
+def test_a_lone_surrogate_in_a_title_still_reaches_windows():
+    # A file named with half of a UTF-16 pair (Windows allows it) gives a title Python can't encode.
+    with mediakeys._HString("bad \udc80 name") as handle:
+        back = mediakeys._winrt().combase.WindowsGetStringRawBuffer(handle, None)
+    assert back == "bad � name"
+
+
+def test_a_failed_update_is_sent_again_in_full():
+    seen = []
+
+    class Flaky:
+        def show(self, now, previous, cover):
+            seen.append(previous)
+            if len(seen) == 1:
+                raise OSError("Windows refused it")
+
+    backend = object.__new__(mediakeys.WindowsMedia)
+    backend.smtc, backend.thumbs, backend._jobs = Flaky(), None, queue.SimpleQueue()
+    song = NowPlaying("playing", title="So Far Away", artist="Dire Straits")
+    for job in (("show", song), ("show", dataclasses.replace(song, state="paused")), ("close", None)):
+        backend._jobs.put(job)
+    backend._serve()
+    assert seen == [None, None]   # the second time Windows is told the whole song, not just "paused"
+
+
+def test_closing_the_media_controls_lets_go_of_everything_at_once():
+    class Anything:
+        def __getattr__(self, name):
+            return lambda *args: None
+
+    smtc = object.__new__(mediakeys.Smtc)   # without Windows: stand-ins for its COM objects
+    smtc.smtc, smtc.updater, smtc._token = Anything(), Anything(), 0
+    smtc._streams, smtc._thumbnail = object(), object()
+    smtc._handler = SimpleNamespace(on_button=smtc._button)   # the handler points back at it
+    smtc.close()
+    assert smtc._handler is None and smtc._streams is None
+    gone = weakref.ref(smtc)
+    gc.disable()
+    try:
+        del smtc
+        assert gone() is None   # freed here and now, not by a later collection on some other thread
+    finally:
+        gc.enable()
+
+
+@windows
+def test_the_worker_takes_the_keyboard_hook_off_even_after_close_stopped_waiting(monkeypatch):
+    taken_off = threading.Event()
+
+    class SlowHook:
+        def __init__(self, on_command):
+            time.sleep(0.3)   # still starting when close() stops waiting
+
+        def close(self):
+            taken_off.set()
+
+    def no_media_controls(hwnd, on_command):
+        raise OSError("no media controls here")
+
+    monkeypatch.setattr(mediakeys, "Smtc", no_media_controls)
+    monkeypatch.setattr(mediakeys, "KeyboardHook", SlowHook)
+    monkeypatch.setattr(mediakeys.WindowsMedia, "CLOSE_WAIT", 0.05)
+    backend = mediakeys.WindowsMedia(MediaKeys(), 0x7001, use_hook=False)
+    backend.close()
+    assert backend._thread.is_alive()   # close() gave up waiting …
+    assert taken_off.wait(5)            # … and the worker still took the hook off when it got there
+    backend._thread.join(5)
+
+
+@windows
+def test_a_new_instance_waits_for_the_windows_previous_one_to_finish_closing(monkeypatch):
+    events = []
+
+    class SlowToClose:
+        def __init__(self, hwnd, on_command):
+            events.append("open")
+
+        def show(self, *args):
+            pass
+
+        def close(self):
+            time.sleep(0.3)
+            events.append("closed")
+
+    monkeypatch.setattr(mediakeys, "Smtc", SlowToClose)
+    monkeypatch.setattr(mediakeys.WindowsMedia, "CLOSE_WAIT", 0.05)
+    first = mediakeys.WindowsMedia(MediaKeys(), 0x7002, keyboard_fallback=False, use_hook=False)
+    assert first.started.wait(5)
+    first.close()   # Media controls off, and straight back on, before the first has finished closing
+    second = mediakeys.WindowsMedia(MediaKeys(), 0x7002, keyboard_fallback=False, use_hook=False)
+    assert second.started.wait(5)
+    second.close()
+    second._thread.join(5)
+    assert events == ["open", "closed", "open", "closed"]   # the old one's close never lands on the new
+
+
+@windows
+def test_the_worker_is_in_the_multithreaded_apartment_even_when_nothing_imported_comtypes_yet():
+    # A fresh process: comtypes sets up COM for whichever thread imports it first.
+    script = textwrap.dedent("""
+        import ctypes, sys
+        from ironbark import mediakeys
+        assert "comtypes" not in sys.modules
+        seen = []
+
+        class Probe:
+            def __init__(self, hwnd, on_command):
+                kind, qualifier = ctypes.c_int(-1), ctypes.c_int(0)
+                ctypes.WinDLL("ole32").CoGetApartmentType(ctypes.byref(kind), ctypes.byref(qualifier))
+                seen.append(kind.value)
+                raise OSError("only looking")
+
+        mediakeys.Smtc = Probe
+        backend = mediakeys.WindowsMedia(mediakeys.MediaKeys(), 0x7003, keyboard_fallback=False, use_hook=False)
+        backend.started.wait(10)
+        backend.close()
+        print(seen[0])
+    """)
+    run = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert run.stdout.strip() == "1", run.stderr   # APTTYPE_MTA
 
 
 @windows

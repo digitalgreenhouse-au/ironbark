@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import sys
 
 import pytest
 
@@ -65,3 +66,30 @@ def test_command_line_option_exits_with_the_checks_result(monkeypatch):
     with pytest.raises(SystemExit):
         main_module.main(["--self-check"])
     assert seen[-1] is None
+
+
+def test_the_pieces_that_fail_quietly_in_the_player_are_checked(tmp_path, monkeypatch):
+    # Windows' audio list, media controls and secure connections are switched off quietly in the
+    # player when they're missing, so only the self-check would notice them gone from a build.
+    assert "root certificates" in selfcheck._check_network()
+    if sys.platform == "win32":
+        assert "pycaw" in selfcheck._check_windows_audio()
+        assert "taskbar buttons" in selfcheck._check_media_controls()
+    monkeypatch.setattr(selfcheck, "_check_window", lambda: "skipped here")
+    report = tmp_path / "report.txt"
+    selfcheck.run(str(report))
+    text = report.read_text(encoding="utf-8")
+    for name in ("Windows audio", "media controls", "secure connections"):
+        assert f"OK    {name}: " in text
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_a_broken_windows_audio_list_fails_the_check(monkeypatch):
+    from ironbark import devices
+
+    def broken():
+        raise OSError("pycaw's COM interfaces didn't load")
+
+    monkeypatch.setattr(devices, "_windows_render_devices", broken)
+    with pytest.raises(OSError, match="didn't load"):
+        selfcheck._check_windows_audio()
