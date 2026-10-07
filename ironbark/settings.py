@@ -1,11 +1,20 @@
-"""Remembers a few things between runs (last folder, volume, window position)."""
+"""Remembers a few things between runs (last folder, volume, window position).
+
+The file is never left half-written (see `write_file`), and a bad one never stops the player
+starting: a value of the wrong kind is dropped on its own (its default stands); a file that can't
+be understood at all is set aside as `settings.json.damaged-<date-time>` and the last good copy,
+`settings.json.bak` (taken each time the settings load cleanly), is used instead.
+"""
 
 from __future__ import annotations
 
 import json
-import shutil
+import math
 import os
+import shutil
 import sys
+import threading
+import time
 from pathlib import Path
 
 from . import APP_NAME, OLD_APP_NAME
@@ -84,21 +93,61 @@ def settings_path() -> Path:
     return _base() / APP_NAME / "settings.json"
 
 
+# What went wrong with the settings file this session ("" = nothing): set when a damaged file
+# was set aside, for the window to mention once.
+problem = ""
+
+
+def write_file(path: Path, text: str, errors: str = "strict") -> None:
+    """Write a text file (UTF-8) so that a crash or a power cut leaves the old file or the new one,
+    never part of one: written beside it under a name no other writer is using, flushed to the
+    disk, then swapped in. Raises OSError, or ValueError for text that can't be encoded."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        with open(temporary, "w", encoding="utf-8", errors=errors) as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def carry_over_old_folder(base: Path | None = None) -> bool:
     """(0.26.0) The player was renamed DG FLAC Player → Ironbark. On the first start under the new
     name, copy the old folder (settings, playlists, library index, tag history, ABX logs, crash
     log) to the new one, and point any paths inside settings.json that led into the old folder at
-    the new one. The old folder is left exactly as it was, as a backup. Returns whether it copied."""
+    the new one. The old folder is left exactly as it was, as a backup. Returns whether it copied.
+    The copy is made under a temporary name and only takes the new name once it's complete; if
+    anything can't be copied, nothing is kept, the player starts with its defaults, and the next
+    start tries again."""
     base = base or _base()
     old, new = base / OLD_APP_NAME, base / APP_NAME
     if new.exists() or not old.is_dir():
         return False
-    shutil.copytree(old, new)
-    path = new / "settings.json"
+    partial = base / f"{APP_NAME}.partial"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        shutil.rmtree(partial, ignore_errors=True)  # what an earlier try left behind
+        shutil.copytree(old, partial)
+        _point_paths_at(partial / "settings.json", old, new)
+        os.replace(partial, new)
+    except OSError:  # (shutil.Error is one: a file that couldn't be copied)
+        shutil.rmtree(partial, ignore_errors=True)
+        return False
+    return True
+
+
+def _point_paths_at(path: Path, old: Path, new: Path) -> None:
+    """Paths inside a settings file that led into the folder `old` now lead into `new`."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return True
+        return
 
     def moved(value):
         if isinstance(value, str):
@@ -111,25 +160,170 @@ def carry_over_old_folder(base: Path | None = None) -> bool:
             return {k: moved(v) for k, v in value.items()}
         return value
 
-    path.write_text(json.dumps(moved(data), indent=2), encoding="utf-8")
-    return True
+    write_file(path, json.dumps(moved(data), indent=2))
 
 
 def load() -> dict:
+    """The saved settings over the defaults (a bad file: see the module notes)."""
+    path = settings_path()
     data = dict(DEFAULTS)
     try:
-        data.update(json.loads(settings_path().read_text(encoding="utf-8")))
-    except (OSError, ValueError):
-        pass
+        saved, text = _read(path)
+    except OSError:
+        return data
+    except ValueError:
+        saved = _recover(path)
+    else:
+        _keep_backup(path, text)
+    if saved is not None:
+        data.update(_checked(saved))
     return data
 
 
 def save(data: dict) -> None:
-    path = settings_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(path)
-    except OSError:
+        write_file(settings_path(), json.dumps(data, indent=2))
+    except (OSError, ValueError):
         pass  # losing preferences is not worth crashing over
+
+
+def _read(path: Path) -> tuple[dict, str]:
+    """A settings file's values and its text. OSError when it can't be read (or isn't there);
+    ValueError when it's damaged: not JSON, or not a JSON object."""
+    text = path.read_text(encoding="utf-8-sig")  # (Notepad may have added a byte-order mark)
+    try:
+        saved = json.loads(text)
+    except RecursionError as error:  # brackets nested thousands deep: damage, not settings
+        raise ValueError("nested too deeply") from error
+    if not isinstance(saved, dict):
+        raise ValueError("not a JSON object")
+    return saved, text
+
+
+def _backup_path(path: Path) -> Path:
+    return path.with_name(path.name + ".bak")
+
+
+def _keep_backup(path: Path, text: str) -> None:
+    """The settings just loaded cleanly: keep them as the last good copy."""
+    backup = _backup_path(path)
+    try:
+        same = backup.read_text(encoding="utf-8") == text
+    except (OSError, ValueError):
+        same = False
+    if not same:
+        try:
+            write_file(backup, text)
+        except (OSError, ValueError):
+            pass
+
+
+def _recover(path: Path) -> dict | None:
+    """A settings file that can't be understood: set it aside under a new name (never written
+    over), and go back to the last good copy if there is one — put back in its place, so the
+    next load (and the next save) starts from it. None when there's no good copy."""
+    global problem
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    aside, n = path.with_name(f"{path.name}.damaged-{stamp}"), 2
+    while aside.exists():
+        aside, n = path.with_name(f"{path.name}.damaged-{stamp}-{n}"), n + 1
+    try:
+        os.replace(path, aside)
+    except OSError:
+        try:
+            shutil.copyfile(path, aside)
+        except OSError:
+            aside = None
+    try:
+        saved, text = _read(_backup_path(path))
+    except (OSError, ValueError):
+        saved = None
+    else:
+        try:
+            write_file(path, text)
+        except (OSError, ValueError):
+            pass
+    kept = f" It was kept as {aside.name}." if aside is not None else ""
+    problem = (f"The settings file was damaged.{kept} "
+               + ("The last good copy is in use." if saved is not None else "The player started with its "
+                                                                             "standard settings."))
+    return saved
+
+
+# -- the kind of value each setting holds --------------------------------------------------------------
+_BAD = object()
+
+
+def _number(value) -> bool:
+    """A finite number (not true / false, which Python also counts as numbers)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # a whole number too big to be a decimal one
+        return False
+
+
+def _same_kind(value, default):
+    """`value` if it's the kind of value `default` is (a whole number does for a decimal one),
+    else _BAD. A setting whose default has no fixed kind is taken as it is."""
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else _BAD
+    if isinstance(default, int):
+        return value if isinstance(value, int) and not isinstance(value, bool) else _BAD
+    if isinstance(default, float):
+        return value if _number(value) else _BAD
+    if isinstance(default, str):
+        return value if isinstance(value, str) else _BAD
+    return value
+
+
+def _tabs(value):
+    """Open tabs: each must say its kind and path as text. A tab that doesn't is dropped on its
+    own; a resume point, search or extras of the wrong kind are dropped from their tab."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return _BAD
+    tabs = []
+    for tab in value:
+        if not (isinstance(tab, dict) and isinstance(tab.get("kind"), str) and isinstance(tab.get("path"), str)):
+            continue
+        tab = dict(tab)
+        if not isinstance(tab.get("query", ""), str):
+            del tab["query"]
+        if not isinstance(tab.get("extras", []), list):
+            del tab["extras"]
+        resume = tab.get("resume")
+        if resume is not None and not (isinstance(resume, dict) and isinstance(resume.get("path", ""), str)
+                                       and _number(resume.get("at", 0))):
+            del tab["resume"]
+        tabs.append(tab)
+    return tabs
+
+
+def _dict_or_none(value):
+    return value if value is None or isinstance(value, dict) else _BAD
+
+
+_CHECKS = {
+    "tabs": _tabs,
+    "experiments": _dict_or_none,
+    "new_music": _dict_or_none,
+    "vu_auto": _dict_or_none,
+    "vu_auto_loudness": _dict_or_none,
+    "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
+}
+
+
+def _checked(saved: dict) -> dict:
+    """The saved values that can be used. One of the wrong kind (a hand edit, a sync tool, another
+    version of the player) is left out, so its default stands; settings this version doesn't know
+    (written by a newer one) are kept as they are."""
+    good = {}
+    for key, value in saved.items():
+        if key in DEFAULTS:
+            value = _CHECKS[key](value) if key in _CHECKS else _same_kind(value, DEFAULTS[key])
+        if value is not _BAD:
+            good[key] = value
+    return good
