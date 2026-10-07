@@ -14,7 +14,8 @@ Settings → Help → "Save diagnostics…" asks where to save it; nothing is se
 Names can say who someone is too ("Sam's AirPods", a playlist named after a person), so in every
 file the sound outputs' names show as "<device 1>", "<device 2>"…, the open tabs' titles as "<tab 1>"…,
 the playlists' names as "<playlist 1>"… and searches as "<search 1>"… — again the same name always
-the same stand-in, so the files still agree with each other.
+the same stand-in, so the files still agree with each other. A network folder's server ("\\\\sams-nas")
+is named on its own in the logs too (the network playback cache's notes), so it shows as "<server 1>"….
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ _PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/]|/(?!/))")
 # Where a path may begin in a log: a drive, or slashes that don't carry on a name (a network share,
 # a path from the root, or one inside quotes, where Python writes every backslash twice: 'C:\\Users').
 _PATH_START = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?=[\\/])|(?<![\w:.~$\\/-])[\\/]+(?=[^\\/\s])")
+# A network share's server: \\server\share (or //server/share).
+_SERVER = re.compile(r"^[\\/]{2}([^\\/]+)[\\/]")
 _SEPARATORS = frozenset("\\/")
 _NOT_IN_NAMES = frozenset('\\/\r\n\t"<>|*?:')   # (and line ends): one part of a path stops at these
 # A path written in a log may also end inside the part that follows it, just before one of these:
@@ -63,8 +66,9 @@ app.log            what {APP_NAME} noted while running (more with Settings > Hel
 
 In the logs, the same paths are replaced, and your home folder shows as <home>. In every file the
 names of your sound outputs show as <device 1>, <device 2>..., your open tabs' titles as <tab 1>...,
-your playlists' names as <playlist 1>... and searches as <search 1>... Music file names a log
-mentions in passing may still show: look through the files before sending if that matters.
+your playlists' names as <playlist 1>..., searches as <search 1>... and network servers as
+<server 1>... Music file names a log mentions in passing may still show: look through the files
+before sending if that matters.
 """
 
 
@@ -81,8 +85,9 @@ def _normal(path: str) -> str:
 class Redactor:
     """Replaces paths with "<folder N>" (numbered in the order first met; the same path, whatever
     its letter case or slashes, always gets the same number), and names that aren't paths — sound
-    outputs, tab titles, playlists, searches — with "<device N>", "<tab N>", "<playlist N>",
-    "<search N>" (`word`; numbered per kind, the same name always the same stand-in)."""
+    outputs, tab titles, playlists, searches, a network folder's server — with "<device N>",
+    "<tab N>", "<playlist N>", "<search N>", "<server N>" (`word`; numbered per kind, the same name
+    always the same stand-in)."""
 
     def __init__(self, home: str | None = None):
         self.names: dict[str, str] = {}   # normalised path (`_normal`) → its stand-in
@@ -98,10 +103,14 @@ class Redactor:
         key = _normal(path)
         if key not in self.names:
             self.names[key] = f"<folder {len(self.names) + 1}>"
+            server = _SERVER.match(path)
+            if server:   # (the logs also name it on its own, in small letters: "sams-nas isn't answering")
+                stand_in = self.word(server.group(1), "server")
+                self.words.setdefault(server.group(1).lower(), stand_in)
         return self.names[key]
 
     def word(self, text: str, kind: str) -> str:
-        """The stand-in for a name of this kind ("device", "tab", "playlist", "search")."""
+        """The stand-in for a name of this kind ("device", "tab", "playlist", "search", "server")."""
         found = self.words.get(text)
         if found is None:
             self._counts[kind] = self._counts.get(kind, 0) + 1

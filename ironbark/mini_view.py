@@ -99,8 +99,8 @@ class MiniView(tk.Frame):
             return RoundIconButton(self, root, name, command, size=theme.ICON_SMALL, diameter=SMALL_BUTTON,
                                    width=SMALL_BUTTON, bg="BG", label=label, **options)
 
-        self.close_button = small("close", on_quit, f"Close ({keys.hint('quit')})", hover="CLOSE_HOVER", pressed="CLOSE_HOVER",
-                                  hover_fg="ON_ACCENT")
+        self.close_button = small("close", on_quit, f"Close ({keys.hint('quit')})", hover="CLOSE_HOVER",
+                                  pressed="CLOSE_HOVER", hover_fg="ON_ACCENT")
         self.close_button.pack(side="right", padx=(0, theme.px(theme.GAP)))
         self.full_button = small("full", on_full, f"Full player ({keys.hint('mini')})")
         self.full_button.pack(side="right", padx=(0, theme.px(theme.GAP_HAIR)))
@@ -117,7 +117,8 @@ class MiniView(tk.Frame):
         self.next_button = RoundIconButton(self, root, "next", on_next, diameter=BUTTON, width=BUTTON, bg="BG",
                                            drawn="next", label=f"Next ({keys.hint('next')})")
         self.next_button.pack(side="right")
-        self.play_button = controls.PlayButton(self, on_play, diameter=PLAY_DIAMETER, label=f"Play / pause ({keys.hint('play')})")
+        self.play_button = controls.PlayButton(self, on_play, diameter=PLAY_DIAMETER,
+                                               label=f"Play / pause ({keys.hint('play')})")
         self.play_button.pack(side="right", padx=max(0, theme.px(theme.GAP_SMALL) - self.play_button.margin))
         self.previous_button = RoundIconButton(self, root, "prev", on_previous, diameter=BUTTON, width=BUTTON,
                                                bg="BG", drawn="prev", label=f"Previous ({keys.hint('previous')})")

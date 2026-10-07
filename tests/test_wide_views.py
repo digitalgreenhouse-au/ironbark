@@ -136,6 +136,93 @@ def test_whole_library_shows_its_results_in_the_lists_place(make_window, monkeyp
     assert not errors
 
 
+def _keyboard(root) -> str:
+    return str(root.tk.call("focus", "-lastfor", root))
+
+
+def test_the_keyboard_never_stays_in_a_part_of_the_pane_put_away(make_window):
+    """A result played with the keyboard, a click on the view switch, the window made narrow: the
+    keys go to what's on show, never to a hidden list (Delete there would take a song out unseen)."""
+    window, root, player, errors = _open(make_window)
+    pv = window.playlist
+    pv.scope_choice.choose("library")
+    _pump(root, 0.3)
+    inline = window._inline
+    inline.tree.focus_set()
+    inline.close()                                             # (what playing a result does)
+    _pump(root, 0.2)
+    assert not inline.panel.winfo_ismapped() and _keyboard(root) == str(pv.tree)
+    window._queue_tracks([player.track, player.track], False)
+    pv.view_switch.choose("up_next")
+    _pump(root, 0.3)
+    dock = window._up_next_view
+    assert _keyboard(root) == str(dock.tree)                   # (it was in the track list, now put away)
+    pv.view_switch.choose("tracks")                            # a click: the switch never takes the keyboard
+    _pump(root, 0.3)
+    assert _keyboard(root) == str(pv.tree)
+    pv.view_switch.choose("up_next")
+    _pump(root, 0.3)
+    _resize(root, 420, 900)
+    assert _keyboard(root) == str(pv.tree) and not dock.winfo_ismapped()
+    _resize(root, 1920, 1080)
+    pv.view_switch.choose("lyrics")
+    _pump(root, 0.3)
+    assert _keyboard(root) == str(root)                        # (nothing in the lyrics takes it: the window)
+    assert not errors
+
+
+def test_a_tab_opened_while_searching_the_whole_library_shows_its_songs(make_window, tmp_path):
+    window, root, player, errors = _open(make_window)
+    pv = window.playlist
+    pv.scope_choice.choose("library")
+    pv.query.set("abba")
+    _pump(root, 0.3)
+    other = tmp_path / "Other"
+    other.mkdir()
+    window.open_tab("folder", other)                           # e.g. from the Library window
+    _pump(root, 0.4)
+    assert window.search_scope == "tab" and pv.scope == "tab" and pv.query.get() == ""
+    assert pv.table.winfo_ismapped() and not window._inline.panel.winfo_ismapped()
+    # Switching tabs while the box searches the whole library keeps the words: they aren't the tab's.
+    pv.scope_choice.choose("library")
+    pv.query.set("abba")
+    _pump(root, 0.3)
+    window.select_tab(0)
+    _pump(root, 0.3)
+    assert pv.query.get() == "abba" and window._inline.panel.winfo_ismapped()
+    # Searching the tab, a switch empties the box as before.
+    pv.scope_choice.choose("tab")
+    _pump(root, 0.2)
+    window.select_tab(1)
+    _pump(root, 0.3)
+    assert pv.query.get() == "" and not errors
+
+
+def test_docked_up_next_rows_follow_downloads_without_redrawing_the_list(make_window, monkeypatch):
+    window, root, player, errors = _open(make_window)
+    window._queue_tracks([player.track] * 3, False)
+    marks = [("◐ 10%", "plain", "10% downloaded"), ("●", "accent", "In the cache"), ("!", "warn", "Couldn't")]
+    monkeypatch.setattr(window, "_up_next_marks", lambda queue, shown=10: list(marks))
+    window.set_view("up_next")
+    _pump(root, 0.4)
+    dock = window._up_next_view
+    tree = dock.tree
+    # A song in the cache isn't green (that reads as the song playing); one that couldn't download warns.
+    assert not tree.item("1", "tags") and tuple(tree.item("2", "tags")) == ("warn",)
+    dock._tip_row = "0"                                        # (the pointer over the first row)
+    tree.item("0", tags=("hover",))
+    rebuilt = []
+    real_delete = tree.delete
+    monkeypatch.setattr(tree, "delete", lambda *items: rebuilt.append(items) or real_delete(*items))
+    marks[0] = ("◐ 55%", "plain", "55% downloaded")
+    _pump(root, 0.4)
+    assert rebuilt == [] and tree.item("0", "values")[0] == "◐ 55%" and "hover" in tree.item("0", "tags")
+    assert dock.mark_meaning(0) == "55% downloaded"
+    window._unqueue(2)                                         # a song taken out: written afresh
+    _pump(root, 0.4)
+    assert rebuilt and tree.get_children() == ("0", "1") and not errors
+
+
 def test_the_right_pane_keeps_the_keyboard_order(make_window):
     window, root, player, errors = _open(make_window)
     pv = window.playlist

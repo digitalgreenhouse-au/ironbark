@@ -5,7 +5,8 @@ current song and the Sleep timer.
 
 The list looks like the track list (the same row styles, the slim scrollbar in the window's margin):
 # · Title · Artist · Time, and a column of download marks while a song from a network drive is waiting
-(● in the cache, ◐ 72% downloaded, ○ waiting, ! couldn't download — hover a row's mark for its words).
+(● in the cache, ◐ 72% downloaded, ○ waiting, ! couldn't download, that song's row in the warning
+colour — hover a row's mark for its words).
 Double-click or Enter plays a song now, Delete takes it out, right-click (or the menu key) for both.
 
 Nothing here talks to the player: the window hands the list what to show (`show`) and does what it's
@@ -18,7 +19,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable
 
-from . import controls, popups, theme
+from . import controls, keys, popups, theme
 from .playlist_view import TREE_STYLES, WIDE_CAPS, fit_columns
 from .tabbar import Tooltip
 
@@ -43,7 +44,9 @@ class UpNextView(ttk.Frame):
                  on_stop_after: Callable[[], None], on_sleep_menu: Callable[[tk.Misc], None]):
         super().__init__(parent)
         self.on_play, self.on_remove = on_play, on_remove
-        self._shown: tuple | None = None   # what the list holds now (titles and marks), so a poll only redraws on a change
+        # What the list holds now (titles and marks), so a poll only redraws on a change.
+        self._shown: tuple | None = None
+        self._mark_column = False   # the download-mark column is on show
         self.count = 0
 
         actions = ttk.Frame(self)
@@ -109,8 +112,9 @@ class UpNextView(ttk.Frame):
             self.on_play = self.on_remove = lambda position: None
 
     def _colour_tags(self):
+        # (A row takes one colour: a song that couldn't download is in the warning colour. Green would
+        # read as the song playing, as in the track list, so a song in the cache keeps the text colour.)
         self.tree.tag_configure("hover", background=theme.HOVER, foreground=theme.TEXT)
-        self.tree.tag_configure("accent", foreground=theme.ACCENT_TEXT)
         self.tree.tag_configure("warn", foreground=theme.WARN)
 
     def _palette_changed(self, _palette):
@@ -133,25 +137,42 @@ class UpNextView(ttk.Frame):
         rows = tuple((track.title, track.artist or "", track.duration, marks[i]) for i, track in enumerate(queue))
         if rows == self._shown:
             return
-        self._shown = rows
+        before, self._shown = self._shown or (), rows
         self.count = len(rows)
         tree = self.tree
+        column = any(mark for _t, _a, _d, (mark, _tone, _meaning) in rows)
+        if len(rows) == len(before) and column == self._mark_column:
+            # The same songs, a download moved on (polled several times a second): only the rows
+            # that changed are written, and the row under the pointer stays lit.
+            for i, (row, old) in enumerate(zip(rows, before)):
+                if row != old:
+                    tree.item(str(i), values=self._values(i, row), tags=self._tags(i, row))
+                    self._marks[i] = row[3][2]
+            return
+        self._mark_column = column
         selected = tree.selection()
         keep = int(selected[0]) if selected else None
         tree.delete(*tree.get_children())
-        column = any(mark for _t, _a, _d, (mark, _tone, _meaning) in rows)
         tree.configure(displaycolumns=(("mark",) if column else ()) + ("no", "title", "artist", "time"))
         self._marks = []
-        for i, (title, artist, duration, (mark, tone, meaning)) in enumerate(rows):
-            tags = (tone,) if tone in ("accent", "warn") else ()
-            tree.insert("", "end", iid=str(i), values=(mark, i + 1, title, artist, _clock(duration)), tags=tags)
-            self._marks.append(meaning)
+        for i, row in enumerate(rows):
+            tree.insert("", "end", iid=str(i), values=self._values(i, row), tags=self._tags(i, row))
+            self._marks.append(row[3][2])
         if keep is not None and rows:
             row = str(min(keep, len(rows) - 1))
             tree.selection_set(row)
             tree.focus(row)
         self._fit()
         self._paint_empty(not rows)
+
+    @staticmethod
+    def _values(i: int, row) -> tuple:
+        title, artist, duration, (mark, _tone, _meaning) = row
+        return mark, i + 1, title, artist, _clock(duration)
+
+    def _tags(self, i: int, row) -> tuple[str, ...]:
+        tags = ("warn",) if row[3][1] == "warn" else ()
+        return ("hover",) + tags if str(i) == self._tip_row else tags
 
     def _paint_empty(self, empty: bool):
         if empty and not self.empty.winfo_manager():
@@ -160,9 +181,6 @@ class UpNextView(ttk.Frame):
         elif not empty and not self.table.winfo_manager():
             self.empty.pack_forget()
             self.table.pack(fill="both", expand=True)
-
-    def total_seconds(self) -> float:
-        return sum(duration or 0 for _t, _a, duration, _m in self._shown or ())
 
     # -- acting --------------------------------------------------------------------------------------
     def selected(self) -> int | None:
@@ -187,8 +205,8 @@ class UpNextView(ttk.Frame):
         self.tree.focus(row)
         position = int(row)
         menu = popups.PopupMenu(self.winfo_toplevel())
-        menu.add("Play now", lambda: self.on_play(position), "Enter")
-        menu.add("Take it out of Up next", lambda: self.on_remove(position), "Delete")
+        menu.add("Play now", lambda: self.on_play(position), keys.hint("list_play"))
+        menu.add("Take it out of Up next", lambda: self.on_remove(position), keys.hint("remove"))
         menu.popup(event.x_root, event.y_root)
 
     def _hover(self, event):

@@ -303,8 +303,9 @@ Ironbark doesn't collect anything about you or your music. Nothing uses the inte
 switch on Settings → Network → *Allow network access*. Then only two features can:
 
 - **Rip verification**: when you press *Verify rip online*, it sends only the disc's IDs and track
-  layout to AccurateRip and CUETools DB. The CUETools DB look-up isn't encrypted, so others on your
-  network can see which disc is looked up.
+  layout to AccurateRip and CUETools DB. As with any request, those websites see your computer's
+  internet address and the Ironbark version. The CUETools DB look-up isn't encrypted, so others on
+  your network can see which disc is looked up.
 - **Check for updates** (Settings → Help, its own switch, also off by default): once a day it asks
   digitalgreenhouse.com.au for one small file saying what the latest version is. The request names
   the Ironbark version, and the website sees your computer's internet address, as any website you

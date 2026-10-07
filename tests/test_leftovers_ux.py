@@ -198,6 +198,9 @@ def test_the_update_check_says_what_it_sends():
     for text in (ui.UPDATE_CHECK_TEXT, help_window.PRIVACY, " ".join(privacy.split())):
         assert "internet address" in text and "version" in text
         assert "nothing is sent" not in text.lower() and "send anything" not in text
+    # Rip verification's look-ups go out the same way: what they show is said there too.
+    rip = next(line for line in help_window.PRIVACY.splitlines() if line.startswith("• Rip verification"))
+    assert "internet address" in rip and "Ironbark version" in rip
     assert "network drives" in ui.NETWORK_ACCESS_TEXT and "plays without it" in ui.NETWORK_ACCESS_TEXT
     assert "Check for updates" in ui.NETWORK_ACCESS_TEXT and "CUETools DB" in ui.NETWORK_ACCESS_TEXT
 
@@ -227,6 +230,21 @@ def test_diagnostics_leave_out_tab_playlist_and_output_names(tmp_path):
     assert "the Library window and the Help menu" in files["crash.log"]   # (ordinary words left alone)
     outputs = files["audio-outputs.txt"]
     assert "Default output: <device 1>" in outputs and "Chosen in Settings: <device 2> (connected)" in outputs
+
+
+def test_diagnostics_leave_out_a_network_servers_name(tmp_path):
+    """A NAS is often named after someone, and the network playback cache's notes name the server on
+    its own (in small letters), not only inside a folder's path."""
+    folder = tmp_path / "Ironbark"
+    folder.mkdir()
+    (folder / "app.log").write_text("music cache: sams-nas isn't answering\n"
+                                    "Preparing track… \\\\sams-nas isn't answering\n"
+                                    "reading \\\\SAMS-NAS\\Music\\x.flac at frame 3\n", encoding="utf-8")
+    prefs = {**settings.DEFAULTS, "library_folders": ["\\\\SAMS-NAS\\Music"]}
+    files = diagnostics.contents(prefs, folder, outputs=lambda: (None, []), home="C:\\Users\\Jane")
+    assert "sams" not in "\n".join(files.values()).lower()
+    assert "music cache: <server 1> isn't answering" in files["app.log"]
+    assert "reading <folder 1>\\x.flac" in files["app.log"]
 
 
 def test_a_folder_named_like_the_start_of_another_keeps_its_own_name():

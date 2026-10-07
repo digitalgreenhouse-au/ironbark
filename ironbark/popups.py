@@ -382,7 +382,8 @@ def ask_text(window: tk.Misc, title: str, message: str = "", *, initial: str = "
 def confirm(window: tk.Misc, title: str, message: str = "", *, detail: str = "", ok: str = "OK",
             cancel: str = "Cancel", danger: bool = False, tone: str = "plain", cover: bool = False) -> bool:
     """A yes / no question. Enter = `ok`, Esc = `cancel`. True for ok. `danger` (Delete…): `ok` is
-    ringed in red and Enter answers `cancel` — only a click on `ok` goes ahead."""
+    ringed in red and Enter answers `cancel` — only choosing `ok` on purpose goes ahead (a click, or Tab
+    past `cancel` to it and then Enter or Space)."""
     return bool(Prompt(window, title, message, detail=detail, tone=tone, cover=cover, cancel=False,
                        buttons=((ok, True, "danger" if danger else "primary"), (cancel, False)),
                        default=1 if danger else 0).wait())

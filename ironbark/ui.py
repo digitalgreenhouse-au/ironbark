@@ -1729,7 +1729,11 @@ class PlayerWindow:
         interrupt: play it even so (it was asked for by name: "Open with", a double-click)."""
         if kind == "album":
             self._mark_opened(Path(str(path)))
-        if self._tier != layout.COLUMN and self.view != "tracks":   # (the tab asked for: its list on show)
+        if self._tier != layout.COLUMN and (self.view != "tracks" or self.search_scope != "tab"):
+            # The tab asked for: its list on show, not Up next, the lyrics or the whole library's results.
+            if self.search_scope != "tab":
+                self.search_scope = "tab"
+                self.playlist.query.set("")   # (the library's search words would filter the tab)
             self.set_view("tracks")
         if play and not interrupt and self.player.status().state is not State.STOPPED:
             play = False
@@ -1745,8 +1749,8 @@ class PlayerWindow:
     def select_tab(self, index: int, then_play: bool = False):
         if not 0 <= index < len(self.tabs):
             return
-        if index != self.current and self.playlist.searching:
-            self.playlist.query.set("")  # a search belongs to the tab it was typed in
+        if index != self.current and self.playlist.searching and self.playlist.scope == "tab":
+            self.playlist.query.set("")  # a search belongs to the tab it was typed in (not the whole library's)
         self.current = index
         tab = self.tabs[index]
         if tab.tracks is None:
@@ -4666,9 +4670,11 @@ class PlayerWindow:
         inline = self._inline.panel if self._inline is not None else None
         shown = {"up_next": self._up_next_view, "lyrics": self._lyrics_view}.get(view) or (
             inline if library else playlist.table)
-        for widget in (playlist.table, inline, self._up_next_view, self._lyrics_view):
-            if widget is not None and widget is not shown and widget.winfo_manager():
-                widget.pack_forget()
+        keys_at = self._keyboard_in()
+        put_away = [widget for widget in (playlist.table, inline, self._up_next_view, self._lyrics_view)
+                    if widget is not None and widget is not shown and widget.winfo_manager()]
+        for widget in put_away:
+            widget.pack_forget()
         if not shown.winfo_manager():
             shown.pack(fill="both", expand=True)
         if self._inline is not None and library != self._inline.is_open:
@@ -4676,9 +4682,35 @@ class PlayerWindow:
                 self._inline.open()
             else:
                 self._inline.close(tell=False)
+        # The keyboard was in what was just put away (a result played, a click on the view switch,
+        # the window made narrow): it goes to what's on show, or keys would act on a hidden list.
+        if any(keys_at == str(w) or keys_at.startswith(f"{w}.") for w in put_away):
+            self._keyboard_to(playlist.tree if shown is playlist.table else playlist.entry if shown is inline
+                              else shown.tree if shown is self._up_next_view else self.root)
         self._up_next_key = None   # (the Up next line: not while the list itself is docked)
         self._paint_up_next()
         self._paint_docks()
+
+    def _keyboard_in(self) -> str:
+        """The Tk name of the widget in this window that has the keyboard, or gets it back when the
+        window is next active."""
+        try:
+            return str(self.root.tk.call("focus", "-lastfor", self.root))
+        except tk.TclError:
+            return ""
+
+    def _keyboard_to(self, target: tk.Misc):
+        """The keyboard to `target` in this window — but not taken from another of the player's
+        windows (the Library, a menu) the user is in just now."""
+        try:
+            focus = self.root.focus_get()
+        except (KeyError, tk.TclError):   # (a widget Tk can't name, e.g. a menu's own)
+            return
+        try:
+            if focus is None or str(focus.winfo_toplevel()) == str(self.root):
+                target.focus_set()
+        except tk.TclError:
+            pass
 
     def _make_up_next_view(self) -> UpNextView:
         def play(position: int):
