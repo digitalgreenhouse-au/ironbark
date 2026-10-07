@@ -229,6 +229,8 @@ def test_taskbar_button_clicks_reach_the_queue_through_the_window_hook(window):
 
 
 @windows
+@pytest.mark.skipif(os.environ.get("DG_LIVE_WINDOWS") != "1",
+                    reason="set DG_LIVE_WINDOWS=1 (hooks every keystroke on the computer while it runs)")
 def test_keyboard_hook_starts_and_stops_cleanly():
     hub = MediaKeys()
     hook = mediakeys.KeyboardHook(hub.press)
