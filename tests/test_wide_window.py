@@ -260,9 +260,10 @@ def test_search_selection_scroll_and_keyboard_survive_a_switch(make_window):
     _pump(root, 0.3)
     view = window.playlist
     view.select(40)
-    view.tree.yview_moveto(0.5)
+    view.list.scroll_to(30)                              # (the list scrolls through its rows itself)
     _pump(root, 0.2)
-    top = view.tree.yview()[0]
+    top = view.list.top
+    assert top > 0
     view.entry.focus_set()
     _pump(root, 0.1)
     focus = root.focus_get()
@@ -276,9 +277,10 @@ def test_search_selection_scroll_and_keyboard_survive_a_switch(make_window):
     assert view.query.get() == "Song 4" and view.tree.selection() == ("40",)
     view.query.set("")
     view._search_now()
-    view.tree.yview_moveto(top)
+    view.list.scroll_to(top)
     _resize(root, 1920, 1080)
-    assert view.tree.yview()[0] == pytest.approx(top, abs=0.05)
+    assert abs(view.list.top - top) <= 3
+
     assert not errors
 
 
@@ -392,7 +394,7 @@ def test_the_heading_menu_says_when_a_column_is_hidden_for_repeating(make_window
     _resize(root, 420, 900)
     seen.clear()
     window._columns_menu(SimpleNamespace(add_check=lambda label, on, command: seen.append((label, on))))
-    assert seen == [("Artist", False), ("Album", False)]
+    assert seen == [("Artist", False), ("Album", False), ("Plays", False)]
     assert not errors
 
 

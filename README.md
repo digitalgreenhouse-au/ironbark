@@ -232,11 +232,13 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+O | Open a folder |
 | Ctrl+Shift+O | Open a playlist file |
 | Ctrl+N | New playlist |
-| Ctrl+F | Search this tab |
+| Ctrl+F · / | Search this tab |
 | Enter | Track list: play the song (an album row: the album) |
 | Ctrl+Enter | Track list: add to Up next |
 | Ctrl+Shift+Enter | Track list: play next |
+| Ctrl+A | Track list: select every song |
 | Menu key · Shift+F10 | The selected row's right-click menu |
+| Shift+click · Ctrl+click · Shift+↑ / ↓ | Track list and the Library's songs: select several songs |
 
 ### Windows & tools
 
@@ -268,7 +270,8 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 |---|---|
 | Ctrl+L | Library (brings it to the front when it's open) |
 | Ctrl+K · Ctrl+Shift+F | Search the library |
-| Ctrl+F | Library: search box |
+| Ctrl+F · / | Library: search box |
+| Ctrl+A | Library: select every song (the song views) |
 | Enter | Library: open the album in a new tab |
 | Ctrl+Enter | Library: add the album to Up next |
 | Ctrl+Shift+Enter | Library: play the album next |

@@ -4,15 +4,24 @@ A Treeview holding every row of a big library is slow to fill (seconds for 200,0
 quarter of a gigabyte) and slower still to search. `VirtualTree` keeps just the rows that fit in
 its window and fills them again from a `RowSource` as the list moves. Its own scrollbar maps to
 positions in the source, and the mouse wheel, the arrow keys, Page Up / Down and Home / End move
-through the source, not through Tk's rows. The selection (one row for now), the row under the
-pointer, the playing mark and folded groups all live in source positions, so they survive
-scrolling, and the memory used doesn't grow with the list.
+through the source, not through Tk's rows. The selection, the row under the pointer, the playing
+mark and folded groups all live in source positions, so they survive scrolling, and the memory
+used doesn't grow with the list.
+
+The selection is one row, or — `multiple=True` — any number of rows, chosen as in Explorer:
+Shift+click or Shift+↑ / ↓ / PgUp / PgDn / Home / End from the row clicked first, Ctrl+click to add
+or take out one row, and `select_all` (Ctrl+A, bound by the owner). It's kept as runs of rows
+(`Ranges`), so selecting all of 200,000 songs costs no more than selecting one. Pressing on a row
+that's already part of a selection of several keeps them all (so they can be dragged together);
+let go without dragging and just that row is selected. Tk itself never selects anything here
+(its selectmode is "none"): the list paints the selected rows on show.
 
 A source is anything with `len()` and `row(i)` → (key, values, tags) or (key, values, tags, text).
 The key is the row's id in the Treeview while it's on show (so a right-click, a drag — TreeDrag —
 or a test can name it); `text` goes in the tree column (#0: a group's fold arrow). A row tagged
 "group" is a group heading: clicking its arrow, double-clicking it or ← / → asks the owner to fold
-it (`on_toggle`) — the source decides what folding means, as rows are never Tk children.
+it (`on_toggle`) — the source decides what folding means, as rows are never Tk children. A source
+may also have `key(i)` (a row's key without making the whole row) and `index_of(key)`.
 
 Text that doesn't fit its column ends with "…" (Tk itself just cuts it off). Only the rows on show
 are measured, so a big list costs no more than a small one — and a text is measured as the sum of
@@ -27,9 +36,10 @@ cache from its own worker and calls `refresh()` (from Tk's thread) when a page h
 
 from __future__ import annotations
 
+import bisect
 import time
 import tkinter as tk
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Protocol
@@ -41,14 +51,20 @@ Row = tuple   # (key, values, tags) or (key, values, tags, text)
 WHEEL_ROWS = 3          # rows a notch of the mouse wheel moves
 JUMP_PAUSE_S = 1.0      # type-to-jump: letters typed within this of each other make one word
 CELL_ROOM = 10          # px at 100%: a cell's own padding, left out of the room its text has
+UNSIZED_PAGE = 60       # rows put in a list not laid out yet (its first <Configure> sets the real page)
+KEEP_REMAP = 20_000     # a selection of more rows than this isn't carried over to a changed list (just its row)
+DRAG_SLOP = 6           # px at 100%: a press that moves less than this before its release is a click
 ELLIPSIS = "…"
 OPEN_MARK, CLOSED_MARK = "▾", "▸"   # a group heading's arrow (in the tree column)
 CLASS_TAG = "IronbarkVirtualTree"
 # The Treeview class bindings the list leaves out: they would scroll, select or fold Tk's own rows
 # (the list moves through its source instead, and folds through its owner).
 _LEFT_OUT = {"<MouseWheel>", "<Shift-MouseWheel>", "<<ToggleSelection>>", "<Shift-Button-1>", "<Key-space>",
-             "<Key-Return>", "<Key-Next>", "<Key-Prior>", "<Key-Left>", "<Key-Right>", "<Key-Down>", "<Key-Up>"}
+             "<Key-Return>", "<Key-Next>", "<Key-Prior>", "<Key-Left>", "<Key-Right>", "<Key-Down>", "<Key-Up>",
+             "<Shift-Key-Up>", "<Shift-Key-Down>", "<Shift-Key-Next>", "<Shift-Key-Prior>", "<Shift-Key-Home>",
+             "<Shift-Key-End>", "<Control-Button-1>"}
 _MEASURED_KEEP = 5_000    # characters' widths remembered per font before the memory of them starts afresh
+_SHIFT, _CONTROL, _ALT = 0x1, 0x4, 0x20000
 
 
 class RowSource(Protocol):
@@ -71,10 +87,89 @@ class ListSource:
     def row(self, index: int) -> Row:
         return self.rows[index]
 
+    def key(self, index: int) -> str:
+        return self.rows[index][0]
+
     def index_of(self, key: str) -> int | None:
         if self._index is None:
             self._index = {row[0]: i for i, row in enumerate(self.rows)}
         return self._index.get(key)
+
+
+class Ranges:
+    """Row positions held as sorted runs [start, end) that neither overlap nor touch: every row of a
+    200,000-row list selected is one run."""
+
+    __slots__ = ("runs",)
+
+    def __init__(self, runs: Iterable[tuple[int, int]] = ()):
+        self.runs: list[tuple[int, int]] = []
+        for start, end in runs:
+            self.add(start, end)
+
+    @classmethod
+    def of(cls, indices: Iterable[int]) -> Ranges:
+        """The runs these positions make (in any order)."""
+        runs: list[tuple[int, int]] = []
+        for i in sorted(set(indices)):
+            if runs and runs[-1][1] == i:
+                runs[-1] = (runs[-1][0], i + 1)
+            else:
+                runs.append((i, i + 1))
+        found = cls()
+        found.runs = runs
+        return found
+
+    def __len__(self) -> int:
+        return sum(end - start for start, end in self.runs)
+
+    def __bool__(self) -> bool:
+        return bool(self.runs)
+
+    def __contains__(self, index: int) -> bool:
+        at = bisect.bisect_right(self.runs, (index, float("inf"))) - 1
+        return at >= 0 and self.runs[at][0] <= index < self.runs[at][1]
+
+    def __iter__(self) -> Iterator[int]:
+        for start, end in self.runs:
+            yield from range(start, end)
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, Ranges) and self.runs == other.runs
+
+    def first(self) -> int | None:
+        return self.runs[0][0] if self.runs else None
+
+    def add(self, start: int, end: int) -> None:
+        if end <= start:
+            return
+        kept = []
+        for s, e in self.runs:
+            if e < start or s > end:   # (apart, not even touching)
+                kept.append((s, e))
+            else:
+                start, end = min(s, start), max(e, end)
+        kept.append((start, end))
+        kept.sort()
+        self.runs = kept
+
+    def discard(self, start: int, end: int) -> None:
+        kept = []
+        for s, e in self.runs:
+            if e <= start or s >= end:
+                kept.append((s, e))
+                continue
+            if s < start:
+                kept.append((s, start))
+            if e > end:
+                kept.append((end, e))
+        self.runs = kept
+
+    def clipped(self, count: int) -> Ranges:
+        """The runs inside a list of `count` rows."""
+        found = Ranges()
+        found.runs = [(s, min(e, count)) for s, e in self.runs if s < count]
+        return found
 
 
 def _use_class_bindings(tree: ttk.Treeview) -> None:
@@ -95,12 +190,14 @@ class VirtualTree:
     is configured here first, so it wins over the owner's tags). `margin=True`: the scrollbar sits
     in the margin right of the list instead (controls.AutoScrollbar.in_margin), so the list keeps its
     full width and its words line up with what's above it; `parent` must then be the frame whose
-    padding is that margin.
+    padding is that margin (or `scroll_parent`, when that's another frame). `multiple=True`:
+    several rows can be selected (see the module notes).
 
-    Callbacks: on_select(index | None) when the selection moves; on_activate(index) on a
-    double-click of an ordinary row; on_toggle(index) to fold or open a group heading; on_jump(text)
-    → the index to jump to as letters are typed (None: no type-to-jump); on_top_edge() when ↑ is
-    pressed on the first row (a search panel takes the keyboard back to its box)."""
+    Callbacks: on_select(index | None) when the selection moves (the row the keyboard is on);
+    on_activate(index) on a double-click of an ordinary row; on_toggle(index) to fold or open a
+    group heading; on_jump(text) → the index to jump to as letters are typed (None: no
+    type-to-jump); on_top_edge() when ↑ is pressed on the first row (a search panel takes the
+    keyboard back to its box)."""
 
     def __init__(self, parent: tk.Misc, columns: Sequence[str], *, show: str = "headings",
                  on_select: Callable[[int | None], None] | None = None,
@@ -109,14 +206,18 @@ class VirtualTree:
                  on_jump: Callable[[str], int | None] | None = None,
                  on_top_edge: Callable[[], None] | None = None,
                  fonts: dict[str, object] | None = None, playing_column: str | None = None,
-                 playing_mark: str = "♪", margin: bool = False):
+                 playing_mark: str = "♪", margin: bool = False, multiple: bool = False,
+                 scroll_parent: tk.Misc | None = None):
         self.on_select, self.on_activate, self.on_toggle = on_select, on_activate, on_toggle
         self.on_jump, self.on_top_edge = on_jump, on_top_edge
         self.fonts = dict(fonts or {})       # tag -> the font its rows are drawn in (measured for "…")
         self.playing_column, self.playing_mark = playing_column, playing_mark
+        self.multiple = multiple
         self.source: RowSource = ListSource()
         self.top = 0                         # the first source row on show
-        self.selected: int | None = None
+        self.selected: int | None = None     # the row the keyboard is on (Enter acts on it)
+        self.anchor: int | None = None       # where a Shift+click or Shift+arrow selection runs from
+        self.chosen = Ranges()               # every row selected (the keyboard's row among them)
         self.hovered: int | None = None
         self.playing: int | None = None
         self._shown: dict[str, int] = {}     # key on show -> its source index
@@ -124,11 +225,13 @@ class VirtualTree:
         self._metrics: tuple[int, int] | None = None   # (the first row's top, a row's height), measured
         self._widths: dict[str, dict[str, int]] = {}   # font -> {character: its width}
         self._typed, self._typed_at = "", 0.0
+        self._held: tuple[int, int, int] | None = None   # (row, x, y): pressed on a selection of several
 
         self.frame = ttk.Frame(parent)
         # height=4: ask for little, then grow into whatever room the window gives the list.
-        self.tree = ttk.Treeview(self.frame, columns=tuple(columns), show=show, selectmode="browse", height=4)
-        self.scrollbar = controls.AutoScrollbar(parent if margin else self.frame, command=self._scrolled)
+        self.tree = ttk.Treeview(self.frame, columns=tuple(columns), show=show, selectmode="none", height=4)
+        self.scrollbar = controls.AutoScrollbar((scroll_parent or parent) if margin else self.frame,
+                                                command=self._scrolled)
         self.tree.configure(yscrollcommand=self._tk_scrolled)
         self.tree.pack(side="left", fill="both", expand=True)
         if margin:
@@ -146,14 +249,18 @@ class VirtualTree:
         tree.bind("<<TreeviewSelect>>", self._tk_selected, add="+")
         tree.bind("<Motion>", self._motion, add="+")
         tree.bind("<Leave>", lambda e: self.set_hover(None), add="+")
+        tree.bind("<ButtonPress-1>", self._pressed, add="+")
         tree.bind("<Double-Button-1>", self._double_click, add="+")
         tree.bind("<ButtonRelease-1>", self._released, add="+")
-        for key, move in (("<Key-Up>", lambda: self.step(-1)), ("<Key-Down>", lambda: self.step(1)),
-                          ("<Key-Prior>", lambda: self.step(-self.page())),
-                          ("<Key-Next>", lambda: self.step(self.page())),
-                          ("<Key-Home>", lambda: self.select(0)),
-                          ("<Key-End>", lambda: self.select(len(self.source) - 1))):
-            tree.bind(key, lambda e, m=move: self._navigate(e, m))
+        moves = (("Up", lambda: -1), ("Down", lambda: 1), ("Prior", lambda: -self.page()),
+                 ("Next", lambda: self.page()))
+        for name, rows in moves:
+            tree.bind(f"<Key-{name}>", lambda e, r=rows: self._navigate(e, lambda: self.step(r())))
+            tree.bind(f"<Shift-Key-{name}>", lambda e, r=rows: self._navigate(e, lambda: self.extend(r())))
+        tree.bind("<Key-Home>", lambda e: self._navigate(e, lambda: self.select(0)))
+        tree.bind("<Key-End>", lambda e: self._navigate(e, lambda: self.select(len(self.source) - 1)))
+        tree.bind("<Shift-Key-Home>", lambda e: self._navigate(e, lambda: self.extend_to(0)))
+        tree.bind("<Shift-Key-End>", lambda e: self._navigate(e, lambda: self.extend_to(len(self.source) - 1)))
         tree.bind("<Key-Left>", lambda e: self._sideways(False))
         tree.bind("<Key-Right>", lambda e: self._sideways(True))
         tree.bind("<KeyPress>", self._typed_key)
@@ -173,23 +280,39 @@ class VirtualTree:
     # -- the source ------------------------------------------------------------------------------
     def set_source(self, source: RowSource, keep: bool = False, select: int | None = None):
         """Show another source (rows from the top, nothing selected). `keep`: the same list
-        changed (a group folded, a row's text): stay where it was, and keep the selected row when
-        the source can find it again by its key (`index_of`). `select`: select this row."""
-        old_key = self._key_of(self.selected) if keep and self.selected is not None else None
+        changed (a group folded, a search typed, a row's text): stay where it was, and keep the
+        selected rows the source can find again by their keys (`index_of`). `select`: select this
+        row."""
+        before = self.selected
+        old_cursor = self._key_of(self.selected) if keep and self.selected is not None else None
+        old_keys: list[str] = []
+        if keep and self.multiple and 1 < len(self.chosen) <= KEEP_REMAP:
+            old_keys = [key for key in (self._key_of(i) for i in self.chosen) if key is not None]
         self.source = source
         self.hovered = None
+        self.chosen = Ranges()
+        self.selected = self.anchor = None
         if keep:
-            self.selected = None
             finder = getattr(source, "index_of", None)
-            if old_key is not None and finder is not None:
-                self.selected = finder(old_key)
+            if finder is not None:
+                if old_cursor is not None:
+                    self.selected = self.anchor = finder(old_cursor)
+                found = [i for i in (finder(key) for key in old_keys) if i is not None]
+                self.chosen = Ranges.of(found)
+                if self.selected is not None:
+                    self.chosen.add(self.selected, self.selected + 1)
+                elif found:
+                    self.selected = self.anchor = found[0]
         else:
-            self.top, self.selected = 0, None
+            self.top = 0
         if select is not None and 0 <= select < len(source):
-            self.selected = select
+            self.selected = self.anchor = select
+            self.chosen = Ranges([(select, select + 1)])
         self.render()
         if select is not None:
             self.see(select)
+        if keep and self.selected != before and self.on_select is not None:
+            self.on_select(self.selected)
 
     def refresh(self):
         """The rows on show again (their text or tags changed, or a page of them has arrived)."""
@@ -198,7 +321,8 @@ class VirtualTree:
     def _key_of(self, index: int | None) -> str | None:
         if index is None or not 0 <= index < len(self.source):
             return None
-        return self.source.row(index)[0]
+        key = getattr(self.source, "key", None)
+        return key(index) if key is not None else self.source.row(index)[0]
 
     def index_of_iid(self, iid: str) -> int | None:
         """The source index of a row on show, by its Treeview id (None: not on show)."""
@@ -226,7 +350,7 @@ class VirtualTree:
             self._metrics = (int(box[1]), max(1, int(box[3])))
             return self._metrics
         try:
-            height = int(ttk.Style(tree).lookup("Treeview", "rowheight") or 0)
+            height = int(ttk.Style(tree).lookup(str(tree.cget("style")) or "Treeview", "rowheight") or 0)
         except (tk.TclError, ValueError):
             height = 0
         height = height or self._font.metrics("linespace") + theme.px(theme.GAP)
@@ -235,9 +359,13 @@ class VirtualTree:
 
     def page(self) -> int:
         """Rows that fit in the list (whole rows only: the list never holds a cut-off one, so Tk
-        never scrolls inside it)."""
-        first, height = self._measure()
-        return max(1, (self.tree.winfo_height() - first - theme.px(theme.GAP_HAIR)) // height)
+        never scrolls inside it). A list not laid out yet (no height) holds UNSIZED_PAGE rows until
+        it is."""
+        height = self.tree.winfo_height()
+        if height <= 1:
+            return UNSIZED_PAGE
+        first, row = self._measure()
+        return max(1, (height - first - theme.px(theme.GAP_HAIR)) // row)
 
     # -- drawing -------------------------------------------------------------------------------
     def _schedule(self):
@@ -283,15 +411,12 @@ class VirtualTree:
         for index, (key, values, tags, text) in zip(range(self.top, end), rows):
             tree.insert("", "end", iid=key, values=values, tags=tags, text=text)
             self._shown[key] = index
-        if rows and self._metrics is None:
+        if rows and self._metrics is None and tree.winfo_height() > 1:
             self._measure()
             if self.page() != page:   # (the page was an estimate until a row could be measured)
                 self.render()
                 return
-        selected = self.iid_of(self.selected) if self.selected is not None else None
-        if selected is not None:
-            tree.selection_set(selected)
-            tree.focus(selected)
+        self._paint_selection()
         self._paint_scrollbar()
 
     def _displayed(self) -> list[str]:
@@ -389,28 +514,135 @@ class VirtualTree:
         return "break"
 
     # -- selection -------------------------------------------------------------------------------
+    def _expected(self) -> list[str]:
+        """The rows on show that are selected (their Treeview ids)."""
+        if not self.chosen:
+            return []
+        return [iid for iid, index in self._shown.items() if index in self.chosen]
+
+    def _paint_selection(self):
+        """Show the selection on the rows on show (Tk's own selection is only ever this)."""
+        tree = self.tree
+        wanted = self._expected()
+        current = tree.selection()
+        if set(current) != set(wanted):
+            if wanted:
+                tree.selection_set(wanted)
+            else:
+                tree.selection_remove(*current)
+        cursor = self.iid_of(self.selected) if self.selected is not None else None
+        if cursor is not None:
+            tree.focus(cursor)
+
+    def _changed(self, before: tuple, notify: bool):
+        self._paint_selection()
+        if notify and self.on_select is not None and (self.selected, self.chosen.runs) != before:
+            self.on_select(self.selected)
+
+    def _state(self) -> tuple:
+        return self.selected, list(self.chosen.runs)
+
     def select(self, index: int | None, see: bool = True, notify: bool = True):
-        """Select source row `index` (None: nothing), scrolled into view."""
+        """Select source row `index` alone (None: nothing), scrolled into view."""
         if index is not None:
             if not len(self.source):
                 index = None
             else:
                 index = max(0, min(index, len(self.source) - 1))
-        changed = index != self.selected
-        self.selected = index
+        before = self._state()
+        self.selected = self.anchor = index
+        self.chosen = Ranges([(index, index + 1)]) if index is not None else Ranges()
         if index is not None and see:
             self.see(index)
-        iid = self.iid_of(index) if index is not None else None
-        if iid is not None:
-            self.tree.selection_set(iid)
-            self.tree.focus(iid)
-        elif self.tree.selection():
-            self.tree.selection_remove(*self.tree.selection())
-        if changed and notify and self.on_select is not None:
-            self.on_select(index)
+        self._changed(before, notify)
+
+    def extend_to(self, index: int, see: bool = True, notify: bool = True):
+        """Select every row from the anchor (the row picked first) to `index` (Shift+click,
+        Shift+arrows); a list of single selection just moves there."""
+        count = len(self.source)
+        if not count:
+            return
+        index = max(0, min(index, count - 1))
+        if not self.multiple:
+            self.select(index, see, notify)
+            return
+        if self.anchor is None or not 0 <= self.anchor < count:
+            self.anchor = self.selected if self.selected is not None and self.selected < count else index
+        before = self._state()
+        self.selected = index
+        self.chosen = Ranges([(min(self.anchor, index), max(self.anchor, index) + 1)])
+        if see:
+            self.see(index)
+        self._changed(before, notify)
+
+    def extend(self, rows: int):
+        """Shift+↑ / ↓ / PgUp / PgDn: the selection grows (or shrinks) from the anchor."""
+        if not len(self.source):
+            return
+        if self.selected is None:
+            self.step(rows)
+            return
+        self.extend_to(self.selected + rows)
+
+    def toggle(self, index: int, notify: bool = True):
+        """Ctrl+click: this row into the selection, or out of it (the keyboard moves to it)."""
+        if not self.multiple:
+            self.select(index, see=False, notify=notify)
+            return
+        before = self._state()
+        if index in self.chosen:
+            self.chosen.discard(index, index + 1)
+        else:
+            self.chosen.add(index, index + 1)
+        self.selected = self.anchor = index
+        self._changed(before, notify)
+
+    def select_all(self, notify: bool = True) -> bool:
+        """Every row selected (Ctrl+A). False when there's nothing to select."""
+        count = len(self.source)
+        if not count or not self.multiple:
+            return False
+        before = self._state()
+        self.chosen = Ranges([(0, count)])
+        if self.selected is None:
+            self.selected = 0
+        self.anchor = 0
+        self._changed(before, notify)
+        return True
+
+    def select_indices(self, indices: Iterable[int], cursor: int | None = None, notify: bool = True):
+        """Select these rows (several only in a list of multiple selection); the keyboard goes to
+        `cursor` (default: the first of them)."""
+        count = len(self.source)
+        found = [i for i in indices if 0 <= i < count]
+        if not self.multiple:
+            self.select(cursor if cursor is not None else (found[0] if found else None), notify=notify)
+            return
+        before = self._state()
+        self.chosen = Ranges.of(found)
+        self.selected = self.anchor = cursor if cursor is not None else (found[0] if found else None)
+        if self.selected is not None:
+            self.see(self.selected)
+        self._changed(before, notify)
 
     def selection(self) -> int | None:
+        """The row the keyboard is on (the one selected, in a list of single selection)."""
         return self.selected
+
+    def sync(self):
+        """Take in a selection set on Tk's rows directly since (by a script or a test), before
+        acting on the selection — Tk tells the list only once events are handled."""
+        self._tk_selected()
+
+    def selected_indices(self) -> list[int]:
+        """Every selected row, top to bottom."""
+        return list(self.chosen)
+
+    def selected_count(self) -> int:
+        return len(self.chosen)
+
+    def is_selected(self, index: int) -> bool:
+        return index in self.chosen
 
     def step(self, rows: int):
         """Move the selection `rows` down (up when negative); with nothing selected, the first row
@@ -425,22 +657,50 @@ class VirtualTree:
             self.select(self.selected + rows)
 
     def _navigate(self, event, move):
-        if event.state & (0x4 | 0x20000):   # (Ctrl / Alt + an arrow: the keyboard table's, not the list's)
+        if event.state & (_CONTROL | _ALT):   # (Ctrl / Alt + an arrow: the keyboard table's, not the list's)
             return None
         move()
         return "break"
 
     def _tk_selected(self, _event=None):
-        """A click selected a row. (Tk also says so when the rows are drawn again: a selected row
-        scrolled out of sight stays selected in the source, so an empty Tk selection changes nothing.)"""
+        """Tk says its selection changed. The list sets it itself (`_paint_selection`), so that's
+        usually just the list's own painting coming back; otherwise something set Tk's selection
+        directly (a script, a test): the rows on show it names become the selection."""
         chosen = self.tree.selection()
-        index = self._shown.get(chosen[0]) if chosen else None
-        if index is not None and index != self.selected:
-            self.selected = index
-            if self.on_select is not None:
-                self.on_select(index)
+        if set(chosen) == set(self._expected()):
+            return
+        before = self._state()
+        indices = [self._shown[iid] for iid in chosen if iid in self._shown]
+        if not self.multiple:
+            indices = indices[:1]
+        focus = self._shown.get(self.tree.focus())
+        self.chosen = Ranges.of(indices)
+        self.selected = self.anchor = focus if focus in indices else (indices[0] if indices else None)
+        self._changed(before, True)
 
     # -- the pointer and groups ------------------------------------------------------------------
+    def _pressed(self, event):
+        """A click picks rows (Tk itself selects nothing here): alone; Shift — from the anchor to
+        here; Ctrl — this one in or out. Pressed on a row of a selection of several, they stay
+        selected for a drag; let go without dragging and just that row is selected."""
+        self._held = None
+        if self.tree.identify_region(event.x, event.y) not in ("cell", "tree"):
+            return
+        index = self.index_at(event.y)
+        if index is None:
+            return
+        if self.multiple and event.state & _SHIFT:
+            self.extend_to(index, see=False)
+        elif self.multiple and event.state & _CONTROL:
+            self.toggle(index)
+        elif self.multiple and index in self.chosen and len(self.chosen) > 1:
+            self._held = (index, event.x, event.y)
+            before = self._state()
+            self.selected = index
+            self._changed(before, True)
+        else:
+            self.select(index, see=False)
+
     def set_hover(self, index: int | None):
         """Light up the row under the pointer (None: none)."""
         if index == self.hovered:
@@ -468,7 +728,13 @@ class VirtualTree:
 
     def _released(self, event):
         """A click on a group heading's arrow folds or opens it. A column's edge dragged along the
-        headings: the rows on show are fitted ("…") to its new width."""
+        headings: the rows on show are fitted ("…") to its new width. A click (not a drag) on a row
+        of a selection of several: just that row."""
+        held, self._held = self._held, None
+        if held is not None:
+            index, x, y = held
+            if max(abs(event.x - x), abs(event.y - y)) < theme.px(DRAG_SLOP) and 0 <= index < len(self.source):
+                self.select(index, see=False)
         if event.y < self._measure()[0]:
             self._schedule()
             return
@@ -511,7 +777,7 @@ class VirtualTree:
     def _typed_key(self, event):
         """Letters and digits typed in the list jump to the first row starting with them (typed
         within a second of each other, they make one word). Other keys go on."""
-        if self.on_jump is None or event.state & (0x4 | 0x20000) or not event.char or not event.char.isalnum():
+        if self.on_jump is None or event.state & (_CONTROL | _ALT) or not event.char or not event.char.isalnum():
             return None
         now = time.monotonic()
         self._typed = (self._typed if now - self._typed_at < JUMP_PAUSE_S else "") + event.char

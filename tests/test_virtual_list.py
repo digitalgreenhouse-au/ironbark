@@ -318,3 +318,88 @@ def test_a_column_dragged_wider_is_fitted_again(root):
     vt.tree.event_generate("<ButtonRelease-1>", x=theme.px(120), y=2)
     root.update()
     assert vt.tree.set("a0", "title") == long
+
+
+# -- several rows selected -------------------------------------------------------------------------------
+def test_ranges_hold_a_selection_as_runs():
+    from ironbark.virtual_list import Ranges
+
+    chosen = Ranges([(0, 200_000)])
+    assert len(chosen) == 200_000 and 199_999 in chosen and 200_000 not in chosen and chosen.runs == [(0, 200_000)]
+    chosen.discard(10, 20)
+    assert chosen.runs == [(0, 10), (20, 200_000)] and 15 not in chosen and 20 in chosen
+    chosen.add(5, 25)
+    assert chosen.runs == [(0, 200_000)]
+    picked = Ranges.of([7, 3, 4, 5, 9])
+    assert picked.runs == [(3, 6), (7, 8), (9, 10)] and list(picked) == [3, 4, 5, 7, 9]
+    assert picked.clipped(8).runs == [(3, 6), (7, 8)] and Ranges().first() is None
+
+
+def _click(vt, iid, **modifiers):
+    """A press and release on a row (state: Shift 0x1, Ctrl 0x4)."""
+    state = (0x1 if modifiers.get("shift") else 0) | (0x4 if modifiers.get("ctrl") else 0)
+    x, y, _w, h = vt.tree.bbox(iid)
+    vt.tree.event_generate("<ButtonPress-1>", x=x + 5, y=y + h // 2, state=state)
+    vt.tree.event_generate("<ButtonRelease-1>", x=x + 5, y=y + h // 2, state=state | 0x100)
+    vt.tree.update()
+
+
+def test_shift_and_ctrl_clicks_and_keys_select_several_rows(root):
+    picked = []
+    vt = make(root, Numbers(200_000), multiple=True, on_select=picked.append)
+    _click(vt, "r2")
+    assert vt.selected_indices() == [2] and vt.tree.selection() == ("r2",)
+    _click(vt, "r5", shift=True)                         # Shift: from the row clicked first
+    assert vt.selected_indices() == [2, 3, 4, 5] and set(vt.tree.selection()) == {"r2", "r3", "r4", "r5"}
+    _click(vt, "r3", ctrl=True)                          # Ctrl: one row out…
+    assert vt.selected_indices() == [2, 4, 5] and vt.selected == 3
+    _click(vt, "r7", ctrl=True)                          # …and one in
+    assert vt.selected_indices() == [2, 4, 5, 7]
+    _click(vt, "r4")                                     # a plain click inside: just that row (no drag)
+    assert vt.selected_indices() == [4]
+    key(vt, "<Shift-KeyPress-Down>")
+    key(vt, "<Shift-KeyPress-Down>")
+    assert vt.selected_indices() == [4, 5, 6] and vt.selected == 6
+    key(vt, "<Shift-KeyPress-Up>")
+    assert vt.selected_indices() == [4, 5]
+    key(vt, "<Shift-KeyPress-End>")                      # to the end of 200,000: one run, not a row each
+    assert vt.selected_count() == 200_000 - 4 and vt.chosen.runs == [(4, 200_000)] and vt.top > 100_000
+    key(vt, "<KeyPress-Home>")                           # a plain key: one row again
+    assert vt.selected_indices() == [0] and vt.top == 0
+    assert vt.select_all() and vt.selected_count() == 200_000 and len(vt.tree.selection()) == vt.page()
+    vt.scroll_to(150_000)                                # every row on show is painted selected
+    assert len(vt.tree.selection()) == len(vt.tree.get_children()) and picked
+
+
+def test_pressing_on_a_selection_keeps_it_for_a_drag(root):
+    rows = [(f"k{i}", (f"Song {i}", ""), ()) for i in range(30)]
+    vt = make(root, ListSource(rows), multiple=True)
+    dragged = []
+    TreeDrag(vt.tree, lambda iid: vt.selected_indices() if vt.is_selected(vt.index_of_iid(iid)) else None,
+             lambda carried, x, y, phase: dragged.append((list(carried), phase)))
+    vt.select_indices([2, 3, 4])
+    x, y, _w, h = vt.tree.bbox("k3")
+    vt.tree.event_generate("<ButtonPress-1>", x=x + 5, y=y + 2, rootx=0, rooty=0)
+    vt.tree.event_generate("<B1-Motion>", x=x + 5, y=y + 60, rootx=0, rooty=60, state=0x100)
+    vt.tree.event_generate("<ButtonRelease-1>", x=x + 5, y=y + 60, rootx=0, rooty=60, state=0x100)
+    assert dragged[-1] == ([2, 3, 4], "drop") and vt.selected_indices() == [2, 3, 4]   # dragged: still all three
+
+
+def test_a_selection_follows_its_rows_into_a_changed_list_and_tk_changes_are_taken_in(root):
+    rows = [(f"k{i}", (f"Song {i}", ""), ()) for i in range(30)]
+    vt = make(root, ListSource(rows), multiple=True)
+    vt.select_indices([5, 6, 9], cursor=6)
+    vt.set_source(ListSource(rows[3:]), keep=True)       # three rows went above them
+    assert vt.selected_indices() == [2, 3, 6] and vt.selected == 3
+    vt.tree.selection_set(("k8",))                       # a script sets Tk's selection itself
+    vt.sync()
+    assert vt.selected_indices() == [5]
+    vt.tree.selection_remove(*vt.tree.selection())
+    vt.sync()
+    assert vt.selected_indices() == [] and vt.selected is None
+
+
+def test_a_list_not_laid_out_yet_still_holds_a_screenful(root):
+    vt = VirtualTree(root, ("title", "artist"))          # (never packed: no height)
+    vt.set_source(Numbers(1000))
+    assert len(vt.tree.get_children()) == vt.page() > 10

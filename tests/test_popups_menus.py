@@ -374,7 +374,7 @@ def test_track_and_tab_menus(make_window, shown_menus, tmp_path, monkeypatch):
     assert "artist" in window.playlist.columns and window.prefs["track_columns"] == ["artist"]
     window._heading_menu(event)
     heading = shown_menus[-1]
-    assert [r.tick.cget("text") for r in heading.rows()] == [glyph(window.root, "check"), ""]
+    assert [r.tick.cget("text") for r in heading.rows()] == [glyph(window.root, "check"), "", ""]   # Artist, Album, Plays
     heading.invoke("Artist")
     assert "artist" not in window.playlist.columns
     # The keyboard's menu key opens the same menu under the focused row.
