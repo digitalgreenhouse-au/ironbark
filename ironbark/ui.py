@@ -281,7 +281,8 @@ class PlayerWindow:
         self._gain_tags: dict[Path, levelling.GainTags | None] = {}
         self._lufs: dict[Path, float | None] = {}
         self._level_wanted: set[Path] = set()
-        self._level_set_with: dict[Path, tuple] = {}   # the choices each file's gain was worked out with
+        # (the choices each file's gain was worked out with, and whether its true peak was known then)
+        self._level_set_with: dict[Path, tuple] = {}
         self._album_lufs: dict[Path, float | None] = {}
         self._album_jobs: queue.Queue = queue.Queue()
         self._album_wanted: Path | None = None
@@ -1144,11 +1145,11 @@ class PlayerWindow:
 
     def _sleep_line(self, status) -> str:
         """The status line while a sleep timer or "stop after this song" is set (with time left)."""
-        if self.sleep_timer is not None and self.sleep_timer.active:
-            return self.sleep_timer.describe()
-        if getattr(status, "stop_after", "") == "song" and status.state is not State.STOPPED:
-            return "Stops after this song"
-        return ""
+        timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
+        after_song = getattr(status, "stop_after", "") == "song" and status.state is not State.STOPPED
+        if after_song and (timer is None or timer.state == sleep.AT_ALBUM_END):
+            return "Stops after this song"   # (sooner than the end of the album, so it's what happens)
+        return timer.describe() if timer is not None else ""
 
     def _sleep_menu(self, menu):
         """Fill `menu` (a PopupMenu or a submenu of one) with "Stop after the current song" and the
@@ -1233,7 +1234,10 @@ class PlayerWindow:
                 continue
             cancel = self._album_cancel
             try:
-                result = loudness.album_loudness(album_files(track_path)[1], cancel)
+                files = album_files(track_path)[1]
+                # (a folder of more songs than an album holds, singles say, isn't measured as one)
+                result = ((None, None) if len(files) > levelling.ALBUM_MOST_FILES
+                          else loudness.album_loudness(files, cancel))
             except (OSError, RuntimeError, ValueError):
                 result = (None, None)
             except Exception:
@@ -1265,7 +1269,10 @@ class PlayerWindow:
         """Keep volume levelling in step with what's playing, as the clipping guard does: this
         song's gain and the next one's, worked out ahead so it's in place when that song joins on.
         A song's gain isn't changed once it's playing (unless the choice in Settings changes), so a
-        late measurement never jumps the level part-way through; it counts from the next song.
+        late measurement never jumps the level part-way through; it counts from the next song. The
+        one exception is downwards only: a gain worked out before the song's true peak was measured
+        (from its tags' peak, which is often just the highest sample) is held down if the measured
+        peak shows it would go past the ceiling (levelling.held), as the clipping guard would.
         Off: every gain is taken away and playback is exactly as without levelling."""
         setting = self._levelling_setting()
         if setting == "off" or track is None:
@@ -1289,8 +1296,14 @@ class PlayerWindow:
         for path, queued in entries:
             mode = levelling.mode_for(setting, tab.kind if tab else None, self.player.shuffle, queued)
             choices = (setting, preamp, mode)
-            if path == track.path and self.player.levelling_for(path) is not None \
-                    and self._level_set_with.get(path) == choices:
+            current, set_with = self.player.levelling_for(path), self._level_set_with.get(path)
+            peak_known = path in self._peaks
+            if path == track.path and current is not None and set_with is not None and set_with[0] == choices:
+                if peak_known and not set_with[1]:   # its true peak has come in since: only ever down
+                    level = levelling.held(current, self._gain_tags.get(path), self._peaks.get(path) or None)
+                    if level != current:
+                        self.player.set_levelling(path, level)
+                    self._level_set_with[path] = (choices, True)
                 continue   # playing: keep its level
             tags = self._gain_tags.get(path)
             album = None
@@ -1302,10 +1315,11 @@ class PlayerWindow:
                     self._want_album(folder, path)
             level = levelling.level_for(mode, tags, self._lufs.get(path), album, self._peaks.get(path) or None,
                                         preamp)
-            if level != self.player.levelling_for(path):
+            if level != current:
                 self.player.set_levelling(path, level)
             if level is not None:
-                self._level_set_with[path] = choices
+                self._level_set_with.pop(path, None)   # (newest last: the oldest are let go below)
+                self._level_set_with[path] = (choices, peak_known)
         while len(self._level_set_with) > 16:
             self._level_set_with.pop(next(iter(self._level_set_with)))
 
@@ -1356,7 +1370,7 @@ class PlayerWindow:
             # (0.24.0) Measured at 8x; just under full scale (plus any headroom the DAC has), with
             # 0.17 dB spare — the most 8x can under-read (analysis.guard_trim).
             trim = guard_trim(peak, self._headroom_db())
-            if abs(self.player.trim_for(path) - trim) > 1e-6:
+            if abs(self.player.guard_for(path) - trim) > 1e-6:   # (the guard's own part: not levelling's)
                 self.player.set_trim(path, trim)
 
     # -- playlists -------------------------------------------------------------

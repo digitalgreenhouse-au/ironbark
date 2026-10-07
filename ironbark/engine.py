@@ -1205,16 +1205,30 @@ class Player:
 
     def _stops_after(self, at) -> bool:
         """Does playback stop at the end of `at` (a list position or a queued song)? "song": only
-        the song playing (`_current`). "album": any song whose next one is from another album —
-        the decoder reads ahead, so with short songs it may be asking about one lined up already."""
+        the song playing (`_current`). "album": any song whose next one is from another album, or
+        after which the list goes round again (repeat all / repeat one: the album has played to
+        its end) — the decoder reads ahead, so with short songs it may be asking about one lined
+        up already."""
         mode = self.stop_after
         if mode is None or at is None:
             return False
         if mode == "song":
             return at == self._current()   # (a queued song is compared by identity)
-        track, following = self._track_at(at), self._track_at(self._next_after(at))
-        return (track is None or following is None
-                or album_folder(audiofile.real_path(following.path)) != album_folder(audiofile.real_path(track.path)))
+        after = self._next_after(at)
+        track, following = self._track_at(at), self._track_at(after)
+        if (track is None or following is None
+                or album_folder(audiofile.real_path(following.path)) != album_folder(audiofile.real_path(track.path))):
+            return True
+        return not isinstance(at, Queued) and not isinstance(after, Queued) and self._goes_round(at, after)
+
+    def _goes_round(self, at: int, after: int) -> bool:
+        """Does the list start again between list positions `at` and `after` (the next one comes
+        no later in play order: repeat all wrapping round, or repeat one)?"""
+        order = self._order  # (a snapshot: the decoder calls this without the lock)
+        try:
+            return order.index(after) <= order.index(at)
+        except ValueError:
+            return False
 
     def fade_out(self, seconds: float) -> bool:
         """Fade the music out over `seconds` (evenly in dB down to FADE_FLOOR_DB, then silence),
@@ -1262,8 +1276,11 @@ class Player:
                     return
                 if self._session:
                     return
-                if self._resume_with is not None and any(q is self._resume_with for q in self.queue):
-                    self._start(self._resume_with)  # stopped after a song: Up next's song comes next
+                if self._resume_with is not None:  # stopped after a song with one from Up next to come
+                    resume = self._resume_with
+                    if not any(q is resume for q in self.queue):  # taken out of Up next since
+                        resume = self.queue[0] if self.queue else self._step(self.index, 1)
+                    self._start(resume if resume is not None else (self._order[0] if self._order else 0))
                     return
                 start_at = self._suspended_at or start_at  # carry on where suspend() left it
                 if self.queued_now is not None and self._suspended_at is not None:
@@ -1564,7 +1581,10 @@ class Player:
                              else "Nothing here has any music that can be played")
             return
         if following is not None:
+            fade = self._fade   # a sleep timer's fade carries on into the next song (it isn't a fresh start)
             self._start(following, transition=session.handoff or "started")
+            if self._session is not None:
+                self._fade = fade
         else:
             self._close_session()
             self.index = self._order[0] if self._order else 0  # ready to play it again

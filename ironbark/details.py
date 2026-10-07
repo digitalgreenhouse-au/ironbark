@@ -49,8 +49,9 @@ NETWORK_HINT = ("Turn on Settings → Network → Allow network access first. On
 
 def levelling_text(level, trim: float = 1.0) -> str:
     """"Volume levelling −4.3 dB (album)" for a track that volume levelling changes (the gain the
-    track really gets: when the clipping guard holds it lower, the guard's figure, and that's said)."""
-    if level is None:
+    track really gets: when the clipping guard holds it lower, the guard's figure, and that's said).
+    "" when the track's gain comes to exactly 0 dB: its samples go out untouched (proof.apply_gain)."""
+    if level is None or trim == 1.0:
         return ""
     if 0 < trim < level.gain * (1 - 1e-6):
         return (f"Volume levelling {20 * math.log10(trim):+.1f} dB ({level.mode}, held down by the clipping "
@@ -68,7 +69,8 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
     of what the decoder rebuilt.
     bits: the track's bits per sample; a device that takes fewer (OutputInfo.device_bits) drops
     the rest, so that isn't bit-perfect either.
-    level: volume levelling on this track (levelling.Levelling) — always amber, never bit-perfect.
+    level: volume levelling on this track (levelling.Levelling) — amber, never bit-perfect (unless
+    its gain comes to exactly 0 dB, which leaves the samples as they are).
     fading: the sleep timer is fading the music out."""
     if output is None:
         return "", "plain"
@@ -158,7 +160,7 @@ def describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, 
                else f"checking… {fmt_clock(proof.checked)} of {fmt_clock(proof.sent)}")
     if not proof.untouched:
         reasons = ["the volume (below 100%)"] if gain < 1.0 else []
-        if level is not None:
+        if levelling_text(level, trim):
             reasons.append(levelling_text(level, trim).replace("Volume levelling", "volume levelling", 1))
         if fading:
             reasons.append("the sleep timer's fade-out")

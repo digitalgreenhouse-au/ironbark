@@ -144,6 +144,75 @@ def test_stop_after_a_song_from_up_next_resumes_with_the_queue(tmp_path, fake_ca
     player.stop()
 
 
+def test_stop_after_resumes_with_the_list_if_that_song_left_up_next(tmp_path, fake_card):
+    (a, _), (b, _), (q, _) = (wav(tmp_path, n, 5000) for n in ("a.wav", "b.wav", "q.wav"))
+    player = Player()
+    session = start(player, [a, b])
+    player.add_to_queue([Track(q, "q")])
+    player.set_stop_after("song")
+    pull(session)
+    with player._lock:
+        player._ended(session)
+    player.remove_from_queue(0)                     # taken out of Up next while stopped
+    with player._lock:
+        player.play()
+    assert player._session._src.path == b           # the list carries on (not "a" over again)
+    player.stop()
+
+
+def test_end_of_this_album_stops_even_when_the_list_goes_round(tmp_path, fake_card):
+    # One album with repeat all (or repeat one) never reaches another album: going round is its end.
+    (a1, _), (a2, _) = wav(tmp_path / "Album", "1.wav", 5000), wav(tmp_path / "Album", "2.wav", 5000)
+    player = Player()
+    player.set_tracks([Track(a1, "1"), Track(a2, "2")])
+    player.set_stop_after("album")
+    for repeat in ("all", "one"):
+        player.set_repeat(repeat)
+        assert player._stops_after(1) and player._follow(1) is None
+    player.set_repeat("all")
+    assert not player._stops_after(0) and player._follow(0)[1] == a2   # (the album's own songs still join)
+    session = start(player, [a1, a2])
+    player.set_stop_after("album")
+    pull(session)
+    deadline = time.monotonic() + 5
+    while player.index != 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    with player._lock:
+        player._ended(session)
+    assert player._session is None and player.status().message == "Stopped at the end of the album, as asked"
+    assert player.index == 0                        # ready to play the album again
+    player.stop()
+
+
+def test_a_fade_carries_on_into_a_song_that_doesnt_join_gaplessly(tmp_path, fake_card):
+    # A sample-rate change means a fresh start, not a gapless join: the fade must not end there,
+    # or the sleep timer would leave the next song playing at full level.
+    (a, _) = wav(tmp_path, "a.wav", 9000)
+    b = tmp_path / "b.wav"
+    sf.write(b, (RNG.standard_normal((9000, 2)) * 4000).astype(np.int16), 48000, subtype="PCM_16")
+    now = [100.0]
+    player = Player()
+    player._clock = lambda: now[0]
+    session = start(player, [a, b])
+    assert player.fade_out(10.0)
+    now[0] += 5.0
+    pull(session)
+    with player._lock:
+        player._ended(session)                      # B starts afresh (the device reopens at 48 kHz)
+    assert player._session is not None and player._session._src.path == b
+    status = player.status()
+    assert status.fading and player._gain(b) == pytest.approx(10 ** (FADE_FLOOR_DB * 0.5 / 20))
+    timer = sleep.SleepTimer(player, 15, clock=lambda: now[0])
+    timer.state = sleep.FADING
+    timer.tick(status)
+    assert timer.active                             # still fading: the timer hasn't let go
+    now[0] += 5.0
+    with player._lock:
+        player._faded()
+    assert player.status().state is State.PAUSED
+    player.stop()
+
+
 def test_stop_by_hand_forgets_it():
     player = Player()
     player.set_stop_after("song")
@@ -287,6 +356,11 @@ def test_the_window_offers_and_shows_them(make_window):
     assert window.sleep_timer is not None and window._sleep_line(status) == "Sleep timer: 45 min left"
     window.set_sleep_timer("album")
     assert player.stop_after == "album" and window.sleep_timer.target == "album"
+    album = SimpleNamespace(state=State.PLAYING, stop_after="album")
+    assert window._sleep_line(album) == "Sleep timer: stopping at the end of this album"
+    assert window.stop_after_current() is True      # sooner than the album's end: the line says so
+    assert window._sleep_line(status) == "Stops after this song"
+    assert window.stop_after_current() is False and player.stop_after == "album"   # (the album's end again)
     window.set_sleep_timer(None)
     assert window.sleep_timer is None and player.stop_after is None
     assert not errors

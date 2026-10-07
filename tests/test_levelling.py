@@ -174,6 +174,15 @@ def test_never_turned_up_past_the_peak():
     assert loud.db == pytest.approx(-2.1) and loud.limited
 
 
+def test_held_only_ever_brings_a_level_down_to_the_ceiling():
+    boosted = Levelling(db(5.9), "track", "ReplayGain tags", limited=True)
+    tags = GainTags(+9.0, None, track_peak=db(-6.0))
+    assert levelling.held(boosted, tags, db(-4.0)) == Levelling(db(3.9), "track", "ReplayGain tags", limited=True)
+    assert levelling.held(boosted, tags, db(-12.0)) is boosted      # (a lower true peak never raises it)
+    album = Levelling(db(2.0), "album", "measured")
+    assert levelling.held(album, GainTags(None, 1.0, album_peak=db(-1.0)), None).db == pytest.approx(0.9)
+
+
 def test_smart_mode():
     assert mode_for("smart", "album", shuffle=False, queued=False) == "album"
     assert mode_for("smart", "folder", shuffle=False, queued=False) == "album"
@@ -385,3 +394,103 @@ def test_the_worker_reads_tags_and_measures_only_what_it_must(monkeypatch, tmp_p
     # Tagged: only its true peak; bare: loudness and peak in one read; not wanted: nothing.
     assert measured == [("tagged.flac", True, False), ("bare.flac", True, True)]
     assert w._lufs == {Path("bare.flac"): -12.0} and w._peaks[Path("tagged.flac")] == 0.5
+
+
+def settled(window, path, forget_peak=True):
+    """Let the window's own first look at the song (its poll, on the worker) finish, then forget
+    what it found: the test sets its own figures, with no refresh running meanwhile."""
+    deadline = time.monotonic() + 10
+    while window._level_wanted and path not in window._lufs and time.monotonic() < deadline:
+        time.sleep(0.01)
+    while not window._peak_jobs.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.05)
+    if forget_peak:
+        window._peaks.pop(path, None)
+    window._gain_tags.pop(path, None)
+    window._lufs.pop(path, None)
+    window._level_set_with.clear()
+    window.player.set_levelling(None)
+    window._level_wanted = {path}                          # (as if the worker had been asked)
+
+
+def test_a_boost_from_the_tags_peak_comes_down_once_the_true_peak_is_measured(make_window):
+    # A tag's peak is often the highest sample, below the true peak: a boost worked out from it
+    # alone (the song started before its true peak was measured) is lowered when that comes in —
+    # never raised, so the level doesn't jump up part-way through.
+    window, root, player, errors = make_window(levelling="track")
+    path = player.track.path
+    settled(window, path)
+    window._gain_tags[path] = GainTags(+9.0, None, track_peak=db(-6.0))
+    status = player.status()
+    window._apply_levelling(player.track, status)
+    assert player.levelling_for(path).db == pytest.approx(5.9)        # from the tag's peak alone
+    window._peaks[path] = db(-4.0)                                    # the true peak: 2 dB higher
+    window._apply_levelling(player.track, status)
+    assert player.levelling_for(path).db == pytest.approx(3.9) and player.levelling_for(path).limited
+    window._peaks[path] = db(-9.0)                                    # (settled now: no more changes)
+    window._apply_levelling(player.track, status)
+    assert player.levelling_for(path).db == pytest.approx(3.9)
+    # No peak in the tags: held at 0 dB until measured, and not raised mid-song after that.
+    window._level_set_with.clear()
+    player.set_levelling(None)
+    del window._peaks[path]
+    window._gain_tags[path] = GainTags(+6.0, None)
+    window._apply_levelling(player.track, status)
+    assert player.levelling_for(path).gain == 1.0
+    window._peaks[path] = db(-12.0)
+    window._apply_levelling(player.track, status)
+    assert player.levelling_for(path).gain == 1.0
+    assert not errors
+
+
+def test_the_guard_checks_only_its_own_part(make_window):
+    # With levelling on, trim_for is the two together: the guard compares against its own part,
+    # so it doesn't set the same turn-down again on every refresh.
+    window, root, player, errors = make_window(levelling="track", clip_guard=True)
+    path = player.track.path
+    settled(window, path, forget_peak=False)
+    player.set_trim(None, 1.0)
+    window._peaks[path] = db(+1.0)                                    # this loud master needs the guard
+    player.set_levelling(path, Levelling(db(-6.0), "track", "ReplayGain tags"))
+    calls = []
+    original = player.set_trim
+    player.set_trim = lambda p, gain: calls.append(gain) or original(p, gain)
+    for _ in range(3):
+        window._apply_guard(player.track, 0)
+    assert len(calls) == 1 and player.guard_for(path) == pytest.approx(db(-1.17))
+    assert player.trim_for(path) == pytest.approx(db(-6.0))
+    assert not errors
+
+
+def test_a_levelling_gain_of_exactly_0_db_is_still_bit_perfect():
+    # (Held at 0 dB because no peak is known yet, say): the samples go out untouched, so the
+    # Output line mustn't say otherwise — the proof will show them untouched.
+    level = Levelling(1.0, "track", "ReplayGain tags", limited=True)
+    assert output_line(EXCLUSIVE, 1.0, trim=1.0, bits=16, level=level) == output_line(EXCLUSIVE, 1.0, bits=16)
+    untouched = Proof(sent=10, checked=10)
+    assert describe_proof(untouched, EXCLUSIVE, 1.0, 1.0, level=level) == describe_proof(untouched, EXCLUSIVE, 1.0, 1.0)
+    faded = describe_proof(Proof(sent=10, checked=10, min_gain=0.5), SHARED, 1.0, 1.0, level=level, fading=True)[0]
+    assert "changed by the sleep timer's fade-out" in faded and "levelling" not in faded
+
+
+def test_a_folder_of_more_songs_than_an_album_isnt_measured_as_one(monkeypatch, tmp_path):
+    from ironbark import loudness
+    from ironbark.ui import PlayerWindow
+    measured = []
+    monkeypatch.setattr(loudness, "album_loudness", lambda files, cancel=None: measured.append(len(files)) or (-14.0, 5.0))
+    monkeypatch.setattr(levelling, "ALBUM_MOST_FILES", 3)
+    small, big = tmp_path / "Album", tmp_path / "Singles"
+    for folder, count in ((small, 3), (big, 4)):
+        folder.mkdir()
+        for k in range(count):
+            sf.write(folder / f"{k}.wav", np.zeros((10, 2), np.int16), 44100)
+    w = SimpleNamespace(_album_lufs={}, _album_jobs=queue.Queue(), _album_wanted=None, _album_cancel=threading.Event())
+    threading.Thread(target=PlayerWindow._measure_albums, args=(w,), daemon=True).start()
+    for folder in (small, big):
+        w._album_wanted = folder
+        w._album_jobs.put((folder, folder / "0.wav"))
+        deadline = time.monotonic() + 5
+        while folder not in w._album_lufs and time.monotonic() < deadline:
+            time.sleep(0.01)
+    assert w._album_lufs == {small: -14.0, big: None} and measured == [3]   # the big one: track gains

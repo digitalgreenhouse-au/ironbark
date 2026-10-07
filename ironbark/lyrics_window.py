@@ -73,7 +73,9 @@ class LyricsView(tk.Frame):
             self.nothing(where)
             return
         self.lyrics, self.current = found, -1
-        self._write([(line.text + ("\n" if k < len(found.lines) - 1 else ""), "line")
+        # One text line per lyric line (follow() lights lines up by number): a line break inside
+        # a piece of text (a SYLT syllable can hold one) is shown as a space.
+        self._write([(" ".join(line.text.splitlines()) + ("\n" if k < len(found.lines) - 1 else ""), "line")
                      for k, line in enumerate(found.lines)])
 
     def follow(self, seconds: float) -> int:
@@ -132,7 +134,9 @@ class LyricsWindow:
         self.view.idle()
 
         self._path = None          # the song whose lyrics are on show (or being read)
-        self._loaded: tuple | None = None   # (path, lyrics) from the worker, picked up by _tick
+        # path -> its lyrics (or None) from the workers, picked up by _tick. By path, so a slow read
+        # of an earlier song finishing late can't take the place of the song playing now.
+        self._found: dict = {}
         self._keep_going = toolwin.KeepGoing(self.win)
         self.win.bind("<Configure>", self._moved, add="+")
         self._job = self.win.after(REFRESH_MS, self._tick)
@@ -148,7 +152,7 @@ class LyricsWindow:
         path = track.path if track is not None else None
         if path != self._path:
             self._path = path
-            self._loaded = None
+            self._found.clear()
             if track is None:
                 self.title_label.configure(text="Nothing playing")
                 self.source_label.configure(text="")
@@ -158,10 +162,8 @@ class LyricsWindow:
             self.source_label.configure(text=track.display_artist_album or audiofile.display_name(path))
             self.view.loading()
             self._read(path)
-        loaded = self._loaded
-        if loaded is not None and loaded[0] == path:
-            self._loaded = None
-            found = loaded[1]
+        if path in self._found:
+            found = self._found.pop(path)
             self.view.show(found, lyrics.where_looked(path))
             if found is not None:
                 kind = "synced" if found.synced else "words only"
@@ -178,7 +180,7 @@ class LyricsWindow:
                 found = reader(path)
             except Exception:  # noqa: BLE001 — unreadable: shown as none found
                 found = None
-            self._loaded = (path, found)
+            self._found[path] = found
 
         threading.Thread(target=work, name="lyrics", daemon=True).start()
 

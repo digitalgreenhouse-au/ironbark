@@ -50,6 +50,8 @@ PEAK_CEILING_DBTP = -0.1      # a turned-up track's peak stays at or below this
 PREAMP_CHOICES = tuple(float(db) for db in range(-6, 7))   # Settings → Pre-amp, dB
 MODES = (("off", "Off"), ("track", "Track"), ("album", "Album"), ("smart", "Smart"))
 ALBUM_TABS = ("album", "folder", "library")   # tabs whose songs come album by album, in order
+ALBUM_MOST_FILES = 200        # a folder of more songs than this isn't one album (a folder of singles):
+                              # it isn't measured as one, and its songs get their track gains
 MAX_GAIN_DB = 64.0            # a tag value beyond this either way isn't a real gain
 MAX_PEAK = 16.0               # nor a peak above this (24 dB over full scale)
 
@@ -206,13 +208,18 @@ def level_for(mode: str, tags: GainTags | None, track_lufs: float | None, album_
             gain_db, source = REFERENCE_LUFS - track_lufs, "measured"
         else:
             return None
-    gain = 10 ** ((gain_db + preamp_db) / 20)
+    return held(Levelling(10 ** ((gain_db + preamp_db) / 20), used, source), tags, peak)
+
+
+def held(level: Levelling, tags: GainTags | None, peak: float | None) -> Levelling:
+    """`level`, held down if need be so the peak lands at or below PEAK_CEILING_DBTP: the measured
+    true peak (`peak`, linear) or the tags' peaks, whichever is higher. No peak known: never up."""
     peaks = [p for p in (peak, tags.track_peak if tags else None,
-                         tags.album_peak if tags is not None and used == "album" else None) if p]
-    ceiling = 10 ** (PEAK_CEILING_DBTP / 20) / max(peaks) if peaks else 1.0   # no peak known: never up
-    if gain > ceiling:
-        return Levelling(ceiling, used, source, limited=True)
-    return Levelling(gain, used, source)
+                         tags.album_peak if tags is not None and level.mode == "album" else None) if p]
+    ceiling = 10 ** (PEAK_CEILING_DBTP / 20) / max(peaks) if peaks else 1.0
+    if level.gain > ceiling:
+        return Levelling(ceiling, level.mode, level.source, limited=True)
+    return level
 
 
 def describe(level) -> str:

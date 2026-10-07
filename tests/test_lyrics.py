@@ -258,6 +258,48 @@ def test_the_window_says_where_it_looked_when_there_are_none(root, tmp_path):
     win.close()
 
 
+def test_a_slow_read_of_an_earlier_song_doesnt_take_the_place_of_this_ones(root, tmp_path):
+    # Song A's read (a sleeping drive, say) finishes after song B's, before the window looks:
+    # B's lyrics must still show, not "Looking for lyrics…" for ever.
+    import threading
+
+    from ironbark.lyrics_window import LyricsWindow
+    a, b = Track(tmp_path / "A.flac", "A"), Track(tmp_path / "B.flac", "B")
+    release = {a.path: threading.Event(), b.path: threading.Event()}
+    words = {a.path: Lyrics([Line(None, "a words")], False, "A.txt"), b.path: SYNCED}
+    started = []
+
+    def reader(path):
+        started.append(path)
+        release[path].wait(10)
+        return words[path]
+
+    player = FakePlayer(a)
+    win = LyricsWindow(root, player, {}, reader=reader)
+    wait(root, lambda: started == [a.path])
+    player.track = b
+    wait(root, lambda: started == [a.path, b.path])
+    for path in (b.path, a.path):                     # B's read ends first, then A's — no tick between
+        release[path].set()
+        deadline = time.monotonic() + 5
+        while path not in win._found and time.monotonic() < deadline:
+            time.sleep(0.01)
+    wait(root, lambda: win.view.lyrics is SYNCED)
+    win.close()
+
+
+def test_a_line_break_inside_a_synced_line_keeps_the_lines_in_step(root):
+    # (A SYLT syllable can hold a line break part-way through.) One text line per lyric line,
+    # or the line lit up would be the wrong one.
+    from ironbark.lyrics_window import LyricsView
+    view = LyricsView(root)
+    view.show(Lyrics([Line(1.0, "one\nstill one"), Line(2.0, "two")], True, "tags"))
+    assert view.follow(2.5) == 1
+    assert view.text.get(*view.text.tag_ranges("current")) == "two"
+    assert view.text.get("1.0", "1.end") == "one still one"
+    view.destroy()
+
+
 from test_light_mini import _pump, make_window  # noqa: E402,F401  (make_window is a fixture)
 
 
