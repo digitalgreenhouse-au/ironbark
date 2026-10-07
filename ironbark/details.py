@@ -195,6 +195,48 @@ def fmt_speed(speed: float | None) -> str:
     return f"{speed / 1e6:.1f} MB/s (megabytes per second)" if speed else ""
 
 
+QUALITY_WORDS = {"excellent": "Excellent", "good": "Good", "poor": "Poor", "unstable": "Unstable"}
+
+
+def server_name(host: str) -> str:
+    """A server as people write it: \\\\192.168.80.173 (or OneDrive)."""
+    if host == "cloud":
+        return "OneDrive"
+    return "\\\\" + host if host else "its server"
+
+
+def network_now_line(now) -> str:
+    """Settings → Network playback's line about the network, as the song playing (or the server
+    last fetched from) sees it: "Network now: Good — 12.8 MB/s (megabytes per second); this song
+    needs 0.4 MB/s"."""
+    if now is None:
+        return "Network now: nothing fetched yet"
+    if now.state == "down":
+        return f"Network now: {server_name(now.host)} isn't answering"
+    words = QUALITY_WORDS.get(now.quality, "measuring")
+    speed = f" — {fmt_speed(now.speed)}" if now.speed else ""
+    need = f"; this song needs {now.song_rate / 1e6:.1f} MB/s" if now.song_rate else ""
+    return f"Network now: {words}{speed}{need}"
+
+
+def cache_mark(progress) -> tuple[str, str, str]:
+    """(mark, tone, what it means) for a network song in Up next: ● in the cache, ◐ 72% partly
+    downloaded, ○ waiting to download, ! couldn't download. ("", "", "") for a song on this computer.
+    Tones: "accent", "warn", "plain"."""
+    if progress is None:
+        return "", "", ""
+    if progress.state == "ready":
+        return "●", "accent", "In the cache: plays without the network"
+    if progress.state == "failed" or progress.host_state == "down":
+        server = server_name(progress.host)
+        why = f"{server} isn't answering" if progress.host_state == "down" else (progress.error or "it couldn't be read")
+        return "!", "warn", f"Couldn't download: {why} · will try again"
+    percent = int(progress.fraction * 100)
+    if percent > 0:
+        return f"◐ {percent}%", "plain", f"{percent}% downloaded"
+    return "○", "plain", "Waiting to download"
+
+
 def network_hover(network) -> str:
     """The status square's hover text for a song from a network drive (one line)."""
     if network is None:
@@ -243,6 +285,9 @@ def source_rows(track, network) -> list[tuple[str, str]]:
     speed = fmt_speed(network.speed)
     if speed and network.cached < 1.0:
         rows.append(("Speed", speed))
+    quality = QUALITY_WORDS.get(getattr(network, "quality", ""))
+    if quality:
+        rows.append(("Network", quality))
     return rows
 
 

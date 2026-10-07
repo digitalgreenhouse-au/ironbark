@@ -375,3 +375,118 @@ def test_every_decode_and_index_call_is_in_the_reviewed_register():
     gone = {k: v for k, v in REVIEWED.items() if k not in found}
     assert not new, f"a new or changed decode call: review it for songs on network drives, then list it: {new}"
     assert not gone, f"listed but not found any more (take it off the list): {gone}"
+
+
+# -- what's downloaded, the network's quality, Up next's marks (v2a) ---------------------------------------
+def test_the_network_now_line_up_next_marks_and_the_quality_row():
+    from ironbark.details import cache_mark, network_now_line
+    from ironbark.netcache import NetworkNow, Progress
+    assert network_now_line(None) == "Network now: nothing fetched yet"
+    assert network_now_line(NetworkNow("192.168.80.173", "up", "good", 12.8e6, 0.4e6)) == (
+        "Network now: Good — 12.8 MB/s (megabytes per second); this song needs 0.4 MB/s")
+    assert network_now_line(NetworkNow("192.168.80.173", "up", "", None, None)) == "Network now: measuring"
+    assert network_now_line(NetworkNow("192.168.80.173", "down", "poor", None, None)) == (
+        "Network now: \\\\192.168.80.173 isn't answering")
+
+    def progress(state, fraction, **more):
+        return Progress(state, fraction, None, "", host="192.168.80.173", **more)
+
+    assert cache_mark(None) == ("", "", "")
+    assert cache_mark(progress("ready", 1.0)) == ("●", "accent", "In the cache: plays without the network")
+    assert cache_mark(progress("downloading", 0.72)) == ("◐ 72%", "plain", "72% downloaded")
+    assert cache_mark(progress("queued", 0.0)) == ("○", "plain", "Waiting to download")
+    assert cache_mark(progress("partial", 0.2, host_state="down")) == (
+        "!", "warn", "Couldn't download: \\\\192.168.80.173 isn't answering · will try again")
+    assert cache_mark(progress("failed", 0.0, error="it's no longer on the share"))[2] == (
+        "Couldn't download: it's no longer on the share · will try again")
+    track = Track(Path("//192.168.80.173/Shared/Song.flac"), "Song", size=28_300_000)
+    rows = dict(source_rows(track, view("playing", copy="downloading", cached=0.5, quality="good", speed=2e6)))
+    assert rows["Network"] == "Good" and rows["Speed"].startswith("2.0 MB/s")
+    assert "Network" not in dict(source_rows(track, view("playing", copy="verified", cached=1.0)))
+
+
+class NetStub(StubCache):
+    """A cache with songs at different stages, for the window's marks and lines."""
+
+    def __init__(self, stages):
+        super().__init__()
+        self.stages = stages            # path name -> netcache.Progress (absent: a local song)
+        self.narrowed = False
+        self.changed = 0
+
+    def progress(self, path):
+        return self.stages.get(Path(path).name)
+
+    def network_now(self):
+        return netcache.NetworkNow("192.168.80.173", "up", "excellent", 12.8e6, 0.4e6)
+
+    def settings_changed(self):
+        self.changed += 1
+
+
+def test_settings_offers_every_pre_download_keep_and_size_choice(make_window, monkeypatch):
+    stub = NetStub({})
+    monkeypatch.setattr(netcache, "install", lambda prefs, player: stub)
+    window, root, player, errors = make_window(experiments={"network_cache": True})
+    window._start_cache()
+    assert [*window.net_predownload_box.cget("values")] == ["Off", "Next track", "Next 2 tracks", "Entire queue"]
+    assert [*window.net_keep_box.cget("values")] == ["Don't keep", "Until playback finishes", "For 1 day",
+                                                    "Until the cache is full"]
+    assert [*window.net_size_box.cget("values")] == ["1 GB", "5 GB", "10 GB", "25 GB", "50 GB", "Unlimited"]
+    assert window.net_keep_box.get() == "Until the cache is full" and window.net_size_box.get() == "10 GB"
+    for box, index in ((window.net_predownload_box, 3), (window.net_keep_box, 1), (window.net_size_box, 5)):
+        box.current(index)
+        box.event_generate("<<ComboboxSelected>>")
+    root.update()
+    assert (window.prefs["net_predownload"], window.prefs["net_keep"], window.prefs["net_cache_gb"]) == (
+        "queue", "session", 0)
+    assert stub.changed == 3                                    # the cache plans and tidies again at once
+    assert window.cache_text.cget("text") == "Cache: 3.2 GB used · 84 songs"   # (no limit: no "of")
+    assert window.net_now_text.cget("text") == (
+        "Network now: Excellent — 12.8 MB/s (megabytes per second); this song needs 0.4 MB/s")
+    settings.save(window.prefs)
+    again = settings.load()
+    assert (again["net_predownload"], again["net_keep"], again["net_cache_gb"]) == ("queue", "session", 0)
+    settings.save({**again, "net_keep": "forever", "net_cache_gb": 3})
+    again = settings.load()
+    assert (again["net_keep"], again["net_cache_gb"]) == ("limit", 10)
+    assert errors == []
+
+
+def test_up_next_marks_each_network_song_and_the_seek_bar_shows_whats_downloaded(make_window, monkeypatch):
+    from ironbark.netcache import Progress
+    window, root, player, errors = make_window()
+    songs = [Track(Path(f"//192.168.80.173/Shared/{name}.flac"), name.title(), duration=200.0)
+             for name in ("ready", "half", "waiting", "away")] + [Track(Path("C:/Music/local.flac"), "Local")]
+    stub = NetStub({"ready.flac": Progress("ready", 1.0, None, "verified"),
+                    "half.flac": Progress("downloading", 0.72, 3e6, "downloading", host="192.168.80.173"),
+                    "waiting.flac": Progress("queued", 0.0, None, "downloading", host="192.168.80.173"),
+                    "away.flac": Progress("partial", 0.1, None, "downloading", host="192.168.80.173",
+                                          host_state="down")})
+    window._netcache = stub
+    player.add_to_queue(songs)
+    window._show_up_next()
+    root.update()
+    rows = [w for w in window.up_next_pop.body.winfo_children() if hasattr(w, "lead")]
+    assert [row.lead.cget("text") if row.lead is not None else "" for row in rows] == ["●", "◐ 72%", "○", "!", ""]
+    assert not any("short wait" in getattr(w, "cget", lambda _: "")("text")
+                   for w in window.up_next_pop.body.winfo_children() if w.winfo_class() == "TLabel")
+    stub.stages["half.flac"] = Progress("downloading", 0.9, 3e6, "downloading", host="192.168.80.173")
+    stub.narrowed = True
+    window._paint_up_next()                                     # (as each poll does while it's open)
+    root.update()
+    rows = [w for w in window.up_next_pop.body.winfo_children() if hasattr(w, "lead")]
+    assert rows[1].lead.cget("text") == "◐ 90%"
+    assert any("short wait" in w.cget("text") for w in window.up_next_pop.body.winfo_children()
+               if w.winfo_class() == "TLabel")
+    window.up_next_pop.hide()
+    track = player.track
+    band = ((0.0, 0.25), (0.6, 0.8))
+    player.status = lambda: Status(State.PLAYING, 0, track, 42.0, track.duration,
+                                   network=view("playing", copy="downloading", cached=0.45, spans=band))
+    window._refresh_view()
+    assert window.seek.band == band
+    player.status = lambda: Status(State.PLAYING, 0, track, 42.0, track.duration)
+    window._refresh_view()
+    assert window.seek.band == ()
+    assert errors == []

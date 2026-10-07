@@ -114,9 +114,27 @@ class Gate:
     waiting: bool = False    # a read is waiting for the network right now
     furthest: int = 0        # the furthest byte any of its reads has needed
     wakers: list = field(default_factory=list)   # wake a waiting read (so it looks at cancel again)
+    spans: list = field(default_factory=list)    # the byte ranges its reads have needed, merged: [[start, end], …]
 
     def start_call(self) -> None:
         self.deadline = time.monotonic() + self.patience
+
+    def note(self, start: int, end: int) -> None:
+        """Record that a read needed bytes [start, end) (kept merged and in order)."""
+        spans = self.spans
+        if spans and spans[-1][0] <= start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
+            return
+        spans.append([start, end])
+        if len(spans) > 1 and spans[-2][0] > start:
+            spans.sort()
+            merged = [spans[0]]
+            for s, e in spans[1:]:
+                if s <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], e)
+                else:
+                    merged.append([s, e])
+            spans[:] = merged
 
     def wake(self) -> None:
         for waker in list(self.wakers):

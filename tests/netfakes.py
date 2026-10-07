@@ -141,11 +141,15 @@ class FakePlayer:
     def __init__(self, paths=()):
         self.order = list(paths)
         self.at = 0
+        self.playing = True            # something plays (or waits to): session_paths lists the songs
         self.lock = threading.Lock()   # the player's own lock: the manager must never take it
 
     def upcoming(self, n: int):
         order, at = self.order, self.at
         return [(i, order[i]) for i in range(at, min(len(order), at + n + 1))]
+
+    def session_paths(self):
+        return list(self.order) if self.playing else []
 
 
 class FakeClassifier(sources.Classifier):
@@ -171,6 +175,7 @@ def make_manager(folder: Path, share: FakeShare, player=None, prefs=None, *, pro
         return True
 
     disk = options.pop("disk_usage", lambda path: Usage(total, total - free, free))
+    options.setdefault("watch_network", None)   # (never Windows' own network notifications in tests)
     made = manager_mod.Manager(folder, {"net_verify": False, **(prefs or {})}, player, classifier=FakeClassifier(),
                                fetcher=share.fetcher, probe_host=options.pop("probe_host", probe_host),
                                disk_usage=disk, **options)

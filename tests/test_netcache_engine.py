@@ -274,11 +274,16 @@ def test_a_seek_past_the_download_fetches_then_plays_exactly_from_there(tmp_path
     s.seek(3.0)
     assert wait_until(lambda: s.network_wait is not None, 3)
     assert s.network_wait.seek and s.network_wait.frame == 3 * RATE
+    asked = []
+    real = prep.resumable
+    prep.resumable = lambda local, frame, stalls, quick=False: asked.append(stalls) or real(local, frame, stalls, quick)
+    assert wait_until(lambda: asked, 3)
     copy.arrive()
     card.play_to_end()
     got = card.audio
     start = int(np.flatnonzero(got.any(axis=1))[0])
     assert np.array_equal(got[start: start + len(ref) - 3 * RATE], ref[3 * RATE:])
+    assert set(asked) == {0}            # a seek ahead isn't a pause for the network: no longer wait next time
     s.close()
 
 

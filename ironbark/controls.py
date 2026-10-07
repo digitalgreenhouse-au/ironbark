@@ -202,6 +202,7 @@ class Slider(tk.Canvas):
         self.maximum = 0.0
         self.dragging = False
         self.hover = False
+        self.band: tuple = ()     # ((from, to), …) as fractions: shown as a faint band (see set_band)
         self._held: tuple[float, float] | None = None   # the latest set() while dragged
         self._drawn = None        # what's on show: (width, knob x, hover, colours)
         self._photo = None
@@ -230,6 +231,14 @@ class Slider(tk.Canvas):
             return
         if (value, maximum) != (self.value, self.maximum):
             self.value, self.maximum = value, maximum
+            self._draw()
+
+    def set_band(self, spans) -> None:
+        """A faint band along the track over the parts that are on this computer (a network song's
+        downloaded stretches, as fractions of it — like a video player's buffered bar); () for none."""
+        band = tuple((max(0.0, min(1.0, a)), max(0.0, min(1.0, b))) for a, b in (spans or ()) if b > a)
+        if band != self.band:
+            self.band = band
             self._draw()
 
     def fraction(self) -> float:
@@ -301,8 +310,9 @@ class Slider(tk.Canvas):
         knob = big if (self.hover or self.dragging) else rest
         has_knob = self.maximum > 0
         x = big + (width - 2 * big) * self.fraction()
-        colours = (theme.colour(self._bg), theme.BORDER, theme.ACCENT)
-        key = (width, height, round(x * SUPERSAMPLE) if has_knob else -1, knob if has_knob else 0, colours)
+        colours = (theme.colour(self._bg), theme.BORDER, theme.ACCENT, theme.MUTED)
+        band = tuple((round(a * width), round(b * width)) for a, b in self.band)
+        key = (width, height, round(x * SUPERSAMPLE) if has_knob else -1, knob if has_knob else 0, colours, band)
         if key == self._drawn:
             return
         self._drawn = key
@@ -315,6 +325,11 @@ class Slider(tk.Canvas):
             half = max(1.0, height * k * 0.125)          # the track: a quarter of the strip's height
             left, right = big * k - half, (width - big) * k + half
             d.rounded_rectangle((left, middle - half, right, middle + half), radius=half, fill=colours[1])
+            for a, b in self.band:   # downloaded stretches, between the track and the part played
+                xa = (big + (width - 2 * big) * a) * k
+                xb = (big + (width - 2 * big) * b) * k
+                d.rounded_rectangle((max(left, xa - half), middle - half, min(right, xb + half), middle + half),
+                                    radius=half, fill=colours[3])
             if has_knob:
                 xk = x * k
                 if xk > left + half:

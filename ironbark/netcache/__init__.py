@@ -20,11 +20,11 @@ import threading
 
 from .. import audiofile, settings
 from . import sources
-from .manager import CacheView, Manager, NotReady, Progress, Unavailable
+from .manager import CacheView, Manager, NetworkNow, NotReady, Progress, Unavailable
 from .store import OwnerLock
 
-__all__ = ["DIRECT", "Manager", "NotReady", "Progress", "Unavailable", "CacheView", "folder", "install",
-           "manager", "uninstall"]
+__all__ = ["DIRECT", "Manager", "NetworkNow", "NotReady", "Progress", "Unavailable", "CacheView", "folder",
+           "install", "manager", "uninstall"]
 
 log = logging.getLogger(__name__)
 _lock = threading.Lock()

@@ -6,6 +6,10 @@ Folder (`settings.cache_folder() / "NetCache"`):
     Partial\\<id>.g<gen>.part       a download in progress: only ever the unbroken run of bytes from
                                    the start (never made full size up front: a full-size file read
                                    before it's filled would play silence as if it were complete)
+    Partial\\<id>.g<gen>.seg-<n>    an "island": a run of bytes from offset n fetched ahead of that
+                                   unbroken run (after a seek ahead, or the end of a file whose open
+                                   reads its end). When the run from the start reaches an island, the
+                                   island is appended to the .part (a local copy) and deleted.
     Tracks\\<name> [<id>].<ext>     complete, checked copies, in their original format (a later version
                                    of the source: [<id>-g<gen>], so an old copy still playing is kept)
 
@@ -20,8 +24,8 @@ aside as netcache.db.damaged-dd-mm-yyyy and the cache emptied — everything can
 
 Write order (so the database never claims bytes that aren't safely on disk): the I/O thread
 writes a chunk, flushes it (readers can see it), and every 4 MiB or 2 s fsyncs it (it's durable);
-the scheduler stores the durable length as `prefix`. After a crash each .part is cut back to its
-stored length and the download carries on from there.
+the scheduler stores the durable length as `prefix` (and each island's, in `islands`). After a
+crash each .part and island is cut back to its stored length and the download carries on from there.
 """
 
 from __future__ import annotations
@@ -74,6 +78,30 @@ CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT);
 _BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
+class Island:
+    """Bytes [start, visible) of a source on disk in a file of their own, fetched ahead of the
+    unbroken run from the start. `durable`: how far they are fsynced (what the database claims)."""
+
+    __slots__ = ("start", "visible", "durable")
+
+    def __init__(self, start: int, visible: int | None = None, durable: int | None = None):
+        self.start = int(start)
+        self.visible = int(self.start if visible is None else visible)
+        self.durable = int(self.visible if durable is None else durable)
+
+    def __repr__(self):
+        return f"Island({self.start}, {self.visible})"
+
+
+def _islands_from(saved) -> list[Island]:
+    try:
+        runs = json.loads(saved) if isinstance(saved, str) else (saved or [])
+        islands = [Island(int(start), int(end), int(end)) for start, end in runs if int(end) > int(start) >= 0]
+    except (TypeError, ValueError):
+        return []
+    return sorted(islands, key=lambda island: island.start)
+
+
 def item_id(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
@@ -94,7 +122,7 @@ class Item:
         self.etag = saved.pop("etag", None)
         self.last_modified = saved.pop("last_modified", None)
         self.prefix = int(saved.pop("prefix", 0) or 0)     # durable bytes (the database's claim)
-        self.islands = saved.pop("islands", None)
+        self.islands: list[Island] = _islands_from(saved.pop("islands", None))   # in order, apart, past the prefix
         info = saved.pop("info", None)
         self.info: dict = json.loads(info) if isinstance(info, str) else dict(info or {})
         self.final_name = saved.pop("final_name", None)
@@ -117,6 +145,7 @@ class Item:
         self.old: dict[int, int] = {}   # abandoned versions still being read: gen -> bytes they have
         self.old_sizes: dict[int, int] = {}   # ... and their full size
         self.old_files: dict[int, Path] = {}   # … and, for an old complete copy, its file
+        self.old_islands: dict[int, list[Island]] = {}   # … and the islands it had
         self.failed_gens: set[int] = set()     # versions whose check failed (a play from one is warned of)
         self.open_ready = False         # the probe opened it and every byte that read is here
         self.open_end: int | None = self.info.get("open_end")
@@ -126,6 +155,7 @@ class Item:
         self.permanent = False          # FAILED because the source is gone or refused
         self.room_check = False         # the I/O thread found no room for it: the scheduler looks
         self.dirty = True
+        self.saved_islands = self.island_claim()   # what the database last heard about the islands
         self.on_demand = None           # (item, gen, start, end, role): wakes the scheduler
 
     # -- what readers use (audiofile.LocalTrack, GrowingFile) -------------------------------
@@ -178,7 +208,59 @@ class Item:
             return self.visible >= end or self.state == READY
         return end <= self.old.get(gen, 0)
 
-    has_now = has   # (plain integer reads: safe without the lock for a quick look)
+    def _runs(self, gen: int) -> tuple[int, list[Island]]:
+        """(the end of the unbroken run from the start, the islands) of version `gen`."""
+        if gen == self.gen:
+            return (int(self.size or 0) if self.state == READY else self.visible), self.islands
+        return self.old.get(gen, 0), self.old_islands.get(gen, [])
+
+    def has_range(self, gen: int, start: int, end: int) -> bool:
+        """Bytes [start, end) of version `gen` are on disk and readable (in the run from the start,
+        in an island, or across both)."""
+        prefix, islands = self._runs(gen)
+        if end <= prefix:
+            return True
+        at = max(start, prefix)
+        for island in list(islands):
+            if island.start > at:
+                break
+            at = max(at, island.visible)
+            if at >= end:
+                return True
+        return at >= end
+
+    has_now = has_range   # (plain integer reads: safe without the lock for a quick look)
+
+    def locate(self, gen: int, at: int) -> tuple[object, int] | None:
+        """Where byte `at` of version `gen` is: ("part", end of that run) — the .part, or the
+        complete copy once renamed — or (island start, island end); None if it isn't here."""
+        prefix, islands = self._runs(gen)
+        if at < prefix:
+            return "part", prefix
+        for island in list(islands):
+            if island.start <= at < island.visible:
+                return island.start, island.visible
+        return None
+
+    def island_bytes(self) -> int:
+        return sum(island.visible - island.start for island in self.islands)
+
+    def held(self) -> int:
+        """Bytes of this version on disk."""
+        if self.state == READY:
+            return int(self.size or 0)
+        return self.visible + self.island_bytes()
+
+    def spans(self) -> list[tuple[int, int]]:
+        """The byte runs of this version on disk, in order: [(start, end), …]."""
+        if self.state == READY or self.complete:
+            return [(0, int(self.size or self.visible))]
+        runs = [(0, self.visible)] if self.visible else []
+        return runs + [(island.start, island.visible) for island in self.islands if island.visible > island.start]
+
+    def island_claim(self) -> list:
+        """The islands as the database stores them: [[start, durable end], …]."""
+        return [[island.start, island.durable] for island in self.islands if island.durable > island.start]
 
     def size_of(self, gen: int) -> int:
         """The full size of version `gen` (an old one keeps its own)."""
@@ -219,13 +301,14 @@ class Item:
             return 1.0
         if not self.size:
             return 0.0
-        return min(1.0, self.visible / self.size)
+        return min(1.0, self.held() / self.size)
 
     def row(self) -> tuple:
         values = dict(id=self.id, key=self.key, kind=self.kind, source=self.source, host=self.host,
                       ext=self.ext, gen=self.gen, state=self.state, size=self.size, mtime_ns=self.mtime_ns,
                       etag=self.etag, last_modified=self.last_modified, prefix=self.prefix,
-                      islands=self.islands, info=json.dumps(self.info), final_name=self.final_name,
+                      islands=json.dumps(self.island_claim()) if self.island_claim() else None,
+                      info=json.dumps(self.info), final_name=self.final_name,
                       verified_by=self.verified_by, verified_at=self.verified_at, created=self.created,
                       completed=self.completed, last_used=self.last_used, use_count=self.use_count,
                       pinned=self.pinned, error=self.error, fail_count=self.fail_count, retry_at=self.retry_at)
@@ -289,6 +372,9 @@ class Store:
     # -- files ------------------------------------------------------------------------------
     def part_path(self, item: Item, gen: int | None = None) -> Path:
         return self.partial / f"{item.id}.g{item.gen if gen is None else gen}.part"
+
+    def island_path(self, item: Item, start: int, gen: int | None = None) -> Path:
+        return self.partial / f"{item.id}.g{item.gen if gen is None else gen}.seg-{int(start)}"
 
     def final_path(self, item: Item) -> Path | None:
         return self.tracks / item.final_name if item.final_name else None
@@ -454,13 +540,15 @@ class Store:
             part = self.part_path(item)
             final = self.final_path(item)
             if item.state == STALE:
-                for gen_part in self.partial.glob(f"{item.id}.g*.part"):
+                for gen_part in self.partial.glob(f"{item.id}.g*"):
                     self.delete_file(gen_part)
                 self.delete_file(final)
                 removed.append(item)
                 done["stale"] += 1
                 continue
             final_size = _size(final)
+            if item.islands and item.state in (READY, FAILED, DOWNLOADED, VERIFYING):
+                item.islands, item.dirty = [], True   # (complete or failed: no runs ahead to keep)
             if item.state == READY:
                 if final_size is not None and final_size == item.size:
                     kept.append(item)
@@ -485,8 +573,11 @@ class Store:
                 continue
             if part_size is None:
                 item.prefix = item.visible = item.durable = 0
-                if item.state != QUEUED:
+                done["truncated"] += self._tidy_islands(item)
+                if item.state != QUEUED and not item.islands:
                     item.state, item.dirty = QUEUED, True
+                elif item.islands and item.state not in (PARTIAL, QUEUED):
+                    item.state, item.dirty = PARTIAL, True
             else:
                 if part_size > item.prefix:
                     try:
@@ -498,14 +589,16 @@ class Store:
                 elif part_size < item.prefix:   # (never expected: claim only what's there)
                     item.prefix = part_size
                 item.visible = item.durable = item.prefix
+                done["truncated"] += self._tidy_islands(item)
                 if item.state in (PROBING, DOWNLOADING, QUEUED):
-                    item.state = PARTIAL if item.prefix else QUEUED
+                    item.state = PARTIAL if item.prefix or item.islands else QUEUED
                 elif item.state == VERIFYING:
                     item.state = DOWNLOADED
                 item.dirty = True
             kept.append(item)
         # Orphans: files no kept row accounts for, and anything left half-written.
         wanted_parts = {self.part_path(item).name for item in kept}
+        wanted_parts |= {self.island_path(item, island.start).name for item in kept for island in item.islands}
         wanted_tracks = {item.final_name for item in kept if item.state == READY and item.final_name}
         for folder, wanted in ((self.partial, wanted_parts), (self.tracks, wanted_tracks)):
             if not folder.is_dir():
@@ -516,7 +609,57 @@ class Store:
                         done["orphans"] += 1
         self.remove(removed)
         self.save([item for item in kept if item.dirty])
+        for item in kept:
+            item.saved_islands = item.island_claim()
         return kept, done
+
+    def _tidy_islands(self, item: Item) -> int:
+        """Cut each island back to its stored length; drop one whose file has gone, or that the
+        run from the start (or an earlier island) already reaches. Returns how many were cut back."""
+        cut, kept = 0, []
+        for island in item.islands:
+            path = self.island_path(item, island.start)
+            size = _size(path)
+            if size is None or island.start <= item.prefix or (kept and island.start <= kept[-1].visible):
+                self.delete_file(path)
+                item.dirty = True
+                continue
+            claim = island.durable - island.start
+            if size > claim:
+                try:
+                    with open(path, "r+b") as f:
+                        f.truncate(claim)
+                    cut += 1
+                except OSError:
+                    pass
+            elif size < claim:   # (never expected: claim only what's there)
+                island.durable = island.start + size
+                item.dirty = True
+            island.visible = island.durable
+            kept.append(island)
+        item.islands = kept
+        return cut
+
+    # -- per-server history (a warm start for the speed and the network's quality) ---------
+    def load_hosts(self) -> list[dict]:
+        if self._con is None:
+            return []
+        rows = self._con.execute("SELECT host, speed, gap, failures, quality, measured FROM hosts").fetchall()
+        return [dict(zip(("host", "speed", "gap", "failures", "quality", "measured"), row)) for row in rows]
+
+    def save_hosts(self, rows) -> None:
+        rows = list(rows)
+        if not rows or self._con is None:
+            return
+        con = self._con
+        con.execute("BEGIN")
+        try:
+            con.executemany("INSERT OR REPLACE INTO hosts (host, speed, gap, failures, quality, measured) "
+                            "VALUES (:host, :speed, :gap, :failures, :quality, :measured)", rows)
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
 
 
 def _size(path: Path | None) -> int | None:

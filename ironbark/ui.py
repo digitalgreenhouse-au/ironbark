@@ -79,7 +79,8 @@ from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
 from .testsignals_window import TestSignalsWindow
-from .details import COPY_FAILED, NowPlayingWindow, copy_note, network_hover, network_line, output_line
+from .details import (COPY_FAILED, NowPlayingWindow, cache_mark, copy_note, network_hover, network_line,
+                      network_now_line, output_line)
 from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
@@ -114,7 +115,10 @@ ALBUM_AGAIN_S = 30.0   # a network album not all downloaded yet: its loudness is
 # Settings -> Network playback (the network playback cache): (saved value, what the choice says)
 NET_MODES = (("intelligent", "Intelligent"), ("fast", "Fast start"), ("complete", "Complete track"))
 NET_BUFFERS = ((10, "10 seconds"), (30, "30 seconds"), (60, "1 minute"), (300, "5 minutes"))
-NET_PREDOWNLOADS = (("off", "Off"), ("next", "Next track"))
+NET_PREDOWNLOADS = (("off", "Off"), ("next", "Next track"), ("next2", "Next 2 tracks"), ("queue", "Entire queue"))
+NET_KEEPS = (("none", "Don't keep"), ("session", "Until playback finishes"), ("day", "For 1 day"),
+             ("limit", "Until the cache is full"))
+NET_SIZES = ((1, "1 GB"), (5, "5 GB"), (10, "10 GB"), (25, "25 GB"), (50, "50 GB"), (0, "Unlimited"))
 QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
@@ -615,6 +619,7 @@ class PlayerWindow:
         self.up_next_label = ttk.Label(body, text="", style="UpNext.TLabel", anchor="w", cursor="hand2")
         self.up_next_label.bind("<Button-1>", lambda e: self._show_up_next())
         self._up_next_key = None
+        self._marks_shown: list = []   # the Up next pop-over's network-song marks as last drawn
         self.up_next_pop = Popover(self.root, width=theme.px(300), keys=True)
 
         # (0.20.0) The empty window (no tabs open): instead of "Nothing playing", a quiet ♫, one
@@ -828,12 +833,18 @@ class PlayerWindow:
         self._paint_version()
         return pop
 
-    def _choice(self, parent, label: str, choices, key: str, tip: str) -> ttk.Combobox:
-        """A drop-down setting in a row (Settings' style): `choices` are (saved value, words)."""
+    def _choice(self, parent, label: str, choices, key: str, tip: str, on_change=None) -> ttk.Combobox:
+        """A drop-down setting in a row (Settings' style): `choices` are (saved value, words);
+        `on_change()` runs after a new choice is saved."""
         row = ttk.Frame(parent, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         ttk.Label(row, text=label, style="Pop.TLabel").pack(side="left")
         box = ttk.Combobox(row, state="readonly", takefocus=False, width=14, values=[words for _, words in choices])
+        # Wide enough for its longest choice (a width counts the font's average character).
+        import tkinter.font as tkfont
+        font = tkfont.nametofont(str(box.cget("font")) or "TkTextFont")
+        longest = max(font.measure(words) for _, words in choices)
+        box.configure(width=max(14, math.ceil(longest / max(1, font.measure("0"))) + 1))
         box.pack(side="right")
         values = [value for value, _ in choices]
         box.current(values.index(self.prefs[key]) if self.prefs.get(key) in values else
@@ -842,6 +853,8 @@ class PlayerWindow:
         def chosen(_event=None):
             self.prefs[key] = values[box.current()]   # (the cache reads it live)
             box.selection_clear()
+            if on_change is not None:
+                on_change()
         box.bind("<<ComboboxSelected>>", chosen)
         Tooltip(box, tip)
         return box
@@ -859,11 +872,28 @@ class PlayerWindow:
             "Intelligent uses this as its starting point and waits less on a fast, steady network.")
         self.net_predownload_box = self._choice(
             box, "Pre-download", NET_PREDOWNLOADS, "net_predownload",
-            "Next track: the next song downloads while this one plays, so it can follow on without a wait.")
+            "How far ahead songs download while one plays, so they follow on without a wait. Songs not "
+            "played yet use at most half the cache; on a slow network only the next one is fetched.",
+            self._net_settings_changed)
+        self.net_keep_box = self._choice(
+            box, "Keep cached tracks", NET_KEEPS, "net_keep",
+            "Don't keep: a copy goes about a minute after it has played. Until playback finishes: kept while "
+            "the song is in the list playing or Up next. For 1 day: a day after it last played. Until the "
+            "cache is full: the copies played longest ago make room for new ones.", self._net_settings_changed)
+        self.net_size_box = self._choice(
+            box, "Maximum cache size", NET_SIZES, "net_cache_gb",
+            "The most the copies may take on this computer. Whatever you choose, at least 2 GB (or 5% of the "
+            "drive) is always left free.", self._net_settings_changed)
         self.net_verify = tk.BooleanVar(value=bool(self.prefs.get("net_verify", True)))
         self._setting(box, "Check finished downloads", "Makes sure each downloaded copy is whole and plays "
                       "correctly (a FLAC file's own fingerprint is checked too).", self.net_verify,
                       self._net_verify_changed)
+        self.net_now_text = ttk.Label(box, text="", style="PopMuted.TLabel", wraplength=theme.px(250),
+                                      justify="left")
+        self.net_now_text.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+        Tooltip(self.net_now_text, "Excellent, Good, Poor or Unstable: how well the network keeps up with the "
+                "music. On a poorer network songs wait a little longer before they start, so they don't "
+                "pause later")
         row = ttk.Frame(box, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self.cache_text = ttk.Label(row, text="", style="PopMuted.TLabel")
@@ -880,18 +910,33 @@ class PlayerWindow:
     def _net_verify_changed(self):
         self.prefs["net_verify"] = self.net_verify.get()
 
+    def _net_settings_changed(self):
+        """Pre-download, Keep cached tracks or the cache's size changed: the cache plans and tidies
+        again now (it reads the settings live)."""
+        changed = getattr(self._netcache, "settings_changed", None)
+        if changed is not None:
+            changed()
+        self._paint_cache()
+
     def _paint_cache(self):
-        """Settings -> Network playback's line about the cache: how full it is."""
+        """Settings -> Network playback's lines about the network now and the cache: how full it is."""
         manager = self._netcache
         if manager is None:
             on = experiments.enabled(self.prefs, NETWORK_CACHE)
             self.cache_text.configure(text="Cache: starts when Ironbark next starts" if on else "Cache: off")
+            self.net_now_text.configure(text="")
             return
         view = manager.snapshot()
         limit = self.prefs.get("net_cache_gb") or 0
         of = f" of {limit}" if limit else ""
         songs = f"{view.songs} song{'' if view.songs == 1 else 's'}"
-        self.cache_text.configure(text=f"Cache: {view.used / 1e9:.1f}{of} GB used · {songs}")
+        text = f"Cache: {view.used / 1e9:.1f}{of} GB used · {songs}"
+        if self.cache_text.cget("text") != text:
+            self.cache_text.configure(text=text)
+        now = getattr(manager, "network_now", None)
+        line = network_now_line(now()) if now is not None else ""
+        if self.net_now_text.cget("text") != line:
+            self.net_now_text.configure(text=line)
 
     def _open_cache_folder(self):
         from . import crash, netcache
@@ -2562,6 +2607,9 @@ class PlayerWindow:
         queue = self.player.up_next()
         key = (len(queue), id(queue[0]) if queue else None)
         if key == self._up_next_key:
+            if (self.up_next_pop.is_open and self._netcache is not None
+                    and self._up_next_marks(queue) != self._marks_shown):
+                self._fill_up_next()   # (a network song's download moved on)
             return
         self._up_next_key = key
         if queue:
@@ -2608,16 +2656,28 @@ class PlayerWindow:
                             fill="SURFACE_HI", fg="TEXT", hover_fill="SURFACE_DOWN", bg="SURFACE",
                             font=theme.font(theme.SIZE_BODY), pad_x=theme.GAP_MEDIUM, pad_y=theme.GAP_HAIR,
                             label="Take every song out of Up next").pack(side="right")
+        marks = self._up_next_marks(queue)
+        self._marks_shown = marks
+        tones = {"accent": theme.ACCENT_TEXT, "warn": theme.WARN}
+        column = any(mark for mark, _, _ in marks)   # (a column of marks only when there are network songs)
         for position, track in enumerate(queue[:UP_NEXT_SHOWN]):
             label = f"{track.title} — {track.artist}" if track.artist else track.title
+            mark, tone, meaning = marks[position]
             row = MenuRow(body, label if len(label) <= 44 else label[:43] + "…",
-                          lambda p=position: self.player.play_queued(p), "×")
+                          lambda p=position: self.player.play_queued(p), "×", lead=mark if column else None,
+                          lead_fg=tones.get(tone, theme.MUTED))
             row.pack(fill="x")
             row.keys.configure(cursor="hand2", font=theme.font(theme.SIZE_LARGE))
             row.keys.bind("<ButtonRelease-1>", lambda e, p=position: self._unqueue(p))
             Tooltip(row.keys, "Take it out of Up next")
+            if meaning:
+                Tooltip(row.lead, meaning)
         if len(queue) > UP_NEXT_SHOWN:
             ttk.Label(body, text=f"and {len(queue) - UP_NEXT_SHOWN} more", style="PopMuted.TLabel").pack(
+                anchor="w", padx=theme.px(theme.GAP_MEDIUM), pady=theme.pad(theme.GAP_HAIR, 0))
+        if self._netcache is not None and getattr(self._netcache, "narrowed", False) and any(m[0] for m in marks):
+            ttk.Label(body, text="The next song may need a short wait: the network is slower than the music "
+                      "right now", style="PopMuted.TLabel", wraplength=theme.px(260), justify="left").pack(
                 anchor="w", padx=theme.px(theme.GAP_MEDIUM), pady=theme.pad(theme.GAP_HAIR, 0))
         # When to stop: after the song playing, or a sleep timer (its choices in a menu of their own).
         stopping = tk.Frame(body, bg=theme.SURFACE)
@@ -2633,6 +2693,19 @@ class PlayerWindow:
         if self.up_next_pop.is_open:  # re-seat it: the list's height changed
             self.up_next_pop.place_configure(y=self._up_next_top())
             self.up_next_pop.wire_rows()
+
+    def _up_next_marks(self, queue) -> list[tuple[str, str, str]]:
+        """For each song shown in Up next: (mark, tone, meaning) — how much of a network song is
+        on this computer (the network playback cache); ("", "", "") for a song on this computer."""
+        manager = self._netcache
+        marks = []
+        for track in queue[:UP_NEXT_SHOWN]:
+            try:
+                progress = manager.progress(track.path) if manager is not None else None
+            except Exception:   # noqa: BLE001 — only a mark
+                progress = None
+            marks.append(cache_mark(progress))
+        return marks
 
     def _unqueue(self, position: int):
         self.player.remove_from_queue(position)
@@ -4034,8 +4107,10 @@ class PlayerWindow:
             position = shown.resume_at if view is not None and shown.last_index >= 0 else 0.0
             duration = view.duration if view is not None else 0.0
         # Always told: while dragged, the bar holds the value (it notices a song change mid-drag),
-        # and the knob and the times follow the pointer.
+        # and the knob and the times follow the pointer. A network song shows what's downloaded.
         self.seek.set(position, duration)
+        band = tuple(network.spans) if showing_playing and network is not None else ()
+        self.seek.set_band(band)
         if not self.seek.dragging:
             self._show_times(position, duration)
         self.status_label.configure(text=self._notice or status.message or network_text or self._sleep_line(status)
@@ -4044,7 +4119,8 @@ class PlayerWindow:
         # The mini strip shows the same as the top of the full window.
         self._mini_state = dict(title=self.title_label.cget("text"), artist=self.sub_label.cget("text"),
                                 position=position, duration=duration, playing=playing_now,
-                                status_colour=colour, status_detail=self._status_detail, notice=self._notice)
+                                status_colour=colour, status_detail=self._status_detail, notice=self._notice,
+                                band=band)
         if self.mini_mode:
             self.mini.show(**self._mini_state)
 
@@ -4056,6 +4132,8 @@ class PlayerWindow:
             self.volume_badge.place_forget()
         if self.settings_pop.is_open:
             self._update_volume_text()
+            if self._netcache is not None and self.netplay_box.winfo_manager():
+                self._paint_cache()   # (the network's speed and the cache's size move on while it's open)
 
         key = (self.current, status.index if self.current == self.playing_tab else None)
         if key != self._shown_key:

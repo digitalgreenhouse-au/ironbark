@@ -73,6 +73,36 @@ def _audio_start(data) -> tuple[int, int, int]:
             return pos, sample_rate, total
 
 
+def seek_points(head: bytes, most: int = 256) -> list[tuple[int, int]]:
+    """The SEEKTABLE's points from a FLAC file's first bytes: [(first sample, byte offset from
+    the first frame), …] in order (placeholder points left out; thinned to at most `most`). Empty
+    when there's no table, or the metadata goes past `head`."""
+    pos = head.find(b"fLaC")
+    if pos < 0:
+        return []
+    pos += 4
+    while pos + 4 <= len(head):
+        header = head[pos]
+        length = int.from_bytes(head[pos + 1:pos + 4], "big")
+        if header & 0x7F == 3:  # SEEKTABLE: 18 bytes a point
+            body = head[pos + 4:pos + 4 + length]
+            if len(body) < length:
+                return []
+            points = []
+            for at in range(0, length - 17, 18):
+                sample = int.from_bytes(body[at:at + 8], "big")
+                if sample == 0xFFFFFFFFFFFFFFFF:   # a placeholder
+                    continue
+                points.append((sample, int.from_bytes(body[at + 8:at + 16], "big")))
+            points.sort()
+            step = max(1, -(-len(points) // most))
+            return points[::step]
+        pos += 4 + length
+        if header & 0x80:
+            return []
+    return []
+
+
 def _parse_header(data, pos: int, size: int):
     """Return (coded number, block size, header length) if a valid frame header is at pos."""
     if pos + 6 > size:

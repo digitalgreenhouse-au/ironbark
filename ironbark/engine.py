@@ -154,9 +154,10 @@ class NetworkView:
     checks: str = ""           # the checks its complete copy passed (e.g. "size+identity+decode+flac-md5")
     cached: float = 0.0        # fraction of this song's file on this computer
     next_cached: float | None = None
-    quality: str = ""
+    quality: str = ""          # its server's: "excellent" | "good" | "poor" | "unstable" ("" not known yet)
     speed: float | None = None  # bytes per second, from its server
     at: float = 0.0            # where it is paused or starts (seconds into the track)
+    spans: tuple = ()          # what of the track is on this computer: ((from, to), …) as fractions of it
 
 
 @dataclass
@@ -924,7 +925,8 @@ class _Session:
             wait.serial, wait.frame, wait.committed = self._serial, cut, True
             items.append((generation, source, cut, _Stall(self._serial)))
             self._queue.not_empty.notify()
-        source.stalls.append(time.perf_counter())
+        if not wait.seek:   # (a seek past what's downloaded isn't the network failing: no longer wait next time)
+            source.stalls.append(time.perf_counter())
 
     def _cut_short(self, source: _Source, frame: int, generation: int, why: str):
         """The rest of this song will never arrive (its file changed or went away mid-song): the
@@ -1467,6 +1469,15 @@ class Player:
             seen_paths.add(track.path)
             at = following
         return result
+
+    def session_paths(self) -> list:
+        """The songs of the list playing and of Up next, while something plays, is paused or waits
+        to start; [] when stopped. No lock (lists replaced whole, as upcoming reads them): the
+        network playback cache keeps these copies under "Keep cached tracks: until playback
+        finishes"."""
+        if self._session is None and self._preparing is None:
+            return []
+        return [track.path for track in self.tracks] + [queued.track.path for queued in self.queue]
 
     # -- Up next -----------------------------------------------------------------
     # Each change takes the lock (the player's thread rewrites the list too, as a queued song
@@ -2173,6 +2184,8 @@ class Player:
             if progress is not None:
                 view.cached, view.speed = progress.fraction, progress.speed
                 view.checks = getattr(progress, "checks", "")
+                view.quality = getattr(progress, "quality", "")
+                view.spans = tuple(getattr(progress, "spans", ()))
             following = self.following_path()
             if following is not None:
                 ahead = preparer.progress(following)

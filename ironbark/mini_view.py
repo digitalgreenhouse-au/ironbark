@@ -129,15 +129,17 @@ class MiniView(tk.Frame):
 
     # -- what's shown --------------------------------------------------------------------------
     def show(self, *, title: str, artist: str, position: float, duration: float, playing: bool,
-             status_colour: str, status_detail: str, notice: str = ""):
+             status_colour: str, status_detail: str, notice: str = "", band: tuple = ()):
         """Bring the strip up to date (cheap when nothing changed). `notice` (e.g. "Volume 40%")
-        stands in for the artist line while it's set."""
+        stands in for the artist line while it's set; `band` is what of a network song is downloaded
+        (the seek bar's faint band)."""
         sub = notice or artist
         if self.title_label.cget("text") != title:
             self.title_label.configure(text=title)
         if self.sub_label.cget("text") != sub:
             self.sub_label.configure(text=sub)
         self.seek.set(position, duration)
+        self.seek.set_band(band)
         self.play_button.configure(text=glyph(self.app_root, "pause" if playing else "play"))
         self.status_square.configure(bg=status_colour)
         self._status_detail = status_detail
