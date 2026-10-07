@@ -13,6 +13,7 @@ import tkinter as tk
 
 _GEOMETRY = re.compile(r"^(?:(\d+)x(\d+))?\+(-?\d+)\+(-?\d+)$")
 TITLE_BAR = 40  # px of the window's top edge that must be on a screen, so it can be dragged
+MIN_SHOWING = 100  # px of that strip's width that must show on one monitor (above its taskbar)
 
 
 def parse(geometry: str) -> tuple[int | None, int | None, int, int] | None:
@@ -23,15 +24,43 @@ def parse(geometry: str) -> tuple[int | None, int | None, int, int] | None:
     return (int(width) if width else None, int(height) if height else None, int(x), int(y))
 
 
+def shows_enough(strip: tuple[int, int, int, int], work: tuple[int, int, int, int]) -> bool:
+    """Does enough of a window's top strip (left, top, right, bottom) lie inside a monitor's work
+    area (the monitor less its taskbar) to grab it: half its height, and MIN_SHOWING px of its
+    width (or all of it, if narrower)? A sliver of a pixel or two doesn't count."""
+    width = min(strip[2], work[2]) - max(strip[0], work[0])
+    height = min(strip[3], work[3]) - max(strip[1], work[1])
+    return width >= min(MIN_SHOWING, strip[2] - strip[0]) and height >= (strip[3] - strip[1]) // 2
+
+
 def on_screen(x: int, y: int, width: int) -> bool:
-    """Is the top strip of a window at (x, y) on any connected monitor?"""
+    """Is enough of the top strip of a window at (x, y) on a connected monitor, clear of its
+    taskbar, to grab it and drag it back?"""
     if sys.platform != "win32":
         return True  # other platforms keep windows on-screen themselves
     import ctypes
     import ctypes.wintypes as wt
 
+    class MonitorInfo(ctypes.Structure):
+        _fields_ = [("cb", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
     strip = wt.RECT(x, y, x + max(width, 100), y + TITLE_BAR)
-    return bool(ctypes.windll.user32.MonitorFromRect(ctypes.byref(strip), 0))  # 0 = none if off-screen
+    try:
+        # A private handle, so setting its types can't change anyone else's calls.
+        user32 = ctypes.WinDLL("user32")
+        user32.MonitorFromRect.restype = wt.HMONITOR
+        user32.MonitorFromRect.argtypes = (ctypes.POINTER(wt.RECT), wt.DWORD)
+        user32.GetMonitorInfoW.argtypes = (wt.HMONITOR, ctypes.POINTER(MonitorInfo))
+        monitor = user32.MonitorFromRect(ctypes.byref(strip), 0)   # 0 = none if it's on no monitor
+        info = MonitorInfo()
+        info.cb = ctypes.sizeof(MonitorInfo)
+        if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return False
+    except (OSError, AttributeError):
+        return True   # can't tell: leave the window where it was
+    work = info.rcWork
+    return shows_enough((strip.left, strip.top, strip.right, strip.bottom),
+                        (work.left, work.top, work.right, work.bottom))
 
 
 def restore(window: tk.Misc, geometry: str, keep_size: bool = True) -> bool:

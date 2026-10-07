@@ -142,8 +142,13 @@ def test_the_window_carries_out_a_press():
         PlayerWindow._media_command(w, command)
     assert player.calls == ["pause", "next", "toggle_pause"]
     w.playing_tab = None  # nothing loaded: play starts the tab on show, like the play button
+    w.player.status = lambda: SimpleNamespace(track=None, state=State.STOPPED)
     PlayerWindow._media_command(w, PLAY)
     assert started == [True]
+    # A song from Up next playing with no tab behind it: the play/pause key pauses it.
+    w.player.status = lambda: SimpleNamespace(track=object(), state=State.PLAYING)
+    PlayerWindow._media_command(w, TOGGLE)
+    assert started == [True] and player.calls[-1] == "toggle_pause"
 
 
 def test_media_keys_and_taskbar_buttons_are_decoded():
