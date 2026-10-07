@@ -96,19 +96,24 @@ Windows SmartScreen warns about an unknown publisher.
 - **Lyrics** (L): from the song's tags or a `.lrc` / `.txt` file beside it, never from the internet;
   synced lyrics light up line by line.
 - **Playlists** are plain `.m3u8` files any player can open. Missing songs stay listed as "file not
-  found", so a playlist never quietly loses them. A deleted playlist goes to the Recycle Bin, and one
+  found", so a playlist never quietly loses them; web addresses are listed (not played yet) and saved
+  back exactly as they were. A deleted playlist goes to the Recycle Bin, and one
   saved by an older player in an older text format is only rewritten once you've said so.
 - **Drag and drop** folders, songs and playlists from Explorer onto the player or onto a tab.
 - **Media keys and Windows' media panel**, with play / pause / next / previous on the taskbar preview.
 - **Keyboard:** playback, volume and window shortcuts work in every Ironbark window; **F1** lists
-  them all. Removing or moving a song in a playlist can be undone (Ctrl+Z).
+  them all. **Tab** reaches every button, switch, choice and slider (a green ring shows where you
+  are), and Settings can be worked entirely from the keyboard. Removing or moving a song in a
+  playlist can be undone (Ctrl+Z).
 - **Opens files from Explorer** (double-click, or *Open with* after the installer's optional task),
   and only one Ironbark runs at a time.
 - **Mini player** (Z): a small strip that stays on top, with its own position.
 - **Wide windows:** maximise it, or make it wider, and it splits in two — the cover and controls on
   the left, the track list the full height on the right, with larger type. Covers are never
   enlarged past their own pixels. **F11** is full screen (Esc leaves it).
-- **Light or dark** themes (or follow Windows); both meet the WCAG AA contrast guidelines.
+- **Light or dark** themes (or follow Windows); both meet the WCAG AA contrast guidelines. A quiet,
+  rounded look: browser-style tabs, pill buttons, rounded fields and lists, and menus with a rounded
+  highlight.
 - **Files are identified by their contents**, so an MP3 renamed `.flac` is flagged.
 
 ### Proof of playback quality (Now Playing, I)
@@ -180,6 +185,13 @@ Windows SmartScreen warns about an unknown publisher.
   the file is replaced.
 - **Hear clipping:** in the Clipping window, switch between an ordinary converter's clipped sound and
   the clean version at the same point in the music.
+- **Network playback cache:** songs on a network drive (a NAS) play from a copy fetched to this
+  computer: a short "Preparing track…" first, then a dropped network or a sleeping server doesn't
+  interrupt the song — a longer outage pauses it at a quiet moment and it carries on by itself from
+  exactly the same sample. The next songs download ahead, Up next shows how far each has got, and
+  the seek bar shows what's downloaded. Settings → Network playback sets the buffering, how far ahead
+  to fetch, how long copies are kept and how much room they may take. Each finished copy is checked
+  against the original (a FLAC file's own fingerprint too).
 
 ## Keyboard
 
@@ -290,7 +302,8 @@ you switch on Settings → Network → *Allow network access*. Then only two fea
   or installed: a newer version is only mentioned in the status line.
 
 Lyrics, the rip-log check and the library's song search all work offline, from files on your
-computer.
+computer. The network playback cache (Experimental) only talks to the network drives your music is
+already on; it never uses the internet.
 
 Settings, playlists and the logs are kept on your computer (on Windows, in `%APPDATA%\Ironbark`),
 and the library database, with your play counts and favourites, beside them (on Windows, in

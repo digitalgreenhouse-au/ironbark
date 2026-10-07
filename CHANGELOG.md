@@ -4,6 +4,101 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.32.0 — 08/10/2026
+
+A new look, a layout for big windows, song search, new Library views, a whole-library quality
+check, and (Experimental) a cache for music on network drives.
+
+**New look**
+- Browser-style tabs: the chosen tab has rounded top corners that flow into the page, the others
+  are quiet names that light up on a rounded plate under the pointer. The playing tab shows a
+  small green level mark; a tab's × appears after a moment and the name shortens to make room.
+- Every button with words is the same rounded pill; text boxes and drop-downs are rounded with a
+  thin rim and a neat chevron, and a green ring shows which one you're typing in. The search box
+  shows Ctrl+F while it's empty and a round × to clear it.
+- Lists have no frame: the selected row is a rounded green plate, headings are small grey words
+  over a thin line, album and playing rows are semibold, and the slim scrollbar sits in the
+  window's margin.
+- Menus have taller rows with a rounded highlight, ticks that line up and drawn chevrons for
+  submenus. Tooltips have rounded corners on Windows 11.
+- The now-playing title is larger and semibold; previous and next are filled shapes that match
+  the play button; shuffle and repeat turn green with a small dot when on; the status square is
+  now a round dot; the lock and ⓘ are one size; the seek bar runs exactly edge to edge.
+- Prompts' buttons no longer touch and a warning's title is no longer cut off; Settings
+  descriptions wrap at the full width; the track list no longer jumps when the status line
+  shows a message.
+
+**Keyboard**
+- Tab reaches every button, switch, choice and slider, with a green ring showing where you are;
+  Enter or Space presses, the arrow keys move sliders and choices. Settings can be worked
+  entirely from the keyboard: Ctrl+, opens it, Tab goes round it, Esc closes it.
+
+**Big windows and full screen**
+- Make the window wider than about 880 px (or maximise it) and it splits in two: the cover, title
+  and controls on the left, the track list the full height on the right. Under 780 px it is
+  exactly as before. Bigger windows get bigger type and roomier rows.
+- Covers are never enlarged past their own pixels in a wide window: a small cover is shown 1:1 on
+  a soft card (hover it to see its size).
+- A wide window shows Artist, Album and Format only when they differ between songs, a count over
+  the list ("Album · 13 songs · 51:57") and a caption over the title (NOW PLAYING, ALBUM, …).
+- F11 is full screen (F11 again, Esc, double-clicking the tab strip or Z leaves it). Wide windows
+  get a maximise button, and a window left maximised opens maximised.
+
+**Song search**
+- Ctrl+K (or Ctrl+Shift+F), from any Ironbark window, opens a search over the whole library: songs,
+  albums and artists as you type, ignoring accents and case. Enter plays the song inside its album,
+  Shift+Enter plays it next, Ctrl+Enter adds it to Up next, Alt+Enter opens the album; right-click
+  for the rest, or drag a result onto a tab.
+- A track-list search that finds nothing offers "Search the whole library".
+
+**Library views and favourites**
+- New views on a second row: Songs (every song, sorted by any column), Most played, Recently
+  played and Favourites. Long lists stay quick however big the library is.
+- Favourites: Add to / Remove from favourites in the song menus; a ♥ shows in the track list, the
+  Library and the search.
+- The Album column shows the album's tag (not the folder name); long names end with "…"; Year,
+  Quality, Tracks and Added stay visible however narrow the window. Typing letters jumps to a name.
+- "Open all N albums in a tab" asks first above 10,000 songs.
+
+**Whole-library quality check**
+- Library → Needs a look: Check the whole library… says how long it will take, then gives every
+  song Now Playing's Check in the background, at low priority. Damaged files, MD5 mismatches,
+  lossy-source and upsampling clues, padded bit depth, clipping and misnamed files are listed,
+  worst first (HDCD, MQA and pre-emphasis greyed, for information). Pause, Resume and Stop; it
+  carries on after a restart and checks new music as it arrives. It waits while ABX or Test
+  signals is open.
+- Now Playing → Check shows a checked song's result at once, and the clipping guard and volume
+  levelling use its stored true peak.
+
+**Network playback cache (Experimental, off until you switch it on)**
+- Songs on a network drive play from a copy fetched to this computer: "Preparing track… 34%"
+  first, then short network hiccups aren't heard; a longer outage pauses at a quiet moment and
+  the song carries on by itself from exactly the same sample.
+- Seeking ahead in a FLAC, WAV or AIFF fetches from that spot first; the next songs download
+  ahead; Up next shows how far each has got (● ◐ ○ !) and the seek bar shows what's downloaded.
+- Settings → Network playback: buffering, initial buffer, pre-download, how long copies are kept,
+  the cache's size, a line on how the network is doing, Open folder and Empty the cache. Each
+  finished copy is checked against the original. Now Playing gets a Source section.
+
+**Fixes and smaller changes**
+- A truncated Apple Lossless (.m4a) file stops with a "damaged here" message instead of playing
+  noise to its end.
+- Web addresses in playlists are listed ("not supported yet") and kept exactly when the playlist
+  is saved; they used to be lost.
+- Deleting a playlist sends it to the Recycle Bin (on a drive with no Recycle Bin it asks first).
+  A playlist saved by an older player in an older text format asks before it is rewritten as
+  UTF-8, and "Added …" is no longer shown when a save fails.
+- Tag history loads without holding up its window and has Clear history….
+- Opening a playlist whose songs are on a switched-off network drive checks that drive once, not
+  once per song.
+- Skipping a song stops its clipping-guard and levelling measurement instead of finishing it.
+- Closing Settings or a menu by clicking the list or the search box leaves the keyboard where you
+  clicked.
+- A favourite given just before quitting is kept.
+- Long lists paint much faster in any window (a full-width list used to take seconds).
+- The Library tab's count is right: "Library · 214 songs · 13 albums · 13:52:11", not the first
+  album's.
+
 ## 0.31.0 — 07/10/2026
 
 New features for big collections, the keyboard, and everyday listening.

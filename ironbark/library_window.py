@@ -465,15 +465,17 @@ class LibraryWindow:
         bottom = ttk.Frame(frame)
         bottom.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0), before=self.list.frame)
         selected.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0), before=self.list.frame)
-        # (The button is packed first, so a long status line is cut short rather than pushing it out of sight.)
+        # (The buttons are packed first, so a long status line wraps beside them rather than pushing them
+        # out of sight or running under them.)
         self.load_all_button = controls.FlatButton(bottom, "Open all albums in a tab", self._load_all)
         self.load_all_button.pack(side="right")
         # Needs a look's own: start the quality check (or resume it), and pause / stop it.
         self.check_button = controls.FlatButton(bottom, "Check the whole library…", self._ask_check, kind="primary",
                                                 label="Read every song once, in the background, for what needs a look")
         self.check_other = controls.FlatButton(bottom, "Pause", self._pause_check)
-        self.status = ttk.Label(bottom, text="", style="Muted.TLabel", anchor="w")
+        self.status = ttk.Label(bottom, text="", style="Muted.TLabel", anchor="w", justify="left")
         self.status.pack(side="left", fill="x", expand=True)
+        self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(1, e.width)), add="+")
 
         self.win.bind("<Destroy>", self._destroyed, add="+")
         search.focus_set()

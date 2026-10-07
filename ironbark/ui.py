@@ -145,6 +145,8 @@ CHECK_AFTER_MS = 60000  # a library quality check left on carries on this long a
 FAVOURITES_WAIT_S = 6.0  # longest closing waits for a ♥ to be stored (the database can be busy for 5 s)
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
+UP_NEXT_CHARS = 44     # an Up next row's words are cut with "…" past this many characters…
+UP_NEXT_MARK_CHARS = 8 # …this many fewer while a column of network-download marks shares the row
 THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
 FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the mini strip has its own)
 SETTINGS_WIDTH = 310       # px at 100%: the Settings panel (less in a narrow window)
@@ -3030,10 +3032,11 @@ class PlayerWindow:
         self._marks_shown = marks
         tones = {"accent": theme.ACCENT_TEXT, "warn": theme.WARN}
         column = any(mark for mark, _, _ in marks)   # (a column of marks only when there are network songs)
+        longest = UP_NEXT_CHARS - (UP_NEXT_MARK_CHARS if column else 0)   # (the marks take some of the row)
         for position, track in enumerate(queue[:UP_NEXT_SHOWN]):
             label = f"{track.title} — {track.artist}" if track.artist else track.title
             mark, tone, meaning = marks[position]
-            row = MenuRow(body, label if len(label) <= 44 else label[:43] + "…",
+            row = MenuRow(body, label if len(label) <= longest else label[:longest - 1] + "…",
                           lambda p=position: self.player.play_queued(p), lead=mark if column else None,
                           lead_fg=tones.get(tone, theme.MUTED))
             row.pack(fill="x")

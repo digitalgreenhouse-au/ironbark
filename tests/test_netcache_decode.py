@@ -124,7 +124,8 @@ def test_playlist_web_addresses_are_kept_exactly(tmp_path, monkeypatch):
     assert lines[0] in written and lines[1] in written
     assert playlists.read(out) == songs
     # Listed as missing, with the reason.
-    view = SimpleNamespace(_tracks=[Track(songs[0], "So What", missing=True)], flat=True, columns=())
+    view = SimpleNamespace(_tracks=[Track(songs[0], "So What", missing=True)], flat=True, columns=(), shown=(),
+                           is_favourite=lambda track: False)
     assert playlist_view.PlaylistView._title(view, 0, False).endswith("(web address — not supported yet)")
 
 
