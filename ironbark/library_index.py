@@ -165,7 +165,6 @@ class LibraryIndex:
         return self._mine(os.fspath(path))
 
     def _mine(self, path: str) -> bool:
-
         """Is this file or folder in one of the library folders?"""
         path = os.path.normcase(path)
         for root in self.roots:

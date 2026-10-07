@@ -110,7 +110,6 @@ def test_a_search_makes_only_the_rows_on_show_and_folds_each_song_once(root, mon
     assert view.tree.set(view.tree.get_children()[0], "title").startswith("Album 0")
 
 
-
 def test_a_search_keeps_marks_and_lets_go_of_hidden_rows(root):
     view = playlist_view.PlaylistView(root, on_play=lambda i: None)
     view.set_tracks(_songs("Intro", "Blue", "Green", "Yellow"), flat=True)

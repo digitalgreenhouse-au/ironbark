@@ -159,7 +159,6 @@ OTHER_KEYS: tuple[tuple[str, str, str], ...] = (
     ("Menu key · Shift+F10", "The selected row's right-click menu", "Tabs & lists"),
     ("Shift+click · Ctrl+click · Shift+↑ / ↓", "Track list and the Library's songs: select several songs",
      "Tabs & lists"),
-
     ("Esc", "Close a menu or window (a search box: clear it first)", "Windows & tools"),
     ("A · B · X · Space", "ABX window: hear A, B or X · stop or replay", "Windows & tools"),
     ("A · B · D · Space", "Clipping (Hear it on): hear A, B or D · stop or replay", "Windows & tools"),

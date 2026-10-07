@@ -20,8 +20,9 @@ A source is anything with `len()` and `row(i)` → (key, values, tags) or (key, 
 The key is the row's id in the Treeview while it's on show (so a right-click, a drag — TreeDrag —
 or a test can name it); `text` goes in the tree column (#0: a group's fold arrow). A row tagged
 "group" is a group heading: clicking its arrow, double-clicking it or ← / → asks the owner to fold
-it (`on_toggle`) — the source decides what folding means, as rows are never Tk children. A source
-may also have `key(i)` (a row's key without making the whole row) and `index_of(key)`.
+it (`on_toggle`) — the source decides what folding means, as rows are never Tk children. A row
+tagged "note" (a message such as "No matches") doesn't light up under the pointer. A source may also
+have `key(i)` (a row's key without making the whole row) and `index_of(key)`.
 
 Text that doesn't fit its column ends with "…" (Tk itself just cuts it off). Only the rows on show
 are measured, so a big list costs no more than a small one — and a text is measured as the sum of
@@ -44,7 +45,7 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Protocol
 
-from . import controls, theme
+from . import controls, popups, theme
 
 Row = tuple   # (key, values, tags) or (key, values, tags, text)
 
@@ -280,7 +281,11 @@ class VirtualTree:
             self._style_fonts = {}
             self._drawn = []
             self._widths.clear()
-
+            if self._render_job is not None:   # (a drawing waiting for Tk to be idle: its command goes now)
+                try:
+                    self.tree.after_cancel(self._render_job)
+                except tk.TclError:
+                    pass
             self._render_job = None
 
     # -- the source ------------------------------------------------------------------------------
@@ -294,8 +299,8 @@ class VirtualTree:
         old_keys: list[str] = []
         if keep and self.multiple and 1 < len(self.chosen) <= KEEP_REMAP:
             old_keys = [key for key in (self._key_of(i) for i in self.chosen) if key is not None]
+        self.set_hover(None)   # (Tk's row lit now may be drawn again unchanged: it mustn't stay lit)
         self.source = source
-        self.hovered = None
         self.chosen = Ranges()
         self.selected = self.anchor = None
         if keep:
@@ -353,7 +358,6 @@ class VirtualTree:
                 found = self._font
             self._style_fonts[name] = found
         return found
-
 
     def _key_of(self, index: int | None) -> str | None:
         if index is None or not 0 <= index < len(self.source):
@@ -685,6 +689,14 @@ class VirtualTree:
         """The row the keyboard is on (the one selected, in a list of single selection)."""
         return self.selected
 
+    def menu_event(self):
+        """A stand-in for a right-click on the row the keyboard is on (the menu key, Shift+F10): that
+        row is scrolled into view first — only the rows on show are Tk's, so a selected row the list
+        has scrolled away from has no place to open its menu at."""
+        if self.selected is not None:
+            self.see(self.selected)
+        return popups.row_event(self.tree)
+
     def sync(self):
         """Take in a selection set on Tk's rows directly since (by a script or a test), before
         acting on the selection — Tk tells the list only once events are handled."""
@@ -771,7 +783,10 @@ class VirtualTree:
     def _motion(self, event):
         if event.state & 0x100:   # (the button held down: a drag, not a hover)
             return
-        self.set_hover(self.index_at(event.y))
+        index = self.index_at(event.y)
+        if index is not None and "note" in self.source.row(index)[2]:
+            index = None   # (a message row, such as "No matches", isn't something to pick)
+        self.set_hover(index)
 
     def set_playing(self, index: int | None):
         """Mark the playing row (tag "playing", and the mark in `playing_column`)."""

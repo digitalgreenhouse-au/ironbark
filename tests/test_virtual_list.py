@@ -403,3 +403,14 @@ def test_a_list_not_laid_out_yet_still_holds_a_screenful(root):
     vt = VirtualTree(root, ("title", "artist"))          # (never packed: no height)
     vt.set_source(Numbers(1000))
     assert len(vt.tree.get_children()) == vt.page() > 10
+
+
+def test_a_new_source_lets_go_of_the_row_lit_under_the_pointer(root):
+    rows = [(f"k{i}", (f"Song {i}", ""), ()) for i in range(30)]
+    vt = make(root, ListSource(rows))
+    vt.set_hover(2)
+    assert "hover" in vt.tree.item("k2", "tags")
+    vt.set_source(ListSource(rows), keep=True)            # the same rows again (drawn unchanged)
+    assert "hover" not in vt.tree.item("k2", "tags") and vt.hovered is None
+    vt.set_hover(5)
+    assert [iid for iid in vt.tree.get_children() if "hover" in vt.tree.item(iid, "tags")] == ["k5"]

@@ -20,7 +20,6 @@ of the Songs view read so far is read on the query thread first — and a drag c
 Plays and Last played can be added as columns (right-click the headings); they're read for the
 rows on show only, on the query thread.
 
-
 **Needs a look** (the last song view): what the whole-library quality check (library_check.py) found —
 damaged files and MD5 mismatches, clues to a lossy or upsampled source or a padded bit depth,
 clipping, misnamed files, and for information HDCD / MQA / pre-emphasis — worst first, in Now
@@ -103,7 +102,6 @@ PAGE = 200               # the Songs view's rows are read this many at a time
 PAGES_KEPT = 25          # …and this many pages kept (others are read again when scrolled back to)
 LOAD_ALL_WARN = 10_000   # songs: opening more than this in one tab asks first
 ALBUM_THREAD_AT = 5_000  # albums: a library this big is grouped, searched and sorted on the query thread
-
 COUNTS_KEPT = 20_000     # play counts / last-played times remembered (the rows shown lately)
 _NUMERIC = {"year", "tracks", "time", "plays"}
 
@@ -443,6 +441,7 @@ class LibraryWindow:
         self._counts: OrderedDict[str, tuple[int, float | None]] = OrderedDict()
         self._counts_wanted: dict[str, None] = {}
         self._counts_job = None
+        self._counts_asked: int | None = None      # the newest read of them on its way
         self._selection_asked: int | None = None   # a selection being read on the query thread…
         self._selection_then: Callable | None = None   # …and what's done with it once it's here
         self._new: set[Path] = set()
@@ -555,9 +554,8 @@ class LibraryWindow:
         theme.on_change(self._palette_changed)
         self.drag: TreeDrag | None = None
         self.tree.bind("<Button-3>", self._context)
-
         for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
-            self.tree.bind(key, lambda e: self._context(popups.row_event(self.tree)) or "break")
+            self.tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
         self._on_drag = on_drag
         self.drag = TreeDrag(self.tree, self._carried, self._dragged)
 
@@ -706,7 +704,6 @@ class LibraryWindow:
             if job is not None and job.get("final") == answer.ask:
                 self._refresh = None   # the refresh's albums are on show: it's finished
                 self._songs_have = None   # (a song view read before it ended is read again)
-
             if self._again:
                 self._ask_albums()
         if pages:
@@ -836,7 +833,6 @@ class LibraryWindow:
             else:
                 self._fill()
 
-
     def _clear_search(self):
         """The search box's × or Esc: empty it (Esc in an empty box closes the window, as before)."""
         if self.search_var.get():
@@ -855,7 +851,6 @@ class LibraryWindow:
         if column == "last" or (column == "plays" and self.view != "most_played"):
             return   # (read for the rows on show only: the list can't be sorted by them)
         newest_first = column in ("added", "plays")
-
         self._sorts[self.view] = (column, not reverse if column == current else newest_first)
         self._fill()
 
@@ -1124,11 +1119,16 @@ class LibraryWindow:
         which takes in every key still wanted, replaces one on its way)."""
         self._counts_job = None
         if self._counts_wanted:
-            self._queries.ask("counts", _plays_and_last, self.index.db, list(self._counts_wanted))
+            self._counts_asked = self._queries.ask("counts", _plays_and_last, self.index.db, list(self._counts_wanted))
 
     def _take_counts(self, answer) -> bool:
-        """Plays and last-played times came in: True to draw the rows on show again."""
+        """Plays and last-played times came in: True to draw the rows on show again. (Only the newest
+        ask's: one asked before a play was counted would bring the counts from before it.)"""
+        if answer.ask != self._counts_asked:
+            return False
+        self._counts_asked = None
         if answer.error is not None or answer.value is None:
+            self._counts_wanted.clear()   # (asked again when next drawn)
             return False
         counts, lasts = answer.value
         for key, count in counts.items():
@@ -1141,6 +1141,8 @@ class LibraryWindow:
     def plays_changed(self):
         """A play was counted: the Plays and Last played columns read their counts again."""
         self._counts.clear()
+        self._counts_wanted.clear()
+        self._counts_asked = None   # (one on its way has the counts from before)
         if self.win.winfo_exists() and self.view in SONG_VIEWS and self.song_columns:
             self.list.refresh()
 
@@ -1161,7 +1163,6 @@ class LibraryWindow:
             menu.add_check(label, on, lambda c=column, on=on: self.set_song_columns(
                 [x for x in self.song_columns if x != c] + ([] if on else [c])))
         menu.popup(event.x_root, event.y_root)
-
 
     def _ask_page(self, page: int, ids: list[int]):
         serial = self._page_serial

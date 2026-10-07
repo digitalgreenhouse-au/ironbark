@@ -444,7 +444,6 @@ def _play_ordered(folder: str, rows: list[tuple]) -> list[int]:
 
 
 def _track_path(root, rel, name, cue_sheet, cue_number, cue_start, cue_end) -> Path:
-
     """A song's path from its stored parts: a CuePath (its stretch of the file) for a CUE track."""
     text = _join(root, rel, name)
     return (Path(text) if cue_number is None
@@ -1212,7 +1211,6 @@ class LibraryDB:
         return found
 
     def new_albums(self, since: float, opened: dict[str, float]) -> list[Path]:
-
         """The album folders with music first seen after `since` (and after their library folder's
         first look) that haven't been opened since it arrived; newest first. `opened`: {album
         folder: when opened}. (watcher.new_albums's rule, from the database.)"""
@@ -1278,16 +1276,24 @@ class LibraryDB:
                                        frozenset((row[9], row[10], row[11]) for row in rows))
         return found
 
-    def ids_matching(self, words: list[str]) -> set[int]:
+    def ids_matching(self, words: list[str], among: Iterable[int] | None = None) -> set[int]:
         """The ids of the songs whose folded search text holds every one of these words (folded,
-        searchfold.words) anywhere in it — the in-tab filter's rule, run by the database."""
+        searchfold.words) anywhere in it — the in-tab filter's rule, run by the database. `among`:
+        only these songs are looked at (a few albums' tab: by id, so the cost goes with the tab, not
+        with the whole library)."""
         if not words:
             return set()
         where = " AND ".join("instr(haystack, ?) > 0" for _word in words)
-        return {row[0] for row in self._con().execute(f"SELECT id FROM tracks WHERE {where}", list(words))}
+        con = self._con()
+        if among is None:
+            return {row[0] for row in con.execute(f"SELECT id FROM tracks WHERE {where}", list(words))}
+        found: set[int] = set()
+        for chunk in _chunks(list(among)):
+            found.update(row[0] for row in con.execute(
+                f"SELECT id FROM tracks WHERE id IN ({', '.join('?' * len(chunk))}) AND {where}", [*chunk, *words]))
+        return found
 
     def file_times(self) -> dict[str, tuple[float, float]]:
-
         """{music file: (when it arrived, when the database first saw it)} for every file in the
         library (not those missing)."""
         return {_join(root, rel, name): (added, seen) for root, rel, name, added, seen in self._con().execute(

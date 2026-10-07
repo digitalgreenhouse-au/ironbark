@@ -455,7 +455,6 @@ _CHECKS = {
 }
 
 
-
 def _checked(saved: dict) -> dict:
     """The saved values that can be used. One of the wrong kind (a hand edit, a sync tool, another
     version of the player) is left out, so its default stands; settings this version doesn't know

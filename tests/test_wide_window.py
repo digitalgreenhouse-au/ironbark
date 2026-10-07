@@ -275,13 +275,11 @@ def test_search_selection_scroll_and_keyboard_survive_a_switch(make_window):
     _resize(root, 1300, 900)
     _resize(root, 420, 900)
     assert view.query.get() == "Song 4" and view.selected_track() == 40
-
     view.query.set("")
     view._search_now()
     view.list.scroll_to(top)
     _resize(root, 1920, 1080)
     assert abs(view.list.top - top) <= 3
-
     assert not errors
 
 

@@ -81,7 +81,7 @@ def window(root, prefs, tracks, **extra):
                         player=SimpleNamespace(stop_after=None), favourites=Favourites(lambda: None), **extra)
     w.tabs[0].tracks = tracks
     for name in ("_menu", "_track_menu", "_columns_menu", "_sleep_menu", "stop_after_current", "_tag_editing",
-                 "edit_selected_tags", "edit_album_tags", "show_tag_history"):
+                 "edit_selected_tags", "edit_album_tags", "show_tag_history", "_with_songs"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
     w._known_playlists = lambda: []
     w.edit_tags = lambda tracks: w.opened.append(("edit", len(tracks))) if w._tag_editing() else None

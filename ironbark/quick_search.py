@@ -332,7 +332,7 @@ class QuickSearch:
         tree.bind("<Escape>", lambda e: None if self.drag.active else self._escape() or "break", add="+")
         tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):   # the keyboard's menu key: the selected result's menu
-            tree.bind(key, lambda e: self._context(popups.row_event(tree)) or "break")
+            tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
 
         self.status = ttk.Label(inner, text="", style="Muted.TLabel", anchor="w")
         self.status.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
@@ -493,7 +493,6 @@ class QuickSearch:
                 self._queries.stop()
             self._queries = indexer.Queries(db)
             self._catalogue = shared_catalogue(db)
-
         self._asked = self._queries.ask("search", search_library, db, self._catalogue, text, interrupt=True)
         self._say("Searching…" if self.results is None else self.status.cget("text"))
         if self._poll_job is None:

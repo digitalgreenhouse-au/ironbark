@@ -20,6 +20,9 @@ list's own loader thread. So:
   same the in-tab filter searches), and Ctrl+A's actions read their songs in one go (`many`).
 - Songs added to the tab later are held as Tracks after the ids (`extras`); `+` makes a new list
   sharing the same reads.
+- A file the library reads again (a tag edit, a new reading format) gets new song ids in the
+  database: when an album's ids aren't found any more, its ids now are put in their place
+  (`_renew`), so its songs don't turn up as missing.
 
 Nothing here touches Tk. The loader thread reads through its own database connection and lets it
 go when it has nothing left to do.
@@ -27,19 +30,22 @@ go when it has nothing left to do.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from array import array
-
 from bisect import bisect_right
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from . import audiofile, searchfold
-from .library import LOSSY_CODECS, Track, group_by_album
+from .library import LOSSY_CODECS, Track, album_folder, group_by_album
+
+log = logging.getLogger(__name__)
 
 KEEP = 5_000   # Track objects kept read (albums at a time); the songs held round the one playing come on top
+BY_ID_MOST = 20_000   # songs: a tab up to this long is searched by its songs' ids, not the whole library's
 
 
 class _Shared:
@@ -58,18 +64,28 @@ class _Shared:
 
 class LibraryTrackList(Sequence):
     """See the module notes. `ids`: the songs' ids in the tab's order; `groups`: (album folder, first
-    index, end index) per album; `seconds`: how long they all last; `varies`: the optional columns
-    whose value isn't the same on every song."""
+    index, end index) per album; `seconds`: how long they all last; `values`: the artists, album names
+    and qualities (as the Format column shows them) seen among those songs — two of each are enough —
+    from which `varies`: the optional columns whose value isn't the same on every song, the songs
+    added after them included."""
 
     def __init__(self, db, ids: Sequence[int], groups: list[tuple[Path, int, int]], seconds: float = 0.0,
-                 varies: Iterable[str] = (), extras: Sequence[Track] = (), shared: _Shared | None = None):
+                 values: tuple[set, set, set] = (set(), set(), set()), extras: Sequence[Track] = (),
+                 shared: _Shared | None = None):
         self.ids = ids if isinstance(ids, array) else array("q", ids)
         self.extras: tuple[Track, ...] = tuple(extras)
-        self._base = (list(groups), seconds)   # (the albums read, and how long they last: before the extras)
+        # (the albums read, how long they last and what they hold: before the extras)
+        self._base = (list(groups), seconds, values)
         self.groups = list(groups) + [(folder, start + len(self.ids), end + len(self.ids))
                                       for folder, start, end in group_by_album(list(self.extras))]
         self.seconds = seconds + sum(track.duration for track in self.extras)
-        self.varies = frozenset(varies)
+        artists, names, qualities = (set(seen) for seen in values)
+        for track in self.extras:
+            artists.add(track.artist)
+            names.add(track.album or album_folder(track.path).name)
+            qualities.add(_shown(track.codec, track.bits, track.sample_rate))
+        self.varies = frozenset(column for column, seen in (("artist", artists), ("album", names),
+                                                            ("quality", qualities)) if len(seen) > 1)
         self._shared = shared or _Shared(db)
         self._starts = [start for _folder, start, _end in self.groups]
         self._wanted: dict[int, None] = {}   # groups asked for, newest last
@@ -91,7 +107,11 @@ class LibraryTrackList(Sequence):
             shared = self._shared
             with shared.lock:
                 shared.misses += 1
-            self._fill(self._group_of(index))
+            try:
+                self._fill(self._group_of(index))
+            except Exception:   # (the engine asks from its own threads: a database that can't be read
+                # now has the song skipped as missing, never the playing stopped by an error)
+                log.exception("couldn't read a song of a library tab")
             track = self.peek(index)
             if track is None:
                 track = _gone(self.ids[index])
@@ -99,8 +119,8 @@ class LibraryTrackList(Sequence):
 
     def __add__(self, other):
         """This list with more songs after it (a song or album added to the tab)."""
-        groups, seconds = self._base
-        return LibraryTrackList(self._shared.db, self.ids, groups, seconds, self.varies,
+        groups, seconds, values = self._base
+        return LibraryTrackList(self._shared.db, self.ids, groups, seconds, values,
                                 self.extras + tuple(other), shared=self._shared)
 
     def __iter__(self):
@@ -157,7 +177,6 @@ class LibraryTrackList(Sequence):
         to the LRU. Those not read yet are read on the loader thread."""
         indices = list(indices)
         ids = {self.ids[i] for i in indices if 0 <= i < len(self.ids)}
-
         with self._shared.lock:
             self._shared.held = ids
         for index in indices:
@@ -189,7 +208,7 @@ class LibraryTrackList(Sequence):
 
     def _fill(self, group: int):
         """Read album `group`'s songs into the LRU (any thread)."""
-        _folder, start, end = self.groups[group]
+        folder, start, end = self.groups[group]
         end = min(end, len(self.ids))
         if start >= end:
             return
@@ -199,6 +218,11 @@ class LibraryTrackList(Sequence):
             if all(i in shared.cache for i in ids):
                 return
         read = shared.db.tracks_by_id(ids)
+        if len(read) < len(ids):   # (some were read again since the tab was made: a file read again gets new ids)
+            renewed = self._renew(folder, start, end)
+            if renewed is not None:
+                ids = renewed
+                read = shared.db.tracks_by_id(ids)
         with shared.lock:
             for track_id in ids:
                 track = read.get(track_id) or _gone(track_id)
@@ -207,6 +231,21 @@ class LibraryTrackList(Sequence):
                 shared.where[track.path] = track_id
             self._trim()
             shared.serial += 1
+
+    def _renew(self, folder, start: int, end: int) -> list[int] | None:
+        """An album whose songs' ids have changed since the tab was made (their files were read again:
+        a tag edit, a new reading format): its songs' ids now, in play order, put in its place in the
+        list — when it still has as many songs (else None: the ones gone show as missing until the tab
+        is opened again, so no other song moves)."""
+        found = self._shared.db.album_orders([folder]).get(os.fspath(folder))
+        if found is None or len(found.ids) != end - start:
+            return None
+        shared = self._shared
+        with shared.lock:
+            moved = dict(zip(self.ids[start:end], found.ids))
+            self.ids[start:end] = array("q", found.ids)   # (the same length: every place stays where it is)
+            shared.held = {moved.get(i, i) for i in shared.held}   # (still held: the songs round the one playing)
+        return list(found.ids)
 
     def _trim(self):
         """Let go of the songs read longest ago, past KEEP (never the ones held). Called under the lock."""
@@ -295,7 +334,6 @@ class LibraryTrackList(Sequence):
         return found | {key for key in keys if key in extras}
 
     def index_of_key(self, key: str) -> int:
-
         """Where the song with this play key (audiofile.key) is: -1 when it isn't here. Asks the
         database (a worker's, or a moment on Tk's thread: one small read)."""
         found = self._shared.db.songs_by_keys([key])
@@ -311,8 +349,11 @@ class LibraryTrackList(Sequence):
 
     def matching(self, words: list[str]) -> list[int]:
         """The songs whose search text holds every word, in list order — searched by the database
-        (its folded text for each song: the in-tab filter's own rule)."""
-        found = self._shared.db.ids_matching(words)
+        (its folded text for each song: the in-tab filter's own rule). A tab of a few albums looks at
+        its own songs only, by id (searched on Tk's thread, it mustn't cost a look at the whole
+        library); a big one has the database look through every song."""
+        among = self.ids if len(self.ids) <= BY_ID_MOST else None
+        found = self._shared.db.ids_matching(words, among)
         positions = [at for at, track_id in enumerate(self.ids) if track_id in found]
         count = len(self.ids)
         for at, track in enumerate(self.extras):
@@ -328,7 +369,6 @@ def _gone(track_id: int) -> Track:
 
 
 def build(db, albums: Sequence) -> LibraryTrackList:
-
     """(A worker thread.) A tab of these albums (library.Album, in the order given) from the library
     database: their songs' ids in play order, without a Track made for each. An album the database
     doesn't hold is left out."""
@@ -344,16 +384,15 @@ def build(db, albums: Sequence) -> LibraryTrackList:
         ids.extend(found.ids)
         groups.append((album.path, start, len(ids)))
         seconds += found.seconds
-        for into, values in ((artists, found.artists), (names, found.names), (qualities, found.qualities)):
+        # (Qualities as shown: two stored ones can show the same — MP3 at two rates — and mustn't
+        # stop the look before a quality that shows differently.)
+        shown = {_shown(*quality) for quality in found.qualities}
+        for into, seen in ((artists, found.artists), (names, found.names), (qualities, shown)):
             if len(into) < 2:
-                into.update(values)
-    varies = {column for column, values in (("artist", artists), ("album", names), ("quality", _shown(qualities)))
-              if len(values) > 1}
-    return LibraryTrackList(db, ids, groups, seconds, varies)
+                into.update(seen)
+    return LibraryTrackList(db, ids, groups, seconds, (artists, names, qualities))
 
 
-def _shown(qualities: set[tuple]) -> set[str]:
-    """Qualities as the Format column shows them ("16/44.1", "MP3")."""
-    return {codec
- if codec in LOSSY_CODECS else (f"{bits}/{rate / 1000:g}" if rate else "")
-            for codec, bits, rate in qualities}
+def _shown(codec: str, bits: int, rate: int) -> str:
+    """A quality as the Format column shows it ("16/44.1", "MP3")."""
+    return codec if codec in LOSSY_CODECS else (f"{bits}/{rate / 1000:g}" if rate else "")

@@ -1405,6 +1405,7 @@ class Player:
                 # same song as before (if it's still there).
                 path = self.tracks[self.index].path if 0 <= self.index < len(self.tracks) else None
                 self.tracks = tracks
+                self._let_go_of_paths()
                 found = self._find(tracks, path) if path is not None else None
                 self.index = found if found is not None else -1
                 self._rebuild_order(first=self.index if self.index >= 0 else None)
@@ -1417,10 +1418,17 @@ class Player:
             else:
                 self._preparing.at = current
             self.tracks = tracks
+            self._let_go_of_paths()
             self.index = current if current is not None else (0 if len(tracks) else -1)
             self._rebuild_order(first=current)
             self._message = ""
             self._relineup()
+
+    def _let_go_of_paths(self):
+        """The paths of a list no longer playing aren't kept (with that list: it may be a big one)."""
+        found = self._paths
+        if found is not None and found[0] is not self.tracks:
+            self._paths = None
 
     def _find(self, tracks, path) -> int | None:
         """The first place of the song with this path in `tracks` (None: not there), through a dict
@@ -2259,7 +2267,6 @@ class Player:
             self.index, self.queued_now = source.index, None
         else:  # the list changed while it was lined up
             index = self._find(tracks, source.path)
-
             if index is not None:
                 self.index = source.index = index
             else:  # taken out of the list: what follows carries on from where the list was

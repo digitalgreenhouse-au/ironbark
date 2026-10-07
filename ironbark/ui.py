@@ -120,8 +120,7 @@ log = logging.getLogger(__name__)
 
 POLL_MS = 250
 HEARD_STEP_S = 2.0  # a move further than this between polls is a seek, not listening
-
-
+READ_HERE_MOST = 2_000   # songs of a library tab read on Tk's thread for an action (more: on a worker first)
 MEDIA_POLL_MS = 60   # how often presses from media keys / Windows' media panel are picked up
 AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
@@ -303,8 +302,14 @@ def _tracks_at(tracks, rows: list[int]) -> list[Track]:
     return many(rows) if many is not None else [tracks[i] for i in rows]
 
 
-def _store_play(index: library_index.LibraryIndex, key: str, heard: float, duration: float) -> None:
+def _read_off_tk(tracks, rows: list[int]) -> bool:
+    """Are these songs of a tab's list too many to read on Tk's thread for an action? (A list read
+    from the library database a page at a time, and more of them than READ_HERE_MOST: reading 200,000
+    takes seconds.)"""
+    return getattr(tracks, "many", None) is not None and len(rows) > READ_HERE_MOST
 
+
+def _store_play(index: library_index.LibraryIndex, key: str, heard: float, duration: float) -> None:
     """Count a play (LibraryDB.record_play) on a worker thread."""
     try:
         if index.db.record_play(key, heard, duration):
@@ -507,7 +512,6 @@ class PlayerWindow:
         self._listening: _Listening | None = None   # the song being heard, for its play count
         self._plays_seen = 0   # plays stored (_plays_stored) when the Plays columns last read their counts
         self._held_key = None    # what the songs held round the one playing were worked out for
-
         self._opened_key = None                  # the song last marked as opening its album
         self.media = mediakeys.MediaKeys()        # presses from media keys / Windows arrive here
         self._windows_media = None                # mediakeys.WindowsMedia while switched on
@@ -1538,8 +1542,43 @@ class PlayerWindow:
         rows = self.playlist.selected_rows() if tab is not None and tab.tracks else []
         if not rows:
             return False
-        self._queue_tracks(_tracks_at(tab.tracks, rows), front)
+        self._with_songs(tab.tracks, rows, lambda tracks: self._queue_tracks(tracks, front))
         return True
+
+    def _with_songs(self, tracks, rows: list[int], then: Callable[[list[Track]], None]):
+        """`then(songs)` with these songs of a tab's list: here and now — or, when they're too many to
+        read on Tk's thread (_read_off_tk: Ctrl+A over a whole library), once a worker thread has read
+        them, the window carrying on meanwhile."""
+        if not _read_off_tk(tracks, rows):
+            then(_tracks_at(tracks, rows))
+            return
+        rows = list(rows)
+        result: dict = {}
+        reading = f"Reading {len(rows):,} songs…"
+
+        def work():
+            try:
+                result["tracks"] = tracks.many(rows)
+            except Exception:   # (a database that can't be read now: said in the status line)
+                log.exception("couldn't read %d songs of a library tab", len(rows))
+                result["tracks"] = None
+            finally:
+                tracks.db.release()   # (this thread's connection)
+
+        def finish():
+            if "tracks" not in result:
+                self.root.after(50, finish)
+                return
+            if self._notice == reading:
+                self._set_notice("")
+            if result["tracks"] is None:
+                self._set_notice("Couldn't read the songs from the library: try again in a moment", 5000)
+            else:
+                then(result["tracks"])
+
+        self._set_notice(reading, 0)
+        threading.Thread(target=work, name="read-songs", daemon=True).start()
+        self.root.after(50, finish)
 
     def _remove_selected(self):
         """Delete in a playlist's track list: the selected songs out of it, all undone at once (other
@@ -1966,7 +2005,6 @@ class PlayerWindow:
         if ready is not None:   # (a list read a page at a time: the song to start, and the ones round it)
             ready(track, self.player.order_around(track))
         self.player.play(track, start_at=start_at)
-
         self._shown_key = None
         self._refresh_tabs()
 
@@ -2541,7 +2579,6 @@ class PlayerWindow:
         self._edit_playlist(tab, tracks, notice, undone, select=min(indices[0], len(tracks) - 1),
                             select_back=indices if len(indices) > 1 else indices[0])
 
-
     def _move_in_playlist(self, index: int, step: int):
         """A song a place up or down the playlist on show (Alt+↑ / ↓, or its menu) — Ctrl+Z moves it back."""
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
@@ -2564,28 +2601,40 @@ class PlayerWindow:
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         if tab is None or not tab.tracks or not rows:
             return
-        tracks = _tracks_at(tab.tracks, rows)
+        listed = tab.tracks
+        if _read_off_tk(listed, rows):
+            # Too many to read before the menu shows (Ctrl+A over a whole library): read once an item is
+            # chosen, off Tk's thread. Fewer favourites than songs means they can't all be favourites.
+            favourite = False
+
+            def songs(act):
+                return lambda: self._with_songs(listed, rows, act)
+        else:
+            tracks = _tracks_at(listed, rows)
+            favourite = len(self.favourites) >= len(tracks) and all(track in self.favourites for track in tracks)
+
+            def songs(act):
+                return lambda: act(tracks)
         single = len(rows) == 1
         album = getattr(rows, "album", not single)   # (an album header's songs, not songs picked one by one)
         menu = self._menu()
         menu.add("Play this album" if album else "Play", lambda: self._play_tab(self.current, rows[0]),
                  keys.hint("list_play"))
-        menu.add("Play next", lambda: self._queue_tracks(tracks, front=True), keys.hint("list_play_next"))
-        menu.add("Add to queue", lambda: self._queue_tracks(tracks, front=False), keys.hint("list_queue"))
+        menu.add("Play next", songs(lambda found: self._queue_tracks(found, front=True)), keys.hint("list_play_next"))
+        menu.add("Add to queue", songs(lambda found: self._queue_tracks(found, front=False)), keys.hint("list_queue"))
         menu.add_separator()
-        add = menu.add_submenu("Add to playlist" if single else f"Add these {len(rows)} songs to playlist")
+        add = menu.add_submenu("Add to playlist" if single else f"Add these {len(rows):,} songs to playlist")
         targets = [p for p in self._known_playlists() if not (tab.kind == "playlist" and Path(tab.path) == p)]
         for path in targets:
-            add.add(path.stem, lambda p=path: self.add_to_playlist(p, tracks))
+            add.add(path.stem, songs(lambda found, p=path: self.add_to_playlist(p, found)))
         add.add_separator()
-        add.add("New playlist…", lambda: self.new_playlist(tracks))   # (Ctrl+N makes an empty one)
-        favourite = all(track in self.favourites for track in tracks)
+        add.add("New playlist…", songs(lambda found: self.new_playlist(found)))   # (Ctrl+N makes an empty one)
         menu.add("Remove from favourites" if favourite else "Add to favourites",
-                 lambda: self.favourites.set(tracks, not favourite), quick_search.HEART)
+                 songs(lambda found: self.favourites.set(found, not favourite)), quick_search.HEART)
         if self._tag_editing():
             menu.add_separator()
-            menu.add("Edit tags…" if single else f"Edit tags of these {len(rows)} songs…",
-                     lambda: self.edit_tags(tracks), keys.hint("edit_tags"))
+            menu.add("Edit tags…" if single else f"Edit tags of these {len(rows):,} songs…",
+                     songs(lambda found: self.edit_tags(found)), keys.hint("edit_tags"))
             menu.add("Tag history (undo)…", self.show_tag_history)
         if tab.kind == "playlist" and single:
             index = rows[0]
@@ -2597,7 +2646,7 @@ class PlayerWindow:
             menu.add("Remove from playlist", lambda: self._remove_from_playlist(index), keys.hint("remove"))
         elif tab.kind == "playlist":
             menu.add_separator()
-            menu.add(f"Remove these {len(rows)} songs from playlist", lambda: self._remove_from_playlist(rows),
+            menu.add(f"Remove these {len(rows):,} songs from playlist", lambda: self._remove_from_playlist(rows),
                      keys.hint("remove"))
         menu.add_separator()
         self._sleep_menu(menu)
@@ -2897,13 +2946,13 @@ class PlayerWindow:
         return experiments.enabled(self.prefs, tag_editor.EXPERIMENT)
 
     def edit_selected_tags(self):
-        """Key E: edit the selected song (or the album whose header is selected)."""
+        """Key E: edit the selected songs (or the album whose header is selected)."""
         if not self._tag_editing():
             return
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         rows = self.playlist.selected_rows() if tab is not None and tab.tracks else []
         if rows:
-            self.edit_tags(_tracks_at(tab.tracks, rows))
+            self._with_songs(tab.tracks, rows, self.edit_tags)
 
     def edit_tags(self, tracks: list[Track]):
         if not self._tag_editing() or not tracks:
@@ -3004,7 +3053,6 @@ class PlayerWindow:
         # (A list read a page at a time: the songs it holds now. The rest are read from the library
         # database when next needed, by then up to date.)
         tracks = [t for tab in self.tabs for t in _held_in_memory(tab.tracks)] + self.player.up_next()
-
         for track in tracks:
             real = Path(audiofile.real_path(track.path))
             if real not in changed or audiofile.cue_of(track.path) is not None:
@@ -3022,8 +3070,6 @@ class PlayerWindow:
         for tab in self.tabs:
             if tab.kind not in ("library", "playlist") and any(id(t) in touched_ids
                                                                for t in _held_in_memory(tab.tracks)):
-
-
                 tab.info_requested = False  # the tab's name comes from the album tag: look it up again
         if touched:
             self._show_current_tab()
@@ -4159,7 +4205,8 @@ class PlayerWindow:
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         if tab is None or not tab.tracks:
             return
-        rows = [r for r in rows if 0 <= r < len(tab.tracks)]
+        if rows and (min(rows) < 0 or max(rows) >= len(tab.tracks)):   # (each move of a drag: kept quick)
+            rows = [r for r in rows if 0 <= r < len(tab.tracks)]
         reorder = (tab.kind == "playlist" and len(rows) == 1 and not self.playlist.searching
                    and self.playlist.contains(x_root, y_root))
         target = None if reorder else self._drop_target(x_root, y_root)
@@ -4167,7 +4214,7 @@ class PlayerWindow:
             target = None  # songs go onto another tab, nowhere else
         if phase == "move":
             self.playlist.show_drop_line(self.playlist.drop_index(y_root) if reorder else None)
-            self._show_drop_target(target, "the song" if len(rows) == 1 else f"these {len(rows)} songs")
+            self._show_drop_target(target, "the song" if len(rows) == 1 else f"these {len(rows):,} songs")
             return
         self.playlist.show_drop_line(None)
         self._clear_drop_target()
@@ -4176,10 +4223,15 @@ class PlayerWindow:
         if reorder:
             self._reorder_playlist(rows[0], self.playlist.drop_index(y_root))
         elif target is not None:
-            tracks = [track for track in _tracks_at(tab.tracks, rows) if not track.missing]
+            onto = self.tabs[target[1]]
 
-            self._set_notice(self._add_tracks_to_tab(self.tabs[target[1]], tracks,
-                                                     [audiofile.key(t.path) for t in tracks]))
+            def add(found: list[Track]):
+                if self._tab_index(onto) < 0:
+                    return   # (closed while the songs were read)
+                tracks = [track for track in found if not track.missing]
+                self._set_notice(self._add_tracks_to_tab(onto, tracks, [audiofile.key(t.path) for t in tracks]))
+
+            self._with_songs(tab.tracks, rows, add)
 
     def _reorder_playlist(self, source: int, target: int):
         """Move one song within the playlist on show (dragged up or down); saved straight away."""
@@ -4835,8 +4887,6 @@ class PlayerWindow:
         self.playlist.plays_changed()
         if self._library is not None and self._library.win.winfo_exists():
             self._library.plays_changed()
-
-
 
     def _record_last_play(self):
         """Closing: the song being heard counts too (given a moment to be stored)."""

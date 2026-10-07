@@ -64,7 +64,7 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import audiofile, controls, layout, popups, searchfold, theme
+from . import audiofile, controls, layout, searchfold, theme
 from .library import Track, album_folder, group_by_album
 from .virtual_list import ELLIPSIS, VirtualTree
 
@@ -174,7 +174,7 @@ def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40
 class TreeDrag:
     """Turns press–move–release on a Treeview row into a drag (after a few pixels, so clicks and
     double-clicks still work as before). `what(iid)` says what a row carries (None = not
-    draggable); `on_drag(carried, x_root, y_root, phase)` hears "move" for each movement and
+    draggable), asked as the drag starts; `on_drag(carried, x_root, y_root, phase)` hears "move" for each movement and
     "drop" or "cancel" (Escape) at the end. Nothing is moved here."""
 
     def __init__(self, tree: ttk.Treeview, what: Callable[[str], object | None],
@@ -192,10 +192,11 @@ class TreeDrag:
         return bool(self._state and self._state["moving"])
 
     def _press(self, event):
+        # What the row carries is asked once the press becomes a drag, not at every click (a row of a
+        # selection of 200,000 songs carries them all).
         iid = self.tree.identify_row(event.y)
-        carried = self.what(iid) if iid and self.tree.identify_region(event.x, event.y) == "cell" else None
-        self._state = None if carried is None else {"carried": carried, "x0": event.x_root, "y0": event.y_root,
-                                                     "moving": False}
+        on_row = bool(iid) and self.tree.identify_region(event.x, event.y) == "cell"
+        self._state = {"iid": iid, "x0": event.x_root, "y0": event.y_root, "moving": False} if on_row else None
 
     def _motion(self, event):
         state = self._state
@@ -204,7 +205,11 @@ class TreeDrag:
         if not state["moving"]:
             if max(abs(event.x_root - state["x0"]), abs(event.y_root - state["y0"])) < self._start:
                 return
-            state["moving"] = True
+            carried = self.what(state["iid"])
+            if carried is None:   # (a row that can't be dragged)
+                self._state = None
+                return
+            state["carried"], state["moving"] = carried, True
             self.tree.configure(cursor="hand2")
         self.on_drag(state["carried"], event.x_root, event.y_root, "move")
 
@@ -387,7 +392,6 @@ class PlaylistView:
         self._worker = _Worker()
         self._asked: dict[str, int | None] = {"search": None, "plays": None}
         self._asking: list[str] = []            # the words of the search on its way from the list's thread
-
         self._plays: OrderedDict[str, int] = OrderedDict()   # song key -> times played (the rows shown lately)
         self._plays_wanted: list[str] = []
         self._plays_job = None
@@ -450,7 +454,7 @@ class PlaylistView:
         self.tree.bind("<ButtonRelease-1>", self._released, add="+")
         self.tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
-            self.tree.bind(key, lambda e: self._context(popups.row_event(self.tree)) or "break")
+            self.tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
         # Dragging songs: a song carries itself, an album header its album's listed songs, a row of a
         # selection of several every song selected.
         self.drag = TreeDrag(self.tree, lambda iid: self._carried(iid) or None, on_drag)
@@ -537,7 +541,6 @@ class PlaylistView:
             self._pack_header(wide)
         self._show_columns(draw=False)
         self.list.fonts_changed()   # (the rows' font and height go with the style: drawn again once Tk is idle)
-
 
     def _update_shown(self):
         """Show the optional columns the setting, the tier and the rows call for."""
@@ -827,7 +830,6 @@ class PlaylistView:
                 if self._plays_job is None:
                     self._plays_job = self.tree.after_idle(self._ask_plays)
             return ""
-
         self._plays.move_to_end(key)
         return f"{count:,}" if count else ""
 
@@ -850,6 +852,8 @@ class PlaylistView:
 
     def plays_changed(self):
         """A song's play was counted: the Plays column reads its counts again."""
+        self._worker.forget("plays")   # (one on its way has the counts from before)
+        self._asked["plays"] = None
         self._plays.clear()
         if "plays" in self.shown:
             self.list.refresh()
@@ -998,9 +1002,11 @@ class PlaylistView:
         rows.album = self.list.selected_count() == 1 and not iid.isdigit()
         self.on_menu(rows, event)
 
-
     def selected_rows(self) -> list[int]:
-        """The tracks the selected rows stand for (songs, and an album header's songs), in list order."""
+        """The tracks the selected rows stand for, in list order: the songs selected, and an album
+        header's listed songs when none of them is selected itself (a header picked on its own, or
+        Ctrl+clicked). A header that's just inside a Shift range brings nothing more: what's acted on
+        is what's lit."""
         self.list.sync()
         listing = self._listing
         entries, count = listing.entries, len(listing.entries)
@@ -1008,16 +1014,22 @@ class PlaylistView:
         if self._found is None and runs == [(0, len(listing))]:
             return list(range(len(self._tracks)))   # (everything: Ctrl+A)
         songs: list[int] = []
-        headers = False
+        headers: list[int] = []
         for start, end in runs:
             for row in range(start, min(end, count)):
                 found = entries[row]
                 if found >= 0:
                     songs.append(found)
                 else:
-                    headers = True
-                    songs.extend(self._group_songs(-1 - found))
-        return sorted(set(songs)) if headers else songs
+                    headers.append(-1 - found)
+        if not headers:
+            return songs
+        picked = set(songs)
+        for g in headers:
+            listed = self._group_songs(g)
+            if not any(i in picked for i in listed):
+                songs.extend(listed)
+        return sorted(set(songs))
 
     def selected_track(self) -> int | None:
         """The selected song's index (None: nothing, or an album header, is selected); with several
@@ -1063,7 +1075,9 @@ class PlaylistView:
 
     def drop_index(self, y_root: int) -> int:
         """Where a dragged song would land: the index of the song the drop line sits above
-        (len = after the last). Only meaningful for a flat list (a playlist) with no search."""
+        (len = after the last). Only meaningful for a flat list (a playlist) with no search. Below the
+        rows on show (the gap under the last whole row): just after the last one on show — the end
+        of the playlist only when that's its last song."""
         y = y_root - self.tree.winfo_rooty()
         rows = self._shown_songs()
         if not rows:
@@ -1071,7 +1085,7 @@ class PlaylistView:
         iid = self.tree.identify_row(y)
         if not iid or not iid.isdigit():
             first = self.tree.bbox(rows[0])
-            return int(rows[0]) if first and y < first[1] else len(self._tracks)
+            return int(rows[0]) if first and y < first[1] else int(rows[-1]) + 1
         box = self.tree.bbox(iid)
         index = int(iid)
         return index + 1 if box and y > box[1] + box[3] / 2 else index
@@ -1088,9 +1102,9 @@ class PlaylistView:
         box = self.tree.bbox(str(index)) if str(index) in rows else ""
         if box:
             y = box[1]
-        else:
+        else:   # (just after the last row on show: under it)
             last = self.tree.bbox(rows[-1])
-            if not last or index != len(self._tracks) or rows[-1] != str(len(self._tracks) - 1):
+            if not last or index != int(rows[-1]) + 1:
                 self._drop_line.place_forget()
                 return
             y = last[1] + last[3]
