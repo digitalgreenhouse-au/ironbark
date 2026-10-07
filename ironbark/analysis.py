@@ -20,7 +20,9 @@ Loudness: integrated loudness and loudness range of the whole track (see loudnes
 - Where the sound stops: the average spectrum of the whole track. A sharp wall well below the
   top of the range (15–20 kHz) is what lossy encoders (MP3, AAC) leave; a sharp wall at
   20–24 kHz in a 88.2 kHz+ file is what upsampling from CD quality leaves. A gentle fade is
-  just the recording (old tape, mellow instruments), so it isn't flagged.
+  just the recording (old tape, mellow instruments), so it isn't flagged. Below CD rate (32 or
+  22.05 kHz) the converter's own anti-alias filter is a sharp wall near the top of the range,
+  so there only a wall well below that counts (`lossy_below`).
 
 Also: clipping (runs of 3+ samples in a row at full scale — Audacity's "Find Clipping"
 default), where the highest peak is, true peak and PLR (peak-to-loudness ratio: true peak
@@ -50,13 +52,15 @@ from .loudness import Loudness, integrated, loudness_range
 DR_BLOCK_SECONDS = 3
 SPECTRUM_SIZE = 8192         # FFT length for the average spectrum (5.4 Hz steps at 44.1 kHz)
 CLIP_RUN = 3                 # this many full-scale samples in a row count as clipping
-LOSSY_BELOW_HZ = 20000.0     # a sharp wall below this suggests a lossy source
+LOSSY_BELOW_HZ = 20000.0     # a sharp wall below this suggests a lossy source…
+CONVERTER_WALL = 0.43        # …but below CD rate, only one below this fraction of the sample rate
 UPSAMPLED_BELOW_HZ = 24500.0 # …and below this, in a 88.2 kHz+ file, upsampling from CD quality
+CUT_SHORT_SLACK = 2304       # frames: decoding may end this little short of the stated length (a margin)
 FLOOR_MARGIN_DB = 10.0       # "sound" = at least this far above the spectrum's own floor
 SHARP_DB = 25.0              # a drop this big within ~1 kHz is a wall, not a fade
 SUBTYPE_BITS = {"PCM_S8": 8, "PCM_U8": 8, "PCM_16": 16, "PCM_24": 24, "PCM_32": 32,
                 "ALAC_16": 16, "ALAC_20": 20, "ALAC_24": 24, "ALAC_32": 32}
-FLOAT_SUBTYPES = {"FLOAT", "DOUBLE"}
+FLOAT_SUBTYPES = audiofile.FLOAT_SUBTYPES
 
 
 @dataclass
@@ -115,11 +119,20 @@ def wall_verdict(cutoff_hz: float | None, sharp: bool, rate: int) -> str:
     by Now Playing → Check and the Spectrogram window's cut-off line."""
     if not sharp or cutoff_hz is None:
         return ""
-    if cutoff_hz < LOSSY_BELOW_HZ:
+    if cutoff_hz < lossy_below(rate):
         return "lossy"
     if rate >= 88200 and cutoff_hz < UPSAMPLED_BELOW_HZ:
         return "upsampled"
     return ""
+
+
+def lossy_below(rate: int) -> float:
+    """A sharp wall below this (Hz) suggests a lossy source. At 32 or 22.05 kHz the converter's
+    own anti-alias filter is a sharp wall just under half the sample rate, so there a wall
+    only counts well below that."""
+    if 0 < rate < 44100:
+        return min(LOSSY_BELOW_HZ, CONVERTER_WALL * rate)
+    return LOSSY_BELOW_HZ
 
 
 @dataclass
@@ -129,7 +142,9 @@ class AlbumResult:
     dr: int | None           # average of the tracks' DR
     dr_low: int | None
     dr_high: int | None
-    tracks: int
+    tracks: int              # tracks measured (one that stops decoding part-way counts up to there)
+    skipped: int = 0         # tracks that couldn't be read at all, so aren't in the figures
+    partial: int = 0         # of `tracks`, those that stop decoding part-way
 
 
 def pcm_bytes(block: np.ndarray, bits: int) -> bytes:
@@ -171,6 +186,8 @@ def dr_of(rms_blocks: list[np.ndarray], peak_blocks: list[np.ndarray]) -> float 
 OVERSAMPLE = 4        # the live true-peak meter (meters.py): BS.1770's own 4x
 FILE_OVERSAMPLE = 8   # (0.24.0) whole-file measures: Check, the clipping guard, the Clipping window
 _TAPS_PER_PHASE = 48
+_STRETCH = 2048       # TruePeak works a block out this many points (per phase) at a time
+_ROUNDING = 1e-9      # far more than a 48-term sum can be rounded by: keeps TruePeak's skip exact
 
 # 🔎 ITU-R BS.1770-5 (11/2023) Annex 2, Attachment 1 (checked 05/10/2026 against the published PDF):
 # the most an n-times oversampled peak can under-read a sine at normalised frequency f (a fraction
@@ -225,22 +242,56 @@ def _oversampling_phases(factor: int = OVERSAMPLE) -> list[np.ndarray]:
 
 class TruePeak:
     """True peak of a stream fed in blocks (the reconstruction above, carried across blocks).
-    (0.24.0) 8x for whole files: BS.1770-5's worst under-read drops from 0.69 to 0.17 dB."""
+    (0.24.0) 8x for whole files: BS.1770-5's worst under-read drops from 0.69 to 0.17 dB.
+
+    Only the highest point is wanted, so stretches that can't beat it are skipped: a phase's
+    output never exceeds the loudest sample it reads times the sum of that phase's tap sizes.
+    Each block's loudest stretches are worked out first, and most of the rest then falls
+    under the peak they set. The skip is exact (the peak is the very value working out every
+    point gives); it saves most on dynamic music, less on loud masters. Call `finish()` at the
+    end of the stream."""
 
     def __init__(self, channels: int, factor: int = FILE_OVERSAMPLE):
         self.phases = _oversampling_phases(factor)
+        self.gains = [float(np.abs(phase).sum()) for phase in self.phases]
         self.overlap = _TAPS_PER_PHASE - 1
         self.previous = np.zeros((self.overlap, channels))
         self.peak = 0.0
 
     def add(self, block: np.ndarray) -> None:
         x = np.concatenate([self.previous, block])
-        for phase in self.phases:
-            for ch in range(x.shape[1]):
-                y = np.convolve(x[:, ch], phase, mode="valid")
-                if len(y):
-                    self.peak = max(self.peak, float(np.abs(y).max()))
+        points = len(x) - self.overlap          # outputs per phase and channel
+        if points > 0:
+            most = max(self.gains)
+            for start, ch, loudest in self._stretches(x, points):
+                bound = loudest * (1 + _ROUNDING)
+                if bound * most <= self.peak:
+                    break                         # loudest first: nothing after this can beat it
+                # A view of x itself, so each output is summed exactly as over the whole block.
+                stretch = x[start: min(points, start + _STRETCH) + self.overlap, ch]
+                for phase, gain in zip(self.phases, self.gains):
+                    if bound * gain > self.peak:
+                        y = np.convolve(stretch, phase, mode="valid")
+                        self.peak = max(self.peak, float(np.abs(y).max()))
         self.previous = x[-self.overlap:]
+
+    def _stretches(self, x: np.ndarray, points: int) -> list[tuple[int, int, float]]:
+        """(first output, channel, loudest sample its outputs read) for each _STRETCH outputs of
+        the block, loudest first. Output j reads x[j] to x[j + overlap]."""
+        count = -(-points // _STRETCH)
+        magnitude = np.zeros(((count + 1) * _STRETCH, x.shape[1]))
+        magnitude[: len(x)] = np.abs(x)
+        own = magnitude[: count * _STRETCH].reshape(count, _STRETCH, -1).max(axis=1)
+        after = magnitude[_STRETCH:].reshape(count, _STRETCH, -1)[:, : self.overlap].max(axis=1)
+        loudest = np.maximum(own, after)
+        channels = x.shape[1]
+        return [(int(i) // channels * _STRETCH, int(i) % channels, float(loudest.flat[i]))
+                for i in np.argsort(-loudest, axis=None, kind="stable")]
+
+    def finish(self) -> None:
+        """The end of the stream: the filter's tail (silence after the last sample), so the
+        wave around the last few samples is measured too."""
+        self.add(np.zeros((_TAPS_PER_PHASE, self.previous.shape[1])))
 
 
 def true_peak(path: str | Path, cancel: threading.Event | None = None) -> float | None:
@@ -249,10 +300,11 @@ def true_peak(path: str | Path, cancel: threading.Event | None = None) -> float 
     heard as crackle or small pops. None if cancelled. The clipping guard's measurement."""
     with audiofile.open(path) as f:
         meter = TruePeak(f.channels)
-        for block in f.blocks(blocksize=f.samplerate * 5, dtype="float32", always_2d=True):
+        for block in audiofile.blocks(f, f.samplerate * 5, dtype="float32", always_2d=True):
             if cancel is not None and cancel.is_set():
                 return None
             meter.add(block)
+    meter.finish()
     return meter.peak
 
 
@@ -328,20 +380,35 @@ def find_cutoff(power: np.ndarray, rate: int) -> tuple[float | None, bool]:
     return cutoff, sharp
 
 
-def _blocks(f: sf.SoundFile, damaged: list, blocksize: int, dtype: str = "float64", always_2d: bool = False):
-    """audiofile.blocks() (int32 from a float or lossy file comes out scaled and clipped, as playback
-    sends it), except that a file which stops decoding part-way (damaged) ends the loop instead of
-    raising, and says so in `damaged`."""
-    blocks = audiofile.blocks(f, blocksize, dtype, always_2d)
-    while True:
+def cut_short(f: sf.SoundFile, frames_read: int) -> bool:
+    """Whether a file whose decoding ended after `frames_read` frames stopped clearly short of
+    the length its header states: cut off (an incomplete download, say), not just at its end.
+    An MP3 without a length header (Xing / Info / VBRI) has only an estimate made from its
+    size, which can be off either way, so it never counts as cut short."""
+    if frames_read + CUT_SHORT_SLACK >= f.frames:
+        return False
+    if audiofile.is_mp3(f):
         try:
-            block = next(blocks)
-        except StopIteration:
-            return
-        except RuntimeError:  # libsndfile: the rest can't be decoded
-            damaged.append(True)
-            return
-        yield block
+            return audiofile.has_length_header(f.name)
+        except (OSError, ValueError, IndexError):
+            return False
+    return True
+
+
+def _blocks(f: sf.SoundFile, damaged: list, **kwargs):
+    """audiofile.blocks() (int32 from a float or lossy file comes out scaled and clipped, as
+    playback sends it), except that a file which stops decoding part-way (damaged) ends the loop
+    instead of raising, and says so in `damaged`; so does one cut short of its stated length."""
+    done = 0
+    try:
+        for block in audiofile.blocks(f, **kwargs):
+            done += len(block)
+            yield block
+    except RuntimeError:  # libsndfile: the rest can't be decoded
+        damaged.append(True)
+        return
+    if cut_short(f, done):
+        damaged.append(True)
 
 
 def analyse(
@@ -417,6 +484,7 @@ def analyse(
                 progress(done / total)
     for counter in clips:
         counter.finish()
+    tp.finish()
 
     md5_ok = None if stored_md5 == 0 else int(md5.hexdigest(), 16) == stored_md5
     if damaged:
@@ -463,10 +531,14 @@ def _flags(formats: FormatScan, path) -> FormatFlags | None:
 def album_measure(paths: Iterable, cancel: threading.Event | None = None,
                   progress: Callable[[float], None] | None = None) -> AlbumResult | None:
     """An album's loudness (all tracks as one programme, as loudness.album_loudness) and DR
-    (the plain average of the tracks'), in one read of each file. None if cancelled."""
+    (the plain average of the tracks'), in one read of each file. A track that stops decoding
+    part-way counts up to there (as the Check does); one that can't be read at all is left out
+    and counted in `skipped`. None if cancelled."""
     paths = list(paths)
     gathered, drs = [], []
+    skipped = partial = 0
     for k, path in enumerate(paths):
+        damaged: list = []
         try:
             with audiofile.open(path) as f:
                 meter = Loudness(f.samplerate, f.channels)
@@ -474,7 +546,7 @@ def album_measure(paths: Iterable, cancel: threading.Event | None = None,
                 total = max(1, f.frames)
                 done = 0
                 rms_blocks, peak_blocks = [], []
-                for block in f.blocks(blocksize=block_frames, dtype="float64", always_2d=True):
+                for block in _blocks(f, damaged, blocksize=block_frames, dtype="float64", always_2d=True):
                     if cancel is not None and cancel.is_set():
                         return None
                     meter.add(block)
@@ -485,7 +557,12 @@ def album_measure(paths: Iterable, cancel: threading.Event | None = None,
                     if progress:
                         progress((k + done / total) / len(paths))
         except (OSError, RuntimeError):
-            continue  # a file that won't decode just doesn't count
+            skipped += 1  # a file that won't open (or isn't a format the player decodes)
+            continue
+        if not done:
+            skipped += 1  # nothing in it could be decoded
+            continue
+        partial += bool(damaged)
         gathered.append(meter.powers.copy())
         dr = dr_of(rms_blocks, peak_blocks)
         if dr is not None:
@@ -495,4 +572,4 @@ def album_measure(paths: Iterable, cancel: threading.Event | None = None,
     rounded = [round(d) for d in drs]
     return AlbumResult(lufs, lra, round(sum(drs) / len(drs)) if drs else None,
                        min(rounded) if rounded else None, max(rounded) if rounded else None,
-                       len(paths))
+                       len(gathered), skipped, partial)

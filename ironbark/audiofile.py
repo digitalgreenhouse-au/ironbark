@@ -167,7 +167,11 @@ def read(f, frames: int, dtype: str, always_2d: bool = True) -> np.ndarray:
 
 
 def blocks(f, blocksize: int, dtype: str = "float64", always_2d: bool = False):
-    """`f.blocks()` through `read`: blocks of `blocksize` frames (the last one shorter) to the end."""
+    """`f.blocks()` through `read`: blocks of `blocksize` frames (the last one shorter), read one
+    after another until the decoder has no more. (soundfile's own SoundFile.blocks() counts down
+    the length the file's header states instead, and when the decoder stops short of it, as on
+    an MP3 cut off part-way, it hands back the last block's samples again until the count runs
+    out.) Every whole-file reader uses this."""
     while True:
         block = read(f, blocksize, dtype, always_2d)
         if not len(block):
@@ -362,7 +366,7 @@ _shortfalls: dict = {}
 _shortfalls_lock = threading.Lock()
 
 
-def _has_length_header(path) -> bool:
+def has_length_header(path) -> bool:
     """Whether the MP3's first frame is a Xing / Info / VBRI frame, which gives the exact length."""
     with io.open(path, "rb") as f:
         data = f.read(1 << 16)
@@ -398,7 +402,7 @@ def mp3_shortfall(f, path) -> tuple[int, int] | None:
             return _shortfalls[key]
     result = None
     try:
-        if not _has_length_header(real):
+        if not has_length_header(real):
             index = mp3frames.build_index(real)
             held = int(index.samples[-1])
             if held - f.frames > max(index.sample_rate, held // 100):   # (decoder delay is far less)

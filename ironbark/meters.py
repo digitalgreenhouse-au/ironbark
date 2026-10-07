@@ -44,7 +44,7 @@ import numpy as np
 
 from . import audiofile
 from .analysis import OVERSAMPLE, _TAPS_PER_PHASE, _oversampling_phases
-from .loudness import MOMENTARY, SHORT_TERM, Loudness, file_powers, integrated, loudness_range
+from .loudness import BLOCK_HOP, MOMENTARY, SHORT_TERM, Loudness, Programme, file_powers, integrated
 
 STEP = 0.001          # the meters' own clock: one reading per millisecond
 SUBSTEPS = 10         # finer steps inside each millisecond for the PPM circuit (0.1 ms)
@@ -145,7 +145,10 @@ class MeterEngine:
         self.current_path = None  # the file being metered (for Auto alignment)
         self.loudness: Loudness | None = None
         self._loud_timeline: collections.deque = collections.deque(maxlen=1500)  # (time, momentary, short-term)
-        self._loud_cache: tuple | None = None  # (key, integrated, range): recomputed at most 10 times a second
+        self._loud_cache: tuple | None = None  # (integrated, range) of the measurement so far
+        # (meters thread only) what _loud_cache is worked out from, and how many steps it has had
+        self._programme = Programme()
+        self._programme_fed = 0
         self._loudness_reset = False
         self.max_momentary: float | None = None
         self.max_short_term: float | None = None
@@ -158,7 +161,8 @@ class MeterEngine:
         self._stop.set()
 
     def reset_max(self):
-        self.max_true_peak = 0.0
+        with self._lock:   # process() raises it under the lock: a reset in between would be undone
+            self.max_true_peak = 0.0
 
     def reset_loudness(self):
         """Start the integrated loudness, loudness range and their maxima again from now."""
@@ -262,10 +266,12 @@ class MeterEngine:
                 meter = self.loudness = Loudness(rate, x.shape[1])
                 self._loudness_reset = False
                 self.max_momentary = self.max_short_term = None
+                self._new_programme(meter)
             elif self._loudness_reset:
                 self._loudness_reset = False
                 meter.reset()
                 self.max_momentary = self.max_short_term = None
+                self._new_programme(meter)
             carried = meter.carried
             new = meter.add(x)
             if not new:
@@ -282,6 +288,25 @@ class MeterEngine:
                     setattr(self, name, best if current is None else max(current, best))
             ends = heard_at + (np.arange(1, new + 1) * meter.step - carried) / rate
             self._loud_timeline.extend(zip(ends.tolist(), momentary.tolist(), short.tolist()))
+        self._update_programme(meter)
+
+    def _new_programme(self, meter: Loudness):
+        """A new integrated measurement starts at `meter.start` (call with the lock held)."""
+        self._programme = Programme()
+        self._programme_fed = meter.start
+        self._loud_cache = None
+
+    def _update_programme(self, meter: Loudness):
+        """(meters thread) The integrated loudness and range so far, brought up to date at most 10
+        times a second of audio. Worked out here, outside the lock, so reading them on the
+        window's thread costs nothing however long the track. Only this thread changes `meter`."""
+        if meter.count - self._programme_fed < BLOCK_HOP and self._loud_cache is not None:
+            return
+        self._programme.add(meter.powers[self._programme_fed: meter.count])
+        self._programme_fed = meter.count
+        figures = (self._programme.integrated(), self._programme.loudness_range())
+        with self._lock:
+            self._loud_cache = figures
 
     def _loudness_now(self, now: float) -> tuple:
         """(momentary, short-term, integrated, range, seconds measured). Call with the lock held."""
@@ -295,11 +320,7 @@ class MeterEngine:
                 break
         if chosen is None and self._loud_timeline:
             chosen = self._loud_timeline[0]
-        key = (meter.count // 10, meter.start, id(meter))
-        if self._loud_cache is None or self._loud_cache[0] != key:
-            measured = meter.measured()
-            self._loud_cache = (key, integrated(measured), loudness_range(measured))
-        _, whole, spread = self._loud_cache
+        whole, spread = self._loud_cache or (None, None)
 
         def clean(v):
             return None if v is None or math.isnan(v) or math.isinf(v) else v
@@ -380,7 +401,7 @@ def vu_levels(path, cancel: threading.Event | None = None) -> np.ndarray | None:
     levels = []
     with audiofile.open(path) as f:
         window = max(1, int(f.samplerate * 0.3))
-        for block in f.blocks(blocksize=window * 30, dtype="float32", always_2d=True):
+        for block in audiofile.blocks(f, window * 30, dtype="float32", always_2d=True):
             if cancel is not None and cancel.is_set():
                 return None
             n = len(block) // window

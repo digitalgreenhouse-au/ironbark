@@ -6,7 +6,9 @@
    same). If they don't line up from the first sample, the offset is found first (cross-
    correlation on whole samples, the way foobar2000's Binary Comparator does it) and the
    comparison runs from there: how many samples differ, the largest difference and the
-   difference's level.
+   difference's level. Samples that match where both have audio aren't called "the same" if
+   either file has sound the other hasn't (a copy cut short, say) — only digital silence and a
+   moment's difference at the ends are let through.
 2. When they differ (or can't be compared sample for sample: another sample rate, say), a
    few seconds are compared the way DeltaWave does, with proof.compare_paths: resampled if
    the rates differ, lined up to a fraction of a sample, the level fitted — so what's left is
@@ -34,6 +36,8 @@ MAX_OFFSET_S = 10.0      # how far apart the two can start and still be lined up
 MAX_OFFSET_RESAMPLED_S = 2.0  # the same, when the rates differ (only a few seconds are compared then)
 PROBE_S = 4.0            # the stretch of A looked for in B, to find the offset
 EXCERPT_S = 5.0          # the stretch compared DeltaWave-style when the files differ
+PARTIAL_S = 0.5          # unmatched sound at an end longer than this: one file is missing audio
+TIE = 1e-6               # correlation peaks this close (relative) match equally well
 
 
 @dataclass
@@ -72,9 +76,14 @@ class Comparison:
     """The result of comparing B against A."""
     a: FileInfo
     b: FileInfo
-    verdict: str = ""              # "identical", "same_shifted", "different", "not_comparable", "cancelled"
+    # "identical", "same_shifted", "partial" (the same where both have audio, but one has more),
+    # "nothing_compared" (no overlap), "different", "not_comparable", "cancelled"
+    verdict: str = ""
     offset: int = 0                # B's frame number for A's frame 0 (B starts this many frames later)
-    offset_found: bool = True      # False: no sound to line up on, so compared from the start
+    offset_found: bool = True      # False: not lined up, so compared from the start
+    silent: bool = False           # (when not found) A had no sound to line up on
+    missing_from_b: bool = False   # A has sound B hasn't (more than PARTIAL_S at an end)
+    extra_in_b: bool = False       # B has sound A hasn't (likewise)
     compared: int = 0              # frames compared (where both have music)
     differing: int = 0             # samples (each channel counts) that differ
     first_difference: int | None = None  # A's frame number of the first difference
@@ -109,27 +118,33 @@ def _mono(x: np.ndarray) -> np.ndarray:
     return x.mean(axis=1) if x.ndim == 2 else x
 
 
-def _read(f: sf.SoundFile, start: int, frames: int) -> np.ndarray:
-    """frames x channels float64 from `start` (zeros where the file has none: before 0 or past the end)."""
-    out = np.zeros((max(0, frames), f.channels))
+def _read(f: sf.SoundFile, start: int, frames: int, dtype: str = "float64") -> np.ndarray:
+    """frames x channels from `start` (zeros where the file has none: before 0 or past the end)."""
+    out = np.zeros((max(0, frames), f.channels), dtype)
     first, last = max(0, start), min(f.frames, start + frames)
     if last > first:
         f.seek(first)
-        got = f.read(last - first, dtype="float64", always_2d=True)
+        got = f.read(last - first, dtype=dtype, always_2d=True)
         out[first - start: first - start + len(got)] = got
     return out
 
 
-def find_lag(probe: np.ndarray, region: np.ndarray) -> tuple[int, float]:
+def find_lag(probe: np.ndarray, region: np.ndarray, prefer: int | None = None) -> tuple[int, float]:
     """Where `probe` (mono) sits inside `region` (mono, longer): (whole-sample position of its
     first sample, how well it matched 0…1). Cross-correlation by FFT; the sign is ignored, so a
-    polarity-flipped copy lines up too."""
+    polarity-flipped copy lines up too. Music that repeats exactly (a loop, a steady tone)
+    matches equally well in several places: then the one nearest `prefer` is taken (callers
+    pass where "not shifted at all" would be)."""
     n, m = len(probe), len(region)
     if n == 0 or m < n:
         return 0, 0.0
     size = 1 << int(np.ceil(np.log2(n + m)))
     corr = np.fft.irfft(np.fft.rfft(region, size) * np.conj(np.fft.rfft(probe, size)), size)[: m - n + 1]
-    best = int(np.argmax(np.abs(corr)))
+    strength = np.abs(corr)
+    best = int(np.argmax(strength))
+    if prefer is not None:
+        ties = np.flatnonzero(strength >= strength[best] * (1 - TIE))
+        best = int(ties[np.argmin(np.abs(ties - prefer))])
     # How good a match: the correlation at the best spot, normalised by both stretches' energy.
     window = region[best: best + n]
     energy = math.sqrt(float(np.dot(probe, probe)) * float(np.dot(window, window)))
@@ -144,22 +159,25 @@ def _probe_starts(frames: int, probe: int) -> list[int]:
                   key=lambda s: abs(s - room / 3))
 
 
-def find_offset(fa: sf.SoundFile, fb: sf.SoundFile, max_offset_s: float = MAX_OFFSET_S) -> int | None:
-    """B's frame number for A's frame 0 (same sample rate), or None if there's no sound to line
-    up on. Offsets up to `max_offset_s` either way."""
+def find_offset(fa: sf.SoundFile, fb: sf.SoundFile, max_offset_s: float = MAX_OFFSET_S) -> tuple[int | None, bool]:
+    """(B's frame number for A's frame 0 (same sample rate) or None if it can't be found, whether
+    A had any sound to line up on). Offsets up to `max_offset_s` either way; when several fit
+    equally well (music that repeats exactly), the smallest."""
     rate = fa.samplerate
     probe_len = min(fa.frames, int(PROBE_S * rate))
     reach = int(max_offset_s * rate)
+    heard = False
     for start in _probe_starts(fa.frames, probe_len):
         probe = _mono(_read(fa, start, probe_len))
         if np.sqrt(np.mean(probe ** 2)) < QUIET:
             continue  # silence: nothing to match
+        heard = True
         region_start = start - reach
         region = _mono(_read(fb, region_start, probe_len + 2 * reach))
-        best, match = find_lag(probe, region)
+        best, match = find_lag(probe, region, prefer=reach)   # region[reach] is "not shifted"
         if match > 0.5:
-            return region_start + best - start
-    return None
+            return region_start + best - start, True
+    return None, heard
 
 
 def compare_files(path_a, path_b, cancel: threading.Event | None = None, progress=None) -> Comparison:
@@ -181,8 +199,9 @@ def compare_files(path_a, path_b, cancel: threading.Event | None = None, progres
             progress(1.0)
             return result
 
-        offset = find_offset(fa, fb)
+        offset, heard = find_offset(fa, fb)
         result.offset_found = offset is not None
+        result.silent = not heard
         result.offset = offset or 0
         _sample_compare(result, fa, fb, cancel, progress)
         if result.verdict == "cancelled":
@@ -225,6 +244,18 @@ def _sample_compare(result: Comparison, fa: sf.SoundFile, fb: sf.SoundFile, canc
         progress((position - first) / max(1, last - first))
     samples = max(1, result.compared * fa.channels)
     if result.differing == 0:
+        if result.compared == 0:
+            result.verdict = "nothing_compared"
+            return
+        # What each file has beyond the stretch compared, and whether any of it is sound.
+        tolerance = int(PARTIAL_S * fa.samplerate)
+        result.missing_from_b = any(_has_sound(fa, start, stop, tolerance)
+                                    for start, stop in ((0, first), (last, fa.frames)))
+        result.extra_in_b = any(_has_sound(fb, start, stop, tolerance)
+                                for start, stop in ((0, first + d), (last + d, fb.frames)))
+        if result.missing_from_b or result.extra_in_b:
+            result.verdict = "partial"
+            return
         same_span = d == 0 and result.extra_end == 0
         result.verdict = "identical" if same_span else "same_shifted"
         return
@@ -237,6 +268,17 @@ def _sample_compare(result: Comparison, fa: sf.SoundFile, fb: sf.SoundFile, canc
         result.level_db = _db(abs(gain)) if gain else float("-inf")
         result.inverted = gain < 0
         result.after_level_db = _db(math.sqrt(left / sum_aa))
+
+
+def _has_sound(f: sf.SoundFile, start: int, stop: int, shortest: int) -> bool:
+    """Whether frames start…stop of a file are longer than `shortest` and hold any sound (a
+    sample above QUIET; digital silence doesn't count)."""
+    if stop - start <= shortest:
+        return False
+    for position in range(start, stop, BLOCK):
+        if np.max(np.abs(_read(f, position, min(BLOCK, stop - position)))) > QUIET:
+            return True
+    return False
 
 
 def _path_check(result: Comparison, fa: sf.SoundFile, fb: sf.SoundFile, offset: int | None):
@@ -281,8 +323,18 @@ def describe(result: Comparison) -> list[tuple[str, str, str]]:
         rows.append(("Result", f"✓ Identical: every sample the same ({_count(result.compared * a.channels)} "
                                f"compared){how}", "good"))
     elif result.verdict == "same_shifted":
-        rows.append(("Result", f"✓ The same samples, lined up differently ({_count(result.compared * a.channels)} "
-                               "compared)", "good"))
+        how = "lined up differently" if result.offset else "only the lengths differ"
+        rows.append(("Result", f"✓ The same samples, {how} ({_count(result.compared * a.channels)} compared)",
+                     "good"))
+    elif result.verdict == "partial":
+        if result.missing_from_b:
+            what = "B is missing some of A's audio" + (", and has audio A hasn't" if result.extra_in_b else "")
+        else:
+            what = "B has audio A hasn't"
+        rows.append(("Result", f"⚠ The same samples where both have audio ({_count(result.compared * a.channels)} "
+                               f"compared), but {what}", "warn"))
+    elif result.verdict == "nothing_compared":
+        rows.append(("Result", "⚠ Nothing to compare: B has no audio alongside A's", "warn"))
     elif result.verdict == "different":
         share = result.differing / max(1, result.compared * a.channels)
         first = (f", the first at {_clock(result.first_difference / a.rate, millis=True)} in A"
@@ -292,9 +344,11 @@ def describe(result: Comparison) -> list[tuple[str, str, str]]:
     elif result.verdict == "not_comparable":
         rows.append(("Result", "Can't be identical: " + "; ".join(result.notes), "warn"))
 
-    if result.verdict in ("identical", "same_shifted", "different"):
-        if not result.offset_found:
+    if result.verdict in ("identical", "same_shifted", "partial", "nothing_compared", "different"):
+        if not result.offset_found and result.silent:
             rows.append(("Lined up", "No sound to line up on, so compared from the very start", "plain"))
+        elif not result.offset_found:
+            rows.append(("Lined up", "A's music couldn't be found in B, so compared from the very start", "warn"))
         elif result.offset:
             later = "later" if result.offset > 0 else "earlier"
             rows.append(("Lined up", f"B starts {_timing(result.offset, a.rate)} {later} than A", "warn"))
