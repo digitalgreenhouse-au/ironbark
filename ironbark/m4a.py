@@ -39,6 +39,7 @@ from pathlib import Path
 
 _CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts", b"udta"}
 _ALAC_FLAGS = {16: 1, 20: 2, 24: 3, 32: 4}  # CAF desc format flags for ALAC, by source bit depth
+_MAX_FRAME_LENGTH = 1 << 16  # samples per ALAC packet: Apple's encoder uses 4096; far more = a damaged cookie
 
 
 class NotAlac(RuntimeError):
@@ -120,7 +121,7 @@ def read_index(path: str | Path) -> Mp4Audio:
     """The ALAC track's layout. Raises NotAlac for anything else (AAC, video-only, damaged)."""
     try:
         return _read_index(path)
-    except (struct.error, IndexError, ValueError) as error:
+    except (struct.error, IndexError, ValueError, OverflowError, MemoryError) as error:
         raise NotAlac(f"this MP4 file's index is damaged ({error})") from error
 
 
@@ -129,6 +130,7 @@ def _read_index(path: str | Path) -> Mp4Audio:
         if not is_mp4(f.read(8)):
             raise NotAlac("not an MP4 file")
         moov = _top_level(f)
+        length = f.seek(0, io.SEEK_END)
     for kind, start, end in _boxes(moov, 8):
         if kind != b"trak":
             continue
@@ -138,11 +140,18 @@ def _read_index(path: str | Path) -> Mp4Audio:
         hdlr = _find(moov, *mdia, b"hdlr")
         if hdlr is None or moov[hdlr[0] + 8: hdlr[0] + 12] != b"soun":
             continue
-        return _read_track(moov, mdia)
+        return _read_track(moov, mdia, length)
     raise NotAlac("no sound track in this MP4 file")
 
 
-def _read_track(moov: bytes, mdia: tuple[int, int]) -> Mp4Audio:
+def _check_count(count: int, box: tuple[int, int], header: int, entry: int, what: str):
+    """A table's entry count must fit in its box: a damaged count would otherwise ask for
+    gigabytes (or read past the box)."""
+    if count * entry > box[1] - box[0] - header:
+        raise NotAlac(f"this MP4 file's index is damaged (the {what} table is cut short)")
+
+
+def _read_track(moov: bytes, mdia: tuple[int, int], length: int | None = None) -> Mp4Audio:
     audio = Mp4Audio()
     mdhd = _find(moov, *mdia, b"mdhd")
     if mdhd is not None:
@@ -174,6 +183,8 @@ def _read_track(moov: bytes, mdia: tuple[int, int]) -> Mp4Audio:
     audio.cookie = moov[cookie_box[0] + 4: cookie_box[0] + 28]  # after the box's version/flags
     (audio.frame_length, _compatible, audio.bits, _pb, _mb, _kb, audio.channels, _max_run,
      _max_frame, _avg_rate, audio.rate) = struct.unpack(">IBBBBBBHIII", audio.cookie)
+    if not 0 < audio.frame_length <= _MAX_FRAME_LENGTH or not audio.channels or not audio.rate:
+        raise NotAlac("this MP4 file's Apple Lossless setup block is damaged")
 
     stsz = _find(moov, *stbl, b"stsz")
     stsc = _find(moov, *stbl, b"stsc")
@@ -182,12 +193,19 @@ def _read_track(moov: bytes, mdia: tuple[int, int]) -> Mp4Audio:
     if None in (stsz, stsc, stco, stts):
         raise NotAlac("incomplete sample table in this MP4 file")
     fixed, count = struct.unpack_from(">II", moov, stsz[0] + 4)
+    if fixed:   # every packet the same size: no table, but they must all fit in the file
+        if length is not None and count * fixed > length:
+            raise NotAlac("this MP4 file's index is damaged (more audio than the file holds)")
+    else:
+        _check_count(count, stsz, 12, 4, "packet size")
     audio.sizes = ([fixed] * count if fixed else
                    list(struct.unpack_from(f">{count}I", moov, stsz[0] + 12)))
     wide = moov[stco[0] - 4: stco[0]] == b"co64"
     chunks = struct.unpack_from(">I", moov, stco[0] + 4)[0]
+    _check_count(chunks, stco, 8, 8 if wide else 4, "chunk offset")
     starts = list(struct.unpack_from(f">{chunks}{'Q' if wide else 'I'}", moov, stco[0] + 8))
     runs = struct.unpack_from(">I", moov, stsc[0] + 4)[0]
+    _check_count(runs, stsc, 8, 12, "packets-per-chunk")
     table = [struct.unpack_from(">III", moov, stsc[0] + 8 + 12 * k) for k in range(runs)]
     packet = 0
     for k, (first, per_chunk, _desc) in enumerate(table):
@@ -203,6 +221,7 @@ def _read_track(moov: bytes, mdia: tuple[int, int]) -> Mp4Audio:
     if packet != count:
         raise NotAlac("the MP4's sample table doesn't add up")
     entries = struct.unpack_from(">I", moov, stts[0] + 4)[0]
+    _check_count(entries, stts, 8, 8, "packet duration")
     duration = sum(n * d for n, d in (struct.unpack_from(">II", moov, stts[0] + 8 + 8 * k)
                                       for k in range(entries)))
     scale = audio.timescale or audio.rate

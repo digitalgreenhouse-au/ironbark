@@ -232,6 +232,10 @@ class Audition:
         index = devices.find_device(self.device)
         self.note = ""
         if index is None and self.device is not None:
+            if self.want_exclusive:
+                # As the player: bit-perfect mode never moves to another device by itself (it could
+                # have no volume control of its own).
+                raise devices.DeviceMissing(f"{self.device} isn't connected")
             self.note = f"{self.device} isn't connected — playing on the system default"
             index = devices.find_device(None)
         kwargs = dict(samplerate=self.switcher.rate, channels=self.switcher.channels, blocksize=BLOCK_FRAMES,
@@ -242,6 +246,7 @@ class Audition:
                 stream = self._factory(device=index, dtype="int32", extra_settings=sd.WasapiSettings(exclusive=True),
                                        dither_off=True, clip_off=True, **kwargs)
                 stream.start()
+                devices.holding(stream)
                 self.exclusive = True
                 self.device_name = self._name(stream)
                 return stream
@@ -253,6 +258,7 @@ class Audition:
         extra = sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS and index is not None else None
         stream = self._factory(device=index, dtype="float32", extra_settings=extra, **kwargs)
         stream.start()
+        devices.holding(stream)
         self.exclusive = False
         self.device_name = self._name(stream)
         return stream
@@ -280,6 +286,8 @@ class Audition:
                 stream.close()
             except sd.PortAudioError:
                 log.exception("closing the audition stream")
+            finally:
+                devices.released(stream)
 
     close = stop
 
