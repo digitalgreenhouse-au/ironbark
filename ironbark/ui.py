@@ -31,10 +31,12 @@ popups.PopupMenu (popups.py), so they follow Dark / Light; a prompt leaves the m
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
@@ -53,7 +55,8 @@ from .compare_window import CompareWindow
 from .testsignals_window import TestSignalsWindow
 from .details import NowPlayingWindow, output_line
 from .engine import Player, State
-from .library import Track, album_folder, find_albums, read_track, scan_album, scan_folder, title_from_filename
+from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
+                      title_from_filename)
 from .library_window import LibraryWindow
 from .meter_window import MeterWindow
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
@@ -73,6 +76,8 @@ AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
 SEEK_STEP = 5.0
 VOLUME_STEP = 0.05   # per mouse-wheel notch over the transport
+WHEEL_NOTCH = 120 if sys.platform == "win32" else 1   # Tk's wheel delta for one notch (Windows: 120)
+QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
@@ -86,6 +91,46 @@ def fmt_time(seconds: float) -> str:
     if seconds >= 3600:  # a double album: 2:02:36, not 122:36
         return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
     return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _known_music_folder() -> Path | None:
+    """Windows' own Music folder (SHGetKnownFolderPath, FOLDERID_Music): it may have been moved
+    (Properties → Location, e.g. to D:\\Music) or redirected by backup or policy. None elsewhere,
+    or if Windows can't say."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    import ctypes.wintypes as wt
+    import uuid
+
+    try:
+        # Private handles, so setting their types can't change anyone else's calls.
+        shell32, ole32 = ctypes.WinDLL("shell32"), ctypes.WinDLL("ole32")
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+        shell32.SHGetKnownFolderPath.argtypes = (ctypes.c_char_p, wt.DWORD, wt.HANDLE, ctypes.POINTER(ctypes.c_void_p))
+        ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
+        music = uuid.UUID("{4BD8D571-6D19-48D3-BE97-422220080E43}").bytes_le   # FOLDERID_Music
+        found = ctypes.c_void_p()
+        try:
+            if shell32.SHGetKnownFolderPath(music, 0, None, ctypes.byref(found)) == 0 and found.value:
+                return Path(ctypes.wstring_at(found.value))
+        finally:
+            ole32.CoTaskMemFree(found)   # (Windows allocates the text even when it fails)
+    except (OSError, AttributeError, ValueError):
+        pass
+    return None
+
+
+@functools.cache
+def default_music_folder() -> Path:
+    """The library folder until one is chosen: the system's Music folder, else ~/Music."""
+    return _known_music_folder() or Path.home() / "Music"
+
+
+def _queued_alone(playing_tab: int | None, status) -> bool:
+    """A song from Up next playing (or paused) with no tab behind it — queued before anything had
+    played, or after its tab was closed. The window then treats it as a playing tab's song."""
+    return playing_tab is None and status.track is not None and status.state is not State.STOPPED
 
 
 @dataclass
@@ -107,6 +152,10 @@ class Tab:
     resume_at: float = 0.0             # how far into it (seconds), to carry on from
     resume_path: str = ""              # that track's file, to find it again after a restart
     extras: list[str] = field(default_factory=list)  # album folders (Library, drops) or single files added, played after
+    play_when_loaded: bool = False     # play was pressed while it was loading
+    unavailable: bool = False          # its folder / file wasn't there at the last load (a drive not connected)
+    load_progress: dict | None = field(default=None, repr=False, compare=False)  # the load under way
+    summary: tuple | None = field(default=None, repr=False, compare=False)  # (tracks, key, text) of the album line
 
     def view_track(self) -> Track | None:
         """The track that represents this tab: the one it last played, else its first."""
@@ -189,7 +238,10 @@ class PlayerWindow:
 
         self.on_top = tk.BooleanVar(value=self.prefs["always_on_top"])
         root.attributes("-topmost", self.on_top.get())
-        player.set_volume(float(self.prefs["volume"]))
+        try:
+            player.set_volume(float(self.prefs["volume"]))
+        except (TypeError, ValueError):   # (a hand-edited settings file)
+            player.set_volume(settings.DEFAULTS["volume"])
         self.volume_var = tk.DoubleVar(value=player.volume * 100)
         self.can_exclusive = devices.exclusive_supported()
         self.exclusive = tk.BooleanVar(value=bool(self.prefs["exclusive"]) and self.can_exclusive)
@@ -210,17 +262,24 @@ class PlayerWindow:
         self._drop_shown = None                   # what's lit up for a drag now: ("tab", i) / ("window", None)
         experiments.tidy(self.prefs)  # forget switches for experiments since rolled in or dropped
         self.experiment_vars: dict[str, tk.BooleanVar] = {}
-        # Clipping guard: true peaks are measured in the background, one file at a time.
+        # Clipping guard: true peaks are measured in the background, one file at a time — only
+        # the song playing and the next (others queued meanwhile are skipped when their turn comes).
         self._peaks: dict[Path, float] = {}
         self._peak_jobs: queue.Queue = queue.Queue()
+        self._peak_wanted: set[Path] = set()
         self._guard_for: Path | None = None
         threading.Thread(target=self._measure_peaks, name="true-peak", daemon=True).start()
         self._closed_tabs: list[tuple[int, Tab]] = []  # for Ctrl+Shift+T
+        self._writing_playlists: set[Path] = set()    # playlists being added to on a thread
+        self._wheel_delta = 0                          # mouse-wheel movement not yet a whole notch
+        self._poll_errors: set[tuple[str, str]] = set()  # kinds of error _poll has logged already
+        self._closing = False
         player.set_output_device(self.prefs["output_device"] or None)
         player.set_shuffle(bool(self.prefs["shuffle"]))
         player.set_repeat(self.prefs["repeat"])
+        hardware_volume = None
         if self.exclusive.get():
-            player.refresh_hardware_volume()
+            hardware_volume = player.refresh_hardware_volume()
             player.set_exclusive(True)
 
         self._build()
@@ -247,6 +306,11 @@ class PlayerWindow:
         self._polls = 0
         self._saved_snapshot = json.dumps(self.prefs, sort_keys=True)
         root.protocol("WM_DELETE_WINDOW", self.quit)
+        if self.exclusive.get():
+            # Bit-perfect from the start: the device may not be last time's (a different Windows
+            # default, or the chosen one unplugged), so the same ear check as switching it on —
+            # once the window is up, and before anything can start playing.
+            root.after_idle(self._protect_ears, hardware_volume)
         self._restore_tabs(folder)
         self._poll_job = self.root.after(POLL_MS, self._poll)
         if self.watch_music.get():
@@ -644,20 +708,28 @@ class PlayerWindow:
             if self.prefs["last_folder"]:
                 kind = self.prefs["last_mode"] or ("album" if self.prefs["last_album_only"] else "folder")
                 saved = [{"kind": kind, "path": self.prefs["last_folder"], "query": self.prefs["last_filter"]}]
-        for source in saved:
-            path = source.get("path", "")
-            kind = source.get("kind")
-            exists = Path(path).is_file() if kind == "playlist" else Path(path).is_dir()
-            if path and exists and kind in ("album", "folder", "library", "playlist", "files"):
-                tab = Tab(source["kind"], path, source.get("query", ""))
+        # Every tab comes back, even one on a drive that isn't connected yet: it's kept, with its
+        # place in it, and is read once its folder is there (the loader checks, off this thread).
+        for source in saved if isinstance(saved, list) else []:
+            try:
+                path, kind = source.get("path", ""), source.get("kind")
+                if not (path and isinstance(path, str) and kind in ("album", "folder", "library", "playlist", "files")):
+                    continue
+                tab = Tab(kind, path, str(source.get("query") or ""))
                 resume = source.get("resume") or {}
                 tab.resume_path, tab.resume_at = str(resume.get("path", "")), float(resume.get("at", 0))
                 tab.extras = [p for p in source.get("extras", []) if isinstance(p, str)]
-                self.tabs.append(tab)
+            except (AttributeError, TypeError, ValueError):   # (a hand-edited settings file)
+                continue
+            self.tabs.append(tab)
         if folder:
             self.open_tab("folder", folder, play=True)
         elif self.tabs:
-            self.select_tab(min(max(0, int(self.prefs["current_tab"])), len(self.tabs) - 1))
+            try:
+                current = int(self.prefs["current_tab"])
+            except (TypeError, ValueError):
+                current = 0
+            self.select_tab(min(max(0, current), len(self.tabs) - 1))
         else:
             self._refresh_tabs()
 
@@ -694,9 +766,13 @@ class PlayerWindow:
     def close_tab(self, index: int, remember: bool = True):
         if not 0 <= index < len(self.tabs):
             return
+        closing = self.tabs[index]
+        if closing.loading:   # the load under way is forgotten: reopened, the tab is read afresh
+            self._forget_songs(closing)
+        closing.play_when_loaded = False
         if remember:
-            self._closed_tabs = (self._closed_tabs + [(index, self.tabs[index])])[-10:]
-            self._set_notice(f"Closed “{self.tabs[index].title}” · click here or press Ctrl+Shift+T to reopen", 8000)
+            self._closed_tabs = (self._closed_tabs + [(index, closing)])[-10:]
+            self._set_notice(f"Closed “{closing.title}” · click here or press Ctrl+Shift+T to reopen", 8000)
         if index == self.playing_tab:
             self.player.stop()
             self.player.set_tracks([])
@@ -717,6 +793,8 @@ class PlayerWindow:
         if not self._closed_tabs:
             return
         index, tab = self._closed_tabs.pop()
+        if tab.kind == "playlist":   # songs may have been added to it while it was closed
+            self._forget_songs(tab)
         index = min(index, len(self.tabs))
         self.tabs.insert(index, tab)
         if self.playing_tab is not None and self.playing_tab >= index:
@@ -757,19 +835,26 @@ class PlayerWindow:
         return next((i for i, t in enumerate(self.tabs) if t is tab), -1)
 
     def _load_tab(self, tab: Tab, then_play: bool = False):
-        """Scan a tab's files in the background (a whole library can take a few seconds)."""
+        """Scan a tab's files in the background (a whole library can take a few seconds). Play
+        pressed meanwhile isn't lost: the tab plays once it's loaded."""
+        tab.play_when_loaded = tab.play_when_loaded or then_play
         if tab.loading:
             return
         tab.loading = True
-        progress = {"done": 0, "total": 0, "tracks": None, "missing": 0}
+        progress = {"done": 0, "total": 0, "tracks": None, "missing": 0, "unavailable": False}
+        tab.load_progress = progress
 
         def work():
             try:
-                if tab.kind == "playlist":
-                    tracks = self._read_playlist(Path(tab.path))
+                root = Path(tab.path)
+                if not (root.is_file() if tab.kind == "playlist" else root.is_dir()):
+                    progress["unavailable"] = True   # a drive that isn't connected (or since moved)
+                    tracks = []
+                elif tab.kind == "playlist":
+                    tracks = self._read_playlist(root)
                     progress["missing"] = sum(1 for t in tracks if t.missing)
                 elif tab.kind == "library":
-                    albums = self._library_albums(Path(tab.path))
+                    albums = self._library_albums(root)
                     if tab.query:  # the same search as the Library window's
                         words = [_fold(w) for w in tab.query.split()]
                         albums = [a for a in albums if browse.matches(a, words, _fold)]
@@ -781,29 +866,76 @@ class PlayerWindow:
                 elif tab.kind == "files":
                     tracks = []  # dropped files: all in extras
                 else:
-                    tracks = self._scan(Path(tab.path), whole_tree=tab.kind != "album")
-                for extra in list(tab.extras):  # albums / files added later (a drive may be unplugged)
-                    if Path(extra).is_dir():
-                        tracks += self._scan(Path(extra))
-                    elif Path(extra).is_file():
-                        tracks.append(read_track(Path(extra)))
+                    tracks = self._scan(root, whole_tree=tab.kind != "album")
+                if not progress["unavailable"]:
+                    # Albums / songs added later (a drive may be unplugged). Each song once: one
+                    # added from an album the tab already holds isn't listed twice.
+                    have = {audiofile.key(t.path) for t in tracks}
+                    for extra in list(tab.extras):
+                        for track in self._extra_tracks(extra):
+                            if audiofile.key(track.path) not in have:
+                                have.add(audiofile.key(track.path))
+                                tracks.append(track)
             except OSError:
+                tracks = []
+            except Exception:   # (a file no reader expected: the tab ends up empty, never stuck loading)
+                log.exception("couldn't load the tab %s", tab.path)
                 tracks = []
             progress["tracks"] = tracks
 
-        threading.Thread(target=work, name="tab-load", daemon=True).start()
-        self.root.after(50, self._finish_load, tab, progress, then_play)
+        def start():
+            if tab.load_progress is not progress:
+                return   # closed meanwhile
+            if tab.kind == "playlist" and Path(tab.path) in self._writing_playlists:
+                self.root.after(50, start)   # songs are being added to it: read it once they're in
+                return
+            threading.Thread(target=work, name="tab-load", daemon=True).start()
+            self.root.after(50, self._finish_load, tab, progress)
 
-    def _finish_load(self, tab: Tab, progress: dict, then_play: bool):
+        start()
+
+    def _extra_tracks(self, extra: str) -> list[Track]:
+        """The songs an extra stands for: an album folder's, a file, or one track of a CUE image
+        (saved as "<file>#<track number>"). None while its drive isn't connected."""
+        path = Path(extra)
+        if path.is_dir():
+            return self._scan(path)
+        if path.is_file():
+            return [read_track(path)]
+        file, mark, number = extra.rpartition("#")
+        if mark and number.isdigit() and Path(file).is_file():
+            return [read_track(cue_track_path(Path(file), int(number)))]
+        return []
+
+    @staticmethod
+    def _forget_songs(tab: Tab):
+        """Forget a tab's songs (and any load under way), so it's read afresh when next shown. Its
+        place is kept as the song's path, found again once it's read."""
+        if tab.tracks is not None and tab.last_index >= 0:
+            tab.resume_path = audiofile.key(tab.view_track().path)
+        tab.last_index = -1
+        tab.tracks, tab.loading, tab.load_progress, tab.play_when_loaded = None, False, None, False
+
+    def _finish_load(self, tab: Tab, progress: dict):
+        if tab.load_progress is not progress:
+            return  # closed while loading (it's read afresh if reopened)
         index = self._tab_index(tab)
-        if index < 0:
-            return  # closed while loading
         if progress["tracks"] is None:
             if tab.kind == "library":
                 self._set_notice(f"Loading library… {progress['done']} of {progress['total'] or '?'} albums", 0)
-            self.root.after(100, self._finish_load, tab, progress, then_play)
+            self.root.after(100, self._finish_load, tab, progress)
             return
-        tab.tracks, tab.loading = progress["tracks"], False
+        tab.loading, tab.load_progress = False, None
+        play, tab.play_when_loaded = tab.play_when_loaded, False
+        tab.unavailable = progress["unavailable"]
+        if tab.unavailable:
+            # Kept as it was, place and all (nothing is saved over it), and read again when it's
+            # next chosen — by then its drive may be connected.
+            self._set_notice(f"“{tab.title}” isn't connected right now: {tab.path}", 8000)
+            if index == self.current:
+                self._show_current_tab()
+            return
+        tab.tracks = progress["tracks"]
         if tab.resume_path and tab.last_index < 0:  # where it got to last time
             tab.last_index = next((i for i, t in enumerate(tab.tracks) if audiofile.key(t.path) == tab.resume_path), -1)
             if tab.last_index < 0:
@@ -819,7 +951,7 @@ class PlayerWindow:
             self._set_notice(f"Loaded {len(tab.tracks)} tracks from {progress['total']} albums")
         if index == self.current:
             self._show_current_tab()
-        if then_play and tab.tracks:
+        if play and tab.tracks:
             if tab.last_index >= 0:
                 self._play_tab(index, tab.last_index, start_at=tab.resume_at)
             else:
@@ -861,7 +993,10 @@ class PlayerWindow:
                         name = found.album
             except OSError:
                 pass
-            tab.info = (name, artist, first, found.album if first else "")
+            except Exception:
+                log.exception("couldn't look up the tab %s", tab.path)
+            finally:   # always published: the tab's label waits for it
+                tab.info = (name, artist, first, found.album if found is not None else "")
 
         threading.Thread(target=work, name="tab-info", daemon=True).start()
         self.root.after(80, self._finish_tab_info, tab)
@@ -891,7 +1026,8 @@ class PlayerWindow:
 
     def toggle_play(self):
         """Pause/resume what's playing; or, when you've flicked to another album, play that."""
-        if self.playing_tab is not None and self.current == self.playing_tab:
+        if (self.playing_tab is not None and self.current == self.playing_tab
+                or _queued_alone(self.playing_tab, self.player.status())):
             self.player.toggle_pause()
             return
         if not 0 <= self.current < len(self.tabs):
@@ -932,16 +1068,21 @@ class PlayerWindow:
         return value if value in GUARD_HEADROOM_CHOICES else 0.0
 
     def _measure_peaks(self):
-        """Background worker: true peak of each file it's given (a second or two per track)."""
+        """Background worker: true peak of each file it's given (a few seconds per track, longer
+        for hi-res). Songs skipped past meanwhile are dropped when their turn comes, so the one
+        playing is never left waiting behind them; and no error stops the worker."""
         from .analysis import true_peak
 
         while True:
             path = self._peak_jobs.get()
-            if path in self._peaks:
+            if path in self._peaks or path not in self._peak_wanted:
                 continue
             try:
                 self._peaks[path] = true_peak(path) or 0.0
             except (OSError, RuntimeError, ValueError):
+                self._peaks[path] = 0.0
+            except Exception:
+                log.exception("couldn't measure the true peak of %s", path)
                 self._peaks[path] = 0.0
 
     def _guard_changed(self):
@@ -966,10 +1107,12 @@ class PlayerWindow:
         following = self.player.following_path()  # (Up next first, as the engine plays it)
         if following is not None:
             paths.append(following)
-        if track.path != self._guard_for:
+        if track.path != self._guard_for or set(paths) != self._peak_wanted:
             self._guard_for = track.path
+            self._peak_wanted = set(paths)   # (anything else still queued is skipped)
             for path in paths:
-                self._peak_jobs.put(path)
+                if path not in self._peaks:
+                    self._peak_jobs.put(path)
         for path in paths:
             peak = self._peaks.get(path)
             if peak is None:
@@ -1046,10 +1189,46 @@ class PlayerWindow:
             self.open_tab("playlist", file, play=True)
 
     def add_to_playlist(self, path: Path, tracks: list[Track]):
+        """Add songs to the end of a playlist. A tab of it that's loaded is the list added to; one
+        still loading gets them once it has loaded (else its list, read before, would later be saved
+        over them). With no tab loaded, the file is read and written on a thread: reading every
+        song's tags first can take seconds on a slow drive. One change to a playlist at a time."""
+        path = Path(path)
         tab = self._playlist_tab(path)
-        existing = list(tab.tracks) if tab and tab.tracks is not None else self._read_playlist(path)
-        self._save_playlist(path, existing + list(tracks))
-        self._set_notice(f"Added {len(tracks)} song{'' if len(tracks) == 1 else 's'} to “{path.stem}”")
+        if (tab is not None and tab.loading) or path in self._writing_playlists:
+            self.root.after(50, self.add_to_playlist, path, tracks)
+            return
+        added = f"Added {len(tracks)} song{'' if len(tracks) == 1 else 's'} to “{path.stem}”"
+        if tab is not None and tab.tracks is not None:
+            self._save_playlist(path, tab.tracks + list(tracks))
+            self._set_notice(added)
+            return
+        self._writing_playlists.add(path)
+        result: dict = {}
+
+        def work():
+            try:
+                playlists.write(path, self._read_playlist(path) + list(tracks))
+            except Exception as error:   # (OSError mostly: the file locked, or the disk full)
+                if not isinstance(error, OSError):
+                    log.exception("couldn't add to the playlist %s", path)
+                result["error"] = error
+            finally:
+                result["done"] = True
+
+        def finish():
+            if "done" not in result:
+                self.root.after(50, finish)
+                return
+            self._writing_playlists.discard(path)
+            if "error" in result:
+                self._for_prompt()
+                popups.tell(self.root, "Couldn't save the playlist", str(result["error"]), tone="warn")
+            else:
+                self._set_notice(added)
+
+        threading.Thread(target=work, name="playlist-add", daemon=True).start()
+        self.root.after(50, finish)
 
     def _save_playlist(self, path: Path, tracks: list[Track]):
         """Write the playlist, and update its tab (and the music, if it's playing from it)."""
@@ -1062,8 +1241,15 @@ class PlayerWindow:
         tab = self._playlist_tab(path)
         if tab is None or tab.tracks is None:
             return
-        tab.tracks = list(tracks)
         index = self._tab_index(tab)
+        # A tab that isn't playing keeps its place on the same song (the same Track, wherever it has
+        # moved to); if that song was taken out, the tab starts again from the top.
+        resume = tab.view_track() if index != self.playing_tab and tab.last_index >= 0 else None
+        tab.tracks = list(tracks)
+        if resume is not None:
+            tab.last_index = next((i for i, t in enumerate(tab.tracks) if t is resume), -1)
+            if tab.last_index < 0:
+                tab.resume_at, tab.resume_path = 0.0, ""
         if index == self.playing_tab:
             self.player.set_tracks(tab.tracks, keep_playing=True)
         if index == self.current:
@@ -1206,7 +1392,7 @@ class PlayerWindow:
             self.open_tab("folder", folder, play=True)
 
     def _library_root(self) -> Path:
-        return Path(self.prefs["library_folder"] or Path.home() / "Music")
+        return Path(self.prefs["library_folder"] or default_music_folder())
 
     def _current_tab_title(self) -> str | None:
         return self.tabs[self.current].title if 0 <= self.current < len(self.tabs) else None
@@ -1224,27 +1410,24 @@ class PlayerWindow:
         result: dict = {}
 
         def work():
-            try:
-                result["tracks"] = self._scan(album)
-            except OSError:
-                result["tracks"] = []
+            result["tracks"] = self._scan_or_nothing(album)
 
         threading.Thread(target=work, name="add-album", daemon=True).start()
         self.root.after(50, self._finish_add_album, tab, album, result, on_done)
 
     def _finish_add_album(self, tab: Tab, album: Path, result: dict, on_done):
+        if self._tab_index(tab) < 0:
+            return  # the tab was closed meanwhile
         if "tracks" not in result or tab.loading:  # (a tab still loading gets it once it's loaded)
             self.root.after(50, self._finish_add_album, tab, album, result, on_done)
             return
-        if self._tab_index(tab) < 0:
-            return  # the tab was closed meanwhile
         tracks = result["tracks"]
         name = tracks[0].album if tracks and tracks[0].album else album.name
-        have = {str(t.path) for t in tab.tracks} if tab.tracks else set()
+        have = {audiofile.key(t.path) for t in tab.tracks} if tab.tracks else set()
         if not tracks:
             message = f"No FLAC, WAV or MP3 files in “{album.name}”"
         elif tab.kind != "playlist" and (Path(tab.path) == album or str(album) in tab.extras
-                                         or all(str(t.path) in have for t in tracks)):
+                                         or all(audiofile.key(t.path) in have for t in tracks)):
             message = f"“{name}” is already in “{tab.title}”"
         elif tab.kind == "playlist":
             self.add_to_playlist(Path(tab.path), tracks)
@@ -1308,6 +1491,16 @@ class PlayerWindow:
             return tracks
         return scan_folder(folder) if whole_tree else scan_album(folder)
 
+    def _scan_or_nothing(self, album: Path) -> list[Track]:
+        """An album's tracks, for a worker thread that must always answer: none if it can't be read."""
+        try:
+            return self._scan(album)
+        except OSError:
+            return []
+        except Exception:
+            log.exception("couldn't read %s", album)
+            return []
+
     # -- tag editing (Experimental) -----------------------------------------------------------------
     def _tag_editing(self) -> bool:
         """Is Settings → Experimental → Tag editing on? Every way in checks this first."""
@@ -1341,10 +1534,7 @@ class PlayerWindow:
         result: dict = {}
 
         def work():
-            try:
-                result["tracks"] = self._scan(album)
-            except OSError:
-                result["tracks"] = []
+            result["tracks"] = self._scan_or_nothing(album)
 
         def finish():
             if "tracks" not in result:
@@ -1427,8 +1617,9 @@ class PlayerWindow:
             for name in self.TAG_FIELDS:
                 setattr(track, name, getattr(fresh[real], name))
             touched.append(track)
+        touched_ids = {id(t) for t in touched}   # (by identity: comparing Tracks field by field is slow)
         for tab in self.tabs:
-            if tab.kind not in ("library", "playlist") and any(t in touched for t in (tab.tracks or [])):
+            if tab.kind not in ("library", "playlist") and any(id(t) in touched_ids for t in (tab.tracks or [])):
                 tab.info_requested = False  # the tab's name comes from the album tag: look it up again
         if touched:
             self._show_current_tab()
@@ -1452,10 +1643,7 @@ class PlayerWindow:
         result: dict = {}
 
         def work():
-            try:
-                result["tracks"] = self._scan(album)
-            except OSError:
-                result["tracks"] = []
+            result["tracks"] = self._scan_or_nothing(album)
 
         def finish():
             if "tracks" not in result:
@@ -1784,8 +1972,18 @@ class PlayerWindow:
         tab.resume_at = max(0.0, min(seconds, max(view.duration - 1, 0.0)))
 
     def _wheel_volume(self, event):
-        step = VOLUME_STEP if event.delta > 0 else -VOLUME_STEP
-        self.player.set_volume(self.player.volume + step)
+        """A step per notch. Fine-grained wheels and touchpads send a notch's worth in many small
+        messages: they add up, so one swipe can't race the volume to the top."""
+        if not event.delta:
+            return
+        if (event.delta > 0) != (self._wheel_delta > 0):
+            self._wheel_delta = 0   # turned the other way: start counting afresh
+        self._wheel_delta += event.delta
+        steps = int(self._wheel_delta / WHEEL_NOTCH)
+        if not steps:
+            return
+        self._wheel_delta -= steps * WHEEL_NOTCH
+        self.player.set_volume(self.player.volume + steps * VOLUME_STEP)
         self.volume_var.set(self.player.volume * 100)
         self._set_notice(f"Volume {self.player.volume:.0%}", 1500)
 
@@ -1980,8 +2178,9 @@ class PlayerWindow:
             self._stop_media()
 
     def _media_state(self, status=None) -> str:
+        """What the player is doing, for the media keys (a song from Up next counts, tab or not)."""
         status = status or self.player.status()
-        if self.playing_tab is None or status.track is None:
+        if status.track is None:
             return "stopped"
         return {State.PLAYING: "playing", State.PAUSED: "paused"}.get(status.state, "stopped")
 
@@ -2124,11 +2323,11 @@ class PlayerWindow:
             for playlist in action.playlists:
                 songs = [t for t in self._read_playlist(playlist) if not t.missing]
                 tracks += songs
-                extras += [str(t.path) for t in songs]
+                extras += [audiofile.key(t.path) for t in songs]
         return tracks, extras
 
     def _finish_drop(self, tab: Tab | None, result: dict):
-        if "plan" not in result or (tab is not None and tab.loading):
+        if "plan" not in result or (tab is not None and tab.loading and self._tab_index(tab) >= 0):
             self.root.after(50, self._finish_drop, tab, result)
             return
         plan = result["plan"]
@@ -2186,12 +2385,16 @@ class PlayerWindow:
             self.add_to_playlist(Path(tab.path), tracks)
             count = len(tracks)
             return f"Added {count} song{'' if count == 1 else 's'} to “{tab.title}”"
-        have = {str(t.path) for t in tab.tracks} if tab.tracks else set()
-        new = [t for t in tracks if str(t.path) not in have]
+        # Songs are told apart by audiofile.key: a CUE track's path is its whole image file.
+        have = {audiofile.key(t.path) for t in tab.tracks} if tab.tracks else set()
+        new = [t for t in tracks if audiofile.key(t.path) not in have]
         if not new:
             return f"Already in “{tab.title}”"
+        # Only the extras that brought something in (a song, or the album folder of one), so the
+        # tab comes back the same after a restart.
+        brought = {audiofile.key(t.path) for t in new} | {str(album_folder(t.path)) for t in new}
         for extra in extras:
-            if extra not in tab.extras and Path(extra) != Path(tab.path):
+            if extra in brought and extra not in tab.extras and Path(extra) != Path(tab.path):
                 tab.extras.append(extra)
         if tab.tracks is not None:  # (not loaded yet: loading it will include them)
             tab.tracks = tab.tracks + new
@@ -2227,7 +2430,8 @@ class PlayerWindow:
             self._reorder_playlist(rows[0], self.playlist.drop_index(y_root))
         elif target is not None:
             tracks = [tab.tracks[r] for r in rows if not tab.tracks[r].missing]
-            self._set_notice(self._add_tracks_to_tab(self.tabs[target[1]], tracks, [str(t.path) for t in tracks]))
+            self._set_notice(self._add_tracks_to_tab(self.tabs[target[1]], tracks,
+                                                     [audiofile.key(t.path) for t in tracks]))
 
     def _reorder_playlist(self, source: int, target: int):
         """Move one song within the playlist on show (dragged up or down); saved straight away."""
@@ -2383,7 +2587,13 @@ class PlayerWindow:
         size = self.art_size
 
         def work():
-            self._art_result = (key, artwork.cover_for(path, size))
+            try:
+                image = artwork.cover_for(path, size)
+            except Exception:   # (a damaged picture: the placeholder instead)
+                log.exception("couldn't read the cover for %s", path)
+                image = None
+            if self._art_key == key:   # asked for another since: this one is stale (it may finish last)
+                self._art_result = (key, image)
 
         threading.Thread(target=work, name="cover-art", daemon=True).start()
 
@@ -2441,24 +2651,67 @@ class PlayerWindow:
 
     # -- refresh -------------------------------------------------------------
     def _album_summary(self, tab: Tab) -> str:
-        """e.g. "FLAC · 24-bit / 96 kHz · 10 tracks · 41:07" for an album you've flicked to."""
+        """e.g. "FLAC · 24-bit / 96 kHz · 10 tracks · 41:07" for an album you've flicked to. Worked
+        out once per change of the tab's list or song, not on every poll: a tab can hold a whole
+        library."""
         track = tab.view_track()
         if track is None:
+            if tab.unavailable:
+                return f"Not connected: {tab.path}"
             return "Loading…" if tab.loading else ("Empty playlist" if tab.kind == "playlist" else "")
+        key = (len(tab.tracks), tab.last_index)
+        if tab.summary is not None and tab.summary[0] is tab.tracks and tab.summary[1] == key:
+            return tab.summary[2]
         if tab.kind == "playlist":
             count = len(tab.tracks)
-            return f"Playlist · {count} song{'' if count == 1 else 's'} · {fmt_time(sum(t.duration for t in tab.tracks))}"
-        if track.lossy or not track.sample_rate:
-            quality = track.codec
+            text = f"Playlist · {count} song{'' if count == 1 else 's'} · {fmt_time(sum(t.duration for t in tab.tracks))}"
         else:
-            quality = f"{track.codec} · {track.bits}-bit / {track.sample_rate / 1000:g} kHz"
-        album = [t for t in tab.tracks if album_folder(t.path) == album_folder(track.path)]
-        total = sum(t.duration for t in album)
-        return f"{quality} · {len(album)} tracks · {fmt_time(total)}"
+            if track.lossy or not track.sample_rate:
+                quality = track.codec
+            else:
+                quality = f"{track.codec} · {track.bits}-bit / {track.sample_rate / 1000:g} kHz"
+            folder = album_folder(track.path)
+            album = [t for t in tab.tracks if album_folder(t.path) == folder]
+            text = f"{quality} · {len(album)} tracks · {fmt_time(sum(t.duration for t in album))}"
+        tab.summary = (tab.tracks, key, text)
+        return text
 
     def _poll(self):
+        """Every POLL_MS: the window follows the player, settings are autosaved, waiting tag saves
+        are retried and the watcher's reports taken in. Each part is guarded on its own and the
+        loop always carries on: one error (logged once per kind) mustn't freeze the window or stop
+        the autosave for the rest of the session."""
+        try:
+            self._guarded(self._refresh_view)
+            self._polls += 1
+            if self._polls % AUTOSAVE_EVERY == 0:
+                self._guarded(self._save_if_changed)
+                if self._tag_waiting:
+                    self._guarded(self._retry_tag_saves)
+            if self._index_updated:
+                self._index_updated = False
+                if self._library is not None and self._library.win.winfo_exists():
+                    self._guarded(self._library.reload)
+            self._guarded(self._watch_reports)
+        finally:
+            self._poll_job = self.root.after(POLL_MS, self._poll)
+
+    def _guarded(self, step):
+        """Run one part of the poll; an error is logged (the first of its kind) and the rest goes on."""
+        try:
+            step()
+        except Exception as error:
+            kind = (getattr(step, "__name__", repr(step)), type(error).__name__)
+            if kind not in self._poll_errors:
+                self._poll_errors.add(kind)
+                log.exception("%s failed: %s (carrying on; more of these aren't logged)", *kind)
+
+    def _refresh_view(self):
+        """The top of the window, the seek bar, the transport and the track list's marker, the
+        taskbar title, Windows' media panel and the mini strip: all as the player is now."""
         status = self.player.status()
-        track = status.track if self.playing_tab is not None else None
+        from_queue = _queued_alone(self.playing_tab, status)
+        track = status.track if self.playing_tab is not None or from_queue else None
         if self.playing_tab is not None and status.index >= 0:
             playing = self.tabs[self.playing_tab]
             # Noted continuously, so switching tabs leaves it paused right here (and an album
@@ -2469,7 +2722,8 @@ class PlayerWindow:
                 self._refresh_tabs()  # a tab of many albums takes the name of the one it's on
         self._apply_guard(track, status.index)
         shown = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
-        viewing_playing = shown is not None and self.current == self.playing_tab
+        # A song from Up next with no tab behind it is shown as a playing tab's song would be.
+        viewing_playing = (shown is not None and self.current == self.playing_tab) or from_queue
 
         # The top of the window follows the tab you're looking at. On the playing tab that's
         # the song; flick to another album and you see that album (press play to start it).
@@ -2488,7 +2742,9 @@ class PlayerWindow:
             if status.dropouts:
                 text, tone = f"{text} · {status.dropouts} dropout(s) this track: see ⓘ", "warn"
             showing_playing = True
-            elsewhere = ""
+            # (With no tab open the top of the window is hidden: the status line says it instead.)
+            elsewhere = "" if shown is not None else (f"♪ Playing from Up next: {track.title}"
+                                                      + (f" — {track.artist}" if track.artist else ""))
         elif shown is not None:
             view = shown.view_track()
             self._request_art(view.path if view else shown.first_file)
@@ -2576,21 +2832,12 @@ class PlayerWindow:
             self._shown_key = key
 
         self._paint_up_next()
-        self._polls += 1
-        if self._polls % AUTOSAVE_EVERY == 0:
-            self._save_if_changed()
-            if self._tag_waiting:
-                self._retry_tag_saves()
-        if self._index_updated:
-            self._index_updated = False
-            if self._library is not None and self._library.win.winfo_exists():
-                self._library.reload()
-        self._watch_reports()
-        self._poll_job = self.root.after(POLL_MS, self._poll)
 
-    def _save_if_changed(self):
+    def _save_if_changed(self) -> bool:
         """Settings are written as they change, not only on close — so a crash, Windows
-        restarting or Task Manager can't lose your window position or choices."""
+        restarting or Task Manager can't lose your window position or choices. A write that
+        fails (the file briefly locked, a full disk) isn't taken as saved: it's tried again at
+        the next autosave. Returns whether the settings on disk are up to date."""
         self.prefs.update(
             volume=self.player.volume,
             exclusive=self.exclusive.get(),
@@ -2612,19 +2859,64 @@ class PlayerWindow:
         if geometry:  # not while minimised or maximised; the mini strip keeps its own
             self.prefs["mini_geometry" if self.mini_mode else "geometry"] = geometry
         snapshot = json.dumps(self.prefs, sort_keys=True)
-        if snapshot != self._saved_snapshot:
-            settings.save(self.prefs)
-            self._saved_snapshot = snapshot
+        if snapshot == self._saved_snapshot:
+            return True
+        if settings.save(self.prefs) is False:
+            return False
+        self._saved_snapshot = snapshot
+        return True
 
     def quit(self):
-        self._save_if_changed()
-        self.root.after_cancel(self._poll_job)
-        self.root.after_cancel(self._media_job)
-        self.root.after_cancel(self._theme_job)
-        self._stop_media()
-        self.watcher.stop()
-        self.player.close()
-        for save in self._tag_waiting:  # the player has let go of its files: a last quick try
+        """Close the player. A tag save under way is first asked to stop after the file in hand
+        (a file is never left half swapped, nor its checked copy left beside it), and songs being
+        added to a playlist are written; then every step of closing runs, even if one before it
+        fails, and the window always closes."""
+        if self._closing:   # already on its way
+            return
+        self._closing = True
+        self._close_when_saved(time.monotonic() + QUIT_WAIT_MS / 1000)
+
+    def _tag_saves_running(self) -> list:
+        """The tag windows (Edit tags, Tag history) with a save on its way."""
+        return [w for w in (self._tag_window, self._tag_history)
+                if w is not None and getattr(w, "saving", None) is not None]
+
+    def _close_when_saved(self, deadline: float):
+        running = self._tag_saves_running()
+        if (running or self._writing_playlists) and time.monotonic() < deadline:
+            for window in running:
+                if not window.saving.cancel.is_set():
+                    window.close()   # (while saving, this only asks it to stop after the file in hand)
+            self._set_notice("Closing once the tag save has finished the file in hand…" if running
+                             else "Closing once the playlist is saved…", 0)
+            self.root.after(100, self._close_when_saved, deadline)
+            return
+        try:
+            for step in (self._save_on_close, self._stop_timers, self._stop_media, self.watcher.stop,
+                         self.player.close, self._last_tag_tries):
+                try:
+                    step()
+                except Exception:
+                    log.exception("while closing: %s failed", getattr(step, "__name__", step))
+        finally:
+            self.root.destroy()
+
+    def _save_on_close(self):
+        if not self._save_if_changed():
+            time.sleep(0.2)   # (a file locked for a moment by antivirus or backup): once more
+            self._save_if_changed()
+
+    def _stop_timers(self):
+        for job in (self._poll_job, self._media_job, self._theme_job):
+            self.root.after_cancel(job)
+
+    def _last_tag_tries(self):
+        """The player has let go of its files: a last quick try for the songs still waiting (a save
+        that has just finished but not yet reported included); any still in use are given up."""
+        for window in self._tag_saves_running():
+            save = window.saving.save
+            if window.saving.finished and save.waiting and save not in self._tag_waiting:
+                self._tag_waiting.append(save)
+        for save in self._tag_waiting:
             save.retry()
             save.abandon()
-        self.root.destroy()
