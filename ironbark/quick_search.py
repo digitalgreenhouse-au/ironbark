@@ -20,7 +20,8 @@ box, on the first one — Enter plays (a song: its album opens in a tab and play
 album carrying on), Shift+Enter plays it next, Ctrl+Enter adds it to Up next, Alt+Enter opens its
 album. Esc empties the box, then closes the panel; so does a click outside it. Right-click a result
 for the rest (Add to playlist…, Show in Library, Show in Explorer, favourites), or drag it onto a
-tab to add it there.
+tab to add it there. Several songs can be selected (Shift+click, Ctrl+click, Shift+↑ / ↓):
+Shift+Enter, Ctrl+Enter, the right-click menu and a drag then take them all.
 
 The panel sits just under the tab strip, as wide as the window (centred, and no wider than
 PANEL_MAX_WIDTH) and down to the window's foot — once centred, no taller than PANEL_MAX_HEIGHT;
@@ -330,7 +331,7 @@ class QuickSearch:
         self._bold = bold
         self.list = VirtualTree(inner, COLUMNS, show="tree headings", on_activate=lambda i: self._act("play"),
                                 on_toggle=self._toggle, on_top_edge=self._back_to_box, fonts={"group": bold},
-                                margin=True, scroll_parent=scroll_parent)
+                                margin=True, scroll_parent=scroll_parent, multiple=True)
         self.list.frame.pack(fill="both", expand=True, pady=theme.pad(0 if self.docked else theme.GAP_MEDIUM, 0))
         tree = self.list.tree
         self.tree = tree
@@ -693,6 +694,17 @@ class QuickSearch:
         index = self.list.selection()
         return self.items[index] if index is not None and 0 <= index < len(self.items) else None
 
+    def _songs_for(self, index: int) -> list:
+        """The songs an action on result `index` (a song) is for: every song selected when it's one of
+        several selected (Shift+click, Ctrl+click), else just it."""
+        hit = self.items[index][1]
+        if self.list.is_selected(index) and self.list.selected_count() > 1:
+            hits = [self.items[i][1] for i in self.list.selected_indices()
+                    if 0 <= i < len(self.items) and self.items[i][0] == "song"]
+            if len(hits) > 1:
+                return hits
+        return [hit]
+
     def _act(self, how: str, first: bool = False):
         """Enter (play), Shift+Enter (next), Ctrl+Enter (queue) or Alt+Enter (album) on the selected
         result — `first`: on the first one (pressed in the box)."""
@@ -704,6 +716,7 @@ class QuickSearch:
             index = self._first_result()
             item = self.items[index] if index is not None else None
         else:
+            index = self.list.selection()
             item = self.selected_item()
         if item is None:
             return
@@ -721,8 +734,10 @@ class QuickSearch:
                 self.close()
                 actions.open_album(thing.album, False)
             else:
-                actions.queue_tracks([thing.track], how == "next")
-                self._note_queued(f"“{song_name(thing.track)}”", how == "next")
+                hits = [thing] if first else self._songs_for(index)
+                actions.queue_tracks([hit.track for hit in hits], how == "next")
+                self._note_queued(f"“{song_name(thing.track)}”" if len(hits) == 1 else f"{len(hits)} songs",
+                                  how == "next")
         elif kind == "album":
             if how in ("play", "album"):
                 self.close()
@@ -745,7 +760,7 @@ class QuickSearch:
             return None
         kind, thing = self.items[index]
         if kind == "song":
-            return [thing.track]
+            return [hit.track for hit in self._songs_for(index)]
         if kind == "album":
             return thing.path
         return None
@@ -757,12 +772,13 @@ class QuickSearch:
         kind, thing = self.items[index]
         if kind not in ("song", "album", "artist"):
             return
-        self.list.select(index, see=False)
+        if not (kind == "song" and self.list.is_selected(index) and self.list.selected_count() > 1):
+            self.list.select(index, see=False)   # (a right-click inside a selection of songs keeps it)
         actions = self._closing_actions()
         menu = popups.PopupMenu(self.root)
         if kind == "song":
-            add_song_items(menu, actions, [thing], {"play": "Enter", "next": "Shift+Enter", "queue": "Ctrl+Enter",
-                                                     "album": "Alt+Enter"})
+            add_song_items(menu, actions, self._songs_for(index), {"play": "Enter", "next": "Shift+Enter",
+                                                                   "queue": "Ctrl+Enter", "album": "Alt+Enter"})
         elif kind == "album":
             menu.add("Play", lambda: actions.open_album(thing.path, True), "Enter")
             menu.add("Play next", lambda: actions.queue_album(thing.path, True), "Shift+Enter")

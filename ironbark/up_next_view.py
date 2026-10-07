@@ -8,6 +8,8 @@ The list looks like the track list (the same row styles, the slim scrollbar in t
 (● in the cache, ◐ 72% downloaded, ○ waiting, ! couldn't download, that song's row in the warning
 colour — hover a row's mark for its words).
 Double-click or Enter plays a song now, Delete takes it out, right-click (or the menu key) for both.
+Several songs can be selected (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A): Delete and the menu
+take them all out at once (the window's Ctrl+Z puts them back).
 
 Nothing here talks to the player: the window hands the list what to show (`show`) and does what it's
 asked (the `on_…` callbacks), as it does for the pop-over.
@@ -35,18 +37,19 @@ def _clock(seconds: float) -> str:
 class UpNextView(ttk.Frame):
     """`show(queue, marks, stopping, sleep_label)` with the queue (engine Queued entries: `.title`,
     `.artist`, `.duration`) and, per song, its (mark, tone, meaning) from the network cache. The
-    callbacks: `on_play(position)`, `on_remove(position)`, `on_clear()`, `on_stop_after()` (flip
+    callbacks: `on_play(position)`, `on_remove(positions)`, `on_clear()`, `on_stop_after()` (flip
     "Stop after the current song"), `on_sleep_menu(widget)` (the sleep timer's menu, at the button).
     `scroll_parent`: the padded frame the slim scrollbar sits in the margin of (the window's body)."""
 
     def __init__(self, parent, *, scroll_parent: tk.Misc, on_play: Callable[[int], None],
-                 on_remove: Callable[[int], None], on_clear: Callable[[], None],
+                 on_remove: Callable[[list[int]], None], on_clear: Callable[[], None],
                  on_stop_after: Callable[[], None], on_sleep_menu: Callable[[tk.Misc], None]):
         super().__init__(parent)
         self.on_play, self.on_remove = on_play, on_remove
         # What the list holds now (titles and marks), so a poll only redraws on a change.
         self._shown: tuple | None = None
         self._mark_column = False   # the download-mark column is on show
+        self._end: str | None = None  # where Shift+↑ / ↓ has taken the selection to (it runs from the focus row)
         self.count = 0
 
         actions = ttk.Frame(self)
@@ -75,7 +78,7 @@ class UpNextView(ttk.Frame):
 
         table = ttk.Frame(self)
         self.table = table
-        self.tree = ttk.Treeview(table, columns=COLUMNS, show="headings", selectmode="browse", height=4,
+        self.tree = ttk.Treeview(table, columns=COLUMNS, show="headings", selectmode="extended", height=4,
                                  displaycolumns=("no", "title", "artist", "time"))
         tree = self.tree
         for column, heading, anchor in (("mark", "", "w"), ("no", "#", "e"), ("title", "Title", "w"),
@@ -97,6 +100,14 @@ class UpNextView(ttk.Frame):
         for key in ("<Return>", "<KP_Enter>"):
             tree.bind(key, lambda e: self.play_selected() or "break")
         tree.bind("<Delete>", lambda e: self.remove_selected() or "break")
+        # Several songs: Shift+click and Ctrl+click are the list's own (extended); Shift+↑ / ↓ grow the
+        # selection from the focus row, which a click or a plain arrow moves.
+        for name, rows in (("Up", -1), ("Down", 1)):
+            tree.bind(f"<Shift-Key-{name}>", lambda e, r=rows: self._extend(r))
+        for sequence in ("<Button-1>", "<Key-Up>", "<Key-Down>"):
+            tree.bind(sequence, lambda e: setattr(self, "_end", None), add="+")
+        for sequence in keys.sequences("select_all"):
+            tree.bind(sequence, lambda e: self.select_all() or "break")
         tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):
             tree.bind(key, lambda e: self._context(popups.row_event(tree)) or "break")
@@ -150,18 +161,19 @@ class UpNextView(ttk.Frame):
                     self._marks[i] = row[3][2]
             return
         self._mark_column = column
-        selected = tree.selection()
-        keep = int(selected[0]) if selected else None
+        keep = sorted(int(iid) for iid in tree.selection() if iid.isdigit())
+        focus = tree.focus()
         tree.delete(*tree.get_children())
         tree.configure(displaycolumns=(("mark",) if column else ()) + ("no", "title", "artist", "time"))
         self._marks = []
         for i, row in enumerate(rows):
             tree.insert("", "end", iid=str(i), values=self._values(i, row), tags=self._tags(i, row))
             self._marks.append(row[3][2])
-        if keep is not None and rows:
-            row = str(min(keep, len(rows) - 1))
-            tree.selection_set(row)
-            tree.focus(row)
+        if keep and rows:   # (the same rows stay selected where they still can be; one at least)
+            chosen = [str(i) for i in keep if i < len(rows)] or [str(len(rows) - 1)]
+            tree.selection_set(chosen)
+            tree.focus(focus if focus in chosen else chosen[0])
+        self._end = None
         self._fit()
         self._paint_empty(not rows)
 
@@ -187,26 +199,60 @@ class UpNextView(ttk.Frame):
         chosen = self.tree.selection() or ((self.tree.focus(),) if self.tree.focus() else ())
         return int(chosen[0]) if chosen and chosen[0].isdigit() else None
 
+    def selected_positions(self) -> list[int]:
+        """Every song selected, top to bottom (the focus row when none is)."""
+        chosen = self.tree.selection() or ((self.tree.focus(),) if self.tree.focus() else ())
+        return sorted(int(iid) for iid in chosen if iid.isdigit())
+
     def play_selected(self):
         position = self.selected()
         if position is not None:
             self.on_play(position)
 
     def remove_selected(self):
-        position = self.selected()
-        if position is not None:
-            self.on_remove(position)
+        positions = self.selected_positions()
+        if positions:
+            self.on_remove(positions)
+
+    def select_all(self):
+        rows = self.tree.get_children()
+        if rows:
+            self.tree.selection_set(rows)
+            if not self.tree.focus():
+                self.tree.focus(rows[0])
+            self._end = None
+
+    def _extend(self, rows: int):
+        """Shift+↑ / ↓: the selection runs from the focus row to one row further up or down."""
+        tree = self.tree
+        children = tree.get_children()
+        if not children:
+            return "break"
+        anchor = tree.focus() if tree.focus() in children else children[0]
+        end = self._end if self._end in children else anchor
+        to = children[max(0, min(len(children) - 1, children.index(end) + rows))]
+        low, high = sorted((children.index(anchor), children.index(to)))
+        tree.selection_set(children[low:high + 1])
+        tree.focus(anchor)
+        tree.see(to)
+        self._end = to
+        return "break"
 
     def _context(self, event):
         row = self.tree.identify_row(event.y)
         if not row:
             return
-        self.tree.selection_set(row)
-        self.tree.focus(row)
-        position = int(row)
+        if row not in self.tree.selection():   # (a right-click inside a selection keeps it)
+            self.tree.selection_set(row)
+            self.tree.focus(row)
+        positions = self.selected_positions()
         menu = popups.PopupMenu(self.winfo_toplevel())
-        menu.add("Play now", lambda: self.on_play(position), keys.hint("list_play"))
-        menu.add("Take it out of Up next", lambda: self.on_remove(position), keys.hint("remove"))
+        menu.add("Play now", lambda: self.on_play(int(row)), keys.hint("list_play"))
+        if len(positions) > 1:
+            menu.add(f"Take these {len(positions)} songs out of Up next", lambda: self.on_remove(positions),
+                     keys.hint("remove"))
+        else:
+            menu.add("Take it out of Up next", lambda: self.on_remove([int(row)]), keys.hint("remove"))
         menu.popup(event.x_root, event.y_root)
 
     def _hover(self, event):

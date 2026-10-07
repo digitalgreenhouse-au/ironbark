@@ -75,7 +75,7 @@ from typing import Callable
 
 from . import audiofile, controls, layout, searchfold, theme
 from .library import Track, album_folder, group_by_album
-from .virtual_list import ELLIPSIS, VirtualTree
+from .virtual_list import CELL_ROOM, ELLIPSIS, VirtualTree
 
 SEARCH_DELAY_MS = 150
 SEARCH_THREAD_AT = 20_000   # songs: a list this long is searched on the list's own thread, off Tk's
@@ -87,6 +87,7 @@ COLUMNS = ("no", "title", "artist", "album", "quality", "plays", "cache", "time"
 QUALITY_W = 72      # px at 100%: the Format column ("24/96", "FLAC", "Opus")
 PLAYS_W = 52        # px at 100%: the Plays column
 CACHE_W = 60        # px at 100%: the Cached column ("◐ 72%")
+WIDEST = {"cache": "◐ 99%", "plays": "9,999"}   # the widest value each of those columns shows
 VISIBLE_MOST = 200  # visible_tracks never hands back more rows than this
 SEARCH_MAX = 520    # px at 100%: the search box's widest, in a wide window's header row
 # How a wide window shares the list's width: by weight, Artist and Album never past their caps (px at
@@ -632,9 +633,18 @@ class PlaylistView:
         self.shown = tuple(shown)
         cache = ("cache",) if self.cache_column else ()
         self.tree.configure(displaycolumns=("no", "title", *self.shown, *cache, "time"))
+        self._size_columns()
         self._fit()
         if draw:
             self.list.refresh()   # (a title carries its artist only while the Artist column is hidden)
+
+    def _size_columns(self):
+        """The Cached and Plays columns as wide as their widest value in the rows' fonts (the playing
+        row's semibold too), never under their usual width: larger text mustn't cut "◐ 72%" short."""
+        fonts = [None] + ([self._bold] if self._bold is not None else [])
+        for column, usual in (("cache", CACHE_W), ("plays", PLAYS_W)):
+            need = max(self.list.text_width(WIDEST[column], font) for font in fonts) + theme.px(CELL_ROOM)
+            self.tree.column(column, width=max(theme.px(usual), need))
 
     def _pack_header(self, wide: bool):
         """The header row and the search row (a wide window), or the search box on its own above the

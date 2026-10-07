@@ -3400,6 +3400,18 @@ class PlayerWindow:
         self._paint_up_next()
         return "break"
 
+    def _unqueue_positions(self, positions: list[int]):
+        """The docked Up next's Delete (or its menu): these songs out of Up next, Ctrl+Z puts them back."""
+        before, after = self.player.remove_queued(positions)
+        self._paint_up_next()
+        count = len(before) - len(after)
+        if not count:
+            return
+        what = f"“{before[min(positions)].track.title}”" if count == 1 else f"{count} songs"
+        self._remember_edit(f"Took {what} out of Up next", f"Put {what} back in Up next",
+                            lambda: (self.player.restore_queue(before, after), self._paint_up_next()),
+                            lambda: self.player.queue is after)
+
     def _change_library_folder(self):
         """Settings → Library → Change… (while there's one library folder): another in its place."""
         folder = filedialog.askdirectory(title="Choose your music library folder",
@@ -4917,8 +4929,9 @@ class PlayerWindow:
         def sleep_menu(widget):
             self._sleep_menu(self._menu()).popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
 
-        dock = UpNextView(self.playlist.frame, scroll_parent=self.body, on_play=play, on_remove=self._unqueue,
-                          on_clear=self.clear_up_next, on_stop_after=self.stop_after_current, on_sleep_menu=sleep_menu)
+        dock = UpNextView(self.playlist.frame, scroll_parent=self.body, on_play=play,
+                          on_remove=self._unqueue_positions, on_clear=self.clear_up_next,
+                          on_stop_after=self.stop_after_current, on_sleep_menu=sleep_menu)
         dock.set_tier(self._tier)
         return dock
 

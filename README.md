@@ -75,15 +75,21 @@ Windows SmartScreen warns about an unknown publisher.
 - **Tabs** for albums, folders, playlists and the Library. Each tab remembers where it was; opening a
   new tab never interrupts what's playing. Drag tabs to reorder them.
 - **Library** (Ctrl+L): browse by album, artist, genre, year, composer or recently added; sort by any
-  column; search. **Songs** lists every song in the library, and **Most played**, **Recently played**
-  and **Favourites** (♥ — right-click any song) keep your listening close. **Play next / Add to
-  queue** from any song or album.
+  column; search. **Songs** lists every song in the library (with optional Plays and Last played
+  columns), and **Most played**, **Recently played** and **Favourites** (♥ — right-click any song) keep
+  your listening close. **Play next / Add to queue** from any song or album.
+- **Select several songs** (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A) in the track list, the
+  Library's song views, the search results and a wide window's Up next: play them next, queue them, add
+  them to a playlist or your favourites, edit their tags, drag them onto a tab, or take them out of a
+  playlist — one Ctrl+Z puts them all back.
 - **Search the whole library** (Ctrl+K): songs, albums and artists as you type, from any window;
   Enter plays the song in its album, Shift+Enter plays it next, Ctrl+Enter adds it to Up next.
 - **Built for big collections:** the Library keeps a database of your music, read once in the
   background (at low priority; in several processes for a big library) and then only what changed,
   so the player never freezes. Use **several music folders** (Settings → Library). An unplugged
-  drive or a sleeping network share never empties the Library.
+  drive or a sleeping network share never empties the Library. A tab of the whole library (Library →
+  *Open all albums in a tab*) opens, scrolls and searches as quickly as an album, even with 200,000
+  songs, and an optional **Plays** column shows how often each song has been played.
 - **Search** ignores accents and special letters ("lodz" finds Łódź, "strasse" finds Straße) and
   looks at title, artist, album, album artist, composer, genre, year and file name.
 - **Spots new music:** albums copied into your music folder appear in the Library by themselves,
@@ -195,8 +201,9 @@ Windows SmartScreen warns about an unknown publisher.
 - **Network playback cache:** songs on a network drive (a NAS) play from a copy fetched to this
   computer: a short "Preparing track…" first, then a dropped network or a sleeping server doesn't
   interrupt the song — a longer outage pauses it at a quiet moment and it carries on by itself from
-  exactly the same sample. The next songs download ahead, Up next shows how far each has got, and
-  the seek bar shows what's downloaded. Settings → Network playback sets the buffering, how far ahead
+  exactly the same sample. The next songs download ahead, Up next and the track list's *Cached*
+  column show how far each has got, and the seek bar shows what's downloaded. A copy deleted behind
+  its back is fetched again from the same spot. Settings → Network playback sets the buffering, how far ahead
   to fetch, how long copies are kept and how much room they may take. Each finished copy is checked
   against the original (a FLAC file's own fingerprint too).
 
@@ -243,9 +250,9 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Enter | Track list: play the song (an album row: the album) |
 | Ctrl+Enter | Track list: add to Up next |
 | Ctrl+Shift+Enter | Track list: play next |
-| Ctrl+A | Track list: select every song |
+| Ctrl+A | Track list (and a wide window's Up next): select every song |
 | Menu key · Shift+F10 | The selected row's right-click menu |
-| Shift+click · Ctrl+click · Shift+↑ / ↓ | Track list and the Library's songs: select several songs |
+| Shift+click · Ctrl+click · Shift+↑ / ↓ | Track list, the Library's songs, the library search's results and a wide window's Up next: select several songs |
 
 ### Windows & tools
 

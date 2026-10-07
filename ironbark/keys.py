@@ -104,7 +104,8 @@ ACTIONS: tuple[Action, ...] = (
            "Tabs & lists"),
     Action("list_queue", _keys("Ctrl+Enter",), "list", "Track list: add to Up next", "Tabs & lists"),
     Action("list_play_next", _keys("Ctrl+Shift+Enter",), "list", "Track list: play next", "Tabs & lists"),
-    Action("select_all", _keys("Ctrl+A",), "list", "Track list: select every song", "Tabs & lists"),
+    Action("select_all", _keys("Ctrl+A",), "list", "Track list (and a wide window's Up next): select every song",
+           "Tabs & lists"),
     # -- Windows & tools ---------------------------------------------------------------------------
     Action("now_playing", _keys("I",), "app", "Now Playing", "Windows & tools", shift=True),
     Action("meters", _keys("M",), "app", "Meters", "Windows & tools", shift=True),
@@ -157,8 +158,9 @@ OTHER_KEYS: tuple[tuple[str, str, str], ...] = (
      "Library search (Ctrl+K): play · play next · add to Up next · open the album", "Library & search"),
     ("A – Z · 0 – 9", "Library list: jump to the first name starting with what you type", "Library & search"),
     ("Menu key · Shift+F10", "The selected row's right-click menu", "Tabs & lists"),
-    ("Shift+click · Ctrl+click · Shift+↑ / ↓", "Track list and the Library's songs: select several songs",
-     "Tabs & lists"),
+    ("Shift+click · Ctrl+click · Shift+↑ / ↓",
+     "Track list, the Library's songs, the library search's results and a wide window's Up next: "
+     "select several songs", "Tabs & lists"),
     ("Esc", "Close a menu or window (a search box: clear it first)", "Windows & tools"),
     ("Tab · Shift+Tab", "A question box: go from button to button (Enter presses the one ringed in green)",
      "Windows & tools"),
@@ -195,6 +197,23 @@ def parse(text: str) -> Key:
     *mods, name = text.split("+")
     base = _NAMES.get(name.lower(), name.lower())
     return frozenset(_MODIFIERS[m.lower()] for m in mods), base
+
+
+def sequences(action_id: str) -> list[str]:
+    """Tk event sequences for an action's keys, for a widget that binds them itself (a list of its
+    own that isn't the track list: the docked Up next's Ctrl+A). A letter both ways round (Caps Lock)."""
+    found = []
+    for text in BY_ID[action_id].keys:
+        mods, base = parse(text)
+        names = [_TK_MODIFIERS[m] for m in ("Ctrl", "Alt", "Shift") if m in mods]
+        if len(base) == 1 and base.isalpha():
+            keysyms = [base, base.upper()]
+        elif base in ("space", "comma", "period", "question", "slash") or base.isdigit():
+            keysyms = [base]
+        else:
+            keysyms = [base.capitalize()]
+        found += ["<" + "-".join([*names, "Key", keysym]) + ">" for keysym in keysyms]
+    return found
 
 
 def normalise(keysym: str, state: int) -> Key:

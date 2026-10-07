@@ -1627,6 +1627,28 @@ class Player:
                 self.queue = queue
                 self._relineup()
 
+    def remove_queued(self, positions) -> tuple[list, list]:
+        """Take several songs out of Up next at once (positions in it as it is now). Returns the list
+        before and after, for `restore_queue`."""
+        gone = set(positions)
+        with self._lock:
+            before = self.queue
+            after = [q for i, q in enumerate(before) if i not in gone]
+            if len(after) != len(before):
+                self.queue = after
+                self._relineup()
+            return before, self.queue
+
+    def restore_queue(self, before: list, after: list) -> bool:
+        """Up next as `before` again (undo of `remove_queued`), if it's still `after`: nothing has
+        changed it since."""
+        with self._lock:
+            if self.queue is not after:
+                return False
+            self.queue = before
+            self._relineup()
+            return True
+
     def clear_queue(self):
         with self._lock:
             self.queue = []

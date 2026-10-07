@@ -449,7 +449,7 @@ def test_library_albums_are_the_search_panels_and_a_big_list_is_searched_off_tk(
     library_index.close_shared()
 
 
-# -- review: Tk's thread, what's acted on, what's lit -------------------------------------------------------
+# -- Tk's thread, what's acted on, what's lit ---------------------------------------------------------------
 def test_a_big_selection_of_a_library_tab_is_read_off_tks_thread(make_window, tmp_path, monkeypatch):
     import threading
 

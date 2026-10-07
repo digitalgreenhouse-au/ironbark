@@ -504,6 +504,12 @@ class VirtualTree:
             cut += 1
         return text[:cut].rstrip() + ELLIPSIS
 
+    def text_width(self, text: str, font=None) -> int:
+        """`text`'s width in pixels as `fit` measures it, in `font` (default: the font the rows are
+        drawn in)."""
+        width = self._char_width(font or self._row_font())
+        return sum(width(ch) for ch in text)
+
     def _char_width(self, font) -> Callable[[str], int]:
         """A character's width in `font` (asked of Tk once, then remembered)."""
         widths = self._widths.get(str(font))

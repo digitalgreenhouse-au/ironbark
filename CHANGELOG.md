@@ -4,6 +4,72 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.33.0 — 08/10/2026
+
+Very big tabs that open in a moment, several songs selected at once, Up next and the lyrics beside
+the controls in a wide window, and finishing touches throughout.
+
+**Big lists**
+- The track list opens, scrolls and searches a tab of a whole library (200,000 songs) as quickly as
+  an album. Library → "Open all albums in a tab" opens it in about a second and a half and uses
+  about 5 MB instead of hundreds. A row not read yet shows "…" for a moment.
+- The Library's album list is searched and sorted without freezing the window, however big the
+  library.
+- Searching inside a tab of a few albums from the Library is instant, even in a very big library.
+- A Library song view opened while the library was first being read fills in when that read ends.
+
+**Selecting several songs**
+- In the track list, the Library's song views, the library search's results and (in a wide window)
+  Up next: Shift+click, Ctrl+click and Shift+↑ / ↓ select several songs. Ctrl+A selects every song
+  (not in the search's results).
+- Right-click a selection: Play next, Add to queue, "Add these N songs to playlist", favourites,
+  "Edit tags of these N songs…" and, in a playlist, "Remove these N songs from playlist". Delete
+  removes every selected song from a playlist, dragging carries them all, and one Ctrl+Z puts them
+  all back. A very big selection is read in the background ("Reading 200,000 songs…") instead of
+  freezing the window.
+- Shift across an album heading acts only on the songs lit, not the rest of that album.
+- "/" goes to the search box (in the main window and the Library).
+
+**Plays columns**
+- An optional Plays column in the track list (right-click the headings → Columns → Plays), and
+  optional Plays and Last played columns in the Library's song views. They show the new count
+  after a play.
+
+**Wide windows**
+- A Tracks · Up next · Lyrics switch above the list: Up next and the lyrics show in the list's
+  place, and the choice is kept for the session. Docked Up next: double-click or Enter plays a song
+  now, Delete takes the selected songs out (Ctrl+Z puts them back), Clear, "Stop after the current
+  song" and the Sleep timer.
+- "This tab | Whole library" beside the search box: Whole library shows every matching song, album
+  and artist in the list's place as you type (Enter plays, Shift+Enter plays next, Ctrl+Enter adds
+  to Up next, Alt+Enter opens the album). Opening an album or folder goes back to This tab.
+- The keyboard always goes to what's on show, so keys never act on a hidden list.
+
+**Finishing touches**
+- A long status message takes a second line drawn above the status line, so nothing moves; hover
+  it for the whole message.
+- Question boxes: Tab and Shift+Tab move between the buttons with a green ring; Enter presses the
+  ringed one, Esc cancels. Removing a library folder in Settings now asks first (Keep is the
+  default).
+- The mini strip's tooltips show their keys, e.g. "Next (N)".
+- After an unexpected close, the next start says "Ironbark closed unexpectedly last time", with a
+  "Save diagnostics…" link.
+- Saved diagnostics also leave out tab, playlist, search, sound-output and network server names.
+- Clearer privacy wording for Check for updates, rip verification and Allow network access
+  (Settings, README and About → Privacy).
+- The menu key (or Shift+F10) opens the selected song's menu even after the list has scrolled away
+  from it. Dragging a song to just below the last row on show in a long playlist puts it there.
+
+**Network playback cache (Experimental)**
+- A "Cached" column in the track list for a tab with songs on a network drive: ● in the cache,
+  ◐ 72% part downloaded, ○ waiting, ! couldn't download.
+- A song whose copy on this computer goes missing plays on to a quiet moment, then carries on from
+  the same spot on a fresh copy, also when that happens while the network is down.
+- A copy that fails its check twice is skipped for now (and says so). VU Auto on a network album
+  waits for the songs to download instead of saying it couldn't measure. Now Playing's live bitrate
+  and an MP3's "cut short" note appear as soon as the copy completes. After Stop, the song left
+  behind stops downloading first.
+
 ## 0.32.0 — 08/10/2026
 
 A new look, a layout for big windows, song search, new Library views, a whole-library quality
