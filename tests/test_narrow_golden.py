@@ -64,7 +64,7 @@ def environment(root) -> dict:
 
 def snapshot(window, root) -> dict:
     """The narrow layout as it stands: packing, places and sizes, the cover, the list's columns."""
-    root.update_idletasks()
+    _steady(window, root)
     names = {}
     for name in NAMED + PACKED:
         widget = _part(window, name)
@@ -100,6 +100,15 @@ def snapshot(window, root) -> dict:
 
 def _settle(root, seconds: float = 0.7):
     _pump(root, seconds)
+
+
+def _steady(window, root):
+    """The cover sized afresh for the window as it now is. (While a window is being resized the
+    cover keeps its size through changes of 2 px or less, so without this it would depend on the
+    sizes the window passed through on the way, which vary with timing.)"""
+    window.art_size = 0
+    window._fit_art()
+    _pump(root, 0.5)
 
 
 def walk_states(window, root, player, logical: tuple[int, int], scaling: float):
