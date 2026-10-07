@@ -9,6 +9,9 @@ A CUE sheet track (one track of a long file) is written as its file's path with 
 file; this player reads it back as that one track. While the track can't be found (the drive is
 unplugged, the .cue has been moved) it keeps its number, so saving the playlist meanwhile
 doesn't turn it into the whole file.
+
+A web address (http:// or https://) can't be played yet: it's read as an `audiofile.UrlPath`,
+listed as missing, and written back exactly as it was.
 """
 
 from __future__ import annotations
@@ -74,6 +77,10 @@ def read(path: Path) -> list[Path]:
                 cue_number = None
             continue
         if not line or line.startswith("#"):
+            continue
+        if audiofile.is_web_address(line):   # kept exactly, so saving the playlist doesn't lose it
+            songs.append(audiofile.UrlPath.parse(line))
+            cue_number = None
             continue
         song = Path(line)
         song = song if song.is_absolute() else (path.parent / song)

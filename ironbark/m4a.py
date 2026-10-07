@@ -280,6 +280,9 @@ class CafStream(io.RawIOBase):
             at += size
         self._length = at
         self._pos = 0
+        # Set once a read finds the file ending before its index says (cut short): libsndfile would
+        # decode whatever it was given as if it were audio — loud noise — so audiofile stops there.
+        self.short = False
         self._file = open(path, "rb")
 
     def readable(self) -> bool:
@@ -313,6 +316,7 @@ class CafStream(io.RawIOBase):
                 self._file.seek(offset + inside)
                 got = self._file.readinto(view[done: done + take])
                 if not got:
+                    self.short = True
                     break  # the file is shorter than its index says (damaged)
                 take = got
             done += take

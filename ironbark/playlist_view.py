@@ -31,7 +31,7 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import controls, popups, searchfold, theme
+from . import audiofile, controls, popups, searchfold, theme
 from .library import Track, group_by_album
 
 SEARCH_DELAY_MS = 150
@@ -284,7 +284,11 @@ class PlaylistView:
         track = self._tracks[i]
         show_artist = (searching or self.flat) and track.artist and "artist" not in self.columns
         title = f"{track.title}  ·  {track.artist}" if show_artist else track.title
-        return title + "   (file not found)" if track.missing else title
+        if not track.missing:
+            return title
+        if isinstance(track.path, audiofile.UrlPath):
+            return title + "   (web address — not supported yet)"
+        return title + "   (file not found)"
 
     def _matching(self, words: list[str]) -> list[int] | None:
         """The songs matching every word, in list order (None: no words, so every song). Each
