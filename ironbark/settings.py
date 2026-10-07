@@ -92,6 +92,8 @@ DEFAULTS = {
     "track_columns": [],         # optional track-list columns on show: "artist", "album"
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window
+    "help_geometry": "",         # the Keyboard shortcuts sheet (F1)
+    "about_geometry": "",        # the About Ironbark window
     "watch_music": True,         # Settings → Library: look for new / changed / removed music every few minutes
     "new_music": None,           # {"since": when watching began, "opened": {album folder: when opened}}
     "theme": "dark",             # Settings → Window → Theme: "dark", "light" or "system" (follow Windows)

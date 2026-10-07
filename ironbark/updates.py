@@ -1,6 +1,6 @@
 """Checking for a newer Ironbark — opt-in. No UI code.
 
-Off unless Settings → Network → "Check for updates" is switched on, and then only while "Allow
+Off unless Settings → Help → "Check for updates" is switched on, and then only while "Allow
 network access" is on too (the one switch every use of the internet answers to: the fetch is
 ripcheck.fetch, which checks it). At most once a day it reads one small file, UPDATE_URL, which
 says what the latest version is. Nothing is sent but the request itself (the player's name and

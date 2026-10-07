@@ -38,8 +38,14 @@ popups.PopupMenu (popups.py), so they follow Dark / Light; a prompt leaves the m
 Opening from outside: files, folders, playlists and CUE sheets named on the command line, or handed
 over by a later launch (instance.py — "Open with", a double-click on a file while the player is
 open) are opened like a drop on the window (`open_paths`); a file asked for this way plays at once.
-Also: Settings → Window → Detailed logging (logs.py), Save diagnostics… (diagnostics.py), Settings →
-Network → Check for updates (updates.py); Python's cycle collector runs on this thread (tkgc.py)."""
+Also: Settings → Help → Save diagnostics… (diagnostics.py), Detailed logging (logs.py) and Check for
+updates (updates.py); Python's cycle collector runs on this thread (tkgc.py).
+
+The keyboard: every shortcut is in one table (keys.py) — `_bind_keys` says what each does here, and
+every window the player opens is attached to it (`_with_keys`), so the keys work wherever the
+keyboard is. F1 (or ?) lists them all (help_window.py); Settings → Help has that list and About.
+A playlist change (Delete, a move, Up next cleared) can be undone once: Ctrl+Z, or Undo in the
+status line."""
 
 from __future__ import annotations
 
@@ -61,13 +67,14 @@ from typing import Callable
 from PIL import ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
-               dragdrop, experiments, library_db, library_index, logs, mediakeys, placement, playlists, popups,
+               dragdrop, experiments, keys, library_db, library_index, logs, mediakeys, placement, playlists, popups,
                settings, tag_editor, theme, tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
 from .testsignals_window import TestSignalsWindow
 from .details import NowPlayingWindow, output_line
+from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
@@ -90,7 +97,9 @@ MEDIA_POLL_MS = 60   # how often presses from media keys / Windows' media panel 
 AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
 SEEK_STEP = 5.0
-VOLUME_STEP = 0.05   # per mouse-wheel notch over the transport
+LONG_SEEK_STEP = 30.0  # Shift+← / →
+VOLUME_STEP = 0.05   # per mouse-wheel notch over the transport, and per Ctrl+↑ / ↓
+UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
 WHEEL_NOTCH = 120 if sys.platform == "win32" else 1   # Tk's wheel delta for one notch (Windows: 120)
 QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
@@ -109,6 +118,17 @@ def fmt_time(seconds: float) -> str:
     if seconds >= 3600:  # a double album: 2:02:36, not 122:36
         return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
     return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def volume_words(volume: float) -> str:
+    """The volume as Settings and the status line say it: "100% · untouched", "75% · −5.0 dB" (the
+    change in level: the slider is squared, see engine.Player.set_volume), "0% · muted"."""
+    gain = volume ** 2
+    if gain >= 1.0:
+        return "100% · untouched"
+    if gain <= 0:
+        return "0% · muted"
+    return theme.figures(f"{volume:.0%} · {20 * math.log10(gain):+.1f} dB")
 
 
 def _known_music_folder() -> Path | None:
@@ -288,6 +308,13 @@ class PlayerWindow:
         self._library: LibraryWindow | None = None
         self._tag_window: TagWindow | None = None
         self._tag_history: TagHistoryWindow | None = None
+        self._help: HelpWindow | None = None
+        self._about: AboutWindow | None = None
+        # The one playlist change Ctrl+Z can undo: (notice, what undoing says, undo, still possible?)
+        self._undo: tuple | None = None
+        # The volume before Ctrl+Shift+↓ muted it, and what it was heard through (_ear_setup); None
+        # once the level has been changed any other way.
+        self._muted_from: tuple[float, tuple] | None = None
         self._tag_waiting: list[tag_editor.TagSave] = []  # saves with songs waiting for the player to move on
         self._index_updated = False  # set by the thread that re-reads edited files into the index
         self._notice = ""            # a UI message that overrides the player's for a while
@@ -507,24 +534,25 @@ class PlayerWindow:
         # (0.20.0) The play button is a drawn green circle; the others light up with a soft round disc.
         self.shuffle_button = controls.RoundIconButton(buttons, self.root, "shuffle", self.toggle_shuffle,
                                                        size=theme.ICON_MEDIUM, diameter=32, width=36, bg="BG",
-                                                       label="Shuffle (S)")
+                                                       label=f"Shuffle ({keys.hint('shuffle')})")
         self.shuffle_button.pack(side="left", fill="y", padx=theme.pad(0, theme.GAP_SMALL))
         controls.RoundIconButton(buttons, self.root, "prev", self.player.previous, size=theme.ICON_LARGE, diameter=36,
-                                 width=40, bg="BG", label="Previous (P)").pack(side="left", fill="y")
-        self.play_button = controls.PlayButton(buttons, self.toggle_play, label="Play / pause (Space)")
+                                 width=40, bg="BG", label=f"Previous ({keys.hint('previous')})").pack(side="left",
+                                                                                                    fill="y")
+        self.play_button = controls.PlayButton(buttons, self.toggle_play, label=f"Play / pause ({keys.hint('play')})")
         self.play_button.pack(side="left", padx=theme.px(theme.GAP_MEDIUM))
         controls.RoundIconButton(buttons, self.root, "next", self.player.next, size=theme.ICON_LARGE, diameter=36,
-                                 width=40, bg="BG", label="Next (N)").pack(side="left", fill="y")
+                                 width=40, bg="BG", label=f"Next ({keys.hint('next')})").pack(side="left", fill="y")
         self.repeat_button = controls.RoundIconButton(buttons, self.root, "repeat", self.cycle_repeat,
                                                       size=theme.ICON_MEDIUM, diameter=32, width=36, bg="BG",
-                                                      label="Repeat (R)")
+                                                      label=f"Repeat ({keys.hint('repeat')})")
         self.repeat_button.pack(side="left", fill="y", padx=theme.pad(theme.GAP_SMALL, 0))
         self._paint_order_buttons()
         self.volume_badge = controls.PillButton(self.transport, "", self._open_settings, fill=None, fg="WARN",
                                                 outline="WARN", hover_fill="SURFACE_HI",
                                                 font=theme.font(theme.SIZE_SMALL), pad_x=theme.GAP, pad_y=1,
                                                 label="Volume below 100% · click for Settings, or use the mouse "
-                                                      "wheel over the buttons")
+                                                      "wheel over the buttons, or Ctrl+↑ / ↓")
         for widget in (self.transport, buttons, *buttons.winfo_children(), self.volume_badge):
             widget.bind("<MouseWheel>", self._wheel_volume)
 
@@ -533,9 +561,12 @@ class PlayerWindow:
         self.status_label = ttk.Label(body, text="", style="Sub.TLabel", anchor="w")
         self.status_label.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP, 0))
         self.status_label.bind("<Button-1>", self._status_clicked)
+        # "Undo (Ctrl+Z)" at the right-hand end of the status line, while it's telling of a playlist
+        # change that can be undone (placed over the line, so nothing else moves).
+        self.undo_link = ttk.Label(body, text=f"Undo ({keys.hint('undo')})", style="UpNext.TLabel", cursor="hand2")
+        self.undo_link.bind("<Button-1>", lambda e: self.undo())
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
-                                     on_menu=self._track_menu, on_remove=self._remove_from_playlist,
-                                     on_move=self._move_in_playlist, on_drag=self._song_drag,
+                                     on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu)
         self.playlist.set_columns(self.prefs.get("track_columns") or ())
         # "Up next (3) · Song": shown above the status line only while songs are queued; click
@@ -595,8 +626,8 @@ class PlayerWindow:
                                    pad_y=theme.GAP_HAIR, label=label)
 
     def _build_settings(self) -> Popover:
-        """Grouped into Sound / Window / Library / Network / Experimental, every on/off choice a slider
-        switch with one plain line saying what it does.
+        """Grouped into Sound / Window / Library / Network / Experimental / Help, every on/off choice
+        a slider switch with one plain line saying what it does.
 
         (0.21.0) It scrolls when it doesn't fit the window (it's ~1300 px tall at 150%
         scaling) — mouse wheel anywhere over it, and a slim scrollbar that shows only then. Its
@@ -674,8 +705,6 @@ class PlayerWindow:
             side="right", padx=theme.pad(0, theme.GAP))
         self._setting(b, "Open at home", "Start up at the home position.", self.open_at_home)
         self._update_home_text()
-        self._setting(b, "Detailed logging", "Notes more of what the player does in its log, to help track "
-                      "down a problem. Off normally.", self.detailed_logging, self._detailed_logging_changed)
 
         self._caption(b, "Library")
         self.library_rows = ttk.Frame(b, style="Pop.TFrame")   # one row per library folder
@@ -692,11 +721,8 @@ class PlayerWindow:
         self._setting(b, "Allow network access", "Lets rip verification look up checksums online "
                       "(AccurateRip, CUETools DB). The CUETools DB lookup isn't encrypted, so others "
                       "on the network can see which disc is looked up. Otherwise only Check for updates "
-                      "uses the internet.",
+                      "(Help, below) uses the internet.",
                       self.allow_network, self._network_changed)
-        self._setting(b, "Check for updates", "Once a day, asks digitalgreenhouse.com.au whether a newer "
-                      f"{APP_NAME} is out. Nothing about you or your music is sent. Needs network access.",
-                      self.check_updates, self._updates_changed)
 
         if experiments.EXPERIMENTS:
             self._caption(b, "Experimental")
@@ -713,17 +739,26 @@ class PlayerWindow:
             self.experiment_vars[experiment.key] = var
             self._setting(b, experiment.title, experiment.description, var,
                           lambda key=experiment.key: self._toggle_experiment(key))
-        self._add_help_buttons(b)
+        self._caption(b, "Help")
+        self.help_box = ttk.Frame(b, style="Pop.TFrame")
+        self.help_box.pack(fill="x")
+        row = ttk.Frame(self.help_box, style="Pop.TFrame")
+        row.pack(fill="x")
+        self._pop_button(row, f"Keyboard shortcuts ({keys.hint('help')})", lambda: self._from_settings(self.show_help),
+                         "Every key, with a filter box. Also F1 or ? in any Ironbark window").pack(side="left")
+        self._pop_button(row, "About Ironbark", lambda: self._from_settings(self.show_about),
+                         "Version, licences, privacy and the website").pack(side="right")
+        self._add_help_buttons(self.help_box)
         self.version_label = ttk.Label(b, text="", style="PopMuted.TLabel")
         self.version_label.pack(anchor="e", pady=theme.pad(theme.GAP_LARGE, 0))
         self._paint_version()
         return pop
 
-    def _add_help_buttons(self, parent):
-        """Help for when something's wrong: Save diagnostics… (and Open log folder), in a row at the
-        bottom of Settings."""
-        tk.Frame(parent, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
-        row = ttk.Frame(parent, style="Pop.TFrame")
+    def _add_help_buttons(self, box: ttk.Frame):
+        """The rest of Settings → Help, under Keyboard shortcuts / About: what to reach for when
+        something's wrong (Save diagnostics…, Open log folder, Detailed logging), and Check for
+        updates."""
+        row = ttk.Frame(box, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self.diagnostics_button = self._pop_button(row, "Save diagnostics…", self.save_diagnostics,
                                                    "Save a .zip to send with a problem report: versions, sound "
@@ -731,10 +766,23 @@ class PlayerWindow:
                                                    "is sent anywhere.")
         self.diagnostics_button.pack(side="left")
         self._pop_button(row, "Open log folder", self._open_log_folder,
-                         "Where crash.log and app.log are kept").pack(side="left", padx=theme.pad(theme.GAP, 0))
+                         "Where crash.log and app.log are kept").pack(side="right")
+        self._setting(box, "Detailed logging", "Notes more of what the player does in its log, to help track "
+                      "down a problem. Off normally.", self.detailed_logging, self._detailed_logging_changed)
+        self._setting(box, "Check for updates", "Once a day, asks digitalgreenhouse.com.au whether a newer "
+                      f"{APP_NAME} is out. The site sees only your internet address and this version number. "
+                      "Needs Allow network access (Network, above).",
+                      self.check_updates, self._updates_changed)
+
+    def _from_settings(self, show):
+        """A Settings button that opens a window: Settings closes first (the mini strip's grown
+        window goes back to the strip)."""
+        Popover.close_open()
+        show()
 
     def _volume_slid(self, value: float):
         """The Settings volume slider moved (while dragging, and let go)."""
+        self._muted_from = None   # (a level chosen since: unmuting no longer goes back to the old one)
         self.player.set_volume(value / 100)
         self.volume_var.set(self.player.volume * 100)   # (the slider ignores this while it's being dragged)
         self._update_volume_text()
@@ -778,57 +826,267 @@ class PlayerWindow:
 
     def _build_new_menu(self) -> Popover:
         pop = Popover(self.root, width=theme.px(240), keys=True, padding=(0, theme.GAP_SMALL))
-        MenuRow(pop.body, "Browse library…", self.open_library, "Ctrl+L").pack(fill="x")
-        MenuRow(pop.body, "Open a folder…", self.choose_folder, "Ctrl+O").pack(fill="x")
-        MenuRow(pop.body, "New playlist…", self.new_playlist, "Ctrl+N").pack(fill="x")
-        MenuRow(pop.body, "Open a playlist file…", self.open_playlist_file).pack(fill="x")
+        MenuRow(pop.body, "Browse library…", self.open_library, keys.hint("library")).pack(fill="x")
+        MenuRow(pop.body, "Open a folder…", self.choose_folder, keys.hint("open_folder")).pack(fill="x")
+        MenuRow(pop.body, "New playlist…", self.new_playlist, keys.hint("new_playlist")).pack(fill="x")
+        MenuRow(pop.body, "Open a playlist file…", self.open_playlist_file, keys.hint("open_playlist")).pack(fill="x")
         return pop
 
-    def _typing(self) -> bool:
-        """Is the search box being typed in? Then single-key shortcuts are just letters."""
-        return isinstance(self.root.focus_get(), (tk.Entry, ttk.Entry))
-
-    def _key(self, action):
-        def handler(event):
-            if self._typing():
-                return None
-            action()
-            return "break"
-        return handler
-
     def _bind_keys(self):
-        bind = self.root.bind
-        bind("<Control-f>", lambda e: self.playlist.focus_search())
-        bind("<space>", self._key(self.toggle_play))
-        bind("<Control-o>", lambda e: self.choose_folder())
-        bind("<Control-n>", lambda e: self.new_playlist())
-        bind("s", self._key(self.toggle_shuffle))
-        bind("r", self._key(self.cycle_repeat))
-        bind("<Control-l>", lambda e: self.open_library())
-        bind("<Control-t>", lambda e: self.open_library())
-        bind("<Control-w>", lambda e: self.close_tab(self.current) if self.tabs else None)
-        bind("<Control-T>", lambda e: self.reopen_tab())  # Ctrl+Shift+T, as in browsers
-        bind("<Control-Tab>", lambda e: self._cycle_tab(1))
-        bind("<Control-Shift-Tab>", lambda e: self._cycle_tab(-1))
-        bind("<Control-Shift-Prior>", lambda e: self.move_tab(self.current, self.current - 1))  # PgUp
-        bind("<Control-Shift-Next>", lambda e: self.move_tab(self.current, self.current + 1))   # PgDn
-        bind("<Control-H>", lambda e: self.snap_home())   # Ctrl+Shift+H
-        bind("<Control-comma>", lambda e: self._open_settings())
-        bind("<Left>", self._key(lambda: self._nudge(-SEEK_STEP)))
-        bind("<Right>", self._key(lambda: self._nudge(SEEK_STEP)))
-        bind("n", self._key(self.player.next))
-        bind("p", self._key(self.player.previous))
-        bind("i", self._key(self.show_details))
-        bind("m", self._key(self.show_meters))
-        bind("b", self._key(self.show_pcm))   # b for bits
-        bind("c", self._key(self.show_clipping))   # c for clipping (inter-sample overs)
-        bind("f", self._key(self.show_spectrogram))   # f for frequencies
-        bind("o", self._key(self.show_scope))   # o: the scope's round picture
-        bind("d", self._key(self.show_compare))   # d for difference
-        bind("x", self._key(self.show_abx))   # x: the ABX test's mystery version
-        bind("t", self._key(self.show_testsignals))   # t for test signals
-        bind("e", self._key(self.edit_selected_tags))   # e: edit tags (only while that experiment is on)
-        bind("z", self._key(self.toggle_mini))   # z: zoom the window down to the mini strip, and back
+        """What each shortcut in keys.ACTIONS does in the player (the Library and Edit tags add their
+        own: their `key_handlers`). Looked up when the key is pressed, so the methods are the live ones."""
+        def call(name):
+            return lambda *key: getattr(self, name)(*key)
+
+        def side(key: str) -> int:   # -1 for the backwards key of a pair (←, ↓, PgUp), 1 for the other
+            return -1 if key.endswith(("Left", "Down", "PgUp")) else 1
+
+        self.keys = keys.Keys(self.root, {
+            "play": call("toggle_play"),
+            "next": lambda: self.player.next(),
+            "previous": lambda: self.player.previous(),
+            "seek": lambda key: self._nudge(side(key) * SEEK_STEP),
+            "seek_long": lambda key: self._nudge(side(key) * LONG_SEEK_STEP),
+            "jump": lambda key: self._jump(int(key) / 10),
+            "shuffle": call("toggle_shuffle"),
+            "repeat": call("cycle_repeat"),
+            "volume": lambda key: self._step_volume(side(key)),
+            "mute": call("toggle_mute"),
+            "full_volume": call("full_volume"),
+            "new_tab": call("open_new_menu"),
+            "close_tab": lambda: self.close_tab(self.current) if self.tabs else None,
+            "reopen_tab": call("reopen_tab"),
+            "next_tab": lambda: self._cycle_tab(1),
+            "previous_tab": lambda: self._cycle_tab(-1),
+            "move_tab": lambda key: self.move_tab(self.current, self.current + side(key)),
+            "go_tab": lambda key: self.select_tab(int(key[-1]) - 1),
+            "last_tab": lambda: self.select_tab(len(self.tabs) - 1),
+            "open_folder": call("choose_folder"),
+            "open_playlist": call("open_playlist_file"),
+            "new_playlist": lambda: self.new_playlist(),
+            "search_tab": call("search_this_tab"),
+            "list_play": lambda: self.playlist.activate(),
+            "list_queue": lambda: self._queue_selected(front=False),
+            "list_play_next": lambda: self._queue_selected(front=True),
+            "now_playing": call("show_details"),
+            "meters": call("show_meters"),
+            "pcm": call("show_pcm"),
+            "clipping": call("show_clipping"),
+            "spectrogram": call("show_spectrogram"),
+            "scope": call("show_scope"),
+            "compare": call("show_compare"),
+            "abx": call("show_abx"),
+            "test_signals": call("show_testsignals"),
+            "mini": call("toggle_mini"),
+            "settings": call("settings_from_key"),
+            "snap_home": call("snap_home"),
+            "help": call("show_help"),
+            "quit": call("quit"),
+            "full_screen": call("toggle_full_screen"),
+            "library": lambda: self.open_library(),
+            "find": call("find_in_library"),
+            "remove": call("_remove_selected"),
+            "move_song": lambda key: self._move_selected(1 if key.endswith("Down") else -1),
+            "undo": call("undo"),
+            "rename": call("rename_playlist_on_show"),
+            "edit_tags": call("edit_selected_tags"),
+        }, held=lambda: bool(popups.Prompt.stack))   # (no key acts while a question box waits)
+        self.keys.attach(self.root, "main")
+        self.keys.mark(self.playlist.tree, "list")
+
+    def _with_keys(self, window, scope: str = "app", handlers: dict | None = None):
+        """Every window the player opens answers the shortcuts (keys.py), and its own: attached once,
+        as it's made. Returns the window."""
+        self.keys.attach(window.win, scope, handlers)
+        return window
+
+    # -- what the keys do (keys.py has which key is which) ------------------------------------------
+    def open_new_menu(self):
+        """Ctrl+T: the + button's menu (Browse library, Open a folder, New playlist, Open a playlist file)."""
+        if self.mini_mode:
+            self.toggle_mini()
+        self.new_menu.toggle(self.bar.add_btn, self.bar.height)
+
+    def search_this_tab(self):
+        """Ctrl+F: the track list's search box."""
+        if self.mini_mode:
+            self.toggle_mini()
+        self.playlist.focus_search()
+
+    def settings_from_key(self):
+        """Ctrl+, / Ctrl+P, in any window: Settings, with the player window brought to the front."""
+        if self.root.state() == "iconic":
+            self.root.deiconify()
+        self.root.lift()
+        self._open_settings()
+
+    def find_in_library(self):
+        """Ctrl+K / Ctrl+Shift+F: search the whole library. For now that's the Library window's search
+        box (albums, artists, years, genres, composers), opened or brought forward and ready to type in."""
+        self.open_library()
+        if self._library is not None and self._library.win.winfo_exists():
+            self._library.focus_search()
+
+    def toggle_full_screen(self):
+        """F11 is kept for a full-screen view to come (so it isn't given another meaning meanwhile):
+        nothing yet."""
+
+    def _jump(self, fraction: float):
+        """0 – 9: to that tenth of the song on show (0: back to its start)."""
+        if self._seek_target_playing:
+            duration = self.player.status().duration
+        else:
+            tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
+            view = tab.view_track() if tab is not None else None
+            duration = view.duration if view is not None else 0.0
+        if duration > 0:
+            self._seek_to(duration * fraction)
+
+    def _set_volume(self, volume: float, notice: str = "", ms: int = 1500):
+        """The volume from a key: the Settings slider follows, and the status line says it."""
+        self._muted_from = None
+        self.player.set_volume(volume)
+        self.volume_var.set(self.player.volume * 100)
+        self._set_notice(notice or f"Volume {volume_words(self.player.volume)}", ms)
+
+    def _step_volume(self, steps: int):
+        """Ctrl+↑ / ↓: a step up or down (as a notch of the mouse wheel over the transport)."""
+        self._set_volume(self.player.volume + steps * VOLUME_STEP)
+
+    def _ears_at_risk(self) -> bool:
+        """Bit-perfect on a device that can't turn itself down (or that the player couldn't confirm
+        can): the player's volume is all there is between the file and the ears (see _protect_ears)."""
+        return bool(self.exclusive.get()) and not self.player.hardware_volume
+
+    def _ear_setup(self) -> tuple:
+        """What the level is heard through: a level kept from one setup isn't safe to bring back in another."""
+        return bool(self.exclusive.get()), self.player.output_device, self.player.hardware_volume
+
+    def full_volume(self):
+        """Ctrl+Shift+↑: volume 100% (untouched). Where the player's volume is the only one (bit-perfect
+        on a device without its own), that's the file at full level into the headphones: asked first."""
+        if self.player.volume < 1.0 and self._ears_at_risk():
+            reason = ("This device has no volume control of its own" if self.player.hardware_volume is False
+                      else "The player couldn't confirm this device has a volume control of its own")
+            self._for_prompt()
+            if not popups.confirm(self.root, "Turn the volume up to 100%?",
+                                  f"{reason}, and bit-perfect goes round the Windows volume: the music will "
+                                  f"play at full level (the volume is {volume_words(self.player.volume)} now).",
+                                  detail="Turn your headphone or amp volume down first.", ok="Turn it up",
+                                  tone="warn"):
+                return
+        self._set_volume(1.0)
+
+    def toggle_mute(self):
+        """Ctrl+Shift+↓: silence; again, back to the level it was (the default level if it was 0
+        already). Never straight back up past the safe level where that would be loud: bit-perfect
+        on a device that can't turn itself down, switched on (or another device chosen) since."""
+        if self.player.volume > 0:
+            remembered = (self.player.volume, self._ear_setup())
+            self._set_volume(0.0, f"Muted · {keys.hint('mute')} again to unmute")
+            self._muted_from = remembered
+            return
+        level, setup = self._muted_from or (settings.DEFAULTS["volume"], None)
+        if level > SAFE_VOLUME and self._ears_at_risk() and setup != self._ear_setup():
+            self._set_volume(SAFE_VOLUME, f"Unmuted at {SAFE_VOLUME:.0%}: this device can't turn itself down in "
+                                          f"bit-perfect mode — raise it slowly", 6000)
+        else:
+            self._set_volume(level)
+
+    def _queue_selected(self, front: bool):
+        """Ctrl+Enter / Ctrl+Shift+Enter in the track list: the selected song (an album header: its
+        songs) into Up next — at the end, or to play next."""
+        tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
+        rows = self.playlist.selected_rows() if tab is not None and tab.tracks else []
+        if not rows:
+            return False
+        self._queue_tracks([tab.tracks[i] for i in rows], front)
+        return True
+
+    def _remove_selected(self):
+        """Delete in a playlist's track list (other tabs: nothing — their songs aren't a list you edit)."""
+        index = self.playlist.selected_track()
+        if index is not None:
+            self._remove_from_playlist(index)
+
+    def _move_selected(self, step: int):
+        """Alt+↑ / ↓ in a playlist's track list: the selected song a place up or down."""
+        index = self.playlist.selected_track()
+        if index is not None:
+            self._move_in_playlist(index, step)
+
+    def rename_playlist_on_show(self):
+        """F2: rename the playlist on show."""
+        if 0 <= self.current < len(self.tabs) and self.tabs[self.current].kind == "playlist":
+            self.rename_playlist(self.current)
+        elif self.tabs:
+            self._set_notice(f"{keys.hint('rename')} renames a playlist: this tab isn't one", 3000)
+
+    # -- undo (one playlist change) ----------------------------------------------------------------------
+    def _remember_edit(self, notice: str, undone: str, undo, possible):
+        """Keep a playlist change to undo (Ctrl+Z, or Undo in the status line), and say what it was.
+        `undo()` puts it back; `possible()` says whether it still can (nothing else changed since)."""
+        self._undo = (notice, undone, undo, possible)
+        self._set_notice(notice, UNDO_NOTE_MS)
+
+    def _edit_playlist(self, tab: Tab, tracks: list[Track], notice: str, undone: str, select: int | None,
+                       select_back: int | None) -> bool:
+        """Save a change to a playlist tab's songs and keep it to undo; `select` (and, undone,
+        `select_back`) is the song to select after. False when it couldn't be saved."""
+        before = list(tab.tracks)
+        if not self._save_playlist(Path(tab.path), tracks):
+            return False
+        after = tab.tracks   # (every later change to the tab's songs makes a new list: see _save_playlist)
+
+        def possible() -> bool:
+            return self._tab_index(tab) >= 0 and tab.tracks is after
+
+        def undo() -> bool:
+            if not self._save_playlist(Path(tab.path), before):
+                return False
+            if select_back is not None and self._tab_index(tab) == self.current:
+                self.playlist.select(select_back)
+            return True
+
+        self._remember_edit(notice, undone, undo, possible)
+        if select is not None and tracks:
+            self.playlist.select(select)
+        return True
+
+    def clear_up_next(self):
+        """Up next's Clear: every song out of it — Ctrl+Z puts them back."""
+        queued = self.player.up_next()
+        self.player.clear_queue()
+        self._paint_up_next()
+        if queued:
+            n = len(queued)
+            self._remember_edit(f"Cleared Up next ({n} song{'' if n == 1 else 's'})",
+                                f"Put {n} song{'' if n == 1 else 's'} back in Up next",
+                                lambda: (self.player.play_next(queued), self._paint_up_next()), lambda: True)
+
+    def undo(self):
+        """Ctrl+Z / Undo in the status line: put the last playlist change back (once). If the playlist
+        file couldn't be written (the drive gone, say — the reason has been shown), it can be tried again."""
+        if self._undo is None:
+            self._set_notice("Nothing to undo", 2500)
+            return
+        _notice, undone, undo, possible = self._undo
+        if not possible():
+            self._undo = None
+            self._set_notice("Can't undo: the playlist has changed since", 5000)
+            return
+        if undo() is False:
+            return
+        self._undo = None
+        self._set_notice(undone, 3000)
+
+    def _paint_undo_link(self):
+        """Undo shows at the end of the status line while the line tells of a change it can undo."""
+        show = self._undo is not None and self._notice == self._undo[0] and not self.mini_mode
+        if show and not self.undo_link.winfo_manager():
+            self.undo_link.place(in_=self.status_label, relx=1.0, rely=0.5, anchor="e")
+        elif not show and self.undo_link.winfo_manager():
+            self.undo_link.place_forget()
 
     # -- tabs ----------------------------------------------------------------
     def _restore_tabs(self, folder: str | None):
@@ -1364,17 +1622,18 @@ class PlayerWindow:
         threading.Thread(target=work, name="playlist-add", daemon=True).start()
         self.root.after(50, finish)
 
-    def _save_playlist(self, path: Path, tracks: list[Track]):
-        """Write the playlist, and update its tab (and the music, if it's playing from it)."""
+    def _save_playlist(self, path: Path, tracks: list[Track]) -> bool:
+        """Write the playlist, and update its tab (and the music, if it's playing from it). False
+        when it couldn't be written (the reason has been shown)."""
         try:
             playlists.write(path, tracks)
         except (OSError, ValueError) as exc:   # (ValueError: a name the file's encoding can't hold)
             self._for_prompt()
             popups.tell(self.root, "Couldn't save the playlist", str(exc), tone="warn")
-            return
+            return False
         tab = self._playlist_tab(path)
         if tab is None or tab.tracks is None:
-            return
+            return True
         index = self._tab_index(tab)
         # A tab that isn't playing keeps its place on the same song (the same Track, wherever it has
         # moved to); if that song was taken out, the tab starts again from the top.
@@ -1388,18 +1647,20 @@ class PlayerWindow:
             self.player.set_tracks(tab.tracks, keep_playing=True)
         if index == self.current:
             self._show_current_tab()
+        return True
 
     def _remove_from_playlist(self, index: int):
+        """Take a song out of the playlist on show (Delete, or its menu) — Ctrl+Z puts it back."""
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         if tab is None or tab.kind != "playlist" or not tab.tracks or not 0 <= index < len(tab.tracks):
             return
         tracks = list(tab.tracks)
-        tracks.pop(index)
-        self._save_playlist(Path(tab.path), tracks)
-        if tracks:
-            self.playlist.select(min(index, len(tracks) - 1))
+        song = tracks.pop(index)
+        self._edit_playlist(tab, tracks, f"Removed “{song.title}” from “{tab.title}”",
+                            f"Put “{song.title}” back", select=min(index, len(tracks) - 1), select_back=index)
 
     def _move_in_playlist(self, index: int, step: int):
+        """A song a place up or down the playlist on show (Alt+↑ / ↓, or its menu) — Ctrl+Z moves it back."""
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         if tab is None or tab.kind != "playlist" or not tab.tracks:
             return
@@ -1408,8 +1669,9 @@ class PlayerWindow:
             return
         tracks = list(tab.tracks)
         tracks[index], tracks[target] = tracks[target], tracks[index]
-        self._save_playlist(Path(tab.path), tracks)
-        self.playlist.select(target)
+        song = tracks[target]
+        self._edit_playlist(tab, tracks, f"Moved “{song.title}” {'up' if step < 0 else 'down'}",
+                            f"Moved “{song.title}” back", select=target, select_back=index)
 
     def _menu(self) -> popups.PopupMenu:
         """(0.21.0) A right-click menu in the app's colours (popups.PopupMenu), over the main window."""
@@ -1422,28 +1684,30 @@ class PlayerWindow:
         tracks = [tab.tracks[i] for i in rows]
         single = len(rows) == 1
         menu = self._menu()
-        menu.add("Play" if single else "Play this album", lambda: self._play_tab(self.current, rows[0]), "Enter")
-        menu.add("Play next", lambda: self._queue_tracks(tracks, front=True))
-        menu.add("Add to queue", lambda: self._queue_tracks(tracks, front=False))
+        menu.add("Play" if single else "Play this album", lambda: self._play_tab(self.current, rows[0]),
+                 keys.hint("list_play"))
+        menu.add("Play next", lambda: self._queue_tracks(tracks, front=True), keys.hint("list_play_next"))
+        menu.add("Add to queue", lambda: self._queue_tracks(tracks, front=False), keys.hint("list_queue"))
         menu.add_separator()
         add = menu.add_submenu("Add to playlist" if single else f"Add these {len(rows)} songs to playlist")
         targets = [p for p in self._known_playlists() if not (tab.kind == "playlist" and Path(tab.path) == p)]
         for path in targets:
             add.add(path.stem, lambda p=path: self.add_to_playlist(p, tracks))
         add.add_separator()
-        add.add("New playlist…", lambda: self.new_playlist(tracks), "Ctrl+N")
+        add.add("New playlist…", lambda: self.new_playlist(tracks))   # (Ctrl+N makes an empty one)
         if self._tag_editing():
             menu.add_separator()
             menu.add("Edit tags…" if single else f"Edit tags of these {len(rows)} songs…",
-                     lambda: self.edit_tags(tracks), "E")
+                     lambda: self.edit_tags(tracks), keys.hint("edit_tags"))
             menu.add("Tag history (undo)…", self.show_tag_history)
         if tab.kind == "playlist" and single:
             index = rows[0]
             menu.add_separator()
-            menu.add("Move up", lambda: self._move_in_playlist(index, -1), "Ctrl+Up", enabled=index > 0)
-            menu.add("Move down", lambda: self._move_in_playlist(index, 1), "Ctrl+Down",
+            menu.add("Move up", lambda: self._move_in_playlist(index, -1), keys.hint("move_song", 0),
+                     enabled=index > 0)
+            menu.add("Move down", lambda: self._move_in_playlist(index, 1), keys.hint("move_song", 1),
                      enabled=index < len(tab.tracks) - 1)
-            menu.add("Remove from playlist", lambda: self._remove_from_playlist(index), "Del")
+            menu.add("Remove from playlist", lambda: self._remove_from_playlist(index), keys.hint("remove"))
         menu.add_separator()
         self._columns_menu(menu.add_submenu("Columns"))
         menu.popup(event.x_root, event.y_root)
@@ -1471,16 +1735,18 @@ class PlayerWindow:
             return
         tab = self.tabs[index]
         menu = self._menu()
+        on_show = index == self.current   # (the keys act on the tab on show: their hints only there)
         if tab.kind == "playlist":
-            menu.add("Rename playlist…", lambda: self.rename_playlist(index))
+            menu.add("Rename playlist…", lambda: self.rename_playlist(index), keys.hint("rename") if on_show else "")
             menu.add("Delete playlist…", lambda: self.delete_playlist(index))
             menu.add_separator()
         if len(self.tabs) > 1:
-            menu.add("Move left", lambda: self.move_tab(index, index - 1), "Ctrl+Shift+PgUp", enabled=index > 0)
-            menu.add("Move right", lambda: self.move_tab(index, index + 1), "Ctrl+Shift+PgDn",
+            menu.add("Move left", lambda: self.move_tab(index, index - 1), keys.hint("move_tab", 0) if on_show else "",
+                     enabled=index > 0)
+            menu.add("Move right", lambda: self.move_tab(index, index + 1), keys.hint("move_tab", 1) if on_show else "",
                      enabled=index < len(self.tabs) - 1)
             menu.add_separator()
-        menu.add("Close tab", lambda: self.close_tab(index), "Ctrl+W")
+        menu.add("Close tab", lambda: self.close_tab(index), keys.hint("close_tab") if on_show else "")
         menu.popup(event.x_root, event.y_root)
 
     def rename_playlist(self, index: int):
@@ -1583,23 +1849,35 @@ class PlayerWindow:
         self._set_notice(message)
         on_done(message)
 
-    def open_library(self):
+    def open_library(self, view: str | None = None):
+        """The Library window (one at a time): an open one is brought to the front as it was, search
+        and all (Ctrl+L) — unless the library folders have been changed in Settings since: then it's
+        made afresh for the new folders. `view`: show that view (e.g. "recent" for new music)."""
+        if view is not None:
+            self.prefs["library_view"] = view
+        if (self._library is not None and self._library.win.winfo_exists()
+                and list(self._library.roots) != self._library_roots()):
+            self._library.close()
+        if self._library is not None and self._library.win.winfo_exists():
+            if view is not None:
+                self._library.set_view(view)
+            self._library.lift()
+            return
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         current = Path(tab.path) if tab and tab.kind == "album" else None
-        if self._library is not None and self._library.win.winfo_exists():
-            self._library.close()
-        self._library = LibraryWindow(self.root, self._library_roots(), current,
-                      on_choose=lambda path: self.open_tab("album", path, play=True),
-                      on_root_changed=self._set_library_folders,
-                      on_load_all=lambda root, query: self.open_tab("library", root, query),
-                      on_add=self.add_album_to_current, add_target=self._current_tab_title,
-                      on_drag=self._album_drag, on_queue=self.queue_album,
-                      view=self.prefs.get("library_view") or "albums",
-                      on_view=lambda view: self.prefs.update(library_view=view),
-                      geometry=self.prefs["library_geometry"],
-                      on_moved=lambda geometry: self.prefs.update(library_geometry=geometry),
-                      on_edit_tags=self.edit_album_tags, can_edit_tags=self._tag_editing,
-                      new_albums=lambda: self._new_albums)
+        library = LibraryWindow(self.root, self._library_roots(), current,
+                                on_choose=lambda path: self.open_tab("album", path, play=True),
+                                on_root_changed=self._set_library_folders,
+                                on_load_all=lambda root, query: self.open_tab("library", root, query),
+                                on_add=self.add_album_to_current, add_target=self._current_tab_title,
+                                on_drag=self._album_drag, on_queue=self.queue_album,
+                                view=self.prefs.get("library_view") or "albums",
+                                on_view=lambda view: self.prefs.update(library_view=view),
+                                geometry=self.prefs["library_geometry"],
+                                on_moved=lambda geometry: self.prefs.update(library_geometry=geometry),
+                                on_edit_tags=self.edit_album_tags, can_edit_tags=self._tag_editing,
+                                new_albums=lambda: self._new_albums)
+        self._library = self._with_keys(library, "library", library.key_handlers())
 
     # -- the library index --------------------------------------------------------------------------
     def _index(self) -> library_index.LibraryIndex:
@@ -1677,9 +1955,12 @@ class PlayerWindow:
                 self._tag_window.lift()
                 self._set_notice("Still saving the last tag edit…")
                 return
+            if not self._tag_window.may_discard():   # (edits typed there, not saved: asked first)
+                return
             self._tag_window.close()
-        self._tag_window = TagWindow(self.root, tracks, self.prefs, on_saved=self._tags_saved,
-                                     busy=self._busy_files, on_history=self.show_tag_history)
+        window = TagWindow(self.root, tracks, self.prefs, on_saved=self._tags_saved,
+                           busy=self._busy_files, on_history=self.show_tag_history)
+        self._tag_window = self._with_keys(window, "tags", window.key_handlers())
 
     def edit_album_tags(self, album: Path):
         """From the Library: edit a whole album's tags."""
@@ -1708,7 +1989,8 @@ class PlayerWindow:
             self._tag_history.reload()
             self._tag_history.lift()
             return
-        self._tag_history = TagHistoryWindow(self.root, self.prefs, on_saved=self._tags_saved, busy=self._busy_files)
+        self._tag_history = self._with_keys(TagHistoryWindow(self.root, self.prefs, on_saved=self._tags_saved,
+                                                             busy=self._busy_files))
 
     def _busy_files(self) -> set[Path]:
         """Files the player has open (the song playing or paused, and the one lined up after it):
@@ -1867,7 +2149,7 @@ class PlayerWindow:
         ttk.Label(head, text=f"{len(queue)} song{'' if len(queue) == 1 else 's'}", style="PopMuted.TLabel").pack(
             side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
         # (0.22.0) Clear is a flat pill like Settings' buttons (it was a plain word).
-        controls.PillButton(head, "Clear", lambda: (self.player.clear_queue(), self._paint_up_next()),
+        controls.PillButton(head, "Clear", lambda: self.clear_up_next(),
                             fill="SURFACE_HI", fg="TEXT", hover_fill="SURFACE_DOWN", bg="SURFACE",
                             font=theme.font(theme.SIZE_BODY), pad_x=theme.GAP_MEDIUM, pad_y=theme.GAP_HAIR,
                             label="Take every song out of Up next").pack(side="right")
@@ -2002,13 +2284,15 @@ class PlayerWindow:
             self._library.refill()
 
     def _status_clicked(self, _event=None):
-        """The status line: "Closed …" reopens the tab; "New music: …" shows Recently added;
-        "Ironbark X.Y.Z is available" opens the download page."""
-        if self._notice.startswith("Closed"):
+        """The status line: "Closed …" reopens the tab; "New music: …" shows Recently added; a
+        playlist change that can be undone is undone; "Ironbark X.Y.Z is available" opens the
+        download page."""
+        if self._undo is not None and self._notice == self._undo[0]:
+            self.undo()
+        elif self._notice.startswith("Closed"):
             self.reopen_tab()
         elif self._notice.startswith("New music"):
-            self.prefs["library_view"] = "recent"
-            self.open_library()
+            self.open_library(view="recent")
         elif self.update_available is not None and self._notice == self._update_text(self.update_available):
             self.open_download_page()
 
@@ -2198,19 +2482,13 @@ class PlayerWindow:
         if not steps:
             return
         self._wheel_delta -= steps * WHEEL_NOTCH
+        self._muted_from = None   # (a level chosen since: unmuting no longer goes back to the old one)
         self.player.set_volume(self.player.volume + steps * VOLUME_STEP)
         self.volume_var.set(self.player.volume * 100)
-        self._set_notice(f"Volume {self.player.volume:.0%}", 1500)
+        self._set_notice(f"Volume {volume_words(self.player.volume)}", 1500)
 
     def _update_volume_text(self):
-        gain = self.player.volume ** 2
-        if gain >= 1.0:
-            text = "100% · untouched"
-        elif gain <= 0:
-            text = "muted"
-        else:
-            text = f"{self.player.volume:.0%} · {20 * math.log10(gain):+.1f} dB"
-        self.volume_text.configure(text=text)
+        self.volume_text.configure(text=volume_words(self.player.volume))
 
     def _toggle_on_top(self):
         """(0.25.0) The switch is for the mode on show: the full window and the mini strip each
@@ -2294,51 +2572,51 @@ class PlayerWindow:
         if self._now_playing is not None and self._now_playing.win.winfo_exists():
             self._now_playing.lift()
         else:
-            self._now_playing = NowPlayingWindow(
+            self._now_playing = self._with_keys(NowPlayingWindow(
                 self.root, self.player, self.prefs["now_playing_geometry"],
                 on_moved=lambda geometry: self.prefs.update(now_playing_geometry=geometry),
                 on_meters=self.show_meters, on_pcm=self.show_pcm, on_clipping=self.show_clipping,
                 on_spectrogram=self.show_spectrogram,
                 on_scope=self.show_scope, on_compare=self.show_compare, on_abx=self.show_abx,
                 on_testsignals=self.show_testsignals,
-                prefs=self.prefs)
+                prefs=self.prefs))
 
     def show_meters(self):
         """VU, PPM, RMS and true-peak meters (one window at a time)."""
         if self._meters is not None and self._meters.win.winfo_exists():
             self._meters.lift()
         else:
-            self._meters = MeterWindow(self.root, self.player, self.prefs)
+            self._meters = self._with_keys(MeterWindow(self.root, self.player, self.prefs))
 
     def show_pcm(self):
         """The sample values being played, in decimal, hex or binary (one window at a time)."""
         if self._pcm is not None and self._pcm.win.winfo_exists():
             self._pcm.lift()
         else:
-            self._pcm = PcmWindow(self.root, self.player, self.prefs,
-                                  analysis_for=NowPlayingWindow.cached_analysis)
+            self._pcm = self._with_keys(PcmWindow(self.root, self.player, self.prefs,
+                                                  analysis_for=NowPlayingWindow.cached_analysis))
 
     def show_clipping(self):
         """(0.24.0) Inter-sample overs: live, the whole song, and (Experimental) hear them."""
         if self._clip is not None and self._clip.win.winfo_exists():
             self._clip.lift()
         else:
-            self._clip = ClipWindow(self.root, self.player, self.prefs)
+            self._clip = self._with_keys(ClipWindow(self.root, self.player, self.prefs))
 
     def show_spectrogram(self):
         """A picture of the sound, live or the whole track (one window at a time)."""
         if self._spectrogram is not None and self._spectrogram.win.winfo_exists():
             self._spectrogram.lift()
         else:
-            self._spectrogram = SpectrogramWindow(self.root, self.player, self.prefs,
-                                                  analysis_for=NowPlayingWindow.cached_analysis)
+            self._spectrogram = self._with_keys(SpectrogramWindow(self.root, self.player, self.prefs,
+                                                                  analysis_for=NowPlayingWindow.cached_analysis))
 
     def show_scope(self):
         """The stereo scope: vectorscope, correlation, balance, DC offset (one window at a time)."""
         if self._scope is not None and self._scope.win.winfo_exists():
             self._scope.lift()
         else:
-            self._scope = ScopeWindow(self.root, self.player, self.prefs)
+            self._scope = self._with_keys(ScopeWindow(self.root, self.player, self.prefs))
 
     def _playing_file(self) -> tuple[Path | None, float]:
         """The song playing (or paused) and how far in, to start Compare / ABX from."""
@@ -2352,7 +2630,7 @@ class PlayerWindow:
         if self._compare is not None and self._compare.win.winfo_exists():
             self._compare.lift()
         else:
-            self._compare = CompareWindow(self.root, self.prefs, path_a=self._playing_file()[0])
+            self._compare = self._with_keys(CompareWindow(self.root, self.prefs, path_a=self._playing_file()[0]))
 
     def show_abx(self):
         """The ABX blind test (one window at a time); A starts as the song playing."""
@@ -2360,14 +2638,28 @@ class PlayerWindow:
             self._abx.lift()
         else:
             path, position = self._playing_file()
-            self._abx = AbxWindow(self.root, self.player, self.prefs, path_a=path, start_s=position)
+            self._abx = self._with_keys(AbxWindow(self.root, self.player, self.prefs, path_a=path, start_s=position))
 
     def show_testsignals(self):
         """Hardware test: test signals, THD+N, J-test, frequency response (one window at a time)."""
         if self._testsignals is not None and self._testsignals.win.winfo_exists():
             self._testsignals.lift()
         else:
-            self._testsignals = TestSignalsWindow(self.root, self.player, self.prefs)
+            self._testsignals = self._with_keys(TestSignalsWindow(self.root, self.player, self.prefs))
+
+    def show_help(self):
+        """F1 / ?: every keyboard shortcut, with a filter box (one window at a time)."""
+        if self._help is not None and self._help.win.winfo_exists():
+            self._help.lift()
+        else:
+            self._help = self._with_keys(HelpWindow(self.root, self.prefs, on_about=self.show_about))
+
+    def show_about(self):
+        """About Ironbark: version, licences, privacy, the website (one window at a time)."""
+        if self._about is not None and self._about.win.winfo_exists():
+            self._about.lift()
+        else:
+            self._about = self._with_keys(AboutWindow(self.root, self.prefs))
 
     # -- media keys, Windows' media panel, taskbar buttons (mediakeys.py) -------------------------
     def _start_media(self):
@@ -2841,8 +3133,9 @@ class PlayerWindow:
         tracks = dragdrop.move_item(tab.tracks, source, target)
         if [t.path for t in tracks] == [t.path for t in tab.tracks]:
             return
-        self._save_playlist(Path(tab.path), tracks)
-        self.playlist.select(target - 1 if target > source else target)
+        song = tab.tracks[source]
+        self._edit_playlist(tab, tracks, f"Moved “{song.title}”", f"Moved “{song.title}” back",
+                            select=target - 1 if target > source else target, select_back=source)
 
     def _album_drag(self, album: Path, x_root: int, y_root: int, phase: str):
         """An album dragged from the Library window: onto a tab adds it there, anywhere else on
@@ -3249,6 +3542,7 @@ class PlayerWindow:
         if not self.seek.dragging:
             self._show_times(position, duration)
         self.status_label.configure(text=self._notice or status.message or elsewhere)
+        self._paint_undo_link()
         # The mini strip shows the same as the top of the full window.
         self._mini_state = dict(title=self.title_label.cget("text"), artist=self.sub_label.cget("text"),
                                 position=position, duration=duration, playing=playing_now,
@@ -3314,8 +3608,12 @@ class PlayerWindow:
         """Close the player. A tag save under way is first asked to stop after the file in hand
         (a file is never left half swapped, nor its checked copy left beside it), and songs being
         added to a playlist are written; then every step of closing runs, even if one before it
-        fails, and the window always closes."""
+        fails, and the window always closes. Edits typed in Edit tags and not saved are asked about
+        first (Ctrl+Q can be pressed in that window too): kept, the player stays open."""
         if self._closing:   # already on its way
+            return
+        tags = self._tag_window
+        if tags is not None and tags.saving is None and tags.win.winfo_exists() and not tags.may_discard():
             return
         self._closing = True
         if self._on_close is not None:

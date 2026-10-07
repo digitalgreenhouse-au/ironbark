@@ -14,6 +14,10 @@ it means (see TreeDrag and ui.PlayerWindow._song_drag).
 Artist and Album columns can be added (off by default: the window is narrow); right-click the
 headings, or a song, to switch them (`set_columns`, saved by the window).
 
+The list's keys (Enter plays, Ctrl+Enter / Ctrl+Shift+Enter queue, Delete removes, Alt+↑ / ↓
+move a song) are in the keyboard table (keys.py); the window binds them, using `activate`,
+`selected_rows` and `selected_track`.
+
 The look (0.20.0): the row under the pointer lights up, the playing song is marked (♪ in place of
 its number, green bold text) even when another row is selected, album header rows read
 "Album · Artist" with the quality on the right, the scrollbar is slim and only there when the list
@@ -147,14 +151,12 @@ class TreeDrag:
 class PlaylistView:
     def __init__(self, parent: tk.Misc, on_play: Callable[[int], None],
                  on_menu: Callable[[list[int], tk.Event], None] = lambda rows, event: None,
-                 on_remove: Callable[[int], None] = lambda index: None,
-                 on_move: Callable[[int, int], None] = lambda index, step: None,
                  on_drag: Callable[[list[int], int, int, str], None] = lambda rows, x, y, phase: None,
                  on_heading_menu: Callable[[tk.Event], None] = lambda event: None):
         self.on_play = on_play
         self.on_heading_menu = on_heading_menu
         self.columns: tuple[str, ...] = ()  # optional columns on show (see set_columns)
-        self.on_menu, self.on_remove, self.on_move = on_menu, on_remove, on_move
+        self.on_menu = on_menu
         self.flat = False
         self._album_start: dict[str, int] = {}  # header row id -> first track index
         self._tracks: list[Track] = []
@@ -214,14 +216,10 @@ class PlaylistView:
         # The row under the pointer lights up.
         self.tree.bind("<Motion>", self._hover_row, add="+")
         self.tree.bind("<Leave>", lambda e: self._set_hover(None), add="+")
-        self.tree.bind("<Double-Button-1>", self._activate)
-        self.tree.bind("<Return>", self._activate)
+        self.tree.bind("<Double-Button-1>", lambda e: self.activate())
         self.tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
             self.tree.bind(key, lambda e: self._context(popups.row_event(self.tree)) or "break")
-        self.tree.bind("<Delete>", lambda e: self._selected_track() is not None and self.on_remove(self._selected_track()))
-        self.tree.bind("<Control-Up>", lambda e: self._move(-1))
-        self.tree.bind("<Control-Down>", lambda e: self._move(1))
         # Dragging songs: a song carries itself, an album header its album's listed songs.
         self.drag = TreeDrag(self.tree, lambda iid: self.rows_of(iid) or None, on_drag)
         self._drop_line = tk.Frame(self.tree, bg=theme.ACCENT, height=max(2, theme.px(2)))
@@ -444,15 +442,10 @@ class PlaylistView:
         selection = self.tree.selection()
         return self.rows_of(selection[0]) if selection else []
 
-    def _selected_track(self) -> int | None:
+    def selected_track(self) -> int | None:
+        """The selected song's index (None: nothing, or an album header, is selected)."""
         selection = self.tree.selection()
         return int(selection[0]) if selection and selection[0].isdigit() else None
-
-    def _move(self, step: int):
-        index = self._selected_track()
-        if index is not None:
-            self.on_move(index, step)
-        return "break"
 
     def select(self, index: int):
         iid = str(index)
@@ -529,9 +522,11 @@ class PlaylistView:
             self.tree.item(iid, tags=tags + ["playing"] if on else tags)
             self.tree.set(iid, "no", PLAYING_MARK if on else self._numbers.get(row, row + 1))
 
-    def _activate(self, _event=None):
+    def activate(self) -> bool:
+        """Play the selected song (an album header: its album). False when nothing is selected."""
         selection = self.tree.selection()
         if not selection or selection[0] == "none":
-            return
+            return False
         iid = selection[0]
         self.on_play(self._album_start[iid] if iid in self._album_start else int(iid))
+        return True

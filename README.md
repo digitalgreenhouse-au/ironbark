@@ -137,17 +137,93 @@ Windows SmartScreen warns about an unknown publisher.
 
 ## Keyboard
 
-| Key | Action | Key | Action |
-|---|---|---|---|
-| Space | Play / pause | ← / → | Seek 5 s |
-| N / P | Next / previous | S / R | Shuffle / repeat |
-| I | Now Playing | Z | Mini player |
-| Ctrl+L | Library | Ctrl+O | Open a folder |
-| Ctrl+F | Search | Ctrl+N | New playlist |
-| Ctrl+W | Close tab | Ctrl+Shift+T | Reopen closed tab |
-| Ctrl+Tab | Next tab | Ctrl+, | Settings |
+Press **F1** (or **?**) in the player for this list, with a filter box. Most keys work in every
+Ironbark window; while you're typing in a box, only the Ctrl and function-key shortcuts act
+(Ctrl+Space still plays and pauses).
 
-The measuring windows are listed in the table above.
+### Playback
+
+| Key | Action |
+|---|---|
+| Space · Ctrl+Space | Play / pause (Ctrl+Space works while you type) |
+| N · Ctrl+→ | Next song |
+| P · Ctrl+← | Previous song |
+| ← / → | Back / forward 5 seconds |
+| Shift+← / Shift+→ | Back / forward 30 seconds |
+| 0 – 9 | Jump to 0% – 90% of the song (0: the start) |
+| S | Shuffle on / off |
+| R | Repeat: off, the album, the song |
+| Ctrl+↑ / Ctrl+↓ | Volume up / down 5% |
+| Ctrl+Shift+↓ | Mute / unmute |
+| Ctrl+Shift+↑ | Volume 100% (untouched) |
+
+### Tabs & lists
+
+| Key | Action |
+|---|---|
+| Ctrl+T | New tab menu (the + button) |
+| Ctrl+W | Close the tab |
+| Ctrl+Shift+T | Reopen the tab closed last |
+| Ctrl+Tab · Ctrl+PgDn | Next tab |
+| Ctrl+Shift+Tab · Ctrl+PgUp | Previous tab |
+| Ctrl+Shift+PgUp / Ctrl+Shift+PgDn | Move the tab left / right |
+| Ctrl+1 – Ctrl+8 | Go to tab 1 – 8 |
+| Ctrl+9 | Go to the last tab |
+| Ctrl+O | Open a folder |
+| Ctrl+Shift+O | Open a playlist file |
+| Ctrl+N | New playlist |
+| Ctrl+F | Search this tab |
+| Enter | Track list: play the song (an album row: the album) |
+| Ctrl+Enter | Track list: add to Up next |
+| Ctrl+Shift+Enter | Track list: play next |
+| Menu key · Shift+F10 | The selected row's right-click menu |
+
+### Windows & tools
+
+| Key | Action |
+|---|---|
+| I | Now Playing |
+| M | Meters |
+| B | PCM stream |
+| C | Clipping |
+| F | Spectrogram |
+| O | Stereo scope |
+| D | Compare two files |
+| X | ABX blind test |
+| T | Test signals |
+| Z · Ctrl+Shift+M | Mini player and back |
+| Ctrl+, · Ctrl+P | Settings |
+| Ctrl+Shift+H | Snap the window to its home spot |
+| F1 · ? | Keyboard shortcuts (this list) |
+| Ctrl+Q | Quit Ironbark |
+| Esc | Close a menu or window (a search box: clear it first) |
+| A · B · X · Space | ABX window: hear A, B or X · stop or replay |
+| A · B · D · Space | Clipping (Hear it on): hear A, B or D · stop or replay |
+
+### Library & search
+
+| Key | Action |
+|---|---|
+| Ctrl+L | Library (brings it to the front when it's open) |
+| Ctrl+K · Ctrl+Shift+F | Search the library |
+| Ctrl+F | Library: search box |
+| Enter | Library: open the album in a new tab |
+| Ctrl+Enter | Library: add the album to Up next |
+| Ctrl+Shift+Enter | Library: play the album next |
+| Ctrl+Tab / Ctrl+Shift+Tab | Library: next / previous view (Albums, Artists, …) |
+| F5 | Library: look for added or changed music |
+| ↓ · Enter | Search box: go to the list · play (open) the first result |
+
+### Editing
+
+| Key | Action |
+|---|---|
+| Delete | Remove the song from the playlist |
+| Alt+↑ / Alt+↓ | Move the song up / down the playlist |
+| Ctrl+Z | Undo: a song removed or moved, or Up next cleared |
+| F2 | Rename the playlist |
+| E | Edit tags of the selected song (Experimental) |
+| Ctrl+S | Edit tags: save |
 
 ## Privacy
 
@@ -156,14 +232,19 @@ you switch on Settings → Network → *Allow network access*. Then only two fea
 
 - **Rip verification**: when you press *Verify rip online*, it sends only the disc's IDs and track
   layout to AccurateRip and CUETools DB.
-- **Check for updates** (its own switch, also off by default): once a day it reads one small file
-  from digitalgreenhouse.com.au saying what the latest version is. Nothing about you is sent, and
-  nothing is downloaded or installed: a newer version is only mentioned in the status line.
+- **Check for updates** (Settings → Help, its own switch, also off by default): once a day it reads
+  one small file from digitalgreenhouse.com.au saying what the latest version is. The site sees
+  only your internet address and the Ironbark version, as any website would. Nothing is downloaded
+  or installed: a newer version is only mentioned in the status line.
 
-Settings, playlists, the library index and the logs are kept on your computer (on Windows, in
-`%APPDATA%\Ironbark`). If something goes wrong, Settings → *Save diagnostics…* makes a zip you can
-choose to attach to a problem report (versions, sound outputs, logs and settings, with folder names
-left out); it is never sent automatically.
+Lyrics, the rip-log check and the library's song search all work offline, from files on your
+computer.
+
+Settings, playlists and the logs are kept on your computer (on Windows, in `%APPDATA%\Ironbark`),
+and the library database, with your play counts and favourites, beside them (on Windows, in
+`%LOCALAPPDATA%\Ironbark`). If something goes wrong, Settings → Help → *Save diagnostics…* saves a
+zip on your computer that you can choose to attach to a problem report (versions, sound outputs,
+logs and settings, with folder names left out); it is never sent anywhere.
 
 ## Feedback
 

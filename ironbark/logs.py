@@ -1,6 +1,6 @@
 """The player's log: app.log beside the settings. No UI code.
 
-Warnings and errors are written by default; Settings → Window → "Detailed logging" adds the
+Warnings and errors are written by default; Settings → Help → "Detailed logging" adds the
 player's own notes of what it's doing (INFO and DEBUG), for tracking down a problem. Other
 libraries stay at warnings either way. The file is kept small: at MAX_BYTES it moves to app.log.1
 (app.log.2 …) and the oldest goes, so FILES files at most.

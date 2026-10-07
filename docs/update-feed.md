@@ -1,8 +1,8 @@
 # Ironbark update feed
 
 Ironbark can tell people when a newer version is out. It is **off by default**: it only runs when
-someone switches on both Settings → Network → **Allow network access** and **Check for updates**.
-It then reads one small file, at most once a day:
+someone switches on both Settings → Network → **Allow network access** and Settings → Help →
+**Check for updates**. It then reads one small file, at most once a day:
 
 ```
 https://www.digitalgreenhouse.com.au/ironbark/version.json

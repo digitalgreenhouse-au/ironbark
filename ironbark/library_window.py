@@ -15,7 +15,11 @@ first (newest first).
 
 (0.22.0) The main window's finish: its search box (magnifier, hint, ×), flat pill buttons, the views
 as a row of words with a green bar under the one on show, the slim scrollbar that shows only when
-needed, and the row under the pointer lit up as in the track list."""
+needed, and the row under the pointer lit up as in the track list.
+
+Keys (the keyboard table, keys.py; `key_handlers` is what they do here): Enter opens the album,
+Ctrl+Enter / Ctrl+Shift+Enter put it in Up next, Ctrl+Tab / Ctrl+Shift+Tab change the view, F5
+rescans, Ctrl+F goes to the search box."""
 
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import browse, controls, indexer, library_db, library_index, placement, popups, theme
+from . import browse, controls, indexer, keys, library_db, library_index, placement, popups, theme
 from .library import Album
 from .playlist_view import TreeDrag, _fold, fit_columns
 
@@ -186,7 +190,6 @@ class LibraryWindow:
         self.tree.bind("<Motion>", self._hover_row, add="+")
         self.tree.bind("<Leave>", lambda e: self._set_hover(None), add="+")
         self.tree.bind("<Double-Button-1>", self._double_click)
-        self.tree.bind("<Return>", lambda e: self._choose_selected())
         self.tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused album's menu
             self.tree.bind(key, lambda e: self._context(popups.row_event(self.tree)) or "break")
@@ -589,15 +592,15 @@ class LibraryWindow:
         self.tree.selection_set(iid)
         self.tree.focus(iid)
         menu = popups.PopupMenu(self.win)   # (0.21.0) in the app's colours, arrow keys work
-        menu.add("Open in new tab", lambda: self._choose(album), "Enter")
+        menu.add("Open in new tab", lambda: self._choose(album), keys.hint("library_open"))
         target = self.add_target()
         if self.on_add is not None and target is not None:
             short = target if len(target) <= 28 else target[:27] + "…"
             menu.add(f"Add to “{short}”", self._add_selected)
         if self.on_queue is not None:
             menu.add_separator()
-            menu.add("Play next", lambda: self._queue(album, True))
-            menu.add("Add to queue", lambda: self._queue(album, False))
+            menu.add("Play next", lambda: self._queue(album, True), keys.hint("library_play_next"))
+            menu.add("Add to queue", lambda: self._queue(album, False), keys.hint("library_queue"))
         if self.on_edit_tags is not None and self.can_edit_tags():
             menu.add_separator()
             menu.add("Edit tags…", lambda: self.on_edit_tags(album.path))
@@ -622,12 +625,46 @@ class LibraryWindow:
         if iid in self._rows:
             self._choose(self._rows[iid])
 
-    def _choose_selected(self):
-        """Open the selected album. (On a group row, Return / double-click fold it open or shut:
-        Tk's own Treeview bindings do that.)"""
+    def _choose_selected(self) -> bool:
+        """Open the selected album. False on a group row (or none): Enter then goes on to Tk's own
+        Treeview binding, which folds the group open or shut (as a double-click does)."""
         album = self._selected_album()
-        if album is not None:
-            self._choose(album)
+        if album is None:
+            return False
+        self._choose(album)
+        return True
+
+    # -- the keyboard ------------------------------------------------------------------------------
+    def key_handlers(self) -> dict:
+        """What the keyboard table's Library keys do here (keys.Keys.attach)."""
+        return {"library_search": lambda: self.focus_search(), "library_open": lambda: self._choose_selected(),
+                "library_queue": lambda: self.queue_selected(front=False),
+                "library_play_next": lambda: self.queue_selected(front=True),
+                "library_view": lambda key: self.cycle_view(-1 if "Shift" in key else 1),
+                "library_rescan": lambda: self.rescan()}
+
+    def focus_search(self):
+        self.search.entry.focus_set()
+        self.search.entry.select_range(0, "end")
+
+    def queue_selected(self, front: bool):
+        """Ctrl+Enter / Ctrl+Shift+Enter: the selected album into Up next (at the end / next)."""
+        album = self._selected_album()
+        if album is None:
+            return False
+        self._queue(album, front)
+        return True
+
+    def cycle_view(self, step: int):
+        """Ctrl+Tab / Ctrl+Shift+Tab: the next (or previous) view, round the ends."""
+        views = list(browse.VIEWS)
+        self.set_view(views[(views.index(self.view) + step) % len(views)])
+
+    def lift(self):
+        """Ctrl+L with the Library already open: bring it to the front, search and all as they were."""
+        self.win.deiconify()
+        self.win.lift()
+        self.win.focus_force()
 
     def _choose_first(self):
         self._flush_search()

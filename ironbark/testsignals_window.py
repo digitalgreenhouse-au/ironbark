@@ -181,7 +181,9 @@ class TestSignalsWindow:
         self._rates: dict[str, int] = {}      # output name -> its rate (asked once)
         self._keep_going = toolwin.KeepGoing(self.win)
         self._options_changed()
-        self.win.bind("<space>", lambda e: self.stop())   # (space never starts a sound: that's asked first)
+        # Space stops the test sound (it never starts one: that's asked first), and only then is it
+        # this window's: otherwise it plays / pauses the music, as in every window.
+        self.win.bind("<space>", lambda e: (self.stop() or "break") if self.playing or self.measuring else None)
         self.win.bind("<Configure>", self._moved, add="+")
         self._job = self.win.after(REFRESH_MS, self._tick)
 

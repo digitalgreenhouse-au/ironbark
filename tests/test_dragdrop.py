@@ -136,8 +136,12 @@ def test_reordering_by_drag_keeps_the_m3u8_correct(tmp_path):
     def save(p, new):
         playlists.write(p, new)
         tab.tracks = list(new)
+        return True
 
-    w = SimpleNamespace(tabs=[tab], current=0, _save_playlist=save, playlist=SimpleNamespace(select=selected.append))
+    w = SimpleNamespace(tabs=[tab], current=0, _save_playlist=save, playlist=SimpleNamespace(select=selected.append),
+                        _set_notice=lambda text, ms=0: None)
+    for name in ("_edit_playlist", "_remember_edit", "_tab_index", "undo"):
+        setattr(w, name, getattr(PlayerWindow, name).__get__(w))
     PlayerWindow._reorder_playlist(w, 0, 3)  # drag "a" down to just above "d"
     assert [p.name for p in playlists.read(path)] == ["b.flac", "c.flac", "a.flac", "d.flac"]
     assert selected == [2]
@@ -146,6 +150,8 @@ def test_reordering_by_drag_keeps_the_m3u8_correct(tmp_path):
     before = path.read_bytes()
     PlayerWindow._reorder_playlist(w, 1, 1)  # no change: the file isn't rewritten
     assert path.read_bytes() == before
+    w.undo()                                 # Ctrl+Z: the last drag is put back
+    assert [p.name for p in playlists.read(path)] == ["b.flac", "c.flac", "a.flac", "d.flac"]
 
 
 def _window_for_adding(tab):

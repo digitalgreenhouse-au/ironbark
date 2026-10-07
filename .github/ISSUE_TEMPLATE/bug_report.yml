@@ -37,5 +37,5 @@ body:
     id: crash
     attributes:
       label: crash.log
-      description: If Ironbark crashed, paste the end of `%APPDATA%\Ironbark\crash.log` (Settings → Open log folder), or attach the zip from Settings → Save diagnostics….
+      description: If Ironbark crashed, paste the end of `%APPDATA%\Ironbark\crash.log` (Settings → Help → Open log folder), or attach the zip from Settings → Help → Save diagnostics….
       render: text

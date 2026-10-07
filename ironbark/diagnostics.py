@@ -1,6 +1,6 @@
 """Diagnostics: one .zip the user saves and can send with a problem report. No UI code.
 
-Settings → "Save diagnostics…" asks where to save it; nothing is sent anywhere. Inside:
+Settings → Help → "Save diagnostics…" asks where to save it; nothing is sent anywhere. Inside:
 - README.txt — what's in it;
 - about.txt — Ironbark's version, whether it's the packaged program, the experiments switched on,
   Windows' version, Python / Tk / libsndfile / PortAudio versions;
@@ -45,7 +45,7 @@ about.txt          {APP_NAME}'s version, Windows' version, and the parts it's bu
 audio-outputs.txt  the sound outputs connected when this was made
 settings.json      your settings, with folder and file paths replaced by <folder 1>, <folder 2>...
 crash.log          errors {APP_NAME} has met (if any)
-app.log            what {APP_NAME} noted while running (more with Settings > Detailed logging)
+app.log            what {APP_NAME} noted while running (more with Settings > Help > Detailed logging)
 
 In the logs, the same paths are replaced, and your home folder shows as <home>. Music file names a
 log mentions in passing may still show: look through the files before sending if that matters.
