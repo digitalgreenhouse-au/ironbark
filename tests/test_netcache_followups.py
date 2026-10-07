@@ -28,6 +28,7 @@ from ironbark.proof import Proof
 
 from netfakes import FakeCopy, FakePlayer, FakePreparer, FakeShare, make_manager, unc, wait_until
 from test_light_mini import make_window  # noqa: F401 — (a fixture)
+from test_stereo import FakePlayer as MeterPlayer, root, tick  # noqa: F401 — (root is a fixture)
 from test_netcache_engine import (RATE, Card, fake_card, music, preparing_player, pump, quick_watch,  # noqa: F401
                                   session_on, silent_frames, stall_and_cut)
 
@@ -405,3 +406,154 @@ def test_one_more_song_is_fetched_only_within_the_budget(tmp_path, managers, mon
     time.sleep(0.5)
     read = {name for (name, op, _, _) in share.log if op == "read"}
     assert read == {"0.bin", "1.bin"}                            # (the next song and one more: 600 KB > 500 KB)
+
+
+# -- VU Auto on a network album: measured again once its songs have downloaded --------------------------
+def test_vu_auto_measures_a_network_album_once_its_songs_have_downloaded(root, tmp_path, monkeypatch):
+    from ironbark import meter_window
+    album = tmp_path / "album"
+    album.mkdir()
+    songs = [album / "01.flac", album / "02.flac"]
+    for song in songs:
+        song.write_bytes(b"")                                    # never read: the measuring is a stand-in
+    here: set = set()
+    monkeypatch.setattr(audiofile, "local_copy", lambda path: path if path in here else None)
+    monkeypatch.setattr(meter_window, "COPIES_LOOK_S", 0.02)
+    tries = []
+
+    def alignment(track, on_first, cancel):
+        tries.append(len(here))
+        if songs[0] in here:
+            on_first(-17.0)
+        if set(songs) - here:
+            raise audiofile.NotCached("this network song hasn't been downloaded yet", None, "not-cached")
+        return -15.0
+
+    monkeypatch.setattr(meter_window, "album_alignment", alignment)
+    win = meter_window.MeterWindow(root, MeterPlayer(), {"vu_align": meter_window.AUTO})
+    win.win.update()
+    win.engine.current_path = songs[0]
+
+    def says(words):
+        def shown():
+            tick(win)
+            return words in win.align_text.cget("text")
+        return wait_until(shown, 5, 0.03)
+
+    assert says("Auto: measured once this album's songs have downloaded")   # not "couldn't measure"
+    here.add(songs[0])                                           # the song playing has downloaded
+    assert says("0 VU = -17 dBFS · Auto: from this song, until the rest of the album has downloaded")
+    here.add(songs[1])                                           # … and the rest of the album
+    assert says("0 VU = -15 dBFS · Auto, measured for this album (album)")
+    assert tries == [0, 1, 2]                                    # once at first, once a figure, once the album
+    win.close()
+
+
+# -- Now Playing's live bitrate once the copy completes ---------------------------------------------------
+def test_now_playings_frame_index_is_built_once_the_copy_completes_mid_song(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from ironbark import details
+    song, other = Path("//nas/s/song.flac"), Path("//nas/s/other.flac")
+    complete: set = set()
+    asked = []
+    monkeypatch.setattr(audiofile, "local_copy",
+                        lambda path: asked.append(path) or (path if path in complete else None))
+    monkeypatch.setattr(details, "INDEX_LOOK_S", 0.02)
+    w = SimpleNamespace(_index_cache={}, _track_path=song, _index=None, INDEX_CACHE_SIZE=20,
+                        _closed=threading.Event())
+    details.NowPlayingWindow._load_index(w, song, lambda source: ("index of", source))
+    assert wait_until(lambda: len(asked) >= 3, 3) and w._index is None and song not in w._index_cache
+    complete.add(song)                                           # the copy is complete now, mid-song
+    assert wait_until(lambda: w._index == ("index of", song), 3)
+    assert w._index_cache[song] == ("index of", song)
+    asked.clear()
+    details.NowPlayingWindow._load_index(w, other, lambda source: ("index of", source))
+    time.sleep(0.2)                                              # (another song is on show: not looked for)
+    assert asked.count(other) == 1 and other not in w._index_cache
+    w._closed.set()
+
+
+# -- the track list's Cached column --------------------------------------------------------------------------
+def test_the_track_list_marks_network_songs_when_the_tab_has_some(make_window):
+    from ironbark.netcache import Progress
+    from test_netcache_ui import NetStub
+    window, root, player, errors = make_window(geometry="420x1100+120+120")
+    local = player.track
+    assert window.playlist.cache_column is False
+    window._show_cache_column()
+    assert window.playlist.cache_column is False                 # no cache running: no column
+    songs = [Track(Path(f"//192.168.80.173/Shared/{name}.flac"), name.title(), duration=200.0)
+             for name in ("ready", "half", "waiting", "away", "unknown")]
+    stub = NetStub({"ready.flac": Progress("ready", 1.0, None, "verified"),
+                    "half.flac": Progress("downloading", 0.72, 3e6, "downloading", host="192.168.80.173"),
+                    "waiting.flac": Progress("queued", 0.0, None, "downloading", host="192.168.80.173"),
+                    "away.flac": Progress("partial", 0.1, None, "downloading", host="192.168.80.173",
+                                          host_state="down")})
+    stub.any_remote = lambda paths: any(str(p).startswith("\\\\") for p in paths)
+    window._netcache = stub
+    window._show_current_tab()                                   # a tab of songs on this computer
+    assert window.playlist.cache_column is False
+    assert "cache" not in [str(c) for c in window.playlist.tree.cget("displaycolumns")]
+    window.tabs[0].tracks = [local] + songs
+    window._show_current_tab()
+    root.update()
+    tree = window.playlist.tree
+    assert len(window.playlist.visible_tracks()) == 6
+    assert [str(c) for c in tree.cget("displaycolumns")][-2:] == ["cache", "time"]
+    assert tree.heading("cache", "text") == "Cached"
+    assert [tree.set(str(i), "cache") for i in range(6)] == ["", "●", "◐ 72%", "○", "!", ""]
+    stub.stages["half.flac"] = Progress("downloading", 0.9, 3e6, "downloading", host="192.168.80.173")
+    window._paint_track_marks()                                  # (as about every second's poll does)
+    assert tree.set("2", "cache") == "◐ 90%"
+    window.playlist.query.set("half")                            # searching keeps the marks
+    window.playlist._search_now()
+    assert tree.set("2", "cache") == "◐ 90%"
+    window.tabs[0].tracks = [local]
+    window._show_current_tab()
+    assert window.playlist.cache_column is False
+    assert errors == []
+
+
+def test_only_the_rows_on_screen_are_marked(make_window):
+    window, root, player, errors = make_window()
+    asked = []
+
+    class Stub:
+        notices: list = []
+        narrowed = False
+
+        def any_remote(self, paths):
+            return True
+
+        def progress(self, path):
+            asked.append(path)
+            return None
+
+    songs = [Track(Path(f"//nas/s/{k:03}.flac"), f"Song {k}", duration=100.0) for k in range(400)]
+    window._netcache = Stub()
+    window.tabs[0].tracks = songs
+    window._show_current_tab()
+    root.update()
+    asked.clear()
+    window._paint_track_marks()
+    on_screen = window.playlist.visible_tracks()
+    assert 0 < len(on_screen) < 100 and len(asked) == len(on_screen)
+    assert errors == []
+
+
+def test_a_whole_librarys_paths_are_classified_by_drive_letter():
+    from ironbark.netcache import sources
+    from netfakes import FakeClassifier
+    looked = []
+
+    class Letters(FakeClassifier):
+        def _type_of(self, letter):
+            looked.append(letter)
+            return sources.DRIVE_REMOTE if letter == "Z:" else 3
+
+    c = Letters()
+    assert not c.any_remote(Path(f"C:/Music/{k}.flac") for k in range(5000))
+    assert looked == ["C:"]                                      # once, not 5,000 times
+    assert c.any_remote([Path("C:/Music/a.flac"), Path("Z:/Music/b.flac")])
+    assert c.any_remote([Path("//nas/share/c.flac")]) and not c.any_remote(["\\\\.\\C:\\x.flac"])

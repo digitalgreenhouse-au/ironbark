@@ -39,6 +39,7 @@ MIXER = "Windows" if sys.platform == "win32" else "system"
 METER_FLOOR_DB = -60.0
 METER_FALL_DB = 2.0  # how far the bars fall back per refresh, so they're readable
 REFRESH_MS = 100
+INDEX_LOOK_S = 2.0      # a network song with no complete copy yet: looked for again this often (its live bitrate)
 WINDOWS_CHECK_SECONDS = 3.0
 TONE_STYLE = {"good": "GoodValue.TLabel", "warn": "WarnValue.TLabel", "plain": "TLabel", "muted": "Muted.TLabel"}
 # (0.22.0) The same tones for a live number (fixed-width digits: theme.numbers).
@@ -635,6 +636,7 @@ class NowPlayingWindow:
         self._album_cancel = threading.Event()  # only the window closing stops an album measurement
         self._album_state: dict | None = None
         self._rip_cancel = threading.Event()   # only the window closing stops a rip check
+        self._closed = threading.Event()
         self._rip_state: dict | None = None
         self._log_state: dict | None = None    # the check against the rip log under way
         self._job = None
@@ -895,10 +897,14 @@ class NowPlayingWindow:
 
         def work():
             # (A song on a network drive: its complete copy on this computer, once there is one —
-            # never the network itself. Not remembered until then, so it's looked at again later.)
-            source = audiofile.local_copy(path)
-            if source is None:
-                return
+            # never the network itself. Looked for again while the song is on show, so the live
+            # bitrate comes as soon as its copy is complete, mid-song.)
+            while True:
+                source = audiofile.local_copy(path)
+                if source is not None:
+                    break
+                if path != self._track_path or self._closed.wait(INDEX_LOOK_S):
+                    return
             try:
                 index = builder(source)
             except Exception:  # noqa: BLE001 — no live bitrate is fine; the average still shows
@@ -1450,6 +1456,7 @@ class NowPlayingWindow:
         self._cancel.set()
         self._album_cancel.set()
         self._rip_cancel.set()
+        self._closed.set()
         if self._job:
             self.win.after_cancel(self._job)
         self.win.destroy()

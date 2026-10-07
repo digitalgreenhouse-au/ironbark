@@ -119,6 +119,7 @@ from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
 log = logging.getLogger(__name__)
 
 POLL_MS = 250
+MARKS_EVERY = 4      # polls between paints of the track list's Cached column (about a second)
 HEARD_STEP_S = 2.0  # a move further than this between polls is a seek, not listening
 MEDIA_POLL_MS = 60   # how often presses from media keys / Windows' media panel are picked up
 AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
@@ -1116,6 +1117,8 @@ class PlayerWindow:
             self._netcache = None
         if self._netcache is None:
             self._set_notice("The network playback cache didn't start: songs on network drives play directly", 8000)
+        else:
+            self._show_cache_column()
         if hasattr(self, "cache_text"):
             self._paint_cache()
 
@@ -1844,8 +1847,40 @@ class PlayerWindow:
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         self.playlist.set_tracks(tab.tracks if tab and tab.tracks else [],
                                  flat=bool(tab and tab.kind == "playlist"))
+        self._show_cache_column(tab)
         self._shown_key = None
         self._refresh_tabs()
+
+    def _show_cache_column(self, tab=None):
+        """The track list's Cached column: only for a tab with songs on a network drive, while the
+        network playback cache runs (marked at once, then about every second)."""
+        if tab is None:
+            tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
+        manager = getattr(self, "_netcache", None)
+        on = False
+        if manager is not None and tab is not None and tab.tracks:
+            try:
+                on = manager.any_remote(track.path for track in tab.tracks)
+            except Exception:
+                log.info("couldn't tell whether a tab has network songs", exc_info=True)
+        self.playlist.set_cache_column(on)
+        if on:
+            self._paint_track_marks()
+
+    def _paint_track_marks(self):
+        """The Cached column's marks for the songs on screen: how much of each network song is on
+        this computer (as Up next marks them)."""
+        manager = self._netcache
+        if manager is None or not self.playlist.cache_column:
+            return
+        marks = {}
+        for index, track in self.playlist.visible_tracks():
+            try:
+                progress = manager.progress(track.path)
+            except Exception:   # noqa: BLE001 — only a mark
+                progress = None
+            marks[index] = cache_mark(progress)[0]
+        self.playlist.set_marks(marks)
 
     def _refresh_tabs(self):
         for tab in self.tabs:
@@ -4668,6 +4703,8 @@ class PlayerWindow:
             self._guarded(self._refresh_view)
             self._guarded(self._count_listening)
             self._polls += 1
+            if self._polls % MARKS_EVERY == 0:
+                self._guarded(self._paint_track_marks)
             if self._polls % AUTOSAVE_EVERY == 0:
                 self._guarded(self._save_if_changed)
                 if self._tag_waiting:

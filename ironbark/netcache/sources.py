@@ -221,6 +221,30 @@ class Classifier:
     def is_remote(self, path) -> bool:
         return self.classify(path) is not Kind.LOCAL
 
+    def any_remote(self, paths) -> bool:
+        """Is any of `paths` on the network (a share, a mapped drive, an online-only OneDrive file)?
+        Quick for a whole library: a drive letter is looked up once, and only files under a OneDrive
+        folder are looked at one by one."""
+        letters: dict[str, bool] = {}
+        for path in paths:
+            if isinstance(path, UrlPath):
+                continue
+            text = os.fspath(path)
+            if text[:2] in ("\\\\", "//"):   # a server path (or a device path: classified in full)
+                if self.classify(path) is not Kind.LOCAL:
+                    return True
+                continue
+            letter = _letter(text)
+            if letter is not None:
+                remote = letters.get(letter)
+                if remote is None:
+                    remote = letters[letter] = self._type_of(letter) == DRIVE_REMOTE
+                if remote:
+                    return True
+            if self._roots and self._is_cloud(text):
+                return True
+        return False
+
     def unc(self, path) -> str | None:
         """The server path of a share song (a mapped letter turned into its server path when the
         mapping is known)."""

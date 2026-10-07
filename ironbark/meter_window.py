@@ -21,10 +21,10 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from . import controls, placement, theme, toolwin
+from . import audiofile, controls, placement, theme, toolwin
 from .library import album_folder
 from .loudness import LRA_SETTLING
-from .meters import PPM_TYPES, MeterEngine, Reading, album_alignment, album_alignment_loudness
+from .meters import PPM_TYPES, MeterEngine, Reading, album_alignment, album_alignment_loudness, album_files
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ AUTO_FALLBACK = -14.0  # until the first measurement arrives
 ALIGNMENTS = {AUTO: None, AUTO_LOUDNESS: None, "-20 dBFS (SMPTE RP155)": -20.0, "-18 dBFS (EBU R68)": -18.0, "-14 dBFS": -14.0,
               "-12 dBFS": -12.0, "-10 dBFS (loud masters)": -10.0, "-8 dBFS": -8.0}
 AUTO_CACHE_SIZE = 1000  # albums remembered
+COPIES_LOOK_S = 5.0     # a network album waiting for its songs to download: looked at this often
 _UNSET = object()       # nothing drawn yet: the next reading is drawn whatever it is
 
 
@@ -74,6 +75,22 @@ def describe_psr(reading: Reading | None) -> str:
     if reading is None or reading.psr is None:
         return "PSR —"
     return f"PSR {reading.psr:.1f} dB"
+
+
+def _copies_here(track: Path, cancel: threading.Event, every: bool) -> bool:
+    """(On Auto's worker.) Wait until songs of `track`'s album that are on a network drive have
+    complete copies on this computer (the network playback cache) — `every` song, or just `track`
+    — looking every COPIES_LOOK_S. Nothing is fetched for it. False if cancelled first."""
+    try:
+        files = album_files(track)[1]
+    except OSError:
+        return False
+    wanted = files if every else files[:1]
+    while not cancel.is_set():
+        if all(audiofile.local_copy(path) is not None for path in wanted):
+            return True
+        cancel.wait(COPIES_LOOK_S)
+    return False
 
 
 class MeterWindow:
@@ -215,20 +232,33 @@ class MeterWindow:
 
         def work():
             value = lufs = None
-            try:
-                if mode == AUTO_LOUDNESS:
-                    result = album_alignment_loudness(track, on_first=provisional, cancel=state["cancel"])
-                    if result is not None:
-                        value, lufs = result
-                else:
-                    value = album_alignment(track, on_first=provisional, cancel=state["cancel"])
-            except (OSError, RuntimeError):
-                value = None
-                state["failed"] = True
-            except Exception:  # noqa: BLE001 — any failure is said in the window, never "measuring…" for ever
-                log.exception("measuring the album for Auto")
-                value = None
-                state["failed"] = True
+            tried_first = False
+            while True:
+                try:
+                    if mode == AUTO_LOUDNESS:
+                        result = album_alignment_loudness(track, on_first=provisional, cancel=state["cancel"])
+                        if result is not None:
+                            value, lufs = result
+                    else:
+                        value = album_alignment(track, on_first=provisional, cancel=state["cancel"])
+                except audiofile.NotCached:
+                    # A network album isn't all on this computer yet (its songs download as they're
+                    # played): measured again once they are — first the song playing, for a figure
+                    # meanwhile, then the whole album. Never from a part of it.
+                    every, tried_first = tried_first or state["value"] is not None, True
+                    state["waiting"] = True
+                    if not _copies_here(track, state["cancel"], every):
+                        return   # (another album, or the window closed)
+                    state["waiting"] = False
+                    continue
+                except (OSError, RuntimeError):
+                    value = None
+                    state["failed"] = True
+                except Exception:  # noqa: BLE001 — any failure is said in the window, never "measuring…" for ever
+                    log.exception("measuring the album for Auto")
+                    value = None
+                    state["failed"] = True
+                break
             if value is not None and not state["cancel"].is_set():
                 state["value"], state["lufs"], state["final"] = value, lufs, True
 
@@ -269,6 +299,10 @@ class MeterWindow:
         elif auto["failed"]:
             text = (f"0 VU = {value:g} dBFS · {name}: from this song (the rest of the album couldn't be measured)"
                     if auto["value"] is not None else f"{name}: couldn't measure this album · 0 VU = {value:g} dBFS")
+        elif auto.get("waiting"):
+            text = (f"0 VU = {value:g} dBFS · {name}: from this song, until the rest of the album has downloaded"
+                    if auto["value"] is not None
+                    else f"{name}: measured once this album's songs have downloaded · 0 VU = {value:g} dBFS meanwhile")
         elif auto["value"] is not None:
             text = f"0 VU = {value:g} dBFS · {name}: from this song, while the rest of the album is measured…"
         else:

@@ -529,6 +529,11 @@ class Manager:
     def _recent_stalls(self, key: str, now: float) -> int:
         return sum(1 for when in self._stall_times.get(key, ()) if now - when <= policy.STALL_STEP_WINDOW_S)
 
+    def any_remote(self, paths) -> bool:
+        """Is any of these songs on a network drive (so the cache would play it)? No I/O beyond
+        looking up a drive letter, or a OneDrive file's attributes."""
+        return self.classifier.any_remote(paths)
+
     def progress(self, path) -> Progress | None:
         kind, key, host = self._describe(path)
         if kind is Kind.LOCAL or not key:
