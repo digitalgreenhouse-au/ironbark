@@ -63,8 +63,21 @@ def environment(root) -> dict:
 
 
 def snapshot(window, root) -> dict:
-    """The narrow layout as it stands: packing, places and sizes, the cover, the list's columns."""
+    """The narrow layout once it has settled (two looks a moment apart agree): packing, places and
+    sizes, the cover, the list's columns."""
     _steady(window, root)
+    last = None
+    for _ in range(12):
+        now = _look(window, root)
+        if now == last:
+            break
+        last = now
+        _pump(root, 0.25)
+    return now
+
+
+def _look(window, root) -> dict:
+    root.update_idletasks()
     names = {}
     for name in NAMED + PACKED:
         widget = _part(window, name)
@@ -92,10 +105,20 @@ def snapshot(window, root) -> dict:
                          widget.winfo_height()] if widget.winfo_ismapped() else None)
     tree = window.playlist.tree
     shown = [str(c) for c in tree.cget("displaycolumns")]
-    return {"packing": packing, "places": places, "art_size": window.art_size,
+    req = {name: _part(window, name).winfo_reqheight() for name in ("bar", "head_text", "seek_row", "transport",
+                                                                      "status_row", "body")}
+    return {"packing": packing, "places": places, "art_size": window.art_size, "requested": req,
             "window": [root.winfo_width(), root.winfo_height()],
             "tree": {"style": str(tree.cget("style")), "columns": shown,
-                     "widths": [int(tree.column(c, "width")) for c in shown]}}
+                     "widths": [int(tree.column(c, "width")) for c in shown] if tree.winfo_ismapped() else None}}
+
+
+def _seen(state: dict) -> dict:
+    """A snapshot without what can't be seen: the column widths of a list that isn't on screen (a
+    window too small for it) are only fitted once it shows."""
+    if state["places"].get("playlist.tree") is None:
+        state = {**state, "tree": {**state["tree"], "widths": None}}
+    return state
 
 
 def _settle(root, seconds: float = 0.7):
@@ -156,6 +179,11 @@ def walk_states(window, root, player, logical: tuple[int, int], scaling: float):
     _settle(root)
     yield "empty", snapshot(window, root)
     window.reopen_tab()
+    for _ in range(100):   # read again from its folder on a worker: wait until it's in
+        tab = window.tabs[0] if window.tabs else None
+        if tab is not None and tab.tracks is not None and not tab.loading and tab.info is not None:
+            break
+        _pump(root, 0.1)
     _settle(root, 1.2)
     yield "a tab again", snapshot(window, root)
 
@@ -192,7 +220,7 @@ def test_the_narrow_window_is_as_it_was(make_window, logical, scaling):
     same_setup = golden["environment"] == environment(root)
     problems = []
     for state, want in golden["cases"][key].items():
-        have = got[state]
+        want, have = _seen(want), _seen(got[state])
         if not same_setup:   # fonts differ: only how the parts are packed can be compared
             want, have = want["packing"], have["packing"]
         problems += [f"{state}{line}" for line in _differences(want, have)]

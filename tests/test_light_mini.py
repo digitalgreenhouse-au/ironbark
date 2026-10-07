@@ -230,6 +230,7 @@ def make_window(tmp_path, monkeypatch):
             root = tk.Tk()
         except tk.TclError as error:
             pytest.skip(f"no display: {error}")
+        native = root.tk.call("tk", "scaling")
         if scaling:
             root.tk.call("tk", "scaling", scaling * 96 / 72)
         theme._scale = theme.scale(root)   # this root's (an earlier test's root may have had another)
@@ -242,13 +243,16 @@ def make_window(tmp_path, monkeypatch):
         window.tabs = [Tab("album", str(music), tracks=[track])]
         window.current = window.playing_tab = 0
         window._refresh_tabs()
-        made.append((window, root))
+        made.append((window, root, native))
         _pump(root, 0.6)
         return window, root, player, errors
 
     yield make
-    for window, root in made:
+    for window, root, native in made:
         try:
+            # Tk's next root starts from the last scaling set in the process (its default fonts too):
+            # put it back, or every later test would be laid out as at this one's.
+            root.tk.call("tk", "scaling", native)
             window.quit()
         except tk.TclError:
             pass

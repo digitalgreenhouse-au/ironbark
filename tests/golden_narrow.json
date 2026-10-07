@@ -472,6 +472,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 460,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -479,11 +487,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      1804,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -947,6 +951,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 437,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -954,11 +966,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      1804,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -1436,6 +1444,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 460,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -1443,11 +1459,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      1804,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -1874,15 +1886,15 @@
      ],
      "status_label": [
       12,
-      241,
+      237,
       278,
-      11
+      15
      ],
      "status_row": [
       12,
-      241,
+      237,
       278,
-      11
+      15
      ],
      "sub_label": [
       12,
@@ -1907,7 +1919,7 @@
       12,
       222,
       278,
-      13
+      9
      ],
      "volume_badge": [
       253,
@@ -1916,6 +1928,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 386,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -1923,11 +1943,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      1804,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -2405,6 +2421,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 460,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -2412,11 +2436,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      1804,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -2707,7 +2727,7 @@
      ],
      "empty_button": [
       93,
-      135,
+      133,
       116,
       32
      ],
@@ -2715,7 +2735,7 @@
       12,
       46,
       278,
-      166
+      162
      ],
      "format_label": null,
      "head": null,
@@ -2740,15 +2760,15 @@
      "status_dot": null,
      "status_label": [
       12,
-      241,
+      237,
       278,
-      11
+      15
      ],
      "status_row": [
       12,
-      241,
+      237,
       278,
-      11
+      15
      ],
      "sub_label": null,
      "title_label": null,
@@ -2756,11 +2776,19 @@
      "undo_link": null,
      "up_next_label": [
       12,
-      216,
+      212,
       278,
       19
      ],
      "volume_badge": null
+    },
+    "requested": {
+     "bar": 36,
+     "body": 63,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -2769,11 +2797,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      1804,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -3237,6 +3261,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 437,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -3244,11 +3276,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      1804,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -3726,6 +3754,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 460,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -3733,11 +3769,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      1804,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -4201,6 +4233,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 437,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -4208,11 +4248,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      240,
-      52
-     ]
+     "widths": null
     },
     "window": [
      302,
@@ -4692,6 +4728,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 693,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -4699,11 +4743,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      2711,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -5167,6 +5207,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 659,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -5174,11 +5222,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      2711,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -5656,6 +5700,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 693,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -5663,11 +5715,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      2711,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -6136,6 +6184,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 584,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -6143,11 +6199,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      2711,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -6625,6 +6677,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 693,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -6632,11 +6692,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      2711,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -6982,6 +7038,14 @@
      ],
      "volume_badge": null
     },
+    "requested": {
+     "bar": 53,
+     "body": 93,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -6989,11 +7053,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      2711,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -7457,6 +7517,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 659,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -7464,11 +7532,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      2711,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -7946,6 +8010,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 693,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -7953,11 +8025,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      2711,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -8421,6 +8489,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 659,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -8428,11 +8504,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      359,
-      77
-     ]
+     "widths": null
     },
     "window": [
      452,
@@ -8942,6 +9014,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 794,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -9441,6 +9521,14 @@
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 771,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -9961,6 +10049,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 794,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -10455,6 +10551,14 @@
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 386,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -10975,6 +11079,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 794,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -11332,6 +11444,14 @@
      ],
      "volume_badge": null
     },
+    "requested": {
+     "bar": 36,
+     "body": 63,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -11339,11 +11459,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      304,
-      52
-     ]
+     "widths": null
     },
     "window": [
      422,
@@ -11831,6 +11947,14 @@
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 771,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -12351,6 +12475,14 @@
       24
      ]
     },
+    "requested": {
+     "bar": 36,
+     "body": 794,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
+    },
     "tree": {
      "columns": [
       "no",
@@ -12850,6 +12982,14 @@
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 771,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -13372,6 +13512,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 1196,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -13871,6 +14019,14 @@
       53,
       35
      ]
+    },
+    "requested": {
+     "bar": 53,
+     "body": 1162,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
     },
     "tree": {
      "columns": [
@@ -14390,6 +14546,14 @@
       53,
       35
      ]
+    },
+    "requested": {
+     "bar": 53,
+     "body": 1196,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
     },
     "tree": {
      "columns": [
@@ -14886,6 +15050,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 584,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -15405,6 +15577,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 1196,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -15762,6 +15942,14 @@
      ],
      "volume_badge": null
     },
+    "requested": {
+     "bar": 53,
+     "body": 93,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -15769,11 +15957,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      461,
-      77
-     ]
+     "widths": null
     },
     "window": [
      632,
@@ -16261,6 +16445,14 @@
       53,
       35
      ]
+    },
+    "requested": {
+     "bar": 53,
+     "body": 1162,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
     },
     "tree": {
      "columns": [
@@ -16781,6 +16973,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 1196,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -17281,6 +17481,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 1162,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -17302,7 +17510,7 @@
   },
   "520x900@100": {
    "a tab again": {
-    "art_size": 461,
+    "art_size": 457,
     "packing": {
      "body": [
       [
@@ -17591,13 +17799,13 @@
       12,
       46,
       498,
-      461
+      457
      ],
      "art_label": [
-      31,
+      33,
       46,
-      461,
-      461
+      457,
+      457
      ],
      "bar": [
       0,
@@ -17639,7 +17847,7 @@
      "empty_view": null,
      "format_label": [
       12,
-      569,
+      565,
       444,
       17
      ],
@@ -17647,160 +17855,168 @@
       12,
       46,
       498,
-      540
+      536
      ],
      "head_icons": [
       456,
-      566,
+      562,
       60,
       24
      ],
      "head_text": [
       12,
-      517,
+      513,
       498,
       69
      ],
      "info_button": [
       492,
-      566,
+      562,
       24,
       24
      ],
      "info_row": [
       12,
-      569,
+      565,
       498,
       17
      ],
      "lock_button": [
       468,
-      566,
+      562,
       24,
       24
      ],
      "next_button": [
       291,
-      632,
+      628,
       36,
       50
      ],
      "play_button": [
       236,
-      632,
+      628,
       50,
       50
      ],
      "playlist.frame": [
       12,
-      689,
+      685,
       498,
       163
      ],
      "playlist.scrollbar": null,
      "playlist.search": [
       12,
-      689,
+      685,
       498,
       31
      ],
      "playlist.tree": [
       12,
-      726,
+      722,
       498,
       126
      ],
      "pos_label": [
       12,
-      610,
+      606,
       25,
       17
      ],
      "previous_button": [
       195,
-      632,
+      628,
       36,
       50
      ],
      "remain_label": [
       477,
-      610,
+      606,
       33,
       17
      ],
      "repeat_button": [
       331,
-      632,
+      628,
       36,
       50
      ],
      "seek": [
       7,
-      594,
+      590,
       508,
       16
      ],
      "seek_row": [
       12,
-      594,
+      590,
       498,
       33
      ],
      "shuffle_button": [
       155,
-      632,
+      628,
       36,
       50
      ],
      "status_dot": [
       456,
-      574,
+      570,
       8,
       8
      ],
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": [
       12,
-      544,
+      540,
       498,
       21
      ],
      "title_label": [
       12,
-      517,
+      513,
       498,
       27
      ],
      "transport": [
       12,
-      631,
+      627,
       498,
       52
      ],
      "undo_link": null,
      "up_next_label": [
       12,
-      856,
+      852,
       498,
       19
      ],
      "volume_badge": [
       473,
-      645,
+      641,
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 853,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -17821,7 +18037,7 @@
     ]
    },
    "after a wide size": {
-    "art_size": 461,
+    "art_size": 457,
     "packing": {
      "body": [
       [
@@ -18096,13 +18312,13 @@
       12,
       46,
       498,
-      461
+      457
      ],
      "art_label": [
-      31,
+      33,
       46,
-      461,
-      461
+      457,
+      457
      ],
      "bar": [
       0,
@@ -18144,7 +18360,7 @@
      "empty_view": null,
      "format_label": [
       12,
-      569,
+      565,
       444,
       17
      ],
@@ -18152,144 +18368,144 @@
       12,
       46,
       498,
-      540
+      536
      ],
      "head_icons": [
       456,
-      566,
+      562,
       60,
       24
      ],
      "head_text": [
       12,
-      517,
+      513,
       498,
       69
      ],
      "info_button": [
       492,
-      566,
+      562,
       24,
       24
      ],
      "info_row": [
       12,
-      569,
+      565,
       498,
       17
      ],
      "lock_button": [
       468,
-      566,
+      562,
       24,
       24
      ],
      "next_button": [
       291,
-      632,
+      628,
       36,
       50
      ],
      "play_button": [
       236,
-      632,
+      628,
       50,
       50
      ],
      "playlist.frame": [
       12,
-      689,
+      685,
       498,
       186
      ],
      "playlist.scrollbar": null,
      "playlist.search": [
       12,
-      689,
+      685,
       498,
       31
      ],
      "playlist.tree": [
       12,
-      726,
+      722,
       498,
       149
      ],
      "pos_label": [
       12,
-      610,
+      606,
       25,
       17
      ],
      "previous_button": [
       195,
-      632,
+      628,
       36,
       50
      ],
      "remain_label": [
       477,
-      610,
+      606,
       33,
       17
      ],
      "repeat_button": [
       331,
-      632,
+      628,
       36,
       50
      ],
      "seek": [
       7,
-      594,
+      590,
       508,
       16
      ],
      "seek_row": [
       12,
-      594,
+      590,
       498,
       33
      ],
      "shuffle_button": [
       155,
-      632,
+      628,
       36,
       50
      ],
      "status_dot": [
       456,
-      574,
+      570,
       8,
       8
      ],
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": [
       12,
-      544,
+      540,
       498,
       21
      ],
      "title_label": [
       12,
-      517,
+      513,
       498,
       27
      ],
      "transport": [
       12,
-      631,
+      627,
       498,
       52
      ],
@@ -18297,10 +18513,18 @@
      "up_next_label": null,
      "volume_badge": [
       473,
-      645,
+      641,
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 830,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -18321,7 +18545,7 @@
     ]
    },
    "after the mini strip": {
-    "art_size": 461,
+    "art_size": 457,
     "packing": {
      "body": [
       [
@@ -18610,13 +18834,13 @@
       12,
       46,
       498,
-      461
+      457
      ],
      "art_label": [
-      31,
+      33,
       46,
-      461,
-      461
+      457,
+      457
      ],
      "bar": [
       0,
@@ -18658,7 +18882,7 @@
      "empty_view": null,
      "format_label": [
       12,
-      569,
+      565,
       444,
       17
      ],
@@ -18666,160 +18890,168 @@
       12,
       46,
       498,
-      540
+      536
      ],
      "head_icons": [
       456,
-      566,
+      562,
       60,
       24
      ],
      "head_text": [
       12,
-      517,
+      513,
       498,
       69
      ],
      "info_button": [
       492,
-      566,
+      562,
       24,
       24
      ],
      "info_row": [
       12,
-      569,
+      565,
       498,
       17
      ],
      "lock_button": [
       468,
-      566,
+      562,
       24,
       24
      ],
      "next_button": [
       291,
-      632,
+      628,
       36,
       50
      ],
      "play_button": [
       236,
-      632,
+      628,
       50,
       50
      ],
      "playlist.frame": [
       12,
-      689,
+      685,
       498,
       163
      ],
      "playlist.scrollbar": null,
      "playlist.search": [
       12,
-      689,
+      685,
       498,
       31
      ],
      "playlist.tree": [
       12,
-      726,
+      722,
       498,
       126
      ],
      "pos_label": [
       12,
-      610,
+      606,
       25,
       17
      ],
      "previous_button": [
       195,
-      632,
+      628,
       36,
       50
      ],
      "remain_label": [
       477,
-      610,
+      606,
       33,
       17
      ],
      "repeat_button": [
       331,
-      632,
+      628,
       36,
       50
      ],
      "seek": [
       7,
-      594,
+      590,
       508,
       16
      ],
      "seek_row": [
       12,
-      594,
+      590,
       498,
       33
      ],
      "shuffle_button": [
       155,
-      632,
+      628,
       36,
       50
      ],
      "status_dot": [
       456,
-      574,
+      570,
       8,
       8
      ],
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": [
       12,
-      544,
+      540,
       498,
       21
      ],
      "title_label": [
       12,
-      517,
+      513,
       498,
       27
      ],
      "transport": [
       12,
-      631,
+      627,
       498,
       52
      ],
      "undo_link": null,
      "up_next_label": [
       12,
-      856,
+      852,
       498,
       19
      ],
      "volume_badge": [
       473,
-      645,
+      641,
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 853,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -19209,7 +19441,7 @@
       12,
       218,
       498,
-      634
+      630
      ],
      "playlist.scrollbar": null,
      "playlist.search": [
@@ -19222,7 +19454,7 @@
       12,
       255,
       498,
-      597
+      593
      ],
      "pos_label": [
       12,
@@ -19274,15 +19506,15 @@
      ],
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": [
       12,
@@ -19305,7 +19537,7 @@
      "undo_link": null,
      "up_next_label": [
       12,
-      856,
+      852,
       498,
       19
      ],
@@ -19315,6 +19547,14 @@
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 386,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -19335,7 +19575,7 @@
     ]
    },
    "cover on again": {
-    "art_size": 461,
+    "art_size": 457,
     "packing": {
      "body": [
       [
@@ -19624,13 +19864,13 @@
       12,
       46,
       498,
-      461
+      457
      ],
      "art_label": [
-      31,
+      33,
       46,
-      461,
-      461
+      457,
+      457
      ],
      "bar": [
       0,
@@ -19672,7 +19912,7 @@
      "empty_view": null,
      "format_label": [
       12,
-      569,
+      565,
       444,
       17
      ],
@@ -19680,160 +19920,168 @@
       12,
       46,
       498,
-      540
+      536
      ],
      "head_icons": [
       456,
-      566,
+      562,
       60,
       24
      ],
      "head_text": [
       12,
-      517,
+      513,
       498,
       69
      ],
      "info_button": [
       492,
-      566,
+      562,
       24,
       24
      ],
      "info_row": [
       12,
-      569,
+      565,
       498,
       17
      ],
      "lock_button": [
       468,
-      566,
+      562,
       24,
       24
      ],
      "next_button": [
       291,
-      632,
+      628,
       36,
       50
      ],
      "play_button": [
       236,
-      632,
+      628,
       50,
       50
      ],
      "playlist.frame": [
       12,
-      689,
+      685,
       498,
       163
      ],
      "playlist.scrollbar": null,
      "playlist.search": [
       12,
-      689,
+      685,
       498,
       31
      ],
      "playlist.tree": [
       12,
-      726,
+      722,
       498,
       126
      ],
      "pos_label": [
       12,
-      610,
+      606,
       25,
       17
      ],
      "previous_button": [
       195,
-      632,
+      628,
       36,
       50
      ],
      "remain_label": [
       477,
-      610,
+      606,
       33,
       17
      ],
      "repeat_button": [
       331,
-      632,
+      628,
       36,
       50
      ],
      "seek": [
       7,
-      594,
+      590,
       508,
       16
      ],
      "seek_row": [
       12,
-      594,
+      590,
       498,
       33
      ],
      "shuffle_button": [
       155,
-      632,
+      628,
       36,
       50
      ],
      "status_dot": [
       456,
-      574,
+      570,
       8,
       8
      ],
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": [
       12,
-      544,
+      540,
       498,
       21
      ],
      "title_label": [
       12,
-      517,
+      513,
       498,
       27
      ],
      "transport": [
       12,
-      631,
+      627,
       498,
       52
      ],
      "undo_link": null,
      "up_next_label": [
       12,
-      856,
+      852,
       498,
       19
      ],
      "volume_badge": [
       473,
-      645,
+      641,
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 853,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -19854,7 +20102,7 @@
     ]
    },
    "empty": {
-    "art_size": 461,
+    "art_size": 457,
     "packing": {
      "body": [
       [
@@ -20137,7 +20385,7 @@
      ],
      "empty_button": [
       203,
-      423,
+      421,
       116,
       32
      ],
@@ -20145,7 +20393,7 @@
       12,
       46,
       498,
-      806
+      802
      ],
      "format_label": null,
      "head": null,
@@ -20170,15 +20418,15 @@
      "status_dot": null,
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": null,
      "title_label": null,
@@ -20186,11 +20434,19 @@
      "undo_link": null,
      "up_next_label": [
       12,
-      856,
+      852,
       498,
       19
      ],
      "volume_badge": null
+    },
+    "requested": {
+     "bar": 36,
+     "body": 63,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -20199,11 +20455,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      38,
-      404,
-      52
-     ]
+     "widths": null
     },
     "window": [
      522,
@@ -20211,7 +20463,7 @@
     ]
    },
    "light": {
-    "art_size": 461,
+    "art_size": 457,
     "packing": {
      "body": [
       [
@@ -20486,13 +20738,13 @@
       12,
       46,
       498,
-      461
+      457
      ],
      "art_label": [
-      31,
+      33,
       46,
-      461,
-      461
+      457,
+      457
      ],
      "bar": [
       0,
@@ -20534,7 +20786,7 @@
      "empty_view": null,
      "format_label": [
       12,
-      569,
+      565,
       444,
       17
      ],
@@ -20542,144 +20794,144 @@
       12,
       46,
       498,
-      540
+      536
      ],
      "head_icons": [
       456,
-      566,
+      562,
       60,
       24
      ],
      "head_text": [
       12,
-      517,
+      513,
       498,
       69
      ],
      "info_button": [
       492,
-      566,
+      562,
       24,
       24
      ],
      "info_row": [
       12,
-      569,
+      565,
       498,
       17
      ],
      "lock_button": [
       468,
-      566,
+      562,
       24,
       24
      ],
      "next_button": [
       291,
-      632,
+      628,
       36,
       50
      ],
      "play_button": [
       236,
-      632,
+      628,
       50,
       50
      ],
      "playlist.frame": [
       12,
-      689,
+      685,
       498,
       186
      ],
      "playlist.scrollbar": null,
      "playlist.search": [
       12,
-      689,
+      685,
       498,
       31
      ],
      "playlist.tree": [
       12,
-      726,
+      722,
       498,
       149
      ],
      "pos_label": [
       12,
-      610,
+      606,
       25,
       17
      ],
      "previous_button": [
       195,
-      632,
+      628,
       36,
       50
      ],
      "remain_label": [
       477,
-      610,
+      606,
       33,
       17
      ],
      "repeat_button": [
       331,
-      632,
+      628,
       36,
       50
      ],
      "seek": [
       7,
-      594,
+      590,
       508,
       16
      ],
      "seek_row": [
       12,
-      594,
+      590,
       498,
       33
      ],
      "shuffle_button": [
       155,
-      632,
+      628,
       36,
       50
      ],
      "status_dot": [
       456,
-      574,
+      570,
       8,
       8
      ],
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": [
       12,
-      544,
+      540,
       498,
       21
      ],
      "title_label": [
       12,
-      517,
+      513,
       498,
       27
      ],
      "transport": [
       12,
-      631,
+      627,
       498,
       52
      ],
@@ -20687,10 +20939,18 @@
      "up_next_label": null,
      "volume_badge": [
       473,
-      645,
+      641,
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 830,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -20711,7 +20971,7 @@
     ]
    },
    "songs queued": {
-    "art_size": 461,
+    "art_size": 457,
     "packing": {
      "body": [
       [
@@ -21000,13 +21260,13 @@
       12,
       46,
       498,
-      461
+      457
      ],
      "art_label": [
-      31,
+      33,
       46,
-      461,
-      461
+      457,
+      457
      ],
      "bar": [
       0,
@@ -21048,7 +21308,7 @@
      "empty_view": null,
      "format_label": [
       12,
-      569,
+      565,
       444,
       17
      ],
@@ -21056,160 +21316,168 @@
       12,
       46,
       498,
-      540
+      536
      ],
      "head_icons": [
       456,
-      566,
+      562,
       60,
       24
      ],
      "head_text": [
       12,
-      517,
+      513,
       498,
       69
      ],
      "info_button": [
       492,
-      566,
+      562,
       24,
       24
      ],
      "info_row": [
       12,
-      569,
+      565,
       498,
       17
      ],
      "lock_button": [
       468,
-      566,
+      562,
       24,
       24
      ],
      "next_button": [
       291,
-      632,
+      628,
       36,
       50
      ],
      "play_button": [
       236,
-      632,
+      628,
       50,
       50
      ],
      "playlist.frame": [
       12,
-      689,
+      685,
       498,
       163
      ],
      "playlist.scrollbar": null,
      "playlist.search": [
       12,
-      689,
+      685,
       498,
       31
      ],
      "playlist.tree": [
       12,
-      726,
+      722,
       498,
       126
      ],
      "pos_label": [
       12,
-      610,
+      606,
       25,
       17
      ],
      "previous_button": [
       195,
-      632,
+      628,
       36,
       50
      ],
      "remain_label": [
       477,
-      610,
+      606,
       33,
       17
      ],
      "repeat_button": [
       331,
-      632,
+      628,
       36,
       50
      ],
      "seek": [
       7,
-      594,
+      590,
       508,
       16
      ],
      "seek_row": [
       12,
-      594,
+      590,
       498,
       33
      ],
      "shuffle_button": [
       155,
-      632,
+      628,
       36,
       50
      ],
      "status_dot": [
       456,
-      574,
+      570,
       8,
       8
      ],
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": [
       12,
-      544,
+      540,
       498,
       21
      ],
      "title_label": [
       12,
-      517,
+      513,
       498,
       27
      ],
      "transport": [
       12,
-      631,
+      627,
       498,
       52
      ],
      "undo_link": null,
      "up_next_label": [
       12,
-      856,
+      852,
       498,
       19
      ],
      "volume_badge": [
       473,
-      645,
+      641,
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 853,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -21230,7 +21498,7 @@
     ]
    },
    "start": {
-    "art_size": 461,
+    "art_size": 457,
     "packing": {
      "body": [
       [
@@ -21505,13 +21773,13 @@
       12,
       46,
       498,
-      461
+      457
      ],
      "art_label": [
-      31,
+      33,
       46,
-      461,
-      461
+      457,
+      457
      ],
      "bar": [
       0,
@@ -21553,7 +21821,7 @@
      "empty_view": null,
      "format_label": [
       12,
-      569,
+      565,
       444,
       17
      ],
@@ -21561,144 +21829,144 @@
       12,
       46,
       498,
-      540
+      536
      ],
      "head_icons": [
       456,
-      566,
+      562,
       60,
       24
      ],
      "head_text": [
       12,
-      517,
+      513,
       498,
       69
      ],
      "info_button": [
       492,
-      566,
+      562,
       24,
       24
      ],
      "info_row": [
       12,
-      569,
+      565,
       498,
       17
      ],
      "lock_button": [
       468,
-      566,
+      562,
       24,
       24
      ],
      "next_button": [
       291,
-      632,
+      628,
       36,
       50
      ],
      "play_button": [
       236,
-      632,
+      628,
       50,
       50
      ],
      "playlist.frame": [
       12,
-      689,
+      685,
       498,
       186
      ],
      "playlist.scrollbar": null,
      "playlist.search": [
       12,
-      689,
+      685,
       498,
       31
      ],
      "playlist.tree": [
       12,
-      726,
+      722,
       498,
       149
      ],
      "pos_label": [
       12,
-      610,
+      606,
       25,
       17
      ],
      "previous_button": [
       195,
-      632,
+      628,
       36,
       50
      ],
      "remain_label": [
       477,
-      610,
+      606,
       33,
       17
      ],
      "repeat_button": [
       331,
-      632,
+      628,
       36,
       50
      ],
      "seek": [
       7,
-      594,
+      590,
       508,
       16
      ],
      "seek_row": [
       12,
-      594,
+      590,
       498,
       33
      ],
      "shuffle_button": [
       155,
-      632,
+      628,
       36,
       50
      ],
      "status_dot": [
       456,
-      574,
+      570,
       8,
       8
      ],
      "status_label": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "status_row": [
       12,
-      881,
+      877,
       498,
-      11
+      15
      ],
      "sub_label": [
       12,
-      544,
+      540,
       498,
       21
      ],
      "title_label": [
       12,
-      517,
+      513,
       498,
       27
      ],
      "transport": [
       12,
-      631,
+      627,
       498,
       52
      ],
@@ -21706,10 +21974,18 @@
      "up_next_label": null,
      "volume_badge": [
       473,
-      645,
+      641,
       37,
       24
      ]
+    },
+    "requested": {
+     "bar": 36,
+     "body": 830,
+     "head_text": 69,
+     "seek_row": 33,
+     "status_row": 15,
+     "transport": 52
     },
     "tree": {
      "columns": [
@@ -22232,6 +22508,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 1288,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -22731,6 +23015,14 @@
       53,
       35
      ]
+    },
+    "requested": {
+     "bar": 53,
+     "body": 1254,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
     },
     "tree": {
      "columns": [
@@ -23251,6 +23543,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 1288,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -23745,6 +24045,14 @@
       53,
       35
      ]
+    },
+    "requested": {
+     "bar": 53,
+     "body": 584,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
     },
     "tree": {
      "columns": [
@@ -24265,6 +24573,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 1288,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -24622,6 +24938,14 @@
      ],
      "volume_badge": null
     },
+    "requested": {
+     "bar": 53,
+     "body": 93,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -24629,11 +24953,7 @@
       "time"
      ],
      "style": "",
-     "widths": [
-      56,
-      611,
-      77
-     ]
+     "widths": null
     },
     "window": [
      782,
@@ -25121,6 +25441,14 @@
       53,
       35
      ]
+    },
+    "requested": {
+     "bar": 53,
+     "body": 1254,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
     },
     "tree": {
      "columns": [
@@ -25641,6 +25969,14 @@
       35
      ]
     },
+    "requested": {
+     "bar": 53,
+     "body": 1288,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
+    },
     "tree": {
      "columns": [
       "no",
@@ -26140,6 +26476,14 @@
       53,
       35
      ]
+    },
+    "requested": {
+     "bar": 53,
+     "body": 1254,
+     "head_text": 102,
+     "seek_row": 48,
+     "status_row": 25,
+     "transport": 77
     },
     "tree": {
      "columns": [
