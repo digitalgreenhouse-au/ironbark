@@ -646,35 +646,43 @@ class Look:
     text: str
     rank: int          # its worst finding's place in FINDINGS (0 = the worst kind)
     checked: float     # when (seconds since 1970)
+    changed: bool = False   # the file has changed since it was checked (it's checked again on the next run)
 
     @property
     def information_only(self) -> bool:
         return all(word in INFORMATION for word in self.words)
 
 
+CHANGED_TEXT = "the file has changed since: it's checked again on the next run"
+
+
 def needs_look(db: LibraryDB) -> list[tuple[SongHit, Look]]:
     """Every song in the library whose stored check found something (missing files left out), worst
     first (`worst_first`). A song checked under two keys — its file written two ways, by Now
-    Playing say — is listed once, by its own key's check (else the newer). Reads the database:
-    for the library's query thread."""
+    Playing say — is listed once, by its own key's check (else the newer). A check of a file the
+    library has seen change since (re-ripped, its tags edited) says so (`Look.changed`): what it
+    found may no longer hold. Reads the database: for the library's query thread."""
     found = {}
-    for key, words, checked, text in db.flagged_checks():
+    for key, words, checked, text, size, mtime in db.flagged_checks():
         words = tuple(word for word in words.split() if word in FINDINGS)
         if words:
-            found[key] = (words, checked, text)
+            found[key] = (words, checked, text, (size, mtime))
     chosen: dict[int, tuple[SongHit, str, bool]] = {}
     for key, hit in db.songs_for_keys(found):
         own = key == audiofile.key(hit.track.path)
         had = chosen.get(hit.id)
         if had is None or (not had[2] and (own or found[key][1] > found[had[1]][1])):
             chosen[hit.id] = (hit, key, own)
+    files = db.song_file_states(hit.id for hit, _key, _own in chosen.values())
     listed = []
     for hit, key, own in chosen.values():
         if not own and db.check_of(hit.track.path) is not None:
             continue   # (its own key's check found nothing: that one has the say)
-        words, checked, text = found[key]
+        words, checked, text, state = found[key]
         result = from_json(text)
-        listed.append((hit, Look(words, describe(words, result, hit.track), FINDINGS.index(words[0]), checked)))
+        changed = files.get(hit.id, state) != state
+        said = describe(words, result, hit.track) + (f" · {CHANGED_TEXT}" if changed else "")
+        listed.append((hit, Look(words, said, FINDINGS.index(words[0]), checked, changed)))
     listed.sort(key=worst_first)
     return listed
 

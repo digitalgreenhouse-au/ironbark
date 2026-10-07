@@ -1525,10 +1525,24 @@ class LibraryDB:
                                   " WHERE key = ?", (_to_db(_key(key)),)).fetchone()
         return tuple(row) if row is not None else None
 
-    def flagged_checks(self) -> list[tuple[str, str, float, str]]:
-        """(key, findings, when, result JSON) of every stored check that found something."""
-        return [(_from_db(key), findings, checked, result) for key, findings, checked, result in self._con().execute(
-            "SELECT key, findings, checked, result FROM checks WHERE findings != ''")]
+    def flagged_checks(self) -> list[tuple[str, str, float, str, int, int]]:
+        """(key, findings, when, result JSON, size, modified ns) of every stored check that found
+        something — the size and time of the file it read."""
+        return [(_from_db(key), findings, checked, result, size, mtime)
+                for key, findings, checked, result, size, mtime in self._con().execute(
+                    "SELECT key, findings, checked, result, size, mtime_ns FROM checks WHERE findings != ''")]
+
+    def song_file_states(self, ids: Iterable[int]) -> dict[int, tuple[int, int]]:
+        """{tracks.id: (size, modified ns)} of these songs' files as the library last saw them (no disk
+        access)."""
+        ids = list(ids)
+        found: dict[int, tuple[int, int]] = {}
+        with self._reading() as con:
+            for chunk in _chunks(ids):
+                found.update((track_id, (size, mtime)) for track_id, size, mtime in con.execute(
+                    "SELECT t.id, f.size, f.mtime_ns FROM tracks t JOIN files f ON f.id = t.file_id"
+                    f" WHERE t.id IN ({', '.join('?' * len(chunk))})", chunk))
+        return found
 
     def forget_checks(self, keys: Iterable) -> int:
         """Drop these songs' checks (songs gone from the library); how many there were."""

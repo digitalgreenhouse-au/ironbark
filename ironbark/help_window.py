@@ -25,9 +25,12 @@ from typing import Callable
 
 from . import APP_NAME, __version__, controls, experiments, keys, placement, theme
 from .playlist_view import _fold, fit_columns
+from .virtual_list import CELL_ROOM, ELLIPSIS
 
 WEBSITE = "https://www.digitalgreenhouse.com.au"
 THIRD_PARTY = "THIRD_PARTY_LICENSES.md"
+FIT_MARGIN = 48       # px at 100%: kept free below a window that first opens as tall as the screen allows
+LICENCE_LINES = 6     # About: the licence text is never shorter than this (the page scrolls instead)
 
 # Ironbark's own licence (the LICENSE file; a test keeps the two the same). Built in, so it shows
 # however the program was installed.
@@ -171,9 +174,13 @@ def version_info(widget: tk.Misc | None = None, prefs: dict | None = None) -> st
 
 
 def _window(parent: tk.Misc, title: str, size: tuple[int, int], minimum: tuple[int, int], geometry: str) -> tk.Toplevel:
+    # The first size is no taller than the screen the player is on (a laptop at 150% display scaling
+    # has about 1,030 px), measured before the window is made so nothing half-made is drawn.
+    room = placement.work_height(parent) - theme.px(FIT_MARGIN)
+    height = max(theme.px(minimum[1]), min(theme.px(size[1]), room))
     win = tk.Toplevel(parent, bg=theme.BG)
     win.title(title)
-    win.geometry(f"{theme.px(size[0])}x{theme.px(size[1])}")
+    win.geometry(f"{theme.px(size[0])}x{height}")
     win.minsize(theme.px(minimum[0]), theme.px(minimum[1]))
     placement.restore(win, geometry)
     theme.dark_title_bar(win)
@@ -217,6 +224,9 @@ class HelpWindow:
 
         table = ttk.Frame(outer)
         table.pack(fill="both", expand=True, pady=theme.pad(theme.GAP, 0))
+        self.table = table
+        # A row too long for the list ends with "…"; selected, its whole text shows here, under the list.
+        self.full = ttk.Label(outer, text="", style="Muted.TLabel", justify="left", wraplength=theme.px(420))
         self.tree = ttk.Treeview(table, columns=("keys", "what"), show="headings", selectmode="browse")
         self.tree.heading("keys", text="Key", anchor="w")
         self.tree.heading("what", text="What it does", anchor="w")
@@ -234,7 +244,11 @@ class HelpWindow:
         self.tree.bind("<Home>", lambda e: self._go(0) or "break")
         self.tree.bind("<End>", lambda e: self._go(-1) or "break")
         self.tree.bind("<Up>", self._up, add="+")
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._show_full(), add="+")
+        self.tree.bind("<Configure>", lambda e: self._fit_rows(), add="+")   # (after fit_columns' own)
         self.rows: dict[str, tuple[str, str, str]] = {}   # tree row id -> (group, keys, what)
+        self.cut: set[str] = set()   # rows whose words end with "…" in the list (too long for it)
+        self._fitted_width = 0
         self.win.bind("<Destroy>", self._destroyed, add="+")
         self.fill()
         self.search.entry.focus_set()
@@ -274,6 +288,51 @@ class HelpWindow:
             self.rows[iid] = (group, keys_text, what)
         if words and not self.rows:
             self.tree.insert("", "end", iid="none", values=("", "No shortcut matches"))
+        self._fitted_width = 0
+        self._fit_rows()
+        self._show_full()
+
+    def _fit_rows(self):
+        """Each row's words as they fit the "What it does" column: whole, or cut with "…" (Treeview
+        cells don't wrap). Done again when the column's width changes."""
+        width = int(self.tree.column("what", "width"))
+        if width == self._fitted_width:
+            return
+        self._fitted_width = width
+        room = width - theme.px(CELL_ROOM)
+        font = tkfont.nametofont("TkDefaultFont")
+        self.cut.clear()
+        for iid, (_group, _keys, what) in self.rows.items():
+            shown = what
+            if font.measure(what) > room:
+                low, high = 0, len(what)   # (the longest start of it that fits with "…" after it)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if font.measure(what[:middle].rstrip() + ELLIPSIS) <= room:
+                        low = middle
+                    else:
+                        high = middle - 1
+                shown = what[:low].rstrip() + ELLIPSIS
+                self.cut.add(iid)
+            self.tree.set(iid, "what", shown)
+        self._show_full()
+
+    def _show_full(self):
+        """The selected row's whole text under the list, while the list cuts it short."""
+        selected = self.tree.selection()
+        row = self.rows.get(selected[0]) if selected and selected[0] in self.cut else None
+        text = f"{row[1]}: {row[2]}" if row is not None else ""
+        self.full.configure(text=text)
+        if text and not self.full.winfo_manager():
+            self.full.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_SMALL, 0), before=self.table)
+            self.tree.after_idle(self._see_selected)   # (the list is shorter now: keep the row in view)
+        elif not text and self.full.winfo_manager():
+            self.full.pack_forget()
+
+    def _see_selected(self):
+        if self.tree.winfo_exists() and self.tree.selection():
+            self.tree.update_idletasks()   # (the list's new height is laid out a pass or two later)
+            self.tree.see(self.tree.selection()[0])
 
     def shown_rows(self) -> list[tuple[str, str, str]]:
         """(group, keys, what) of every row listed now, top to bottom."""
@@ -314,7 +373,9 @@ class HelpWindow:
         return None
 
     def _rewrap(self, event):
-        self.note.configure(wraplength=max(theme.px(160), event.width - 2 * theme.px(theme.GAP_WIDE)))
+        width = max(theme.px(160), event.width - 2 * theme.px(theme.GAP_WIDE))
+        self.note.configure(wraplength=width)
+        self.full.configure(wraplength=width)
 
     def _moved(self, event):
         if event.widget is self.win:
@@ -343,15 +404,21 @@ class AboutWindow:
         self.copy = copy or self._to_clipboard
         self.open_url = open_url or webbrowser.open
         # (Wide enough for a licence's 80-column lines in the small fixed-width font.)
-        self.win = _window(parent, "About Ironbark", (600, 780), (360, 560), prefs.get("about_geometry", ""))
+        self.win = _window(parent, "About Ironbark", (600, 780), (360, 360), prefs.get("about_geometry", ""))
         self.win.protocol("WM_DELETE_WINDOW", self.close)
         self.win.bind("<Escape>", lambda e: self.close())
         self.win.bind("<Configure>", self._moved, add="+")
 
-        outer = ttk.Frame(self.win, padding=theme.px(theme.GAP_WIDE))
+        # The buttons stay at the foot; everything above them is a page that scrolls when the window
+        # is shorter than it, so the whole privacy text and the licences can always be read. The
+        # licence text takes whatever height the page has left (never less than LICENCE_LINES).
+        bottom = ttk.Frame(self.win, padding=theme.pad(theme.GAP_WIDE, theme.GAP_MEDIUM, theme.GAP_WIDE,
+                                                        theme.GAP_WIDE))
+        bottom.pack(side="bottom", fill="x")
+        self.area = controls.ScrollArea(self.win, bg="BG")
+        self.area.pack(fill="both", expand=True)
+        outer = ttk.Frame(self.area.inner, padding=theme.pad(theme.GAP_WIDE, theme.GAP_WIDE, theme.GAP_WIDE, 0))
         outer.pack(fill="both", expand=True)
-        bottom = ttk.Frame(outer)   # packed first, from the bottom: a short window squeezes the licence text
-        bottom.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
         controls.FlatButton(bottom, "Copy version info", self.copy_version_info,
                             label="For a bug report: the version, Windows, Python, Tk, libsndfile, PortAudio "
                                   "and the experiments switched on").pack(side="left")
@@ -389,15 +456,22 @@ class AboutWindow:
                        style="Warn.TLabel", pady=(theme.GAP_SMALL, 0))
         holder = ttk.Frame(outer)
         holder.pack(fill="both", expand=True, pady=theme.pad(theme.GAP, 0))
-        self.text = tk.Text(holder, wrap="word", height=12, bd=0, highlightthickness=0, bg=theme.SURFACE,
-                            fg=theme.TEXT, insertbackground=theme.TEXT, selectbackground=theme.SELECT,
-                            selectforeground=theme.ON_ACCENT, font=theme.mono(theme.SIZE_SMALL),
-                            padx=theme.px(theme.GAP_MEDIUM), pady=theme.px(theme.GAP))
+        self.text = tk.Text(holder, wrap="word", height=LICENCE_LINES, bd=0, highlightthickness=0,
+                            bg=theme.SURFACE, fg=theme.TEXT, insertbackground=theme.TEXT,
+                            selectbackground=theme.SELECT, selectforeground=theme.ON_ACCENT,
+                            font=theme.mono(theme.SIZE_SMALL), padx=theme.px(theme.GAP_MEDIUM),
+                            pady=theme.px(theme.GAP))
         scrollbar = controls.AutoScrollbar(holder, command=self.text.yview)
         self.text.configure(yscrollcommand=scrollbar.set)
         self.text.pack(side="left", fill="both", expand=True)
         scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.text)
+        self.area.bind_wheel()
+        # (The wheel over the licence text scrolls the text, not the page.)
+        self.text.bindtags(tuple(tag for tag in self.text.bindtags() if tag != self.area.wheel_tag))
+        self._wrap_width = 0
+        self._fit_job = None
         outer.bind("<Configure>", self._rewrap, add="+")
+        self.area.canvas.bind("<Configure>", lambda e: self._fit_text_later(), add="+")
         self.show_document(0)
 
     def _para(self, parent, text: str, style: str = "TLabel", pady=(0, 0)) -> ttk.Label:
@@ -434,9 +508,33 @@ class AboutWindow:
         self.win.clipboard_append(text)
 
     def _rewrap(self, event):
+        """The page changed size: the paragraphs wrap to its width, and the licence text is fitted
+        again once Tk has laid out their new heights (the page's height changes with them)."""
         width = max(theme.px(160), event.width - 2 * theme.px(theme.GAP_WIDE))
-        for label in self.wrapped:
-            label.configure(wraplength=width)
+        if width != self._wrap_width:
+            self._wrap_width = width
+            for label in self.wrapped:
+                label.configure(wraplength=width)
+        self._fit_text_later()
+
+    def _fit_text_later(self):
+        if self._fit_job is None:
+            self._fit_job = self.win.after_idle(self._fit_text)
+
+    def _fit_text(self):
+        """The licence text as tall as the room the page has left (whole lines), never less than
+        LICENCE_LINES: past that, the page scrolls instead."""
+        self._fit_job = None
+        if not self.win.winfo_exists():
+            return
+        room = self.area.canvas.winfo_height()
+        if room <= 1:
+            return   # (not laid out yet: its first <Configure> fits it)
+        line = max(1, int(self.text.tk.call("font", "metrics", self.text.cget("font"), "-linespace")))
+        others = self.area.inner.winfo_reqheight() - self.text.winfo_reqheight()
+        lines = max(LICENCE_LINES, (room - others - 2 * int(self.text.cget("pady"))) // line)
+        if lines != int(self.text.cget("height")):
+            self.text.configure(height=lines)
 
     def _moved(self, event):
         if event.widget is self.win:

@@ -133,7 +133,7 @@ def test_checks_are_kept_by_song_and_survive_a_rebuild_of_the_library_tables(tmp
         assert db._con().execute("PRAGMA user_version").fetchone()[0] == library_db.SCHEMA_VERSION == 2
         db.save_check("C:/a.flac#2", 10, 20, 1, "clipping", 1.2, "{}", when=5.0)
         assert db.check_of("C:/a.flac#2") == (10, 20, 1, 5.0, "clipping", 1.2, "{}")
-        assert db.flagged_checks() == [("C:/a.flac#2", "clipping", 5.0, "{}")]
+        assert db.flagged_checks() == [("C:/a.flac#2", "clipping", 5.0, "{}", 10, 20)]
         db._con().execute("PRAGMA user_version = 99")       # a version with no way up: library tables remade
     with LibraryDB.open(path) as db:
         assert db.check_states() == {"C:/a.flac#2": (10, 20, 1)}

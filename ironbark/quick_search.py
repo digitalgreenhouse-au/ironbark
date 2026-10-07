@@ -451,6 +451,9 @@ class QuickSearch:
         if self._search_job is not None:
             self.root.after_cancel(self._search_job)
             self._search_job = None
+        # An Enter or ↓ waiting for the results was for the panel: it's put away, so they only list
+        # (the search on its way still comes in, for when the panel is opened again).
+        self._pending = None
         before, self._focus_before = self._focus_before, None
         try:
             if before is not None and before.winfo_exists():
