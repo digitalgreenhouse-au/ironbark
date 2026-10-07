@@ -151,7 +151,7 @@ def test_flat_button_speaks_ttk(root):
 def test_primary_button_greys_out_like_a_plain_one(root):
     plain = controls.FlatButton(root, "A", state="disabled")
     primary = controls.FlatButton(root, "B", kind="primary", state="disabled")
-    assert primary.fill_colour() == plain.fill_colour() == theme.SURFACE
+    assert primary.fill_colour() == plain.fill_colour() == theme.SURFACE_HI     # the plain pill
     primary.set_enabled(True)
     assert primary.fill_colour() == theme.SELECT
 
@@ -163,7 +163,7 @@ def test_choice_row_follows_its_variable(root):
     row = controls.ChoiceRow(root, (("live", "Live"), ("track", "Whole track")), var, command=lambda: changes.append(1))
     row.pack()
     root.update()
-    assert row.labels["live"].cget("fg") == theme.ACCENT_TEXT and row.bars["live"].cget("bg") == theme.ACCENT
+    assert row.labels["live"].cget("fg") == theme.ACCENT_TEXT and row.bars["live"].lit
     assert row.labels["track"].cget("fg") == theme.MUTED
     font = row.labels["live"].cget("font")
     row.choose("track")
@@ -172,7 +172,7 @@ def test_choice_row_follows_its_variable(root):
     assert changes == [1]
     assert row.labels["track"].cget("fg") == theme.ACCENT_TEXT and row.labels["live"].cget("font") == font
     var.set("live")                                          # set from code: the row follows
-    assert row.bars["live"].cget("bg") == theme.ACCENT and row.bars["track"].cget("bg") == theme.BG
+    assert row.bars["live"].lit and not row.bars["track"].lit
     row.marks = {"track"}
     row.paint()
     assert row.labels["track"].cget("fg") == theme.ACCENT_TEXT
@@ -283,7 +283,9 @@ def test_now_playing_lines_up_colours_and_fits(root, tmp_path):
         texts = [win.meter.itemcget(i, "text") for i in win.meter.find_all() if win.meter.type(i) == "text"]
         assert any(t.startswith(theme.MINUS) for t in texts)                 # −7.5 dB, a true minus
         # Flat pill buttons, and no blank line under the Windows check while it has nothing to say.
-        assert set(win.tool_buttons) == {"Meters (M)", "PCM stream (B)", "Compare two files (D)"}
+        assert set(win.tool_buttons) == {"Meters", "PCM stream", "Compare two files"}
+        assert win.tool_buttons["Meters"].tip.text == "Meters (M)"            # the key is in the tooltip
+        assert win.tool_buttons["Meters"].winfo_reqheight() == theme.px(theme.CONTROL_H_SMALL)
         assert isinstance(win.windows_button, controls.FlatButton)
         assert not win.windows_note.winfo_manager()
         # Never taller than the screen; the panel scrolls instead.
@@ -364,8 +366,8 @@ def test_now_playing_follows_light(root, tmp_path):
     _pump(root, 0.3)
     theme.use(theme.LIGHT, root)
     _pump(root, 0.3)
-    button = win.tool_buttons["Meters (M)"]
-    assert button.cget("bg") == theme.LIGHT.BG and button.fill_colour() == theme.LIGHT.SURFACE
+    button = win.tool_buttons["Meters"]
+    assert button.cget("bg") == theme.LIGHT.BG and button.fill_colour() == theme.LIGHT.SURFACE_HI
     win.close()
     assert not root.errors
 
@@ -443,9 +445,9 @@ def test_library_window_has_the_main_window_finish(root, tmp_path, monkeypatch):
                         on_load_all=lambda p, s: None)
     _pump(root, 0.3)
     assert isinstance(win.search, controls.SearchBox) and win.search_var is win.search.query
-    assert isinstance(win.views, controls.ChoiceRow) and win.views.bars["albums"].cget("bg") == theme.ACCENT
+    assert isinstance(win.views, controls.ChoiceRow) and win.views.bars["albums"].lit
     win.views.choose("artists")
-    assert win.view == "artists" and win.views.bars["artists"].cget("bg") == theme.ACCENT
+    assert win.view == "artists" and win.views.bars["artists"].lit and not win.views.bars["albums"].lit
     assert isinstance(win.scrollbar, controls.AutoScrollbar)
     # Esc in the search box empties it; Esc in an empty box is left to the window (it closes).
     win.search_var.set("x")

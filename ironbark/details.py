@@ -16,7 +16,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from . import audiofile, controls, levelling, loopback, placement, ripcheck, theme, toolwin
+from . import audiofile, controls, levelling, loopback, placement, ripcheck, shapes, theme, toolwin
 from .analysis import (CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse,
                        lossy_below)
 from .engine import Health, OutputInfo, PlaybackEvent, Player, State
@@ -469,23 +469,29 @@ class NowPlayingWindow:
         self.title_label.pack(fill="x")
         self.sub_label = ttk.Label(outer, text="", style="Sub.TLabel", anchor="w")
         self.sub_label.pack(fill="x")
-        # The other windows, as flat pill buttons in rows (the window is narrow): looking at the
-        # sound, then testing it. (0.24.0) Clipping sits beside Meters / PCM stream; Stereo moves down
-        # a row so each row still fits the narrow window.
+        # The other windows, as small plain pills in rows (the window is narrow), lined up with the
+        # value column below: looking at the sound, then testing it. Each one's key is in its
+        # tooltip. (0.24.0) Clipping sits beside Meters / PCM stream; Stereo moves down a row so each
+        # row still fits the narrow window.
         self.tool_buttons: dict[str, controls.FlatButton] = {}
-        for first, tools in ((True, [("Meters (M)", on_meters), ("PCM stream (B)", on_pcm),
-                                     ("Clipping (C)", on_clipping), ("Spectrogram (F)", on_spectrogram)]),
-                             (False, [("Stereo (O)", on_scope), ("Compare two files (D)", on_compare),
-                                      ("ABX blind test (X)", on_abx)]),
-                             (False, [("Test signals (T)", on_testsignals), ("Lyrics (L)", on_lyrics)])):
-            tools = [(text, command) for text, command in tools if command]
+        tools_frame = ttk.Frame(outer)
+        tools_frame.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
+        self.tools_frame = tools_frame
+        row = 0
+        for tools in ([("Meters", "M", on_meters), ("PCM stream", "B", on_pcm), ("Clipping", "C", on_clipping),
+                       ("Spectrogram", "F", on_spectrogram)],
+                      [("Stereo", "O", on_scope), ("Compare two files", "D", on_compare),
+                       ("ABX blind test", "X", on_abx)],
+                      [("Test signals", "T", on_testsignals), ("Lyrics", "L", on_lyrics)]):
+            tools = [tool for tool in tools if tool[2]]
             if not tools:
                 continue
-            row_frame = ttk.Frame(outer)
-            row_frame.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM if first else theme.GAP, 0))
-            for index, (text, command) in enumerate(tools):
-                button = controls.FlatButton(row_frame, text, command)
-                button.pack(side="left", padx=theme.pad(0 if index == 0 else theme.GAP, 0))
+            row_frame = ttk.Frame(tools_frame)
+            row_frame.grid(row=row, column=1, sticky="w", pady=theme.pad(0 if row == 0 else theme.GAP_SMALL, 0))
+            row += 1
+            for index, (text, key, command) in enumerate(tools):
+                button = controls.FlatButton(row_frame, text, command, small=True, label=f"{text} ({key})")
+                button.pack(side="left", padx=theme.pad(0 if index == 0 else theme.GAP_SMALL, 0))
                 self.tool_buttons[text] = button
 
         live = self._section(outer, "Live", first=True)
@@ -587,7 +593,7 @@ class NowPlayingWindow:
         """One label column for the whole window: every section's labels as wide as the longest
         label anywhere, so all the values start at the same place. Then fit the window."""
         frames = [w for w in (self.values["position"].master, self.values["sent"].master, self.file_frame,
-                              self.check_frame)]
+                              self.check_frame, self.tools_frame)]
         widest = max([theme.px(LABEL_MIN)] + [child.winfo_reqwidth() for frame in frames
                                               for child in frame.grid_slaves(column=0)
                                               if isinstance(child, ttk.Label)])
@@ -710,7 +716,7 @@ class NowPlayingWindow:
         running = self._analysis_state   # (rebuilt while the check runs: still greyed out, still counting)
         self.check_button = controls.FlatButton(self.check_frame, label, self._start_analysis, kind="primary",
                                                 state="disabled" if running else "normal")
-        self.check_button.grid(row=0, column=0, columnspan=2, sticky="w")
+        self.check_button.grid(row=0, column=1, sticky="w")   # (lined up with the tools above)
         self.check_progress = ttk.Label(self.check_frame, text="", style="Muted.TLabel")
         self.check_progress.grid(row=1, column=0, columnspan=2, sticky="w", pady=theme.pad(theme.GAP_SMALL, 0))
         self._say(self.check_progress, f"Reading the whole file… {running['progress']:.0%}" if running else "")
@@ -1152,9 +1158,22 @@ class NowPlayingWindow:
             self._say(self.windows_note, "")
             self._refit()
 
+    def _bar(self, x: float, y: int, width: float, height: int, colour: str):
+        """A level bar with rounded ends: two cached end pictures and a rectangle between them."""
+        c = self.meter
+        radius = max(1, height // 2)
+        left, right = shapes.ends_photos(c, height, radius, fill=colour)
+        self._meter_pictures += [left, right]
+        width = max(width, 2 * radius)
+        c.create_image(x, y, image=left, anchor="nw")
+        c.create_image(x + width, y, image=right, anchor="ne")
+        if width > 2 * radius:
+            c.create_rectangle(x + radius, y, x + width - radius, y + height, fill=colour, width=0)
+
     def _draw_meter(self, levels: tuple[float, ...]):
         c = self.meter
         c.delete("all")
+        self._meter_pictures = []   # (kept while shown: a shared cache may be cleared)
         width, height = int(c.cget("width")), int(c.cget("height"))
         channels = len(levels) or 2
         names = ["L", "R"] if channels == 2 else [str(i + 1) for i in range(channels)]
@@ -1173,11 +1192,11 @@ class NowPlayingWindow:
             c.create_text(0, y + bar_h / 2, text=names[ch], anchor="w", fill=theme.MUTED,
                           font=theme.font(theme.SIZE_BODY))
             # (0.22.0) The empty part in BORDER, like the seek bar's track (SURFACE all but vanished in Light).
-            c.create_rectangle(label_w, y, label_w + bar_w, y + bar_h, fill=theme.BORDER, width=0)
+            self._bar(label_w, y, bar_w, bar_h, theme.BORDER)
             fill = (shown - METER_FLOOR_DB) / -METER_FLOOR_DB
             colour = theme.DANGER if shown > -0.1 else theme.WARN if shown > -6 else theme.ACCENT
             if fill > 0:
-                c.create_rectangle(label_w, y, label_w + bar_w * fill, y + bar_h, fill=colour, width=0)
+                self._bar(label_w, y, bar_w * fill, bar_h, colour)
             reading = "—" if db == float("-inf") else theme.figures(f"{db:.1f} dB")
             c.create_text(width, y + bar_h / 2, text=reading, anchor="e", fill=theme.TEXT,
                           font=theme.numbers(theme.SIZE_BODY))

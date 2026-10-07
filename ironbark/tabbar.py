@@ -23,7 +23,8 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageTk
 
-from . import chrome, shapes, theme
+from . import chrome, keyfocus, shapes, theme
+from .keyfocus import Focusable
 
 # Colours are theme.py roles, read when drawn (so they follow a palette change): the strip is
 # STRIP with a TAB_EDGE line along its foot, the selected tab BG, a hovered tab's plate STRIP_HI,
@@ -40,6 +41,7 @@ GLYPHS = {
     "lock": ("\ue72e", "L"), "unlock": ("\ue785", "U"),
     "shuffle": ("\ue8b1", "⤮"), "repeat": ("\ue8ee", "↻"), "repeat_one": ("\ue8ed", "↺"),
     "warning": ("\ue7ba", "⚠"),   # (0.21.0) a warning box's sign
+    "check": ("\ue73e", "✓"), "search": ("\ue721", "⌕"),   # a menu's tick; the search box's magnifier
 }
 
 
@@ -75,6 +77,39 @@ def released_over(event, widget: tk.Misc) -> bool:
     return 0 <= x < widget.winfo_width() and 0 <= y < widget.winfo_height()
 
 
+DWMWA_WINDOW_CORNER_PREFERENCE = 33   # Windows 11's DWM (Desktop Window Manager) window attributes
+DWMWA_BORDER_COLOR = 34
+DWMWCP_ROUNDSMALL = 3                  # small rounded corners, as Windows' own tooltips have
+
+
+def round_corners(window: tk.Misc, rim: str) -> bool:
+    """Ask Windows 11 to round a small pop-up window's corners and draw its 1 px rim in `rim` (a
+    colour). True when it did; Windows 10 (and anything else) says no, and the window keeps the rim
+    Tk draws."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # Private handles: the argtypes set here are this function's alone.
+        user32, dwm = ctypes.WinDLL("user32"), ctypes.WinDLL("dwmapi")
+        user32.GetParent.argtypes, user32.GetParent.restype = [wintypes.HWND], wintypes.HWND
+        dwm.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+        hwnd = user32.GetParent(window.winfo_id()) or window.winfo_id()
+        corner = ctypes.c_int(DWMWCP_ROUNDSMALL)
+        if dwm.DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ctypes.byref(corner),
+                                     ctypes.sizeof(corner)) != 0:
+            return False
+        r, g, b = theme.rgb(rim)
+        colour = wintypes.DWORD(r | g << 8 | b << 16)   # a COLORREF: 0x00BBGGRR
+        dwm.DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ctypes.byref(colour), ctypes.sizeof(colour))
+        return True
+    except (OSError, AttributeError, tk.TclError):
+        return False
+
+
 class Tooltip:
     """A small label that appears after hovering a moment. `text` may be a function, so it
     can describe the current state (e.g. what the status square means right now).
@@ -84,10 +119,14 @@ class Tooltip:
     below it in the window.
 
     `at`: where the tip's left edge goes (screen x), for a widget that holds several things (the
-    tab strip: under the tab the pointer is on); by default, the widget's left edge."""
+    tab strip: under the tab the pointer is on); by default, the widget's left edge.
+
+    On Windows 11 the tip has small rounded corners and an EDGE rim drawn by Windows (round_corners);
+    elsewhere Tk's square 1 px rim."""
 
     def __init__(self, widget: tk.Misc, text, at: Callable[[], int] | None = None):
         self.widget, self.text, self.at = widget, text, at
+        self.label: tk.Label | None = None   # the tip's words, while it's shown
         self._job = None
         self._tip: tk.Toplevel | None = None
         widget.bind("<Enter>", self._schedule, add="+")
@@ -131,10 +170,13 @@ class Tooltip:
         tip = tk.Toplevel(self.widget)
         tip.overrideredirect(True)
         tip.attributes("-topmost", True)
-        tk.Label(tip, text=text, bg=theme.SURFACE_HI, fg=theme.TEXT, font=theme.font(theme.SIZE_BODY),
-                 padx=theme.px(theme.GAP_MEDIUM), pady=theme.px(theme.GAP_SMALL), justify="left",
-                 wraplength=self.wrap(), highlightthickness=1, highlightbackground=theme.BORDER).pack()
+        self.label = tk.Label(tip, text=text, bg=theme.SURFACE_HI, fg=theme.TEXT, font=theme.font(theme.SIZE_BODY),
+                              padx=theme.px(theme.GAP_MEDIUM), pady=theme.px(theme.GAP_SMALL), justify="left",
+                              wraplength=self.wrap(), highlightthickness=1, highlightbackground=theme.EDGE)
+        self.label.pack()
         tip.update_idletasks()
+        if round_corners(tip, theme.EDGE):   # Windows 11 draws the rounded rim itself
+            self.label.configure(highlightthickness=0)
         top = self.widget.winfo_toplevel()
         x = self.at() if self.at is not None else self.widget.winfo_rootx()
         right = top.winfo_rootx() + top.winfo_width()
@@ -206,12 +248,14 @@ class IconButton(tk.Label):
                        fg=theme.colour(self._hover_fg if hover else ("ACCENT_TEXT" if self.active else self._fg)))
 
 
-class RoundIconButton(IconButton):
+class RoundIconButton(Focusable, IconButton):
     """An IconButton (glyph from the icon font, colours as theme roles) that lights up with a soft
     round disc under the pointer instead of a square: the transport's buttons, the header's lock and
     ⓘ, the strip's + and gear. `diameter` and `width` px at 100% (the disc is centred in the width).
-    `hover` is the disc's role (HOVER on the window, STRIP_HI on the strip), `pressed` the disc while
-    held down.
+    `hover` is the disc's role (HOVER on the window, STRIP_HI on the strip) or a theme.tone mix,
+    `pressed` the disc while held down. The keyboard reaches it (keyfocus): Enter / Space press it,
+    and a DG-green ring round its disc shows it has the keyboard. `set_backdrop(role)`: what it sits
+    on changed (a menu row lighting up).
 
     `drawn="prev"` / `"next"`: the glyph is drawn into the picture (shapes.skip, filled, TEXT)
     instead of taken from the icon font. `set_on(True)`: the glyph in ACCENT_TEXT with a small dot
@@ -238,7 +282,19 @@ class RoundIconButton(IconButton):
         self.bind("<ButtonRelease-1>", lambda e: self._press(False), add="+")
         self.bind("<Destroy>", self._let_go, add="+")
         theme.on_change(self._palette_changed)
+        self._keyboard()
         self._paint(False)
+
+    def activate(self):
+        self.command()
+
+    def focus_changed(self):
+        self._paint(self._hovering)
+
+    def set_backdrop(self, bg: str):
+        if bg != self._bg:
+            self._bg = bg
+            self._paint(self._hovering)
 
     def _let_go(self, event):
         if event.widget is self:   # (destroyed: its picture is let go here, on Tk's thread)
@@ -268,9 +324,10 @@ class RoundIconButton(IconButton):
         d = self._diameter
         bg = theme.colour(self._bg)
         lit = hover or self.active
-        disc = theme.colour(self._pressed_role if self._pressed else self._hover) if lit else None
+        disc = theme.tone(self._pressed_role if self._pressed else self._hover) if lit else None
         ink = self.glyph_colour(hover)
         dot = theme.ACCENT_TEXT if self.on and not hover else None
+        ring = (theme.ACCENT, keyfocus.ring_width()) if self.focused else None
         drawn = self._drawn
         s = theme.scale()
 
@@ -285,9 +342,12 @@ class RoundIconButton(IconButton):
                 g.ellipse((d * k / 2 - r, cy - r, d * k / 2 + r, cy + r), fill=dot)
             if drawn:
                 shapes.skip(theme.px(self.SKIP_SIZE), ink, drawn == "next", image, (d / 2, d / 2))
+            if ring:
+                g.ellipse((0, 0, d * k - 1, d * k - 1), outline=ring[0], width=ring[1] * k)
             return shapes.down(image, (d, d))
 
-        self._photo = shapes.photo(self, ("round button", d, bg, disc, ink if drawn else None, dot, drawn), draw)
+        self._photo = shapes.photo(self, ("round button", d, bg, disc, ink if drawn else None, dot, drawn, ring),
+                                   draw)
         self.configure(image=self._photo, bg=bg, fg=ink)
 
 
@@ -858,17 +918,21 @@ class TabBar(tk.Frame):
         return text + "…" if text else original[:1]  # a very slim tab still shows its first letter
 
 
-class Toggle(tk.Label):
+class Toggle(Focusable, tk.Label):
     """A slider switch for an on/off setting: green with the knob on the right when on.
     Drawn with Pillow at 4x and scaled down, so the round ends are smooth (a Tk canvas
-    draws jagged circles on Windows). Follows its BooleanVar, however that gets changed."""
+    draws jagged circles on Windows). Follows its BooleanVar, however that gets changed.
+
+    The keyboard reaches it (keyfocus): Space or Enter flips it. Its picture keeps a little room
+    round the switch (`margin`) for the DG-green ring that shows it has the keyboard."""
 
     # Pictures are cached per Tk root (root._dg_toggle_images: (on, width, height, colours) -> PhotoImage).
-    WIDTH, HEIGHT = 34, 18    # px at 100%
+    WIDTH, HEIGHT = 34, 18    # px at 100%: the switch itself
 
     def __init__(self, parent, root, variable: tk.BooleanVar, command: Callable[[], None] | None = None,
                  bg: str = "SURFACE"):
         self._size = (theme.px(self.WIDTH), theme.px(self.HEIGHT))
+        self.margin = keyfocus.ring_room()
         self._app_root, self._bg = root, bg  # (not _root: that name is a Tk method); bg: a theme role
         super().__init__(parent, bg=theme.colour(bg), bd=0, cursor="hand2")
         self.variable, self.command = variable, command
@@ -877,6 +941,13 @@ class Toggle(tk.Label):
         self._trace = variable.trace_add("write", lambda *_: self._draw())
         self.bind("<Destroy>", lambda e: self._untrace(), add="+")
         theme.on_change(self._palette_changed)   # the picture is Pillow-drawn: redraw it in new colours
+        self._keyboard()
+        self._draw()
+
+    def activate(self):
+        self.toggle()
+
+    def focus_changed(self):
         self._draw()
 
     def toggle(self):
@@ -903,10 +974,15 @@ class Toggle(tk.Label):
             self.configure(image=self._photo)
 
     def _image(self, on: bool):
+        return self._picture(on, theme.ACCENT if on else theme.SWITCH_OFF, theme.ON_ACCENT if on else theme.MUTED)
+
+    def _picture(self, on: bool, track: str, knob: str):
+        """The switch in these colours, with the focus ring round it while it has the keyboard."""
         w, h = self._size
-        bg, track = theme.colour(self._bg), theme.ACCENT if on else theme.SWITCH_OFF
-        knob = theme.ON_ACCENT if on else theme.MUTED
-        key = (on, w, h, bg, track, knob)
+        m = self.margin
+        bg = theme.colour(self._bg)
+        ring = (theme.ACCENT, keyfocus.ring_width()) if self.focused else None
+        key = (on, w, h, m, bg, track, knob, ring)
         # (0.19.0) One cache per Tk root: a picture made under an earlier root (tests build
         # several) went with it, and Tk would refuse it ("image doesn't exist").
         images = getattr(self._app_root, "_dg_toggle_images", None)
@@ -914,14 +990,18 @@ class Toggle(tk.Label):
             images = self._app_root._dg_toggle_images = {}
         if key not in images:
             k = 4
-            img = Image.new("RGB", (w * k, h * k), bg)
+            W, H = w + 2 * m, h + 2 * m
+            img = Image.new("RGB", (W * k, H * k), bg)
             draw = ImageDraw.Draw(img)
-            draw.rounded_rectangle((0, 0, w * k - 1, h * k - 1), radius=h * k // 2, fill=track)
+            draw.rounded_rectangle((m * k, m * k, (m + w) * k - 1, (m + h) * k - 1), radius=h * k // 2, fill=track)
             pad = 3 * k
             d = h * k - 2 * pad
-            x = w * k - pad - d if on else pad
-            draw.ellipse((x, pad, x + d, pad + d), fill=knob)
-            images[key] = ImageTk.PhotoImage(img.resize((w, h), Image.LANCZOS), master=self._app_root)
+            x = m * k + (w * k - pad - d if on else pad)
+            draw.ellipse((x, m * k + pad, x + d, m * k + pad + d), fill=knob)
+            if ring:
+                draw.rounded_rectangle((0, 0, W * k - 1, H * k - 1), radius=H * k // 2, outline=ring[0],
+                                       width=ring[1] * k)
+            images[key] = ImageTk.PhotoImage(img.resize((W, H), Image.LANCZOS), master=self._app_root)
         return images[key]
 
 
@@ -939,7 +1019,9 @@ class SettingRow(tk.Frame):
                  command: Callable[[], None] | None = None, wrap: int | None = None, guess: int = 220):
         super().__init__(parent, bg=theme.SURFACE, cursor="hand2")
         self.toggle = Toggle(self, root, variable, command)
-        self.toggle.pack(side="right", anchor="n", pady=theme.pad(theme.GAP_HAIR, 0), padx=theme.pad(theme.GAP_LARGE, 0))
+        room = self.toggle.margin   # (the switch's picture has room round it for the focus ring)
+        self.toggle.pack(side="right", anchor="n", pady=(max(0, theme.px(theme.GAP_HAIR) - room), 0),
+                         padx=(max(0, theme.px(theme.GAP_LARGE) - room), 0))
         text = tk.Frame(self, bg=theme.SURFACE)
         text.pack(side="left", fill="x", expand=True)
         name = tk.Label(text, text=title, bg=theme.SURFACE, fg=theme.TEXT, font=theme.font(theme.SIZE_BODY), anchor="w")
@@ -973,11 +1055,20 @@ class MenuRow(tk.Frame):
     (0.21.0) Also: `enabled=False` greys it out (shown, but does nothing); `check` True / False
     gives it a tick column (a switchable item such as a track-list column); `closes=False` keeps
     the pop-over open when it's chosen (a submenu's way in); `on_hover(row)` tells the menu the
-    pointer is on it, so the mouse and the arrow keys share one highlight (`set_active`)."""
+    pointer is on it, so the mouse and the arrow keys share one highlight (`set_active`).
+
+    Rows are MENU_ROW_H tall, their words MENU_INSET in from the menu's sides. The highlight is a
+    rounded HOVER plate (`plate`), MENU_PLATE_INSET in from the sides: a square frame whose four
+    corners are rounded off by small pictures drawn on the menu's SURFACE. `ticks`: keep a tick
+    column even with no tick (every row of a menu that has ticks, so the words line up);
+    `chevron="right"`: a way into a submenu (a chevron where the shortcut would be), `"left"`: the
+    way back out (a chevron before the words, which are semibold — the submenu's title). Anything
+    else put on the plate that has `set_backdrop(role)` is told when the row lights up."""
 
     def __init__(self, parent, text: str, command: Callable[[], None], shortcut: str = "", *,
                  enabled: bool = True, check: bool | None = None, closes: bool = True,
-                 on_hover: Callable[["MenuRow"], None] | None = None):
+                 on_hover: Callable[["MenuRow"], None] | None = None, ticks: bool | None = None,
+                 chevron: str = ""):
         super().__init__(parent, bg=theme.SURFACE, cursor="hand2")
         self.command = command
         self.enabled = enabled
@@ -985,29 +1076,60 @@ class MenuRow(tk.Frame):
         self.active = False
         self.on_hover = on_hover
         self.text = text
-        parts = [self]
+        self.chevron = chevron
+        inset = theme.px(theme.MENU_PLATE_INSET)
+        gap = max(1, inset // 2)
+        self.plate = tk.Frame(self, bg=theme.SURFACE, cursor="hand2")
+        self.plate.pack(fill="both", expand=True, padx=inset, pady=gap)
+        # A strut as tall as the plate should be: the row is MENU_ROW_H whatever the font.
+        strut = tk.Frame(self.plate, bg=theme.SURFACE, width=1, height=max(1, theme.px(theme.MENU_ROW_H) - 2 * gap))
+        strut.pack(side="left")
+        words_in = max(0, theme.px(theme.MENU_INSET) - inset - 1)
+        parts = [self, self.plate, strut]
         self.tick = None
-        if check is not None:
-            self.tick = tk.Label(self, text="✓" if check else "", bg=theme.SURFACE, fg=theme.ACCENT_TEXT,
-                                 font=theme.font(theme.SIZE_BODY, "bold"), width=2, anchor="e")
-            self.tick.pack(side="left")
-            parts.append(self.tick)
         self.checked = check
-        self.label = tk.Label(self, text=text, bg=theme.SURFACE, fg=theme.TEXT, font=theme.font(theme.SIZE_BODY),
-                              anchor="w", padx=theme.px(theme.GAP_MEDIUM), pady=theme.px(theme.GAP))
-        self.label.pack(side="left", fill="x", expand=True)
-        self.keys = tk.Label(self, text=shortcut, bg=theme.SURFACE, fg=theme.MUTED, font=theme.font(theme.SIZE_SMALL),
-                             padx=theme.px(theme.GAP_MEDIUM))
-        self.keys.pack(side="right")
+        column = check is not None if ticks is None else ticks
+        if column or chevron == "left":
+            self._column = shapes.spacer_photo(self, theme.px(theme.MENU_INSET + theme.GAP_SMALL), 1)
+            self.tick = tk.Label(self.plate, text=glyph(self, "check") if check else "", image=self._column,
+                                 compound="center", bg=theme.SURFACE, fg=theme.ACCENT_TEXT, bd=0, padx=0, pady=0,
+                                 font=icon_font(self, theme.ICON_SMALL) or theme.font(theme.SIZE_BODY, "bold"))
+            self.tick.pack(side="left", padx=(words_in, 0))
+            parts.append(self.tick)
+            words_in = 0
+        weight = ("semibold",) if chevron == "left" else ()
+        self.label = tk.Label(self.plate, text=text, bg=theme.SURFACE, fg=theme.TEXT, anchor="w", padx=0, pady=0,
+                              bd=0, font=theme.font(theme.SIZE_BODY, *weight))
+        self.label.pack(side="left", fill="x", expand=True, padx=(words_in, 0))
+        self.keys = tk.Label(self.plate, text="" if chevron == "right" else shortcut, bg=theme.SURFACE, fg=theme.MUTED,
+                             font=theme.font(theme.SIZE_SMALL), padx=0, pady=0, bd=0)
+        self.keys.pack(side="right", padx=(theme.px(theme.GAP_MEDIUM), max(0, theme.px(theme.MENU_INSET) - inset)))
         parts += [self.label, self.keys]
         self._parts = parts
+        self._corners: list[tk.Label] = []
         for w in parts:
-            w.bind("<Enter>", lambda e: self._entered())
-            w.bind("<Leave>", lambda e: self.set_active(False))
-            w.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self._run())
+            self._bind_part(w)
         theme.on_change(self._palette_changed)
+        self._paint_chevron()
         if not enabled:
             self.set_enabled(False)
+
+    def _bind_part(self, w: tk.Misc):
+        w.bind("<Enter>", lambda e: self._entered())
+        w.bind("<Leave>", lambda e: self.set_active(False))
+        w.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self._run())
+
+    def _paint_chevron(self, ink: str | None = None):
+        """The drawn chevron (a submenu's way in or out), in the row's words' colour."""
+        if not self.chevron:
+            return
+        height = theme.px(theme.MENU_INSET)
+        width = height + (theme.px(theme.GAP_SMALL) if self.chevron == "left" else 0)   # (the tick column's)
+        ink = ink or theme.MUTED
+        direction = self.chevron
+        self._chevron = shapes.photo(self, ("menu chevron", direction, width, height, ink),
+                                     lambda: shapes.chevron(width, height, ink, direction))
+        (self.keys if direction == "right" else self.tick).configure(image=self._chevron)
 
     def _entered(self):
         if self.on_hover is not None:
@@ -1023,7 +1145,33 @@ class MenuRow(tk.Frame):
 
     def _paint(self, bg):
         for w in self._parts:
-            w.configure(bg=bg)
+            if w is not self:
+                w.configure(bg=bg)
+        for w in self.plate.winfo_children():
+            if hasattr(w, "set_backdrop"):
+                w.set_backdrop("HOVER" if self.active else "SURFACE")
+        if self.active:
+            self._round_plate()
+        else:
+            for corner in self._corners:
+                corner.place_forget()
+
+    def _round_plate(self):
+        """Round the lit plate's corners: four small pictures over its square ones."""
+        radius = theme.px(theme.RADIUS_S)
+        pictures = [shapes.photo(self, ("menu corner", i, radius, theme.HOVER, theme.SURFACE),
+                                 lambda i=i: shapes.corners(radius, theme.HOVER, theme.SURFACE)[i]) for i in range(4)]
+        if not self._corners:
+            for _ in range(4):
+                corner = tk.Label(self.plate, bd=0, padx=0, pady=0, highlightthickness=0, cursor="hand2")
+                self._bind_part(corner)
+                self._corners.append(corner)
+        self._corner_pictures = pictures   # (kept: a shared cache may be cleared)
+        for corner, picture, (relx, rely, anchor) in zip(self._corners, pictures, (
+                (0, 0, "nw"), (1, 0, "ne"), (0, 1, "sw"), (1, 1, "se"))):
+            corner.configure(image=picture)
+            corner.place(relx=relx, rely=rely, anchor=anchor)
+            corner.lift()
 
     def disabled_colour(self) -> str:
         return theme.mix("MUTED", "SURFACE", DISABLED_FADE)
@@ -1033,6 +1181,7 @@ class MenuRow(tk.Frame):
         faded = self.disabled_colour()
         self.label.configure(fg=theme.TEXT if enabled else faded)
         self.keys.configure(fg=theme.MUTED if enabled else faded)
+        self._paint_chevron(None if enabled else faded)
         for w in self._parts:
             w.configure(cursor="hand2" if enabled else "arrow")
         self.set_active(False)
@@ -1040,6 +1189,10 @@ class MenuRow(tk.Frame):
     def _palette_changed(self, _palette):
         if not self.enabled:            # the faded grey is worked out, not a role: work it out again
             self.set_enabled(False)
+        else:
+            self._paint_chevron()
+        if self.active:
+            self._round_plate()
 
     def _run(self):
         if self.enabled:
@@ -1058,17 +1211,26 @@ class Popover(tk.Frame):
     only shows when needed). Settings needs this: at 150% display scaling it is ~1300 px tall.
     `transient=True`: the panel destroys itself when it closes (menus built for one right-click).
     `keys=True`: the arrow keys move through its MenuRows, Enter runs one, Esc closes; the panel
-    takes the keyboard while it's open and gives it back when it closes."""
+    takes the keyboard while it's open and gives it back when it closes.
+    `controls=True` (Settings): the panel takes the keyboard while it's open, Tab and Shift+Tab go
+    round its controls top to bottom (keyfocus.cycle), Esc closes it and the keyboard goes back.
+    `at_edge=True`: opened by `toggle`, it sits MARGIN in from the window's right edge (not under
+    its button).
+
+    The panel is SURFACE with a 1 px EDGE rim."""
 
     open_one: "Popover | None" = None
     MARGIN = 8   # px at 100%: kept clear between the panel and its window's edges
 
     def __init__(self, root: tk.Misc, width: int, *, scroll: bool = False, transient: bool = False,
-                 keys: bool = False, padding: tuple[int, int] = (theme.GAP_WIDE, theme.GAP_LARGE)):
-        super().__init__(root, bg=theme.SURFACE, highlightthickness=1, highlightbackground=theme.BORDER)
+                 keys: bool = False, padding: tuple[int, int] = (theme.GAP_WIDE, theme.GAP_LARGE),
+                 controls: bool = False, at_edge: bool = False):
+        super().__init__(root, bg=theme.SURFACE, highlightthickness=1, highlightbackground=theme.EDGE,
+                         highlightcolor=theme.EDGE)
         self.root = root
         self.width = width
         self.scroll, self.transient, self.keys_on = scroll, transient, keys
+        self.controls_on, self.at_edge = controls, at_edge
         self.area = None
         if scroll:
             from .controls import ScrollArea   # (controls imports this module: import here, not at the top)
@@ -1091,6 +1253,8 @@ class Popover(tk.Frame):
             root.bind("<ButtonPress-1>", Popover._click_anywhere, add="+")
             root.bind("<Escape>", lambda e: Popover.close_open(), add="+")
             root.bind("<Configure>", lambda e: Popover._window_resized(e, root), add="+")
+        if controls:
+            self.configure(takefocus=1)
         if keys:
             self.configure(takefocus=1)
             for key, step in (("<Down>", 1), ("<Up>", -1), ("<Tab>", 1), ("<Shift-Tab>", -1)):
@@ -1117,6 +1281,8 @@ class Popover(tk.Frame):
         right = under.winfo_rootx() + under.winfo_width() - self.root.winfo_rootx()
         margin = theme.px(self.MARGIN)
         x = max(margin, min(right - width, self.root.winfo_width() - width - margin))
+        if self.at_edge:
+            x = max(margin, self.root.winfo_width() - width - margin)
         self._top, self._at = top, None
         self.place(x=x, y=top, width=width)
         self._opened()
@@ -1179,10 +1345,13 @@ class Popover(tk.Frame):
         Popover.open_one = self
         if self.keys_on:
             self.wire_rows()
+        if self.keys_on or self.controls_on:
             try:
                 self._focus_before = self.focus_get()
             except (tk.TclError, KeyError):   # (focus on a widget Python has no object for)
                 self._focus_before = None
+            if self.controls_on:
+                keyfocus.cycle(self, self.area)
             self.focus_set()
 
     def wire_rows(self):
@@ -1198,7 +1367,7 @@ class Popover(tk.Frame):
         if Popover.open_one is self:
             Popover.open_one = None
         before, self._focus_before = self._focus_before, None
-        if self.keys_on and before is not None:
+        if (self.keys_on or self.controls_on) and before is not None:
             try:
                 if before.winfo_exists():
                     before.focus_set()     # the keyboard goes back where it was (e.g. the track list)

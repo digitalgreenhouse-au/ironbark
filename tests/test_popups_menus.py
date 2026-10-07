@@ -15,6 +15,7 @@ import pytest
 
 from ironbark import playlists, popups, tabbar, theme
 from ironbark.popups import Prompt, PopupMenu
+from ironbark.tabbar import glyph
 
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
@@ -253,8 +254,11 @@ def test_menu_runs_commands_and_moves_with_the_keys(root):
     assert [r.keys.cget("text") for r in rows] == ["Enter", "Ctrl+Up", "Ctrl+W"]   # shortcuts shown
     assert rows[1].label.cget("fg") == rows[1].disabled_colour()                  # greyed out
     menu.press("Down")
-    assert menu.active_row is rows[0] and rows[0].cget("bg") == theme.HOVER
+    assert menu.active_row is rows[0] and rows[0].plate.cget("bg") == theme.HOVER   # its rounded plate lights
+    assert rows[0].cget("bg") == theme.SURFACE and len(rows[0]._corners) == 4
+    assert all(corner.winfo_manager() == "place" for corner in rows[0]._corners)
     menu.press("Down")                                                            # skips the greyed one
+    assert not any(corner.winfo_manager() for corner in rows[0]._corners)         # the old row's plate goes
     assert menu.active_row is rows[2]
     menu.press("Down")                                                            # round to the top
     assert menu.active_row is rows[0]
@@ -302,14 +306,15 @@ def test_submenus_open_in_place_and_come_back(root):
     menu.press("Down")
     menu.press("Down")                               # onto "Add to playlist ›"
     menu.press("Right")
-    assert menu.is_open and [r.text for r in menu.rows()] == ["‹  Add to playlist", "Road trip", "New playlist…"]
+    assert menu.is_open and [r.text for r in menu.rows()] == ["Add to playlist", "Road trip", "New playlist…"]
+    assert menu.rows()[0].back and menu.rows()[0].chevron == "left"   # the way back: a chevron and the title
     assert menu.active_row.text == "Road trip"
     menu.press("Left")                               # back, with the highlight on where we came from
     assert menu.active_row.text == "Add to playlist"
     menu.invoke("Columns")
     tick = menu.rows()[1]
-    assert tick.text == "Artist" and tick.tick.cget("text") == "✓"
-    menu.invoke("‹  Columns")
+    assert tick.text == "Artist" and tick.tick.cget("text") == glyph(root, "check")
+    menu.invoke("Columns")                           # (the back row is titled with the submenu's name)
     menu.invoke("Add to playlist")
     menu.invoke("New playlist…")
     assert picked == ["new"] and not menu.is_open
@@ -367,7 +372,7 @@ def test_track_and_tab_menus(make_window, shown_menus, tmp_path, monkeypatch):
     assert "artist" in window.playlist.columns and window.prefs["track_columns"] == ["artist"]
     window._heading_menu(event)
     heading = shown_menus[-1]
-    assert [r.tick.cget("text") for r in heading.rows()] == ["✓", ""]
+    assert [r.tick.cget("text") for r in heading.rows()] == [glyph(window.root, "check"), ""]
     heading.invoke("Artist")
     assert "artist" not in window.playlist.columns
     # The keyboard's menu key opens the same menu under the focused row.

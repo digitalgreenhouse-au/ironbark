@@ -165,6 +165,106 @@ def spacer(width: int, height: int) -> Image.Image:
     return Image.new("RGBA", (max(1, width), max(1, height)), CLEAR)
 
 
+def chevron(width: int, height: int, colour: str, direction: str = "down", line: float | None = None,
+            bg: str | None = None) -> Image.Image:
+    """A thin chevron ("down", "right" or "left") centred in `width` × `height`, drawn rather than taken
+    from an icon font (Windows 10's icon font may lack these glyphs, and the Mac has neither)."""
+    image, d = _canvas(width, height, bg)
+    k = SUPERSAMPLE
+    s = theme.scale()
+    line = line if line is not None else max(1.0, 1.3 * s)
+    cx, cy, arm = width / 2 * k, height / 2 * k, 3.6 * s * k
+    if direction == "down":
+        points = [(cx - arm, cy - arm / 2), (cx, cy + arm / 2), (cx + arm, cy - arm / 2)]
+    elif direction == "right":
+        points = [(cx - arm / 2, cy - arm), (cx + arm / 2, cy), (cx - arm / 2, cy + arm)]
+    else:
+        points = [(cx + arm / 2, cy - arm), (cx - arm / 2, cy), (cx + arm / 2, cy + arm)]
+    d.line(points, fill=theme.colour(colour), width=max(1, round(line * k)), joint="curve")
+    return down(image, (width, height))
+
+
+def corners(radius: int, fill: str, bg: str) -> tuple[Image.Image, ...]:
+    """The four corners (top-left, top-right, bottom-left, bottom-right) of a rounded `fill` plate on
+    `bg`, each `radius` px square: laid over a square plate's corners, they round it."""
+    radius = max(1, radius)
+    whole = rounded(2 * radius + 2, 2 * radius + 2, radius, fill, bg=bg)
+    w = whole.width
+    return (whole.crop((0, 0, radius, radius)), whole.crop((w - radius, 0, w, radius)),
+            whole.crop((0, w - radius, radius, w)), whole.crop((w - radius, w - radius, w, w)))
+
+
+def ring(width: int, height: int, radius: int, colour: str, line: int) -> Image.Image:
+    """A see-through rounded ring `line` px wide just inside `width` × `height`: the focus ring."""
+    return rounded(width, height, min(radius, height // 2, width // 2), outline=colour, line=line)
+
+
+# -- ttk image elements -------------------------------------------------------------------------------
+def at_least(size: tuple[int, int], border: tuple[int, int, int, int]) -> tuple[int, int]:
+    """`size` grown, if need be, to its 9-slice borders plus 2 px each way: Tk hangs drawing an image
+    element whose picture is smaller than its borders."""
+    left, top, right, bottom = border
+    return max(size[0], left + right + 2), max(size[1], top + bottom + 2)
+
+
+def element_pictures() -> dict[str, tuple[Image.Image, tuple[int, int, int, int]]]:
+    """Every picture the ttk styles draw with (theme._elements makes them image elements), by name:
+    (picture, its 9-slice border — left, top, right, bottom). The border's corners stay as drawn and
+    the middle is repeated to fill, so the middle of every picture is plain.
+
+    - "field BG" / "field SURFACE" (+ " focus", " off"): a rounded field on the window or on a card,
+      filled one step "into" it, with a 1 px EDGE rim (a FOCUS_RING DG-green ring when focused).
+    - "chevron" (+ " hot", " off"): a drop-down's chevron, see-through.
+    - "heading": a list heading's background, with a 1 px BORDER line along its foot.
+    - "selection" / "clear": the selected row's rounded SELECT plate, and nothing (other rows).
+    - "thumb v" / "thumb h" (+ " hot"): the slim scrollbar's thumb, a THUMB pill (MUTED and wider
+      under the pointer), see-through on the trough."""
+    px = theme.px
+    line = max(1, px(1))
+    out: dict[str, tuple[Image.Image, tuple[int, int, int, int]]] = {}
+
+    radius = px(theme.RADIUS_M)
+    focus = max(line, px(theme.FOCUS_RING))
+    b = radius + 1
+    border = (b, b, b, b)
+    size = at_least((2 * b + 4, 2 * b + 4), border)
+    for where, fill in (("BG", "SURFACE"), ("SURFACE", "BG")):
+        out[f"field {where}"] = rounded(*size, radius, fill, "EDGE", line, bg=where), border
+        out[f"field {where} focus"] = rounded(*size, radius, fill, "ACCENT", focus, bg=where), border
+        out[f"field {where} off"] = rounded(*size, radius, theme.mix(fill, where, 0.5), "BORDER", line,
+                                            bg=where), border
+
+    room = (px(theme.SEARCH_CLEAR_ROOM), px(theme.CONTROL_H_SMALL))
+    out["chevron"] = chevron(*room, "MUTED"), (0, 0, 0, 0)
+    out["chevron hot"] = chevron(*room, "TEXT"), (0, 0, 0, 0)
+    out["chevron off"] = chevron(*room, theme.mix("MUTED", "BG", 0.45)), (0, 0, 0, 0)
+
+    border = (1, 1, 1, line + 1)
+    heading = Image.new("RGB", at_least((4, line + 4), border), theme.BG)
+    ImageDraw.Draw(heading).rectangle((0, heading.height - line, heading.width, heading.height), fill=theme.BORDER)
+    out["heading"] = heading, border
+
+    radius = px(theme.RADIUS_S)
+    b = radius + 1
+    border = (b, b, b, b)
+    size = at_least((2 * b + 4, 2 * b + 4), border)
+    out["selection"] = rounded(*size, radius, "SELECT"), border
+    out["clear"] = Image.new("RGBA", size, CLEAR), border
+
+    trough = max(4, px(theme.SCROLLBAR_WIDTH))
+    end = (max(2, px(theme.THUMB_HOT)) + 1) // 2 + 1
+    for name, wide, colour in (("thumb v", px(theme.THUMB_REST), "THUMB"),
+                               ("thumb v hot", px(theme.THUMB_HOT), "MUTED")):
+        wide = max(2, min(trough, wide))
+        border = (0, end, 0, end)
+        w, h = at_least((trough, 2 * end + 4), border)
+        thumb = Image.new("RGBA", (w, h), CLEAR)
+        thumb.paste(rounded(wide, h, wide // 2, colour), ((w - wide) // 2, 0))
+        out[name] = thumb, border
+        out[name.replace(" v", " h")] = thumb.transpose(Image.Transpose.ROTATE_90), (end, 0, end, 0)
+    return out
+
+
 # -- cached PhotoImages -------------------------------------------------------------------------------
 def disc_photo(widget: tk.Misc, diameter: int, colour: str, bg: str | None = None) -> ImageTk.PhotoImage:
     ink, back = theme.colour(colour), (theme.colour(bg) if bg else None)

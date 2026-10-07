@@ -30,7 +30,6 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
-from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
@@ -154,7 +153,7 @@ class LibraryWindow:
         search.bind("<Down>", lambda e: self._focus_list())
         search.bind("<Return>", lambda e: self._choose_first())
 
-        # The browse views: a row of words, the one on show in green with a green bar under it.
+        # The browse views: a row of words, the one on show in green with a short green pill under it.
         self.view_var = tk.StringVar(value=self.view)
         self.views = controls.ChoiceRow(frame, [(key, browse.VIEW_TITLES[key]) for key in browse.VIEWS],
                                         self.view_var, command=lambda: self.set_view(self.view_var.get()))
@@ -165,7 +164,7 @@ class LibraryWindow:
         table = ttk.Frame(frame)
         table.pack(fill="both", expand=True, pady=theme.pad(theme.GAP, 0))
         self.tree = ttk.Treeview(table, columns=browse.COLUMNS, show="headings", selectmode="browse")
-        widths = {"album": 220, "artist": 140, "year": 48, "quality": 64, "tracks": 52, "added": 82}
+        widths = {"album": 220, "artist": 140, "year": 48, "quality": 64, "tracks": 60, "added": 96}
         for column in browse.COLUMNS:
             anchor = "e" if column in ("tracks", "year") else "w"
             self.tree.heading(column, text=HEADINGS[column], anchor=anchor,
@@ -174,16 +173,14 @@ class LibraryWindow:
                              stretch=column in ("album", "artist"))
         self.tree.column("#0", width=theme.px(22), stretch=False)  # the fold-open arrow of a group
         self._fit = fit_columns(self.tree, {"album": 3, "artist": 2}, minimum=theme.px(60))
-        bold = tkfont.nametofont("TkDefaultFont").copy()
-        bold.configure(weight="bold")
-        self._bold = bold
         self._colour_tags()
         theme.on_change(self._palette_changed)
-        # (0.22.0) The slim scrollbar, only there when the list is longer than its window.
-        self.scrollbar = controls.AutoScrollbar(table, command=self.tree.yview)
+        # (0.22.0) The slim scrollbar, only there when the list is longer than its window — in the
+        # window's right margin, so the list's words line up with the search box.
+        self.scrollbar = controls.AutoScrollbar(frame, command=self.tree.yview)
         self.tree.configure(yscrollcommand=self.scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
-        self.scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.tree)
+        self.scrollbar.in_margin(table)
         # The row under the pointer lights up (as in the track list).
         self.hovered: str | None = None
         self.drag: TreeDrag | None = None
@@ -247,7 +244,6 @@ class LibraryWindow:
             except tk.TclError:
                 pass
         self.search_var = self.view_var = None
-        self._bold = None
         self.albums, self._shown = [], []
         self._rows.clear()
         self._folds.clear()
@@ -383,7 +379,7 @@ class LibraryWindow:
         # same option, the first-configured wins); its text turns TEXT, as green text on the hover
         # grey would fall under AA in Dark.
         self.tree.tag_configure("hover", background=theme.HOVER, foreground=theme.TEXT)
-        self.tree.tag_configure("group", foreground=theme.ACCENT_TEXT, font=self._bold)
+        self.tree.tag_configure("group", foreground=theme.ACCENT_TEXT, font=theme.font(theme.SIZE_BODY, "semibold"))
         self.tree.tag_configure("new", foreground=theme.ACCENT_TEXT)   # a new album: green until opened
 
     def _palette_changed(self, _palette):

@@ -19,15 +19,16 @@ move a song) are in the keyboard table (keys.py); the window binds them, using `
 `selected_rows` and `selected_track`.
 
 The look (0.20.0): the row under the pointer lights up, the playing song is marked (♪ in place of
-its number, green bold text) even when another row is selected, album header rows read
-"Album · Artist" with the quality on the right, the scrollbar is slim and only there when the list
-is longer than the window, and the search box has a magnifier and a × to clear it.
+its number, green semibold text) even when another row is selected, album header rows read
+"Album · Artist" in green semibold with the quality on the right, the scrollbar is slim and only
+there when the list is longer than the window, and the search box has a magnifier and a × to clear
+it. The list is frameless on the window's colour, the selected row a rounded green plate, and the
+scrollbar sits in the window's right margin, so the list's words line up with the search box.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
@@ -179,7 +180,8 @@ class PlaylistView:
 
         # (0.20.0) A magnifier inside the box on the left, and a × on the right while there's
         # something typed; (0.22.0) the box itself is controls.SearchBox, shared with the Library.
-        self.search = controls.SearchBox(frame, "Search songs, artists, albums   Ctrl+F", on_clear=self.clear_search)
+        self.search = controls.SearchBox(frame, "Search songs, artists, albums", on_clear=self.clear_search,
+                                         keys="Ctrl+F")
         self.search.pack(fill="x", pady=theme.pad(0, theme.GAP))
         self.query, self.entry = self.search.query, self.search.entry
         self.magnifier, self.clear_button, self.hint = self.search.magnifier, self.search.clear_button, self.search.hint
@@ -203,16 +205,14 @@ class PlaylistView:
         self.tree.column("album", width=theme.px(120), stretch=True, anchor="w")
         self.tree.column("time", width=theme.px(52), stretch=False, anchor="e")
         self._fit = fit_columns(self.tree, {"title": 2, "artist": 1, "album": 1}, minimum=theme.px(50))
-        bold = tkfont.nametofont("TkDefaultFont").copy()
-        bold.configure(weight="bold")
-        self._bold = bold
         self._colour_tags()
         theme.on_change(self._palette_changed)
-        # (0.20.0) The slim scrollbar, only there when the list is longer than its window.
-        self.scrollbar = controls.AutoScrollbar(table, command=self.tree.yview)
+        # (0.20.0) The slim scrollbar, only there when the list is longer than its window — in the
+        # window's right margin (`parent` is the padded frame round the list).
+        self.scrollbar = controls.AutoScrollbar(parent, command=self.tree.yview)
         self.tree.configure(yscrollcommand=self.scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
-        self.scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.tree)
+        self.scrollbar.in_margin(table)
         # The row under the pointer lights up.
         self.tree.bind("<Motion>", self._hover_row, add="+")
         self.tree.bind("<Leave>", lambda e: self._set_hover(None), add="+")
@@ -229,8 +229,9 @@ class PlaylistView:
         # on Tk 8.6.12): "hover" comes first so a hovered album / playing row lights up too. Its
         # text turns TEXT: green text on the hover grey would be under WCAG AA's 4.5:1 in Dark.
         self.tree.tag_configure("hover", background=theme.HOVER, foreground=theme.TEXT)
-        self.tree.tag_configure("album", background=theme.BG, foreground=theme.ACCENT_TEXT, font=self._bold)
-        self.tree.tag_configure("playing", foreground=theme.ACCENT_TEXT, font=self._bold)
+        self.tree.tag_configure("album", background=theme.BG, foreground=theme.ACCENT_TEXT,
+                                font=theme.font(theme.SIZE_BODY, "semibold"))
+        self.tree.tag_configure("playing", foreground=theme.ACCENT_TEXT, font=theme.font(theme.SIZE_BODY, "semibold"))
         self.tree.tag_configure("note", foreground=theme.MUTED)
 
     def _palette_changed(self, _palette):

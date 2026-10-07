@@ -154,7 +154,8 @@ def test_play_button_shows_play_or_pause_and_clicks(root):
     button = controls.PlayButton(root, lambda: pressed.append(1), label="Play")
     button.pack()
     _pump(root, 0.2)
-    assert button.winfo_reqwidth() == max(16, theme.px(controls.PLAY_DIAMETER))
+    # The circle, and room round it for the keyboard's focus ring.
+    assert button.winfo_reqwidth() == max(16, theme.px(controls.PLAY_DIAMETER)) + 2 * button.margin
     play_image = str(button.cget("image"))
     button.set_playing(True)
     assert str(button.cget("image")) != play_image

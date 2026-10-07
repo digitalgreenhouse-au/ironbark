@@ -180,7 +180,7 @@ def test_a_closed_library_window_is_freed(root, library):
     assert len(root.tk.splitlist(traces)) == 2        # the box's own and the window's
     w.win.destroy()                            # the title bar's ×, as well as Esc / a choice (close)
     assert len(root.tk.splitlist(root.tk.call("trace", "info", "variable", str(var)))) == 0
-    assert w.search_var is None and w.view_var is None and w._bold is None
+    assert w.search_var is None and w.view_var is None
     del w, var
     gc.collect()
     assert window() is None and menu() is None
@@ -403,7 +403,8 @@ def test_enter_in_a_delete_question_answers_no(root):
     later(lambda p: p.press_default())                      # Enter (held, or pressed again)
     assert popups.confirm(root, "Delete the playlist “Mix”?", ok="Delete", danger=True) is False
     box = seen[-1]
-    assert box.default == 1 and box.buttons[1].fill_colour() is None   # Cancel: plain, no green go-ahead
+    assert box.default == 1 and box.buttons[1].kind == "plain"         # Cancel: plain, no green go-ahead
+    assert box.buttons[1].fill_colour() == theme.SURFACE_HI
     later(lambda p: p._chosen(0))                           # a click on Delete
     assert popups.confirm(root, "Delete the playlist “Mix”?", ok="Delete", danger=True) is True
     direct = popups.Prompt(root, "Delete?", buttons=(("Delete", True, "danger"), ("Keep", False)), cancel=False)

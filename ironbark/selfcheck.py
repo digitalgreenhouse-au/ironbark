@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import gc
 import io
+import json
 import shutil
 import sys
 import tempfile
@@ -343,6 +344,11 @@ def _check_window() -> str:
     real_settings_path = settings.settings_path   # settings, playlists, index, logs all follow it
     try:
         settings.settings_path = lambda: home / "settings.json"
+        # The check window registers nothing system-wide (Windows' media panel, the taskbar's
+        # buttons, a keyboard hook) and doesn't start looking for new music; "media controls"
+        # above checks those pieces are there without taking them over.
+        (home / "settings.json").write_text(
+            json.dumps({"media_controls": False, "watch_music": False}), encoding="utf-8")
         appicon.set_app_id()
         root = tk.Tk()
         errors = []    # errors in the window code (Tk would only print them)

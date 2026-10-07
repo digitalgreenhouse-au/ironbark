@@ -118,6 +118,8 @@ UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are coun
 THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
 FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the mini strip has its own)
 SETTINGS_WIDTH = 310       # px at 100%: the Settings panel (less in a narrow window)
+SETTINGS_CHOICE_W = 120    # px at 100%: Settings' drop-downs beside their names (their left edges line up)
+DROP_GAP = 4               # px at 100%: a pop-over from the strip opens this far below it
 HEAD_ICON_SLOT = 24        # px at 100%: the lock's and ⓘ's slots (and round hover discs) beside the format line
 INFO_INK_INSET = 6         # px at 100%: the ⓘ glyph's ink stops this far inside its slot (measured from Segoe
                            # Fluent Icons / MDL2 Assets at 10 pt), so the slot reaches this far into the margin
@@ -474,7 +476,7 @@ class PlayerWindow:
         theme.apply(self.root)
         theme.on_change(self._palette_changed)
         self.bar = TabBar(self.root, self.root, on_select=self.select_tab, on_close=self.close_tab,
-                          on_new=lambda: self.new_menu.toggle(self.bar.add_btn, self.bar.height),
+                          on_new=lambda: self.new_menu.toggle(self.bar.add_btn, self._below_strip()),
                           on_settings=lambda: self._open_settings(),
                           on_double=self._bar_double_click, on_quit=self.quit,
                           on_tab_menu=self._tab_menu, on_move=self.move_tab)
@@ -559,7 +561,7 @@ class PlayerWindow:
         seek_row = ttk.Frame(body)
         seek_row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
         self.seek_row = seek_row
-        self.seek = controls.Slider(body, on_release=self._seek_released, on_drag=self._seek_dragged)
+        self.seek = controls.Slider(body, on_release=self._seek_released, on_drag=self._seek_dragged, step=SEEK_STEP)
         track = ttk.Frame(seek_row, height=int(self.seek.cget("height")))
         track.pack(fill="x")
         inset = round(self.seek.track_inset())
@@ -591,7 +593,7 @@ class PlayerWindow:
                                                         label=f"Previous ({keys.hint('previous')})")
         self.previous_button.pack(side="left", fill="y")
         self.play_button = controls.PlayButton(buttons, self.toggle_play, label=f"Play / pause ({keys.hint('play')})")
-        self.play_button.pack(side="left", padx=theme.px(theme.GAP_MEDIUM))
+        self.play_button.pack(side="left", padx=max(0, theme.px(theme.GAP_MEDIUM) - self.play_button.margin))
         self.next_button = controls.RoundIconButton(buttons, self.root, "next", self.player.next, diameter=36,
                                                     width=40, bg="BG", drawn="next", label=f"Next ({keys.hint('next')})")
         self.next_button.pack(side="left", fill="y")
@@ -600,10 +602,8 @@ class PlayerWindow:
                                                       label=f"Repeat ({keys.hint('repeat')})")
         self.repeat_button.pack(side="left", fill="y", padx=theme.pad(theme.GAP_SMALL, 0))
         self._paint_order_buttons()
-        self.volume_badge = controls.PillButton(self.transport, "", self._open_settings, fill=None, fg="WARN",
-                                                outline="WARN", hover_fill="SURFACE_HI",
-                                                font=theme.font(theme.SIZE_SMALL), pad_x=theme.GAP_MEDIUM,
-                                                height=theme.CONTROL_H_SMALL,
+        self.volume_badge = controls.PillButton(self.transport, "", self._open_settings, kind="badge", small=True,
+                                                font=theme.font(theme.SIZE_SMALL),
                                                 label="Volume below 100% · click for Settings, or use the mouse "
                                                       "wheel over the buttons, or Ctrl+↑ / ↓")
         for widget in (self.transport, buttons, *buttons.winfo_children(), self.volume_badge):
@@ -633,7 +633,7 @@ class PlayerWindow:
         self.up_next_label = ttk.Label(body, text="", style="UpNext.TLabel", anchor="w", cursor="hand2")
         self.up_next_label.bind("<Button-1>", lambda e: self._show_up_next())
         self._up_next_key = None
-        self.up_next_pop = Popover(self.root, width=theme.px(300), keys=True)
+        self.up_next_pop = Popover(self.root, width=theme.px(300), keys=True, padding=(0, theme.GAP_LARGE))
 
         # (0.20.0) The empty window (no tabs open): instead of "Nothing playing", a quiet ♫, one
         # clear button and the shortcut. Shown in place of the cover / transport / list by
@@ -645,7 +645,6 @@ class PlayerWindow:
         self.empty_mark = tk.Label(middle, bg=theme.BG, bd=0)
         self.empty_mark.pack(pady=theme.pad(0, theme.GAP_WIDE))
         self.empty_button = controls.PillButton(middle, "Open your library", self.open_library,
-                                                font=theme.font(theme.SIZE_BODY, "bold"),
                                                 label="Your albums, artists and playlists (Ctrl+L)")
         self.empty_button.pack()
         self.empty_hint = ttk.Label(middle, text="Ctrl+L  ·  or drop a folder or music files here",
@@ -680,11 +679,30 @@ class PlayerWindow:
                    guess=theme.px(column)).pack(fill="x", pady=theme.pad(theme.GAP, 0))
 
     def _pop_button(self, parent, text: str, command, label: str = "") -> controls.PillButton:
-        """(0.21.0) A flat button in a pop-over (Settings): a soft grey pill, darker under the pointer —
-        drawn like the rest of the app's buttons instead of a stock ttk button."""
-        return controls.PillButton(parent, text, command, fill="SURFACE_HI", fg="TEXT", hover_fill="SURFACE_DOWN",
-                                   bg="SURFACE", font=theme.font(theme.SIZE_BODY), pad_x=theme.GAP_MEDIUM,
-                                   pad_y=theme.GAP_HAIR, label=label)
+        """(0.21.0) A button in a pop-over (Settings): a small plain pill, like the rest of the app's
+        buttons instead of a stock ttk button."""
+        return controls.PillButton(parent, text, command, kind="plain", small=True, bg="SURFACE", label=label)
+
+    def _choice_box(self, parent, label: str, values, *, state: str = "readonly", full: bool = False,
+                    gap: int = theme.GAP) -> ttk.Combobox:
+        """A Settings drop-down on its own row: its name on the left, the box SETTINGS_CHOICE_W wide on
+        the right (so the boxes' left edges line up), or the whole width (`full`, no name). Tab
+        reaches it; ↓ opens it."""
+        if full:
+            box = ttk.Combobox(parent, state=state, takefocus=True, style=theme.CARD_COMBOBOX)
+            box.pack(fill="x")
+            return box
+        row = ttk.Frame(parent, style="Pop.TFrame")
+        row.pack(fill="x", pady=theme.pad(gap, 0))
+        holder = tk.Frame(row, bg=theme.SURFACE, width=theme.px(SETTINGS_CHOICE_W))
+        holder.pack(side="right", fill="y")   # (first: in a narrow window the name gives way, not the box)
+        ttk.Label(row, text=label, style="Pop.TLabel").pack(side="left")
+        box = ttk.Combobox(holder, state=state, takefocus=True, style=theme.CARD_COMBOBOX, values=list(values),
+                           width=1)
+        box.pack(fill="x")
+        holder.configure(height=box.winfo_reqheight())
+        holder.pack_propagate(False)
+        return box
 
     def _build_settings(self) -> Popover:
         """Grouped into Sound / Window / Library / Network / Experimental / Help, every on/off choice
@@ -693,7 +711,7 @@ class PlayerWindow:
         (0.21.0) It scrolls when it doesn't fit the window (it's ~1300 px tall at 150%
         scaling) — mouse wheel anywhere over it, and a slim scrollbar that shows only then. Its
         buttons are flat pills and the volume is the same drawn slider as the seek bar."""
-        pop = Popover(self.root, width=theme.px(SETTINGS_WIDTH), scroll=True)
+        pop = Popover(self.root, width=theme.px(SETTINGS_WIDTH), scroll=True, controls=True, at_edge=True)
         self.settings_area = pop.area
         b = pop.body
         row = ttk.Frame(b, style="Pop.TFrame")
@@ -705,8 +723,8 @@ class PlayerWindow:
 
         self._caption(b, "Sound", first=True)
         self._output_choices: list[str | None] = []
-        self.output_box = ttk.Combobox(b, state="readonly", takefocus=False, postcommand=self._refresh_outputs)
-        self.output_box.pack(fill="x")
+        self.output_box = self._choice_box(b, "", (), full=True)
+        self.output_box.configure(postcommand=self._refresh_outputs)
         self.output_box.bind("<<ComboboxSelected>>", self._change_output)
         Tooltip(self.output_box, "Output: where the sound goes")
         self._refresh_outputs()
@@ -716,12 +734,8 @@ class PlayerWindow:
         self._setting(b, "Clipping guard", "Lowers only tracks that would crackle, by just enough.",
                       self.clip_guard, self._guard_changed)
         # (0.24.0) "My DAC has headroom": room some converters have above full scale. Off by default.
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-        ttk.Label(row, text="My DAC has headroom", style="Pop.TLabel").pack(side="left")
-        self.headroom_box = ttk.Combobox(row, state="readonly", takefocus=False, width=8,
-                                         values=[headroom_label(v) for v in GUARD_HEADROOM_CHOICES])
-        self.headroom_box.pack(side="right")
+        self.headroom_box = self._choice_box(b, "My DAC has headroom",
+                                             [headroom_label(v) for v in GUARD_HEADROOM_CHOICES])
         self.headroom_box.current(headroom_index(self.prefs.get("clip_headroom", 0.0)))
         self.headroom_box.bind("<<ComboboxSelected>>", self._headroom_chosen)
         Tooltip(self.headroom_box, "Only if your converter is known to take overs: the clipping guard then lets "
@@ -729,25 +743,16 @@ class PlayerWindow:
                                    "Measured converters range from none to about 3.5 dB. Off = none.")
         # Volume levelling: off by default (any change of level means the device no longer gets the
         # file's own samples); the pre-amp goes with it.
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-        ttk.Label(row, text="Volume levelling", style="Pop.TLabel").pack(side="left")
-        self.levelling_box = ttk.Combobox(row, state="readonly", takefocus=False, width=8,
-                                          values=[label for _, label in levelling.MODES])
-        self.levelling_box.pack(side="right")
+        self.levelling_box = self._choice_box(b, "Volume levelling", [label for _, label in levelling.MODES])
         self.levelling_box.current([key for key, _ in levelling.MODES].index(self._levelling_setting()))
         self.levelling_box.bind("<<ComboboxSelected>>", self._levelling_chosen)
         Tooltip(self.levelling_box, "Plays songs at about the same loudness, from their ReplayGain tags (or "
                                     "Ironbark measures them). Track: each song on its own. Album: an album's "
                                     "songs keep their own balance. Smart: Album while an album plays in order, "
                                     "else Track. Not bit-perfect while it's on.")
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-        ttk.Label(row, text="Levelling pre-amp", style="Pop.TLabel").pack(side="left")
-        self.preamp_box = ttk.Combobox(row, takefocus=False, width=8,
-                                       values=[levelling.preamp_label(v) for v in levelling.PREAMP_CHOICES],
-                                       state="disabled" if self._levelling_setting() == "off" else "readonly")
-        self.preamp_box.pack(side="right")
+        self.preamp_box = self._choice_box(b, "Levelling pre-amp",
+                                           [levelling.preamp_label(v) for v in levelling.PREAMP_CHOICES],
+                                           state="disabled" if self._levelling_setting() == "off" else "readonly")
         self.preamp_box.current(levelling.PREAMP_CHOICES.index(self._preamp_db()))
         self.preamp_box.bind("<<ComboboxSelected>>", self._preamp_chosen)
         Tooltip(self.preamp_box, "Added to every levelling gain. A song is only turned up as far as its "
@@ -759,18 +764,13 @@ class PlayerWindow:
         self.volume_text.pack(side="right", padx=theme.pad(theme.GAP_MEDIUM, 0))
         # (0.21.0) The drawn slider (controls.Slider), following volume_var however it's changed.
         self.volume_slider = controls.Slider(row, on_release=self._volume_slid, on_drag=self._volume_slid,
-                                             bg="SURFACE")
+                                             bg="SURFACE", step=VOLUME_STEP * 100)
         self.volume_slider.pack(side="left", fill="x", expand=True)
         self.volume_slider.set(self.volume_var.get(), 100.0)
         self.volume_var.trace_add("write", lambda *_: self.volume_slider.set(self.volume_var.get(), 100.0))
 
         self._caption(b, "Window")
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x")
-        ttk.Label(row, text="Theme", style="Pop.TLabel").pack(side="left")
-        self.theme_box = ttk.Combobox(row, state="readonly", takefocus=False, width=16,
-                                      values=[label for _, label in theme.THEME_CHOICES])
-        self.theme_box.pack(side="right")
+        self.theme_box = self._choice_box(b, "Theme", [label for _, label in theme.THEME_CHOICES], gap=0)
         self.theme_box.current([key for key, _ in theme.THEME_CHOICES].index(self.prefs["theme"]))
         self.theme_box.bind("<<ComboboxSelected>>", self._theme_chosen)
         Tooltip(self.theme_box, "Follow Windows: light or dark, as Windows' own app setting is "
@@ -997,7 +997,7 @@ class PlayerWindow:
         """Ctrl+T: the + button's menu (Browse library, Open a folder, New playlist, Open a playlist file)."""
         if self.mini_mode:
             self.toggle_mini()
-        self.new_menu.toggle(self.bar.add_btn, self.bar.height)
+        self.new_menu.toggle(self.bar.add_btn, self._below_strip())
 
     def search_this_tab(self):
         """Ctrl+F: the track list's search box."""
@@ -2456,36 +2456,40 @@ class PlayerWindow:
         for child in body.winfo_children():
             child.destroy()
         queue = self.player.up_next()
+        inset = theme.px(theme.MENU_INSET)
         head = tk.Frame(body, bg=theme.SURFACE)
-        head.pack(fill="x", pady=theme.pad(0, theme.GAP_SMALL))
+        head.pack(fill="x", padx=inset, pady=theme.pad(0, theme.GAP_SMALL))
         ttk.Label(head, text="Up next", style="PopTitle.TLabel").pack(side="left")
         ttk.Label(head, text=f"{len(queue)} song{'' if len(queue) == 1 else 's'}", style="PopMuted.TLabel").pack(
             side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
-        # (0.22.0) Clear is a flat pill like Settings' buttons (it was a plain word).
-        controls.PillButton(head, "Clear", lambda: self.clear_up_next(),
-                            fill="SURFACE_HI", fg="TEXT", hover_fill="SURFACE_DOWN", bg="SURFACE",
-                            font=theme.font(theme.SIZE_BODY), pad_x=theme.GAP_MEDIUM, pad_y=theme.GAP_HAIR,
+        # (0.22.0) Clear is a small plain pill like Settings' buttons (it was a plain word).
+        controls.PillButton(head, "Clear", lambda: self.clear_up_next(), kind="plain", small=True, bg="SURFACE",
                             label="Take every song out of Up next").pack(side="right")
         for position, track in enumerate(queue[:UP_NEXT_SHOWN]):
             label = f"{track.title} — {track.artist}" if track.artist else track.title
             row = MenuRow(body, label if len(label) <= 44 else label[:43] + "…",
-                          lambda p=position: self.player.play_queued(p), "×")
+                          lambda p=position: self.player.play_queued(p))
             row.pack(fill="x")
-            row.keys.configure(cursor="hand2", font=theme.font(theme.SIZE_LARGE))
-            row.keys.bind("<ButtonRelease-1>", lambda e, p=position: self._unqueue(p))
-            Tooltip(row.keys, "Take it out of Up next")
+            row.remove_button = controls.RoundIconButton(
+                row.plate, self.root, "x", lambda p=position: self._unqueue(p), size=theme.TAB_CLOSE,
+                diameter=theme.CLOSE_DISC, width=theme.CLOSE_SLOT, bg="SURFACE", hover=("HOVER", "TEXT", 0.16),
+                pressed=("HOVER", "TEXT", 0.26), label="Take it out of Up next")
+            row.remove_button.set_focusable(False)   # (the list's keys work the rows)
+            row.remove_button.bind("<Enter>", lambda e, r=row: r._entered(), add="+")   # (the row stays lit)
+            row.keys.pack_forget()
+            row.remove_button.pack(side="right", padx=(0, theme.px(theme.GAP_SMALL)))
         if len(queue) > UP_NEXT_SHOWN:
             ttk.Label(body, text=f"and {len(queue) - UP_NEXT_SHOWN} more", style="PopMuted.TLabel").pack(
-                anchor="w", padx=theme.px(theme.GAP_MEDIUM), pady=theme.pad(theme.GAP_HAIR, 0))
+                anchor="w", padx=inset, pady=theme.pad(theme.GAP_HAIR, 0))
         # When to stop: after the song playing, or a sleep timer (its choices in a menu of their own).
         stopping = tk.Frame(body, bg=theme.SURFACE)
         stopping.pack(fill="x")
-        tk.Frame(stopping, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_SMALL, theme.GAP_SMALL))
+        popups.separator(stopping)
         MenuRow(stopping, "Stop after the current song", self.stop_after_current, keys.hint("stop_after"),
                 check=self.player.stop_after == "song").pack(fill="x")
         timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
         row = MenuRow(stopping, f"Sleep timer: {sleep.choice_label(timer.target).lower()}" if timer
-                      else "Sleep timer…", lambda: None, "›", closes=False)
+                      else "Sleep timer…", lambda: None, closes=False, ticks=True, chevron="right")
         row.command = lambda r=row: self._sleep_menu(self._menu()).popup(r.winfo_rootx(), r.winfo_rooty())
         row.pack(fill="x")
         if self.up_next_pop.is_open:  # re-seat it: the list's height changed
@@ -2698,7 +2702,11 @@ class PlayerWindow:
         if self.mini_mode:   # (0.25.0) the strip's own gear: Settings opens under the strip
             self._open_mini_settings()
             return
-        self.settings_pop.toggle(self.bar.settings_btn, self.bar.height)
+        self.settings_pop.toggle(self.bar.settings_btn, self._below_strip())
+
+    def _below_strip(self) -> int:
+        """Where a pop-over from the strip's buttons opens: DROP_GAP below the strip."""
+        return self.bar.height + theme.px(DROP_GAP)
 
     def _open_mini_settings(self):
         """(0.25.0) Settings from the mini strip, without leaving it: the window grows to hold
@@ -2733,7 +2741,7 @@ class PlayerWindow:
         self.root.geometry(f"{want_w}x{want_h}+{x}+{y}")
         self.root.update_idletasks()
         self.mini_button.set_text("Full player")
-        self.settings_pop.toggle(self.mini.settings_button, strip)
+        self.settings_pop.toggle(self.mini.settings_button, strip + theme.px(DROP_GAP))
 
     def _settings_closed(self):
         """(0.25.0) Settings closed. If it was opened from the mini strip, the window goes back to
@@ -3863,7 +3871,6 @@ class PlayerWindow:
             self._status_detail = f"{verdict}: {text.removeprefix('→ ')}"
         else:
             role, self._status_detail = "BG", ""
-        colour = theme.colour(role)
         if role != self._status_colour:
             self._paint_status_dot(role)
         playing_now = showing_playing and status.state is State.PLAYING
@@ -3887,7 +3894,7 @@ class PlayerWindow:
         # The mini strip shows the same as the top of the full window.
         self._mini_state = dict(title=self.title_label.cget("text"), artist=self.sub_label.cget("text"),
                                 position=position, duration=duration, playing=playing_now,
-                                status_colour=colour, status_detail=self._status_detail, notice=self._notice)
+                                status_colour=role, status_detail=self._status_detail, notice=self._notice)
         if self.mini_mode:
             self.mini.show(**self._mini_state)
 

@@ -339,6 +339,14 @@ METER_FACE_TEXT = 0.085    # the scale numbers
 METER_FACE_BIG = 0.16      # "VU", "−" and "+"
 
 
+def tone(spec) -> str:
+    """A colour from a role, a "#rrggbb", or a mix spelt (a, b, amount) — a worked-out shade that is
+    worked out again whenever it's drawn, so it follows a palette change."""
+    if isinstance(spec, tuple):
+        return mix(*spec)
+    return colour(spec)
+
+
 def font(size: int = SIZE_BODY, *style: str) -> tuple:
     """A Segoe UI font at one of the SIZE_* steps, e.g. font(SIZE_SMALL, "bold"). "semibold" is the
     semibold face where Tk has it (see FONT_SEMIBOLD), else bold."""
@@ -449,16 +457,30 @@ CAPTION_W = 40            # minimise and close: full-height plates this wide
 # Controls (px at 100%).
 CONTROL_H = 32            # fields, and pills with words
 CONTROL_H_SMALL = 24      # badges, compact pills
+PILL_PAD = 12             # a pill's words, in from its ends…
+PILL_PAD_SMALL = 8        # …on a compact pill
+FIELD_INSET = 12          # a field's text, in from its left edge
+FOCUS_RING = 2            # the DG-green ring round whatever has the keyboard
+MENU_ROW_H = 32           # a menu row's height
+MENU_INSET = 12           # a menu's words and separators, in from its sides
+MENU_PLATE_INSET = 4      # the highlighted row's rounded plate, in from the menu's sides
 
 # (0.20.0) The slim scrollbar (no arrow buttons; see SLIM_SCROLLBAR) and the search box's insets.
-SCROLLBAR_WIDTH = 8       # px at 100%: the thumb shows 1 px narrower each side (its border is the window colour)
-SEARCH_ICON_ROOM = 26     # px at 100%: room left of the search text for the magnifier
+SCROLLBAR_WIDTH = 8       # px at 100%: the scrollbar's trough
+THUMB_REST = 4            # its thumb: a pill this wide at rest…
+THUMB_HOT = 6             # …and this wide under the pointer or while dragged
+SEARCH_ICON_ROOM = 30     # px at 100%: room left of the search text for the magnifier
 SEARCH_CLEAR_ROOM = 24    # …and right of it for the ×
 
 # ttk style names made by apply() (0.20.0).
 SLIM_SCROLLBAR = "Slim.Vertical.TScrollbar"
 SLIM_HSCROLLBAR = "Slim.Horizontal.TScrollbar"   # (0.22.0) the same, across (PCM stream's long rows)
 SEARCH_ENTRY = "Search.TEntry"
+# Fields and slim scrollbars on a SURFACE panel or card (Settings, prompts) rather than the window:
+# a field is filled one step "into" what holds it — SURFACE on the window, BG on a card.
+CARD_ENTRY = "Card.TEntry"
+CARD_COMBOBOX = "Pop.TCombobox"
+CARD_SCROLLBAR = "Pop.Slim.Vertical.TScrollbar"
 
 _scale: float | None = None
 
@@ -490,6 +512,41 @@ def pad(*values: float):
 
 
 # -- ttk styles ----------------------------------------------------------------------------
+def _elements(root: tk.Tk, style: ttk.Style) -> None:
+    """The ttk image elements the styles draw with: fields, the drop-downs' chevron, the list
+    heading's line, the selected row's rounded plate and the scrollbar thumbs (shapes.element_pictures).
+    Made once per Tk root — an element's name can't be made twice — and kept on
+    `root._dg_style_images`; after a palette change the same pictures get new pixels."""
+    from PIL import ImageTk
+
+    from . import shapes   # (shapes draws with this module's colours: imported when it's needed)
+
+    pictures = shapes.element_pictures()
+    images = getattr(root, "_dg_style_images", None)
+    if images is not None:
+        for name, (picture, _border) in pictures.items():
+            if (images[name].width(), images[name].height()) == picture.size:
+                images[name].paste(picture)
+        return
+    images = root._dg_style_images = {name: ImageTk.PhotoImage(picture, master=root)
+                                      for name, (picture, _border) in pictures.items()}
+    border = {name: b for name, (_picture, b) in pictures.items()}
+    for prefix, where in (("Round", "BG"), ("Card", "SURFACE")):
+        name = f"field {where}"
+        style.element_create(f"{prefix}.field", "image", images[name], ("disabled", images[name + " off"]),
+                             ("focus", images[name + " focus"]), border=border[name], padding=0, sticky="nswe")
+    style.element_create("Round.chevron", "image", images["chevron"], ("disabled", images["chevron off"]),
+                         ("pressed", images["chevron hot"]), ("active", images["chevron hot"]), sticky="")
+    style.element_create("Round.heading", "image", images["heading"], border=border["heading"], sticky="nswe")
+    style.element_create("Round.selection", "image", images["clear"], ("selected", images["selection"]),
+                         border=border["selection"], sticky="nswe")
+    # (A scrollbar finds its thumb by the element's name: it must end in ".thumb".)
+    for axis, element in (("v", "Slim.Vertical.Scrollbar.thumb"), ("h", "Slim.Horizontal.Scrollbar.thumb")):
+        name = f"thumb {axis}"
+        style.element_create(element, "image", images[name], ("pressed", images[name + " hot"]),
+                             ("active", images[name + " hot"]), border=border[name], sticky="nswe")
+
+
 def apply(root: tk.Tk) -> None:
     """Style the app's ttk widgets with the current palette (run again after a palette change)."""
     global _scale, NUMBERS, SEMIBOLD
@@ -521,14 +578,22 @@ def apply(root: tk.Tk) -> None:
               background=[("active", BG)],
               indicatorbackground=[("selected", ACCENT), ("active", SURFACE_HI)])
 
-    style.configure("TCombobox", background=SURFACE, foreground=TEXT, fieldbackground=SURFACE,
-                    bordercolor=BORDER, lightcolor=SURFACE, darkcolor=SURFACE, arrowcolor=TEXT)
-    style.map("TCombobox",
-              fieldbackground=[("readonly", SURFACE)],
-              foreground=[("readonly", TEXT)],
-              selectbackground=[("readonly", SURFACE)],
-              selectforeground=[("readonly", TEXT)],
-              background=[("active", SURFACE_HI)])
+    # Fields and drop-downs are pictures (ttk image elements, see _elements): a rounded field with a
+    # 1 px EDGE rim, a 2 px DG-green ring while it has the keyboard, and a drawn chevron instead of
+    # a separate arrow box. All of them are CONTROL_H tall, the words FIELD_INSET in.
+    _elements(root, style)
+    line = tkfont.nametofont("TkDefaultFont", root=root).metrics("linespace")
+    pad_y = max(1, (px(CONTROL_H) - line) // 2)
+    for name, field in (("TCombobox", "Round.field"), (CARD_COMBOBOX, "Card.field")):
+        style.layout(name, [(field, {"sticky": "nswe", "children": [
+            ("Round.chevron", {"side": "right", "sticky": "ns"}),
+            ("Combobox.padding", {"expand": "1", "sticky": "nswe", "children": [
+                ("Combobox.textarea", {"sticky": "nswe"})]})]})])
+        style.configure(name, foreground=TEXT, padding=(px(FIELD_INSET), pad_y, 0, pad_y), arrowcolor=MUTED)
+        style.map(name, foreground=[("disabled", MUTED), ("readonly", TEXT)],
+                  fieldbackground=[("readonly", BG if name == CARD_COMBOBOX else SURFACE)],
+                  selectbackground=[("readonly", BG if name == CARD_COMBOBOX else SURFACE)],
+                  selectforeground=[("readonly", TEXT)])
     # The combobox's drop-down list is a classic Tk listbox.
     root.option_add("*TCombobox*Listbox.background", SURFACE)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
@@ -542,39 +607,43 @@ def apply(root: tk.Tk) -> None:
     style.configure("Vertical.TScrollbar", background=SURFACE, troughcolor=BG,
                     bordercolor=BG, lightcolor=SURFACE, darkcolor=SURFACE, arrowcolor=MUTED)
     style.map("Vertical.TScrollbar", background=[("active", SURFACE_HI)])
-    # (0.20.0) The slim scrollbar: just a thumb in a trough the colour of the window — no arrow
-    # buttons. clam makes the bar `arrowsize` wide; its thumb's border is drawn in the window
-    # colour, so the visible thumb is 2 px narrower. (controls.AutoScrollbar shows it only when
-    # the list is longer than its window.)
-    style.layout(SLIM_SCROLLBAR, [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
-        ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-    style.configure(SLIM_SCROLLBAR, background=MUTED, troughcolor=BG, bordercolor=BG, lightcolor=MUTED,
-                    darkcolor=MUTED, gripcount=0, arrowsize=max(4, px(SCROLLBAR_WIDTH)))
-    style.map(SLIM_SCROLLBAR, background=[("pressed", TEXT), ("active", TEXT)],
-              lightcolor=[("pressed", TEXT), ("active", TEXT)], darkcolor=[("pressed", TEXT), ("active", TEXT)])
+    # (0.20.0) The slim scrollbar: just a thumb in a trough the colour of what holds it — no arrow
+    # buttons; clam makes the bar `arrowsize` wide. The thumb is a picture: a THUMB_REST pill, wider
+    # and lighter under the pointer or while dragged. (controls.AutoScrollbar shows it only when the
+    # list is longer than its window.)
+    for name, trough in ((SLIM_SCROLLBAR, BG), (CARD_SCROLLBAR, SURFACE)):
+        style.layout(name, [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+            ("Slim.Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+        style.configure(name, troughcolor=trough, bordercolor=trough, lightcolor=trough, darkcolor=trough,
+                        gripcount=0, arrowsize=max(4, px(SCROLLBAR_WIDTH)))
     style.layout(SLIM_HSCROLLBAR, [("Horizontal.Scrollbar.trough", {"sticky": "we", "children": [
-        ("Horizontal.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-    style.configure(SLIM_HSCROLLBAR, background=MUTED, troughcolor=BG, bordercolor=BG, lightcolor=MUTED,
-                    darkcolor=MUTED, gripcount=0, arrowsize=max(4, px(SCROLLBAR_WIDTH)))
-    style.map(SLIM_HSCROLLBAR, background=[("pressed", TEXT), ("active", TEXT)],
-              lightcolor=[("pressed", TEXT), ("active", TEXT)], darkcolor=[("pressed", TEXT), ("active", TEXT)])
+        ("Slim.Horizontal.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+    style.configure(SLIM_HSCROLLBAR, troughcolor=BG, bordercolor=BG, lightcolor=BG, darkcolor=BG, gripcount=0,
+                    arrowsize=max(4, px(SCROLLBAR_WIDTH)))
 
-    style.configure("TEntry", fieldbackground=SURFACE, foreground=TEXT, insertcolor=TEXT,
-                    bordercolor=BORDER, lightcolor=SURFACE, darkcolor=SURFACE)
-    style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
+    for name, field in (("TEntry", "Round.field"), (CARD_ENTRY, "Card.field")):
+        style.layout(name, [(field, {"sticky": "nswe", "children": [
+            ("Entry.padding", {"sticky": "nswe", "children": [("Entry.textarea", {"sticky": "nswe"})]})]})])
+        style.configure(name, foreground=TEXT, insertcolor=TEXT, padding=(px(FIELD_INSET), pad_y))
+        style.map(name, foreground=[("disabled", MUTED)])
     style.configure("Various.TEntry", foreground=MUTED)  # (0.16.0) Edit tags: a "(various)" field
-    style.map("Various.TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
     # (0.20.0) The track list's search box: room inside for the magnifier (left) and the × (right).
-    style.configure(SEARCH_ENTRY, padding=(px(SEARCH_ICON_ROOM), px(GAP_HAIR), px(SEARCH_CLEAR_ROOM), px(GAP_HAIR)))
-    style.map(SEARCH_ENTRY, bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
+    style.configure(SEARCH_ENTRY, padding=(px(SEARCH_ICON_ROOM), pad_y, px(SEARCH_CLEAR_ROOM), pad_y))
 
+    # Lists are frameless, on the window's own colour: a heading line under small muted headings,
+    # the row under the pointer HOVER (a tag, full width: Tk 8.6 rows have no hover state), and the
+    # selected row a rounded SELECT plate (Round.selection, drawn over the row's own background).
     row_height = int(tkfont.nametofont("TkDefaultFont").metrics("linespace") * 1.5)
-    style.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=TEXT,
-                    bordercolor=BORDER, lightcolor=SURFACE, darkcolor=SURFACE, rowheight=row_height)
-    style.map("Treeview", background=[("selected", SELECT)], foreground=[("selected", ON_ACCENT)])
-    style.configure("Treeview.Heading", background=BG, foreground=MUTED, bordercolor=BORDER,
-                    lightcolor=BG, darkcolor=BG, relief="flat")
-    style.map("Treeview.Heading", background=[("active", SURFACE_HI)])
+    style.configure("Treeview", background=BG, fieldbackground=BG, foreground=TEXT, bordercolor=BG,
+                    lightcolor=BG, darkcolor=BG, rowheight=row_height)
+    style.map("Treeview", background=[("selected", BG)], foreground=[("selected", ON_ACCENT)])
+    style.layout("Treeview.Row", [("Treeitem.row", {"sticky": "nswe"}), ("Round.selection", {"sticky": "nswe"})])
+    style.layout("Treeview.Heading", [("Round.heading", {"sticky": "nswe"}), ("Treeheading.padding", {
+        "sticky": "nswe", "children": [("Treeheading.image", {"side": "right", "sticky": ""}),
+                                       ("Treeheading.text", {"sticky": "we"})]})])
+    style.configure("Treeview.Heading", background=BG, foreground=MUTED, font=font(SIZE_SMALL), relief="flat",
+                    padding=(px(GAP_SMALL), px(GAP_SMALL), px(GAP_SMALL), px(GAP)))
+    style.map("Treeview.Heading", foreground=[("active", TEXT)])
     # (0.20.0) No dotted focus box round a list row: a row is just its text (some Tk builds' themes
     # add a Treeitem.focus element here; the selected row's colour already says where you are).
     style.layout("Treeview.Item", [("Treeitem.padding", {"sticky": "nswe", "children": [
