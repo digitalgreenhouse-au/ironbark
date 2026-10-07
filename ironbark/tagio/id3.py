@@ -25,7 +25,12 @@ with a byte-order mark, 2 UTF-16BE (v2.4 only), 3 UTF-8 (v2.4 only). v2.4 text f
 several values separated by a null; v2.3 separates some lists with "/". Frames understood here:
 text frames (T***), TXXX (description + value), COMM / USLT (encoding, 3-letter language,
 description, text), APIC (encoding, MIME type, picture type, description, data; v2.2 PIC has a
-3-letter image format instead of a MIME type). Every other frame is kept as it was read.
+3-letter image format instead of a MIME type). Every other frame is kept as it was read; one that
+can't be read at all (encrypted, or compressed data that won't inflate within MAX_INFLATED or to
+the size it states) is kept exactly as stored, flags included. When the frames can't be followed
+to the padding (an unreadable frame ID, a frame running past the end, a v2.2 frame with no v2.3
+name), the tag's `problem` says why, and the file classes refuse to rewrite it: what came after
+would be lost.
 
 Dates: v2.4 has TDRC ("2004-05-03", ISO 8601); v2.3 has TYER (yyyy), TDAT (DDMM) and TIME
 (HHMM). A v2.3 tag is read as TDRC (TYER + TDAT + TIME joined: "2004-05-03T10:20") and written
@@ -48,14 +53,15 @@ from ._files import TagError
 
 LATIN1, UTF16, UTF16BE, UTF8 = 0, 1, 2, 3
 HEADER = 10
-_V22_IDS = {  # id3v2-00 (2.2) frame IDs -> their v2.3/v2.4 equivalents (others are dropped on rewrite)
+MAX_INFLATED = 32 << 20   # compressed frames: at most this many bytes inflated per tag, all frames together
+MAX_VALUES = 4096         # values in one text frame (more: the frame is kept as it was, unread)
+_V22_IDS = {  # id3v2-00 (2.2) frame IDs -> their v2.3/v2.4 equivalents (a tag with others isn't rewritten)
     "TT1": "TIT1", "TT2": "TIT2", "TT3": "TIT3", "TP1": "TPE1", "TP2": "TPE2", "TP3": "TPE3",
     "TP4": "TPE4", "TAL": "TALB", "TRK": "TRCK", "TPA": "TPOS", "TYE": "TYER", "TDA": "TDAT",
     "TIM": "TIME", "TCO": "TCON", "TCM": "TCOM", "TEN": "TENC", "TSS": "TSSE", "TCR": "TCOP",
     "TBP": "TBPM", "TLA": "TLAN", "TOR": "TORY", "TPB": "TPUB", "TRC": "TSRC", "TXT": "TEXT",
     "TCP": "TCMP", "TXX": "TXXX", "COM": "COMM", "ULT": "USLT", "PIC": "APIC",
 }
-_V23_ONLY_DATES = ("TYER", "TDAT", "TIME", "TRDA")
 _PIC_FORMATS = {"JPG": "image/jpeg", "PNG": "image/png", "GIF": "image/gif", "BMP": "image/bmp"}
 
 
@@ -81,13 +87,20 @@ def _terminator(encoding: int) -> bytes:
     return b"\x00\x00" if encoding in (UTF16, UTF16BE) else b"\x00"
 
 
+def _utf16_end(data: bytes, start: int = 0) -> int:
+    """Where the first UTF-16 terminator at or after `start` begins (two zero bytes on a 2-byte
+    boundary counted from `start`), or −1."""
+    at = data.find(b"\x00\x00", start)
+    while at >= 0 and (at - start) % 2:
+        at = data.find(b"\x00\x00", at + 1)
+    return at
+
+
 def _split_term(encoding: int, data: bytes) -> tuple[bytes, bytes]:
     """(first string's bytes, the rest after its terminator); no terminator → (all, b"")."""
     if encoding in (UTF16, UTF16BE):
-        for i in range(0, len(data) - 1, 2):
-            if data[i] == 0 and data[i + 1] == 0:
-                return data[:i], data[i + 2:]
-        return data, b""
+        at = _utf16_end(data)
+        return (data, b"") if at < 0 else (data[:at], data[at + 2:])
     at = data.find(b"\x00")
     return (data, b"") if at < 0 else (data[:at], data[at + 1:])
 
@@ -105,11 +118,27 @@ def _decode(encoding: int, data: bytes) -> str:
 
 
 def _decode_list(encoding: int, data: bytes) -> list[str]:
-    """Every null-separated string (trailing terminators dropped)."""
-    out = []
-    while data:
-        piece, data = _split_term(encoding, data)
-        out.append(_decode(encoding, piece))
+    """Every null-separated string (trailing terminators dropped), split in one pass. More than
+    MAX_VALUES values → TagError (the frame is then kept as it was, unread)."""
+    if encoding in (UTF16, UTF16BE):
+        if len(data) % 2 == 0:                       # trailing terminators: whole zero pairs
+            zeros = len(data) - len(data.rstrip(b"\x00"))
+            data = data[: len(data) - zeros // 2 * 2]
+        pieces, start = [], 0
+        while start < len(data):
+            end = _utf16_end(data, start)
+            if end < 0:
+                end = len(data)
+            pieces.append(data[start:end])
+            if len(pieces) > MAX_VALUES:
+                raise TagError("a text frame holds too many values")
+            start = end + 2
+    else:
+        data = data.rstrip(b"\x00")
+        pieces = data.split(b"\x00", MAX_VALUES) if data else []
+        if len(pieces) > MAX_VALUES:
+            raise TagError("a text frame holds too many values")
+    out = [_decode(encoding, piece) for piece in pieces]
     while out and out[-1] == "":
         out.pop()
     return out
@@ -166,6 +195,16 @@ class Frame:
 
     def __repr__(self):
         return f"<{type(self).__name__} {self.id}>"
+
+
+class StoredFrame(Frame):
+    """A frame that can't be read here — encrypted, or compressed data that won't inflate within
+    its limits. `raw` is its body exactly as stored and `flags` its two flag bytes: it's written
+    back unchanged into a tag of the same version (other versions lay the flags out differently)."""
+
+    def __init__(self, id: str, raw: bytes, flags: bytes, source: int):
+        super().__init__(id, raw, source)
+        self.flags = bytes(flags)
 
 
 class TextFrame(Frame):
@@ -305,11 +344,14 @@ def parse_frame(id: str, body: bytes, source: int) -> Frame:
 # -- the tag ------------------------------------------------------------------------------------
 class ID3Tag:
     """An ID3 tag's frames, in file order. `version` is (2, major, revision) as read — (1, 1, 0)
-    for one made from an ID3v1 tag."""
+    for one made from an ID3v1 tag. `problem` is "" when every byte of the tag was accounted for;
+    otherwise why a rewrite would lose something (the frames read so far are still there to show,
+    but the file classes refuse to write such a tag)."""
 
     def __init__(self, frames: list[Frame] | None = None, version: tuple[int, int, int] = (2, 4, 0)):
         self.frames: list[Frame] = list(frames or [])
         self.version = version
+        self.problem = ""
 
     # -- reading --
     @classmethod
@@ -339,7 +381,7 @@ class ID3Tag:
             if at > len(body):
                 raise TagError("the ID3 extended header runs past the end of the tag")
         tag = cls([], (2, major, revision))
-        tag.frames = list(_frames(body, at, major, bool(flags & 0x80)))
+        tag.frames, tag.problem = _frames(body, at, major, bool(flags & 0x80))
         if major < 4:
             tag._upgrade_dates()
         if major == 2:
@@ -348,23 +390,24 @@ class ID3Tag:
         return tag
 
     def _upgrade_dates(self):
-        """v2.3's TYER / TDAT / TIME → one TDRC; TORY → TDOR (v2.4 "Native Frames" §4.2.5)."""
+        """v2.3's TYER / TDAT / TIME → one TDRC; TORY → TDOR (v2.4 "Native Frames" §4.2.5). A TDAT
+        or TIME that can't be merged (not four digits, or TIME without a day) is kept as it is."""
         year = self.text("TYER")
         if year and not self.getall("TDRC"):
             date = year[0].strip()
             ddmm = (self.text("TDAT") or [""])[0].strip()
             hhmm = (self.text("TIME") or [""])[0].strip()
-            if len(ddmm) == 4 and ddmm.isdigit():
+            if _digits(ddmm, 4):
                 date += f"-{ddmm[2:]}-{ddmm[:2]}"
-                if len(hhmm) == 4 and hhmm.isdigit():
+                if _digits(hhmm, 4):
                     date += f"T{hhmm[:2]}:{hhmm[2:]}"
             at = self.frames.index(self.getall("TYER")[0])
             self.frames.insert(at, TextFrame("TDRC", [date], getattr(self.get("TYER"), "encoding", None)))
-        for frame_id in ("TYER", "TDAT", "TIME"):
-            if self.getall("TDRC"):
-                self.delall(frame_id)
-        if self.getall("TORY") and not self.getall("TDOR"):
-            old = self.get("TORY")
+        if self.getall("TDRC"):   # the v2.3 frames this date is written back as go; any others stay
+            merged = _v23_date_frames((self.text("TDRC") or [""])[0])
+            self.frames = [f for f in self.frames if f.id not in merged or not isinstance(f, TextFrame)]
+        old = self.get("TORY")
+        if isinstance(old, TextFrame) and not self.getall("TDOR"):
             self.frames[self.frames.index(old)] = TextFrame("TDOR", old.text, old.encoding)
 
     @classmethod
@@ -432,20 +475,47 @@ class ID3Tag:
             frames = _downgrade_dates(frames)
         out = []
         for frame in frames:
-            if len(frame.id) != 4 or (type(frame) is Frame and (frame.raw is None or frame.source not in (0, major))):
-                continue   # encrypted, or an unknown frame from another version: can't be written
+            flags = b"\x00\x00"
+            if isinstance(frame, StoredFrame):
+                if frame.source != major:
+                    raise TagError(f"the {frame.id} frame can only be written back as ID3v2.{frame.source}")
+                flags = frame.flags
+            elif type(frame) is Frame and (frame.raw is None or frame.source not in (0, major)):
+                raise TagError(f"the {frame.id} frame can't be written as ID3v2.{major}")
+            if len(frame.id) != 4:
+                raise TagError(f"the {frame.id} frame has no ID3v2.{major} name")
             body = frame.render_body(major)
             if major == 4:
                 size = to_synchsafe(len(body))
             else:
                 size = struct.pack(">I", len(body))
-            out.append(frame.id.encode("latin-1") + size + b"\x00\x00" + body)
+            out.append(frame.id.encode("latin-1") + size + flags + body)
         frames_data = b"".join(out)
         return b"ID3" + bytes([major, 0, 0]) + to_synchsafe(len(frames_data) + padding) + frames_data + bytes(padding)
 
 
+def _digits(text: str, count: int) -> bool:
+    return len(text) == count and text.isascii() and text.isdigit()
+
+
+def _v23_date_frames(date: str) -> set[str]:
+    """The v2.3 frames a TDRC date is written as: TYER, + TDAT with a day, + TIME with a time."""
+    date = date.strip()
+    found = {"TYER"} if date else set()
+    if len(date) >= 10 and date[4] == "-" and date[7] == "-":
+        found.add("TDAT")
+        if len(date) >= 16 and date[10] == "T":
+            found.add("TIME")
+    return found
+
+
 def _downgrade_dates(frames: list[Frame]) -> list[Frame]:
-    """TDRC → TYER (+ TDAT, TIME); TDOR → TORY, for a v2.3 tag."""
+    """TDRC → TYER (+ TDAT, TIME); TDOR → TORY, for a v2.3 tag. A v2.3 date frame the TDRC
+    doesn't rewrite (TRDA, or a TDAT / TIME it has no day / time for) is kept."""
+    regenerated: set[str] = set()
+    for frame in frames:
+        if frame.id == "TDRC" and isinstance(frame, TextFrame):
+            regenerated |= _v23_date_frames((frame.text or [""])[0])
     out: list[Frame] = []
     for frame in frames:
         if frame.id == "TDRC" and isinstance(frame, TextFrame):
@@ -453,82 +523,151 @@ def _downgrade_dates(frames: list[Frame]) -> list[Frame]:
             if not date:
                 continue
             out.append(TextFrame("TYER", [date[:4]], frame.encoding))
-            if len(date) >= 10 and date[4] == "-" and date[7] == "-":
+            if "TDAT" in _v23_date_frames(date):
                 out.append(TextFrame("TDAT", [date[8:10] + date[5:7]], frame.encoding))
-                if len(date) >= 16 and date[10] == "T":
+                if "TIME" in _v23_date_frames(date):
                     out.append(TextFrame("TIME", [date[11:13] + date[14:16]], frame.encoding))
         elif frame.id == "TDOR" and isinstance(frame, TextFrame):
             out.append(TextFrame("TORY", [(frame.text or [""])[0][:4]], frame.encoding))
-        elif frame.id in _V23_ONLY_DATES and any(f.id == "TDRC" for f in frames):
+        elif frame.id in regenerated and isinstance(frame, TextFrame):
             continue
         else:
             out.append(frame)
     return out
 
 
-def _frames(body: bytes, at: int, major: int, tag_unsync: bool):
-    id_size, size_size = (3, 3) if major == 2 else (4, 4)
-    header = id_size + size_size + (0 if major == 2 else 2)
-    while at + header <= len(body):
+def _valid_id(raw: bytes) -> bool:
+    return bool(raw) and all(0x41 <= b <= 0x5A or 0x30 <= b <= 0x39 for b in raw)
+
+
+def _frame_size(body: bytes, at: int, major: int, header: int, content_end: int) -> int:
+    """A frame's size. v2.4 sizes are synchsafe, but some taggers wrote plain 32-bit numbers:
+    a size byte with the high bit set can only be plain; otherwise, when the two readings
+    differ, the one that lands on what must come next (a frame header, the padding or the end
+    of the tag) wins — the synchsafe one when both do."""
+    size_bytes = body[at + header - (6 if major > 2 else 3): at + header - (2 if major > 2 else 0)]
+    plain = int.from_bytes(size_bytes, "big")
+    if major != 4 or any(b & 0x80 for b in size_bytes):
+        return plain
+    safe = synchsafe(size_bytes)
+    if safe == plain:
+        return safe
+
+    def landing(size: int) -> int:   # 2 = on a frame header or exactly at the end, 1 = inside the padding
+        end = at + header + size
+        if end == content_end or end == len(body):
+            return 2
+        if end > len(body):
+            return 0
+        if end > content_end:
+            return 1
+        if end + header > len(body) or not _valid_id(body[end: end + 4]):
+            return 0
+        follows = body[end + 4: end + 8]
+        return 2 if min(synchsafe(follows), int.from_bytes(follows, "big")) <= len(body) - end - header else 0
+
+    return plain if landing(plain) > landing(safe) else safe
+
+
+def _frames(body: bytes, at: int, major: int, tag_unsync: bool) -> tuple[list[Frame], str]:
+    """(the frames, a problem — "" when the walk accounted for every byte up to the padding)."""
+    id_size = 3 if major == 2 else 4
+    header = 6 if major == 2 else 10
+    content_end = len(body.rstrip(b"\x00"))   # the zero padding starts here
+    frames: list[Frame] = []
+    problem = ""
+    inflated = 0
+    while at < content_end:
+        if at + header > len(body):
+            return frames, "a few stray bytes after the last frame"
         raw_id = body[at: at + id_size]
         if raw_id[0] == 0:
-            break   # padding
-        try:
-            frame_id = raw_id.decode("ascii")
-        except UnicodeDecodeError:
-            break
-        if not all(c.isupper() or c.isdigit() for c in frame_id):
-            break
-        size_bytes = body[at + id_size: at + id_size + size_size]
-        if major == 4:
-            size = synchsafe(size_bytes)
-            if any(b & 0x80 for b in size_bytes):   # some taggers wrote v2.4 sizes as plain numbers
-                size = int.from_bytes(size_bytes, "big")
-        else:
-            size = int.from_bytes(size_bytes, "big")
+            return frames, "bytes after the start of the padding"
+        if not _valid_id(raw_id):
+            return frames, "a frame it can't follow (an unreadable frame ID)"
+        frame_id = raw_id.decode("ascii")
+        size = _frame_size(body, at, major, header, content_end)
         flags = body[at + header - 2: at + header] if major > 2 else b"\x00\x00"
         data = body[at + header: at + header + size]
         at += header + size
         if len(data) < size:
-            break   # cut short: keep what was read
-        try:
-            frame = _decode_frame(frame_id, data, flags, major, tag_unsync)
-        except (TagError, zlib.error, IndexError):
-            frame = None
-        if frame is None:
-            continue
+            return frames, f"the {frame_id} frame runs past the end of the tag"
+        frame, used = _decode_frame(frame_id, data, flags, major, tag_unsync, MAX_INFLATED - inflated)
+        inflated += used
         if major == 2:
             new_id = _V22_IDS.get(frame_id)
-            if new_id is None:
+            if new_id is None:   # read on past it, but a rewrite (as v2.3) would drop it
+                problem = problem or f"an ID3v2.2 {frame_id} frame, which has no v2.3 equivalent"
                 continue
             frame = parse_frame(new_id, frame.raw, 2)
-        yield frame
+        frames.append(frame)
+    return frames, problem
 
 
-def _decode_frame(frame_id: str, data: bytes, flags: bytes, major: int, tag_unsync: bool) -> Frame | None:
+def _inflate(data: bytes, declared: int | None, allowance: int) -> bytes | None:
+    """zlib data inflated, or None when it's damaged, inflates past `allowance` bytes, or doesn't
+    come to the size the frame declares."""
+    limit = min(declared, allowance) if declared is not None else allowance
+    if limit < 0 or (declared is not None and declared > allowance):
+        return None
+    inflater = zlib.decompressobj()
+    try:
+        out = inflater.decompress(data, limit + 1)
+    except zlib.error:
+        return None
+    if len(out) > limit or not inflater.eof or (declared is not None and len(out) != declared):
+        return None
+    return out
+
+
+def _decode_frame(frame_id: str, data: bytes, flags: bytes, major: int, tag_unsync: bool,
+                  allowance: int) -> tuple[Frame, int]:
+    """(the frame, bytes inflated). A frame that can't be read (encrypted, or compressed data
+    that won't inflate within `allowance` or to its declared size) is kept as a StoredFrame."""
+    stored = data
     if major == 4:
         status, fmt = flags
+        kept = StoredFrame(frame_id, stored, bytes([status, fmt | (0x02 if tag_unsync else 0)]), 4)
         if fmt & 0x40:   # grouping identity byte
             data = data[1:]
-        if fmt & 0x04:   # encrypted: can't be read; kept only as an unknown frame
-            return Frame(frame_id, None, 4)
+        if fmt & 0x04:   # encrypted: can't be read
+            return kept, 0
+        declared = None
         if fmt & 0x01:   # data length indicator
-            data = data[4:]
+            if len(data) < 4:
+                return kept, 0
+            declared, data = synchsafe(data[:4]), data[4:]
         if fmt & 0x02 or tag_unsync:
             data = deunsync(data)
         if fmt & 0x08:
-            data = zlib.decompress(data)
+            data = _inflate(data, declared, allowance)
+            if data is None:
+                return kept, 0
+            return parse_frame(frame_id, data, major), len(data)
     elif major == 3:
         status, fmt = flags
+        kept = StoredFrame(frame_id, stored, flags, 3)
         if fmt & 0x40:   # encrypted
-            return Frame(frame_id, None, 3)
-        if fmt & 0x80:
-            data = data[4:]
-        if fmt & 0x20:
+            return kept, 0
+        declared = None
+        if fmt & 0x80:   # compressed: the inflated size comes first
+            if len(data) < 4:
+                return kept, 0
+            declared, data = int.from_bytes(data[:4], "big"), data[4:]
+        if fmt & 0x20:   # grouping identity byte
             data = data[1:]
         if fmt & 0x80:
-            data = zlib.decompress(data)
-    return parse_frame(frame_id, data, major)   # (written back with no flags: the body is stored plainly)
+            data = _inflate(data, declared, allowance)
+            if data is None:
+                return kept, 0
+            return parse_frame(frame_id, data, major), len(data)
+    return parse_frame(frame_id, data, major), 0   # (written back with no flags: the body is stored plainly)
+
+
+def _genre_number(text: str) -> int | None:
+    """A genre reference's number ("17"), or None: plain ASCII digits only ("²" counts as a digit
+    to str.isdigit, but isn't one int() reads)."""
+    return int(text) if 0 < len(text) <= 9 and text.isascii() and text.isdigit() else None
 
 
 def genres(values: list[str]) -> list[str]:
@@ -549,8 +688,8 @@ def genres(values: list[str]) -> list[str]:
                 if end < 0:
                     break
                 code, text = text[1:end], text[end + 1:]
-                if code.isdigit():
-                    add(genre_list.name(int(code)) or code)
+                if _genre_number(code) is not None:
+                    add(genre_list.name(_genre_number(code)) or code)
                 elif code == "RX":
                     add("Remix")
                 elif code == "CR":
@@ -559,8 +698,8 @@ def genres(values: list[str]) -> list[str]:
                     add(code)
             if text.startswith("(("):
                 text = text[1:]
-            if text.isdigit():
-                add(genre_list.name(int(text)) or text)
+            if _genre_number(text) is not None:
+                add(genre_list.name(_genre_number(text)) or text)
             elif text in ("RX", "CR"):
                 add("Remix" if text == "RX" else "Cover")
             else:
@@ -587,6 +726,13 @@ def render_v1(tag: ID3Tag, old: bytes) -> bytes:
     else:
         body += comment.encode("latin-1", "replace")[:30].ljust(30, b"\x00")
     return body + bytes([genre])
+
+
+def damaged_reason(tag: "ID3Tag | None") -> str:
+    """Why a file's ID3 tag isn't rewritten, in plain words."""
+    if tag is not None and tag.problem:
+        return f"its ID3 tag couldn't be read to the end ({tag.problem}), so it isn't rewritten (nothing in it is lost)"
+    return "its ID3 tag is damaged, so it isn't rewritten (nothing in it is lost)"
 
 
 def tag_size(head: bytes) -> int:

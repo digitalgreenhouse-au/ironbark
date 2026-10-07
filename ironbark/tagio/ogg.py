@@ -22,32 +22,33 @@ Writing rebuilds the pages that hold the header packets after the first (comment
 Vorbis the setup packet) with granule 0 (−1 on a page where no packet ends), sequence numbers
 following the first page, and a fresh CRC. When the new comment needs a different number of
 pages, every later page of the stream is renumbered and its CRC recomputed (the audio data in
-them is copied unchanged).
+them is copied unchanged); bytes after the last page that aren't an Ogg page (an ID3v1 or APE
+tag some programs append, or a cut-off last page) are copied as they are. A file whose last
+header page also carries sound isn't written: rebuilding that page would drop it.
 """
 
 from __future__ import annotations
 
+import shutil
 import struct
+import zlib
 from pathlib import Path
 
-from ._files import TagError, file_size, overwrite, read_at, replace_region
+from ._files import COPY_CHUNK, TagError, file_size, overwrite, read_at, reading, replace_region
 from .vorbis import VComment
 
-_CRC_TABLE = []
-for _n in range(256):
-    _r = _n << 24
-    for _ in range(8):
-        _r = ((_r << 1) ^ 0x04C11DB7) if _r & 0x80000000 else (_r << 1)
-    _CRC_TABLE.append(_r & 0xFFFFFFFF)
+LAST_PAGE_TRIES = 256   # candidate last pages checked (CRC) before the length is given up as unknown
+
+# Ogg's CRC is the same polynomial as zlib's CRC-32, but not reflected and with no inversion at
+# the start or end. Fed bytes with their bits reversed, zlib's (reflected) CRC from a zero
+# register gives the bit-reversed Ogg CRC — so the work runs at zlib's C speed.
+_REVERSED_BITS = bytes(int(f"{n:08b}"[::-1], 2) for n in range(256))
 
 
 def crc32(data: bytes) -> int:
     """Ogg's CRC-32 (RFC 3533 §6: polynomial 0x04C11DB7, initial value 0, not reflected)."""
-    crc = 0
-    table = _CRC_TABLE
-    for byte in data:
-        crc = ((crc << 8) & 0xFFFFFFFF) ^ table[(crc >> 24) ^ byte]
-    return crc
+    register = zlib.crc32(bytes(data).translate(_REVERSED_BITS), 0xFFFFFFFF) ^ 0xFFFFFFFF
+    return int(f"{register:032b}"[::-1], 2)
 
 
 class Page:
@@ -75,18 +76,27 @@ class Page:
         return page[:22] + struct.pack("<I", crc32(page)) + page[26:]
 
 
-def _packets_of(pages: list[Page]) -> list[bytes]:
-    """The complete packets in these pages (a packet still open at the end is left out)."""
-    packets, current = [], b""
+def _split(pages: list[Page]) -> tuple[list[bytes], bool]:
+    """(the complete packets in these pages, whether a packet is still open at the end). One
+    pass: a packet's segments on one page are a single slice, joined across pages once."""
+    packets: list[bytes] = []
+    pieces: list[bytes] = []
     for page in pages:
-        at = 0
+        start = at = 0
         for value in page.lacing:
-            current += page.data[at: at + value]
             at += value
             if value < 255:
-                packets.append(current)
-                current = b""
-    return packets
+                pieces.append(page.data[start:at])
+                packets.append(b"".join(pieces))
+                pieces, start = [], at
+        if start < at:
+            pieces.append(page.data[start:at])
+    return packets, bool(pieces)
+
+
+def _ends(page: Page) -> int:
+    """How many packets end on this page (each segment shorter than 255 bytes ends one)."""
+    return sum(1 for value in page.lacing if value < 255)
 
 
 def paginate(packets: list[bytes], serial: int, first_sequence: int) -> list[Page]:
@@ -94,7 +104,7 @@ def paginate(packets: list[bytes], serial: int, first_sequence: int) -> list[Pag
     last packet finishes its page."""
     pages: list[Page] = []
     lacing: list[int] = []
-    data = b""
+    data: list[bytes] = []
     continued = ends = False   # the page being filled: starts mid-packet / has a packet ending on it
 
     def flush():
@@ -102,7 +112,7 @@ def paginate(packets: list[bytes], serial: int, first_sequence: int) -> list[Pag
         page.flags = 0x01 if continued else 0
         page.granule = 0 if ends else -1
         page.serial, page.sequence = serial, first_sequence + len(pages)
-        page.lacing, page.data = bytes(lacing), data
+        page.lacing, page.data = bytes(lacing), b"".join(data)
         pages.append(page)
 
     for packet in packets:
@@ -111,9 +121,9 @@ def paginate(packets: list[bytes], serial: int, first_sequence: int) -> list[Pag
         for i, value in enumerate(sizes):
             if len(lacing) == 255:
                 flush()
-                lacing, data, continued, ends = [], b"", i > 0, False
+                lacing, data, continued, ends = [], [], i > 0, False
             lacing.append(value)
-            data += packet[at: at + value]
+            data.append(packet[at: at + value])
             at += value
         ends = True
     if lacing:
@@ -127,6 +137,7 @@ class OggFile:
     header_packets = 2
     codec = ""
 
+    @reading
     def __init__(self, path):
         self.path = Path(path)
         with open(self.path, "rb") as f:
@@ -135,22 +146,30 @@ class OggFile:
             self.serial = first.serial
             self.pages = [first]          # the pages holding the header packets
             at = first.size
-            while len(_packets_of(self.pages)) < self.header_packets:
+            ended = _ends(first)
+            while ended < self.header_packets:
                 if at >= self.size:
                     raise TagError("the Ogg file ends inside its headers")
                 page = Page.read(f, at, self.size)
                 at += page.size
                 if page.serial == self.serial:
                     self.pages.append(page)
+                    ended += _ends(page)
             self.headers_end = at
-            self.packets = _packets_of(self.pages)[: self.header_packets]
+            packets, still_open = _split(self.pages)
+            self.packets = packets[: self.header_packets]
+            # Sound sharing the last header page (not allowed by the specs, but seen): that page
+            # is rebuilt from the header packets alone on a save, so such a file isn't written.
+            self.sound_on_header_page = len(packets) > self.header_packets or still_open
             self.last_granule = self._last_granule(f)
         self._parse_headers()
 
     def _last_granule(self, f) -> int:
         """The granule position of the stream's last page, searched for from the end (a page
-        only counts when its CRC checks out, so "OggS" inside audio data can't fool it)."""
+        only counts when its CRC checks out, so "OggS" inside audio data can't fool it). At most
+        LAST_PAGE_TRIES candidates are checked, so a file full of fake page headers can't stall it."""
         pos = self.size
+        tries = 0
         while pos > 0:
             start = max(0, pos - (1 << 16))
             chunk = read_at(f, start, min(self.size, pos + 26) - start)
@@ -159,6 +178,9 @@ class OggFile:
                 if at + 27 <= len(chunk) and chunk[at + 4] == 0:
                     granule, serial = struct.unpack_from("<qI", chunk, at + 6)
                     if serial == self.serial and granule >= 0:
+                        tries += 1
+                        if tries > LAST_PAGE_TRIES:
+                            return 0
                         try:
                             page = Page.read(f, start + at, self.size)
                             stored = struct.unpack_from("<I", chunk, at + 22)[0]
@@ -193,8 +215,11 @@ class OggFile:
     def save(self) -> None:
         packets = [self._comment_packet()] + self.packets[2:]
         old = self.pages[1:]            # the pages after the first (the identification packet's own page)
-        if self.pages[0].lacing and _packets_of([self.pages[0]]) != self.packets[:1]:
+        if self.pages[0].lacing and _split([self.pages[0]]) != (self.packets[:1], False):
             raise TagError("this Ogg file's first page holds more than its first header — not written")
+        if self.sound_on_header_page:
+            raise TagError("this Ogg file has sound on the page that ends its headers — not written "
+                           "(rewriting that page would lose it)")
         new = paginate(packets, self.serial, self.pages[0].sequence + 1)
         delta = len(new) - len(old)
         header = b"".join(page.render() for page in new)
@@ -212,7 +237,12 @@ class OggFile:
                     out.write(header)
                     at = self.headers_end
                     while at < self.size:
-                        page = Page.read(src, at, self.size)
+                        try:
+                            page = Page.read(src, at, self.size)
+                        except TagError:   # not an Ogg page: whatever follows is copied as it is
+                            src.seek(at)
+                            shutil.copyfileobj(src, out, COPY_CHUNK)
+                            break
                         if page.serial == self.serial:
                             page.sequence = (page.sequence + delta) & 0xFFFFFFFF
                             out.write(page.render())

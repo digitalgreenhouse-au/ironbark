@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 from pathlib import Path
 
@@ -10,6 +11,21 @@ COPY_CHUNK = 1 << 20
 
 class TagError(ValueError):
     """A file's tags can't be read or written: it's damaged, or not the format it was opened as."""
+
+
+def reading(init):
+    """For a file class's __init__: anything a damaged file makes the parsing code raise (struct,
+    slicing, decoding, a missing attribute…) comes out as a TagError, so every caller only ever
+    has TagError and OSError to deal with."""
+    @functools.wraps(init)
+    def wrapper(self, *args, **kwargs):
+        try:
+            init(self, *args, **kwargs)
+        except (TagError, OSError):
+            raise
+        except Exception as error:   # noqa: BLE001 — turned into the one error callers expect
+            raise TagError(f"the file's headers couldn't be read ({type(error).__name__}: {error})") from error
+    return wrapper
 
 
 def read_at(f, offset: int, size: int) -> bytes:

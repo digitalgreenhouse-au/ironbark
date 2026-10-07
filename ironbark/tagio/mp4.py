@@ -31,7 +31,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._files import TagError, file_size, read_at, replace_region
+from ._files import TagError, file_size, read_at, reading, replace_region
 
 FREE_PADDING = 1024   # spare room left after ilst (in a "free" box) when moov has to grow
 _CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"udta", b"edts"}
@@ -289,6 +289,7 @@ def _esds(info: MP4Info, data: bytes, start: int, end: int) -> None:
 class MP4File:
     """An MP4 / M4A file's audio facts (`info`) and tags (`tags`: MP4Tags or None)."""
 
+    @reading
     def __init__(self, path):
         self.path = Path(path)
         with open(self.path, "rb") as f:
