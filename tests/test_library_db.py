@@ -1,6 +1,6 @@
 """library_db.py: the library database — schema and upgrades, damaged files set aside, tracks and
 albums stored exactly (albums equal browse.albums_from), missing files kept with their dates,
-new music from SQL (equal to watcher.new_albums), library_index.json brought across, several
+new music from SQL (equal to the old JSON index's rules), library_index.json brought across, several
 library folders, plays and favourites, song search (ranking, fallbacks, interrupting)."""
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 
+import legacy_index
 import numpy as np
 import pytest
 import soundfile as sf
@@ -426,10 +427,10 @@ def test_new_albums_and_tidying_match_the_watchers_rules(tmp_path):
         folders = sorted(db.album_folders())
         for since in (0.0, built + 2e5, built + 9e5, built + 2e6):
             opened = {folder: built + rng.random() * 1e6 for folder in rng.sample(folders, 40)}
-            assert db.new_albums(since, opened) == watcher.new_albums(index, since, opened)
+            assert db.new_albums(since, opened) == legacy_index.new_albums(index, since, opened)
             tidy = {f: w for f, w in opened.items() if f in db.album_folders() and w > since}
             opened["C:/Not/In/The/Library"] = built + 5
-            assert tidy == watcher.tidy_opened(opened, index, since)
+            assert tidy == legacy_index.tidy_opened(opened, index, since)
 
 
 # -- library_index.json brought across ---------------------------------------------------------------------

@@ -1,5 +1,7 @@
-"""The Library window: every album under a music folder, from the saved library index
-(library_index.py), so it opens at once and only changed files are read again.
+"""The Library window: every album in the library folders, from the library database
+(library_index.py over library_db.py), so it opens at once and only changed files are read again.
+The album list is fetched on the library's query thread (indexer.Queries), never on Tk's: the
+window's own `after` loop picks it up, with the indexer's progress and news of changed albums.
 
 Browse by Albums · Artists · Genres · Years · Composers · Recently added (the grouping rules are in
 browse.py); click a column heading to sort by it (again to reverse). Search matches album, artist,
@@ -17,6 +19,7 @@ needed, and the row under the pointer lit up as in the track list."""
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 import tkinter as tk
@@ -26,12 +29,13 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import browse, controls, library_index, placement, popups, theme
+from . import browse, controls, indexer, library_index, placement, popups, theme
 from .library import Album
 from .playlist_view import TreeDrag, _fold, fit_columns
 
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)
 SEARCH_DELAY_MS = 150   # the list follows the search box after a pause in typing, as the track list does
+TICK_MS = 100           # how often the window picks up the album list and the indexer's news
 HEADINGS = {"album": "Album", "artist": "Artist", "year": "Year", "quality": "Quality", "tracks": "Tracks",
             "added": "Added"}
 
@@ -45,8 +49,8 @@ class LibraryWindow:
     _sorts: dict[str, tuple[str, bool]] = {}      # per view: (column, reversed), kept for the session
     _closed: dict[str, set[str]] = {}             # per view: groups folded shut
 
-    def __init__(self, parent: tk.Misc, root_folder: Path, current: Path | None,
-                 on_choose: Callable[[Path], None], on_root_changed: Callable[[Path], None],
+    def __init__(self, parent: tk.Misc, root_folder: Path | list[Path], current: Path | None,
+                 on_choose: Callable[[Path], None], on_root_changed: Callable[[list[Path]], None],
                  on_load_all: Callable[[Path, str], None], geometry: str = "",
                  on_moved: Callable[[str], None] = lambda geometry: None,
                  on_add: Callable[[Path, Callable[[str], None]], None] | None = None,
@@ -57,7 +61,9 @@ class LibraryWindow:
                  on_edit_tags: Callable[[Path], None] | None = None,
                  can_edit_tags: Callable[[], bool] = lambda: False,
                  new_albums: Callable[[], list[Path]] = lambda: []):
-        self.root_folder = root_folder
+        # The library folders (one, or several); on_root_changed(folders) when "Add folder…" adds one.
+        self.roots: list[Path] = [Path(root_folder)] if isinstance(root_folder, (str, Path)) else list(root_folder)
+        self.root_folder = self.roots[0]
         self.current = current
         self.on_choose = on_choose
         self.on_root_changed = on_root_changed
@@ -76,10 +82,19 @@ class LibraryWindow:
         self._shown: list[Album] = []          # albums listed now (each once)
         self._rows: dict[str, Album] = {}      # tree row id -> its album
         self._groups: dict[str, str] = {}      # tree row id -> group name
-        self.index = library_index.shared(root_folder)
-        self._refresh: dict | None = None      # a refresh running in the background
+        self.index = library_index.shared(self.roots)
+        # A refresh running in the background: a dict until the album list it brought is on show.
+        self._refresh: dict | None = None
         self._fill_job = None                  # a search waiting for a pause in typing
         self._folds: dict[str, str] = {}       # text -> folded, for searching (cleared with each new album list)
+        self._queries = indexer.Queries(self.index.db)   # the album list is read here, off Tk's thread
+        self._events: queue.SimpleQueue = self.index.listen()
+        self._asked: int | None = None         # the album list asked for and not yet here
+        self._again = False                    # albums changed while it was on its way: ask again after
+        self._loading = True                   # no album list yet
+        self._problem = ""                     # the album list couldn't be read
+        self._tick_job = None
+        self._status_text = ""
 
         self.win = tk.Toplevel(parent, bg=theme.BG)
         self.win.title("Library")
@@ -102,8 +117,9 @@ class LibraryWindow:
         self._search_trace = self.search_var.trace_add("write", lambda *_: self._search_changed())
         controls.FlatButton(top, "Rescan", self.rescan, label="Look for added or changed music now").pack(
             side="right", padx=theme.pad(theme.GAP, 0))
-        controls.FlatButton(top, "Change folder…", self._change_root,
-                            label="Choose the folder your music is in").pack(side="right", padx=theme.pad(theme.GAP_MEDIUM, 0))
+        controls.FlatButton(top, "Add folder…", self._add_folder,
+                            label="Add another folder of music to the Library (Settings → Library lists them)").pack(
+            side="right", padx=theme.pad(theme.GAP_MEDIUM, 0))
         self.search.pack(side="left", fill="x", expand=True)
         search = self.search.entry
         search.bind("<Down>", lambda e: self._focus_list())
@@ -181,6 +197,7 @@ class LibraryWindow:
         self.win.bind("<Destroy>", self._destroyed, add="+")
         search.focus_set()
         self._load()
+        self._tick_job = self.win.after(TICK_MS, self._tick)
 
     def _destroyed(self, event):
         """Closed (Esc, a choice, or the window's ×): let go of what would keep this window alive or
@@ -190,9 +207,12 @@ class LibraryWindow:
         freed there fails)."""
         if event.widget is not self.win:
             return
-        if self._fill_job is not None:
-            self.win.after_cancel(self._fill_job)
-            self._fill_job = None
+        for job in (self._fill_job, self._tick_job):
+            if job is not None:
+                self.win.after_cancel(job)
+        self._fill_job = self._tick_job = None
+        self.index.unlisten(self._events)
+        self._queries.stop()
         if self.search_var is not None:
             try:
                 self.search_var.trace_remove("write", self._search_trace)
@@ -206,51 +226,104 @@ class LibraryWindow:
 
     # -- the index -------------------------------------------------------------------------------
     def _load(self):
-        """Show what the index already knows at once; bring it up to date in the background
-        (only changed files are read). The first time ever, every file is read once."""
-        self.index = library_index.shared(self.root_folder)
-        self._set_albums(self.index.albums() if self.index.entries else [])
-        self.win.title(f"Library — {self.root_folder.name or self.root_folder}")
+        """Show what the library database already knows (asked for on the query thread: it's on
+        show a moment later); bring it up to date in the background (only changed files are read).
+        The first time ever, every file is read once."""
+        self.index = library_index.shared(self.roots)
+        self._ask_albums()
+        self.win.title(f"Library — {self._place()}")
         self._fill()
         if not self.index.refreshed:  # not yet checked this session
             self._start_refresh()
 
+    def _place(self) -> str:
+        """The library folder's name ("Music"), or how many there are."""
+        if len(self.roots) > 1:
+            return f"{len(self.roots)} folders"
+        return self.root_folder.name or str(self.root_folder)
+
+    def _ask_albums(self) -> int:
+        """Ask the query thread for the album list (the newest ask is the one shown)."""
+        self._asked = self._queries.ask("albums", self.index.albums)
+        self._again = False
+        return self._asked
+
+    def _want_albums(self):
+        """The albums changed: ask for them again (once the list on its way has arrived)."""
+        if self._asked is None:
+            self._ask_albums()
+        else:
+            self._again = True
+
+    def _tick(self):
+        """Every TICK_MS: take in the album list and what the indexer says. Tk is only touched
+        when something came in."""
+        self._tick_job = None
+        if not self.win.winfo_exists():
+            return
+        news = False
+        while True:
+            try:
+                event = self._events.get_nowait()
+            except queue.Empty:
+                break
+            news = True
+            if isinstance(event, indexer.AlbumsChanged) and self._refresh is None:
+                self._want_albums()   # (during this window's own refresh, the list comes once at its end)
+        for answer in self._queries.drain():
+            if answer.kind != "albums" or answer.ask != self._asked:
+                continue   # one replaced by a newer ask
+            news = True
+            self._asked = None
+            self._loading = False
+            if answer.error is None:
+                self._problem = ""
+                self._set_albums(answer.value)
+                self._fill()
+            else:
+                self._problem = f"Couldn't read the library: {answer.error}"
+            job = self._refresh
+            if job is not None and job.get("final") == answer.ask:
+                self._refresh = None   # the refresh's albums are on show: it's finished
+            if self._again:
+                self._ask_albums()
+        job = self._refresh
+        if job is not None and job.get("done") and "final" not in job:
+            job["final"] = self._ask_albums()
+        if news or job is not None:
+            self._paint_status()
+        self._tick_job = self.win.after(TICK_MS, self._tick)
+
     def _start_refresh(self):
         if self._refresh is not None:
             return
-        job: dict = {"folder": self.root_folder, "index": self.index}
+        job: dict = {"folders": list(self.roots), "index": self.index}
         self._refresh = job
 
-        def work():
+        def work():   # (holds the job and the index only: nothing of the window's, nothing of Tk's)
             try:
                 job["diff"] = job["index"].refresh()
             except Exception as error:  # noqa: BLE001 — shown, never fatal: the index is only a speed-up
                 job["error"] = str(error)
-            job["done"] = True
+            finally:
+                job["done"] = True
+                job["index"].db.release()
 
-        threading.Thread(target=work, name="library-index", daemon=True).start()
-        self.win.after(100, self._wait_for_refresh, job)
+        threading.Thread(target=work, name="library-refresh", daemon=True).start()
         self._paint_status()
-
-    def _wait_for_refresh(self, job: dict):
-        if not self.win.winfo_exists() or job is not self._refresh:
-            return
-        if not job.get("done"):
-            self._paint_status()
-            self.win.after(150, self._wait_for_refresh, job)
-            return
-        self._refresh = None
-        if job["folder"] == self.root_folder:
-            self._set_albums(self.index.albums())
-            self._fill()
 
     def rescan(self):
         self._start_refresh()
 
     def reload(self):
-        """Show the index again (after a tag edit updated it), keeping the view, sort and search."""
+        """Show the library again (after a tag edit updated it), keeping the view, sort and
+        search: the album list is asked for afresh."""
         if self.win.winfo_exists() and self._refresh is None:
-            self._set_albums(self.index.albums())
+            self._want_albums()
+
+    def refill(self):
+        """List the albums again as they are (e.g. one is no longer new), without asking for them."""
+        if self.win.winfo_exists():
             self._fill()
 
     def _set_albums(self, albums: list[Album]):
@@ -410,15 +483,20 @@ class LibraryWindow:
             return
         total = len(self.albums)
         job = self._refresh
+        place = str(self.root_folder) if len(self.roots) == 1 else f"{len(self.roots)} library folders"
         if job is not None and not total:
             done, of = self.index.progress
             text = (f"Building the library index (first time only)… {done} of {of} files" if of
-                    else f"Looking through {self.root_folder}…")
+                    else f"Looking through {place}…")
+        elif self._problem and not total:
+            text = self._problem
+        elif self._loading and not total:
+            text = "Opening the library…"
         elif not total:
-            text = f"No music found in {self.root_folder}"
+            text = f"No music found in {place}"
         else:
             words = self.search_var.get().strip()
-            text = f"{len(self._shown)} of {total} albums" if words else f"{total} albums in {self.root_folder}"
+            text = f"{len(self._shown)} of {total} albums" if words else f"{total} albums in {place}"
             if job is not None:
                 done, of = self.index.progress
                 text += f" · checking for changes… {done} of {of}" if of else " · checking for changes…"
@@ -429,6 +507,11 @@ class LibraryWindow:
             new = len(self._new)
             if new:  # first, so a long folder name can't push it out of sight
                 text = f"{new} new album{'' if new == 1 else 's'} · {text}"
+        if text != self._status_text:   # (painted often while a refresh runs: Tk only when it changed)
+            self._say(text)
+
+    def _say(self, text: str):
+        self._status_text = text
         self.status.configure(text=text)
 
     def _folded(self, opened: bool):
@@ -457,17 +540,17 @@ class LibraryWindow:
     def _add_selected(self):
         album = self._selected_album()
         if album is not None and self.on_add is not None:
-            self.status.configure(text=f"Adding “{album.name}”…")
+            self._say(f"Adding “{album.name}”…")
             self.on_add(album.path, self._added)
 
     def _added(self, message: str):
         if self.win.winfo_exists():
-            self.status.configure(text=message)
+            self._say(message)
             self._paint_buttons()
 
     def _queue(self, album: Album, front: bool):
         if self.on_queue is not None:
-            self.status.configure(text=f"Adding “{album.name}” to Up next…")
+            self._say(f"Adding “{album.name}” to Up next…")
             self.on_queue(album.path, front)
 
     def _context(self, event):
@@ -528,15 +611,25 @@ class LibraryWindow:
         self.on_choose(album.path)
         self.close()
 
-    def _change_root(self):
-        folder = filedialog.askdirectory(parent=self.win, title="Choose your music library folder",
+    def _add_folder(self):
+        folder = filedialog.askdirectory(parent=self.win, title="Add a folder of music to the Library",
                                          initialdir=str(self.root_folder), mustexist=True)
-        if folder:
-            self.root_folder = Path(folder)
-            self.on_root_changed(self.root_folder)
-            self.search_var.set("")
-            self._refresh = None
-            self._load()
+        if folder and Path(folder) not in self.roots:
+            roots = self.roots + [Path(folder)]
+            self.on_root_changed(roots)
+            self.set_roots(roots)
+
+    def set_roots(self, roots: list[Path]):
+        """The library folders changed (here, or in Settings): the refresh under way for the old
+        ones is let go (the indexer stops its look before the new folders are stored), and the
+        list follows the new ones."""
+        roots = [Path(r) for r in roots]
+        if roots == self.roots or not roots:
+            return
+        self.roots, self.root_folder = roots, roots[0]
+        self.search_var.set("")
+        self._refresh = None
+        self._load()
 
     def _moved(self, event):
         if event.widget is self.win:

@@ -10,8 +10,10 @@ and lists the system's audio (WASAPI on Windows) — no stream is opened, so not
 Windows, pycaw/comtypes read Windows' own list of outputs, and Windows' media controls and taskbar
 buttons can be reached (nothing is shown); secure connections (ssl, with root certificates) and the
 XML reader the rip check needs; the library database works — SQLite with its write-ahead log
-(WAL) and the song search index (FTS5), which a different Python's SQLite might lack; the icon
-files are in the package; the main window opens, takes drag and drop, and closes. Most of these
+(WAL) and the song search index (FTS5), which a different Python's SQLite might lack; the indexer
+reads a library through a worker process (in the packaged program that's Ironbark.exe started
+again, which must run the task and not open a second player — or load Tk); the icon files are in
+the package; the main window opens, takes drag and drop, and closes. Most of these
 fail quietly inside the player (logged, feature off), so only this check catches them missing
 from a build.
 
@@ -41,7 +43,7 @@ def run(report_path: str | None = None) -> int:
     for name, check in (("libsndfile", _check_sndfile), ("PortAudio", _check_portaudio),
                         ("Windows audio", _check_windows_audio), ("media controls", _check_media_controls),
                         ("secure connections", _check_network), ("library database", _check_library_db),
-                        ("icon files", _check_icons),
+                        ("library indexer", _check_indexer), ("icon files", _check_icons),
                         ("main window", _check_window)):
         try:
             detail = check()
@@ -199,6 +201,43 @@ def _check_library_db() -> str:
         shutil.rmtree(home, ignore_errors=True)
 
 
+def _check_indexer() -> str:
+    """The indexer, on a tiny library made in an empty temporary folder: its tags read in a worker
+    process (as a big library's first look reads them), stored, and found again; and the worker
+    process itself checked — it must have loaded neither Tk nor the player."""
+    import numpy as np
+    import soundfile as sf
+
+    from . import indexer, library_db
+
+    home = Path(tempfile.mkdtemp(prefix="ironbark-selfcheck-index-"))
+    try:
+        root = home / "Music"
+        for n in range(1, 4):
+            folder = root / f"Album {n}"
+            folder.mkdir(parents=True)
+            sf.write(folder / "01 Song.flac", np.zeros((4410, 2), dtype=np.int16), 44100, format="FLAC")
+        pool = indexer.make_pool(1)
+        if pool is None:
+            raise RuntimeError("no worker process could be started")
+        try:
+            loaded = pool.submit(indexer.worker_check).result(timeout=120)
+        finally:
+            pool.shutdown(wait=True)
+        if loaded["tkinter"] or loaded["player"]:
+            raise RuntimeError(f"a worker process loaded what it mustn't: {loaded}")
+        with library_db.LibraryDB.open(home / library_db.FILE_NAME) as db:
+            look = indexer.Indexer(db, pool_min=0, fast=1, gentle=1)
+            diff = look.check([root])
+            if diff.error or len(diff.added) != 3 or not look.used_pool:
+                raise RuntimeError(f"the indexer's first look went wrong: {diff}")
+            if len(db.albums()) != 3 or not look.check([root]).nothing:
+                raise RuntimeError("the indexer didn't store the test library")
+        return "3 albums read in a worker process (no Tk, no player there), stored and checked again"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def _check_icons() -> str:
     from . import appicon
 
@@ -240,5 +279,8 @@ def _check_window() -> str:
             raise RuntimeError("the window opened, but drag and drop (tkdnd) didn't load")
         return f"opened and closed; Tk {tk.TkVersion}, drag and drop (tkdnd {drops})"
     finally:
+        from . import library_index
+
+        library_index.close_shared()   # (the window's library database is in `home`: let go of it first)
         settings.settings_path = real_settings_path
         shutil.rmtree(home, ignore_errors=True)

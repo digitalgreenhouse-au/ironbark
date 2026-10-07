@@ -1,6 +1,6 @@
 """Test helper: synthetic music libraries — tracks with real-looking tags, paths and dates, and
 nothing on disk — for checking the library database against the code it replaces (browse.py's
-album rules, library_index.py's saved index, watcher.py's new-music rules) and for timing it.
+album rules, the old JSON index (legacy_index.py) and its new-music rules) and for timing it.
 
 `make_library(n, root, seed)` gives a list of `SynthFile`s (one per music file: its path, size,
 modified time, `added` / `seen` dates and tracks). It has what real libraries have: "The" bands,
@@ -20,7 +20,8 @@ from pathlib import Path
 from ironbark import library_db
 from ironbark.audiofile import CuePath, CueRange
 from ironbark.library import Track
-from ironbark.library_index import Entry, LibraryIndex
+from ironbark.library_index import Entry
+from legacy_index import JsonIndex
 
 WORDS = ("love night day heart fire rain blue black white dream light dark gold river road home song "
          "time world life soul moon star sun sea wind storm summer winter city street train ghost angel "
@@ -179,9 +180,9 @@ def cue_sheets(files: list[SynthFile]) -> dict[str, list[list]]:
     return sheets
 
 
-def index_of(root: str | Path, files: list[SynthFile], built: float, path: Path) -> LibraryIndex:
-    """A library_index.LibraryIndex holding exactly these files (saved to `path` by .save())."""
-    index = LibraryIndex(root, path=path)
+def index_of(root: str | Path, files: list[SynthFile], built: float, path: Path) -> JsonIndex:
+    """The old JSON index (legacy_index.py) holding exactly these files (saved to `path` by .save())."""
+    index = JsonIndex(root, path)
     index.entries = {f.path: Entry(f.size, f.mtime, f.added, f.seen, list(f.tracks)) for f in files}
     index.cues = cue_sheets(files)
     index.built = built

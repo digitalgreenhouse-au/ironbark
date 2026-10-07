@@ -57,7 +57,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import __version__, audiofile, library_index, searchfold, settings
+from . import __version__, audiofile, searchfold, settings
 from .audiofile import CuePath, CueRange
 from .browse import make_album
 from .library import (_DISC_FOLDER, Album, Track, is_music_name, natural_key, play_order, read_track, skip_folder,
@@ -65,7 +65,9 @@ from .library import (_DISC_FOLDER, Album, Track, is_music_name, natural_key, pl
 
 FILE_NAME = "library.db"
 SCHEMA_VERSION = 1          # PRAGMA user_version: bump with a step in _UPGRADES (else the library tables are remade)
-READ_FORMAT = library_index.FORMAT   # the tag reader's version: a file read by an older one is read again
+# The tag reader's version: bump it when read_track() learns something new, and every file read by
+# an older one is read again in the background (the library stays browsable meanwhile).
+READ_FORMAT = 1
 MISSING_DAYS = 7            # a missing file's row is kept this long without a clean look confirming it's gone
 SEARCH_LIMIT = 200          # songs a search hands back (the best ones)
 MIN_SEARCH = 2              # letters a search word needs before the index is asked (one letter finds most songs)
@@ -186,6 +188,7 @@ _INSERT_FTS = (f"INSERT INTO song_fts(rowid, {', '.join(FTS_COLUMNS)}) "
 _TRACK_SELECT = ("SELECT r.path, d.rel, f.name, t.id, " + ", ".join(f"t.{n}" for n in _TRACK_FIELDS[:-1])
                  + " FROM tracks t JOIN files f ON f.id = t.file_id JOIN folders d ON d.id = f.folder_id"
                  " JOIN roots r ON r.id = d.root_id")
+_ALBUM_TRACKS = "SELECT t.album_id, " + _TRACK_SELECT[len("SELECT "):]   # (the album's id, then as _TRACK_SELECT)
 
 
 # -- what a look at one folder found ---------------------------------------------------------------------
@@ -275,7 +278,7 @@ def track_row(track: Track) -> tuple[tuple, tuple[str, ...]]:
     fts, haystack = _search_texts(track.title, track.artist, track.album, track.album_artist, track.composer,
                                   track.genre, str(year) if year else "", stem)
     details = json.dumps([list(pair) for pair in track.details]) if track.details else None
-    values = (cue.sheet if cue else None, cue.number if cue else None, cue.start if cue else None,
+    values = (_to_db(cue.sheet) if cue else None, cue.number if cue else None, cue.start if cue else None,
               cue.end if cue else None, track.title, track.artist, track.album, track.album_artist,
               track.composer, track.genre, track.date, year, track.track_no, track.disc_no, float(track.duration),
               track.sample_rate, track.bits, track.channels, track.bitrate, track.size, track.codec,
@@ -285,7 +288,41 @@ def track_row(track: Track) -> tuple[tuple, tuple[str, ...]]:
     return values, fts
 
 
-def _join(root: str, rel: str, name: str = "") -> str:
+def _to_db(text: str) -> str | bytes:
+    """A file or folder name as stored: as it is, or — a name Windows allows that isn't valid
+    Unicode (a lone surrogate), which SQLite's text can't hold — its bytes, read back exactly by
+    _from_db."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "surrogatepass")
+    return text
+
+
+def _from_db(value) -> str:
+    return value.decode("utf-8", "surrogatepass") if isinstance(value, bytes) else value
+
+
+def _text(value: str) -> str:
+    """Text that's only shown or searched (a title made from such a file name), with any character
+    SQLite can't hold replaced."""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return value.encode("utf-8", "replace").decode("utf-8")
+    return value
+
+
+def _run(con: sqlite3.Connection, sql: str, values: tuple) -> sqlite3.Cursor:
+    """con.execute, and when a text can't be held (see _text), again with those texts made safe."""
+    try:
+        return con.execute(sql, values)
+    except UnicodeEncodeError:
+        return con.execute(sql, tuple(_text(v) if isinstance(v, str) else v for v in values))
+
+
+def _join(root, rel, name="") -> str:
+    root, rel, name = _from_db(root), _from_db(rel), _from_db(name)
     folder = os.path.join(root, rel) if rel else root
     return os.path.join(folder, name) if name else folder
 
@@ -297,7 +334,7 @@ def _track(row) -> Track:
      encoder, float_samples, bitrate_mode, channel_mode, misnamed, unsupported, compilation, details) = row
     text = _join(root, rel, name)
     path = (Path(text) if cue_number is None
-            else CuePath(text, cue=CueRange(cue_sheet, cue_number, cue_start, cue_end)))
+            else CuePath(text, cue=CueRange(_from_db(cue_sheet), cue_number, cue_start, cue_end)))
     return Track(path=path, title=title, artist=artist, album=album, track_no=track_no, disc_no=disc_no,
                  duration=duration, sample_rate=sample_rate, bits=bits, channels=channels, bitrate=bitrate,
                  encoder=encoder, md5=int(md5, 16) if md5 else 0, size=size, codec=codec,
@@ -356,6 +393,16 @@ def _key(path_or_key) -> str:
     return path_or_key if isinstance(path_or_key, str) else audiofile.key(path_or_key)
 
 
+def _keys_in(con: sqlite3.Connection, sql: str, keys: list[str]) -> list[tuple]:
+    """Rows of `sql` (which has "IN ({marks})" for the keys) for these play / favourite keys, a
+    batch at a time, with each row's key as text."""
+    rows = []
+    for chunk in _chunks(keys):
+        rows += [(_from_db(key), *rest) for key, *rest in con.execute(
+            sql.format(marks=", ".join("?" * len(chunk))), [_to_db(k) for k in chunk])]
+    return rows
+
+
 # -- the database ----------------------------------------------------------------------------------------
 class LibraryDB:
     """The library database (see the module notes). Open with `LibraryDB.open(path, roots)`."""
@@ -366,17 +413,24 @@ class LibraryDB:
         self.problem = ""               # what went wrong opening it ("" = nothing): e.g. a damaged file set aside
         self._local = threading.local()
         self._lock = threading.Lock()
-        self._connections: dict[int, sqlite3.Connection] = {}   # thread id -> its connection
+        # thread id -> (the thread, its connection); a thread that has ended has its closed for it
+        self._connections: dict[int, tuple[threading.Thread, sqlite3.Connection]] = {}
         self._epoch = 0                 # bumped when every connection is closed (close, recover)
         self._closed = False
+        self._ready = threading.Event()   # the file has been made or upgraded (_get_ready)
+        self._ready_lock = threading.RLock()
+        self._preparing = False
 
     @classmethod
-    def open(cls, path: str | Path | None = None, roots: Iterable[str | Path] | None = None) -> LibraryDB:
+    def open(cls, path: str | Path | None = None, roots: Iterable[str | Path] | None = None,
+             lazy: bool = False) -> LibraryDB:
         """Open (or start) the database at `path` (default db_path()); `roots`: the library folders,
         when known (set_roots). A file that isn't a usable database is set aside and an empty one
-        started (`problem` says so)."""
+        started (`problem` says so). `lazy`: nothing is done until it's first used — by then on a
+        worker thread, as making or checking the file can take a moment."""
         db = cls(path or db_path())
-        db._prepare()
+        if not lazy:
+            db._get_ready()
         if roots is not None:
             db.set_roots(roots)
         return db
@@ -409,23 +463,30 @@ class LibraryDB:
             return con
         if self._closed:
             raise sqlite3.ProgrammingError("the library database is closed")
+        if not self._ready.is_set():
+            self._get_ready()
         con = self._connect()
         with self._lock:
-            self._connections[threading.get_ident()] = con
+            ended = [ident for ident, (thread, _c) in self._connections.items() if not thread.is_alive()]
+            left = [self._connections.pop(ident)[1] for ident in ended]
+            self._connections[threading.get_ident()] = (threading.current_thread(), con)
             local.con, local.epoch = con, self._epoch
+        for old in left:   # (workers that never said release: nobody else can be using theirs)
+            old.close()
         return con
 
     def release(self) -> None:
-        """Close this thread's connection (a thread that's finished with the database)."""
+        """Close this thread's connection (a thread that's finished with the database). A thread
+        that ends without it has its connection closed when another thread next connects."""
         with self._lock:
-            con = self._connections.pop(threading.get_ident(), None)
+            found = self._connections.pop(threading.get_ident(), None)
             self._local.con = None
-        if con is not None:
-            con.close()
+        if found is not None:
+            found[1].close()
 
     def _close_all(self) -> None:
         with self._lock:
-            connections = list(self._connections.values())
+            connections = [con for _thread, con in self._connections.values()]
             self._connections.clear()
             self._epoch += 1
             self._local.con = None
@@ -445,9 +506,9 @@ class LibraryDB:
         gets Interrupted. Nothing happens if it isn't asking anything."""
         ident = thread if isinstance(thread, int) else thread.ident
         with self._lock:
-            con = self._connections.get(ident)
-        if con is not None:
-            con.interrupt()
+            found = self._connections.get(ident)
+        if found is not None:
+            found[1].interrupt()
 
     @contextmanager
     def _writing(self, bump: bool = True):
@@ -477,6 +538,19 @@ class LibraryDB:
                 con.execute("COMMIT")
 
     # -- the file: making, upgrading, checking --
+    def _get_ready(self) -> None:
+        """Make or upgrade the file, once; other threads asking meanwhile wait for it. (Preparing
+        opens this thread's connection through _con, hence the re-entrant lock.)"""
+        with self._ready_lock:
+            if self._ready.is_set() or self._preparing:
+                return
+            self._preparing = True
+            try:
+                self._prepare()
+                self._ready.set()
+            finally:
+                self._preparing = False
+
     def _prepare(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -593,12 +667,12 @@ class LibraryDB:
             with self._writing() as w:
                 for track_id, title, artist, album, album_artist, composer, genre, year, name, missing in rows:
                     fts, haystack = _search_texts(title, artist, album, album_artist, composer, genre,
-                                                  str(year) if year else "", os.path.splitext(name)[0])
-                    w.execute("UPDATE tracks SET haystack = ? WHERE id = ?", (haystack, track_id))
+                                                  str(year) if year else "", os.path.splitext(_from_db(name))[0])
+                    _run(w, "UPDATE tracks SET haystack = ? WHERE id = ?", (haystack, track_id))
                     if self.fts:
                         w.execute("DELETE FROM song_fts WHERE rowid = ?", (track_id,))
                         if missing is None:
-                            w.execute(_INSERT_FTS, (track_id, *fts))
+                            _run(w, _INSERT_FTS, (track_id, *fts))
             last = rows[-1][0]
             if cancel is not None and cancel():
                 return False
@@ -617,7 +691,7 @@ class LibraryDB:
 
     # -- library folders --
     def roots(self) -> list[str]:
-        return [row[0] for row in self._con().execute("SELECT path FROM roots ORDER BY id")]
+        return [_from_db(row[0]) for row in self._con().execute("SELECT path FROM roots ORDER BY id")]
 
     def set_roots(self, paths: Iterable[str | Path]) -> None:
         """The library folders are now these: new ones are added (empty until looked at), ones no
@@ -628,10 +702,10 @@ class LibraryDB:
             if not any(Path(text) == Path(w) for w in wanted):
                 wanted.append(text)
         with self._writing() as con:
-            have = con.execute("SELECT id, path FROM roots").fetchall()
+            have = [(root_id, _from_db(path)) for root_id, path in con.execute("SELECT id, path FROM roots")]
             for text in wanted:
                 if not any(Path(path) == Path(text) for _id, path in have):
-                    con.execute("INSERT INTO roots(path) VALUES (?)", (text,))
+                    con.execute("INSERT INTO roots(path) VALUES (?)", (_to_db(text),))
             gone = [root_id for root_id, path in have if not any(Path(path) == Path(w) for w in wanted)]
             for root_id in gone:
                 con.execute("DELETE FROM roots WHERE id = ?", (root_id,))
@@ -646,7 +720,7 @@ class LibraryDB:
             found = _find_root(con, str(Path(old)))
             if found is None or _find_root(con, str(Path(new))) is not None:
                 return False
-            con.execute("UPDATE roots SET path = ? WHERE id = ?", (str(Path(new)), found[0]))
+            con.execute("UPDATE roots SET path = ? WHERE id = ?", (_to_db(str(Path(new))), found[0]))
         return True
 
     def built(self, root: str | Path) -> float:
@@ -669,7 +743,7 @@ class LibraryDB:
         found = _find_root(con, str(Path(root)))
         if found is None:
             return {}
-        root_text = con.execute("SELECT path FROM roots WHERE id = ?", (found[0],)).fetchone()[0]
+        root_text = _from_db(con.execute("SELECT path FROM roots WHERE id = ?", (found[0],)).fetchone()[0])
         return {_join(root_text, rel): FolderState(folder_id, cue_sig, bool(listed_ok))
                 for folder_id, rel, cue_sig, listed_ok in con.execute(
                     "SELECT id, rel, cue_sig, listed_ok FROM folders WHERE root_id = ?", (found[0],))}
@@ -683,7 +757,7 @@ class LibraryDB:
                 for folder_id, name, size, mtime, missing, read_format in con.execute(
                         "SELECT folder_id, name, size, mtime_ns, missing_since, read_format FROM files"
                         f" WHERE folder_id IN ({', '.join('?' * len(chunk))})", chunk):
-                    states[folder_id][name] = FileState(size, mtime, missing is not None, read_format)
+                    states[folder_id][_from_db(name)] = FileState(size, mtime, missing is not None, read_format)
         return states
 
     def cue_track_folders(self, folder_ids: Iterable[int]) -> set[int]:
@@ -712,7 +786,7 @@ class LibraryDB:
             if not result.listed_ok:
                 con.execute("UPDATE folders SET listed_ok = 0 WHERE id = ?", (folder_id,))
                 return set()
-            old = {name: (file_id, missing) for file_id, name, missing in con.execute(
+            old = {_from_db(name): (file_id, missing) for file_id, name, missing in con.execute(
                 "SELECT id, name, missing_since FROM files WHERE folder_id = ?", (folder_id,))}
             changed = False
             for name, rows in result.tracks.items():
@@ -733,7 +807,7 @@ class LibraryDB:
                     file_id = con.execute(
                         "INSERT INTO files(folder_id, name, size, mtime_ns, added, seen, read_format)"
                         " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (folder_id, name, size, mtime, added, now, result.read_format)).lastrowid
+                        (folder_id, _to_db(name), size, mtime, added, now, result.read_format)).lastrowid
                 self._insert_tracks(con, file_id, album_id, rows)
                 changed = True
             for name, (file_id, missing) in old.items():
@@ -778,7 +852,7 @@ class LibraryDB:
         After a look at the whole library folder that went cleanly, pass `before=now`. Returns
         how many files were removed."""
         before = time.time() - MISSING_DAYS * 86400 if before is None else before
-        with self._writing() as con:
+        with self._writing(bump=False) as con:
             if root is None:
                 ids = [row[0] for row in con.execute(
                     "SELECT id FROM files WHERE missing_since IS NOT NULL AND missing_since <= ?", (before,))]
@@ -787,6 +861,8 @@ class LibraryDB:
                 ids = [] if found is None else [row[0] for row in con.execute(
                     "SELECT f.id FROM files f JOIN folders d ON d.id = f.folder_id WHERE f.missing_since IS NOT NULL"
                     " AND f.missing_since <= ? AND d.root_id = ?", (before, found[0]))]
+            if not ids:
+                return 0   # (nothing changed: the generation stays as it is)
             for chunk in _chunks(ids):
                 con.execute(f"DELETE FROM files WHERE id IN ({', '.join('?' * len(chunk))})", chunk)
             while con.execute(   # empty folders (a disc folder first, then the album folder it was in)
@@ -794,13 +870,14 @@ class LibraryDB:
                     " AND NOT EXISTS (SELECT 1 FROM folders c WHERE c.album_folder_id = folders.id"
                     " AND c.id != folders.id)").rowcount:
                 pass
+            con.execute("UPDATE meta SET value = value + 1 WHERE key = 'generation'")
         return len(ids)
 
     def _insert_tracks(self, con: sqlite3.Connection, file_id: int, album_id: int, rows: list[tuple]) -> None:
         for values, fts in rows:
-            track_id = con.execute(_INSERT_TRACK, (file_id, album_id, *values)).lastrowid
+            track_id = _run(con, _INSERT_TRACK, (file_id, album_id, *values)).lastrowid
             if self.fts:
-                con.execute(_INSERT_FTS, (track_id, *fts))
+                _run(con, _INSERT_FTS, (track_id, *fts))
 
     def _hide(self, con: sqlite3.Connection, file_ids: list[int], now: float) -> None:
         """Mark files missing: out of the albums and the search, dates kept."""
@@ -823,9 +900,9 @@ class LibraryDB:
                     "SELECT t.id, t.title, t.artist, t.album, t.album_artist, t.composer, t.genre, t.year, f.name"
                     f" FROM tracks t JOIN files f ON f.id = t.file_id WHERE t.file_id IN ({marks})", chunk).fetchall():
                 fts, _haystack = _search_texts(title, artist, album, album_artist, composer, genre,
-                                               str(year) if year else "", os.path.splitext(name)[0])
+                                               str(year) if year else "", os.path.splitext(_from_db(name))[0])
                 con.execute("DELETE FROM song_fts WHERE rowid = ?", (track_id,))
-                con.execute(_INSERT_FTS, (track_id, *fts))
+                _run(con, _INSERT_FTS, (track_id, *fts))
 
     def _rebuild_albums(self, con: sqlite3.Connection, album_ids: Iterable[int]) -> None:
         """Make these albums' rows again from their tracks (browse.make_album: the Library's own rules)."""
@@ -845,14 +922,15 @@ class LibraryDB:
                                 " WHERE album_id = ?) AND f.missing_since IS NULL", (album_id,)).fetchone()[0]
             folder = Path(_join(root, rel))
             album = make_album(folder, play_order(folder, [_track(row) for row in rows]), added)
-            con.execute("INSERT OR REPLACE INTO albums(id, name, display_name, title, artist, year, codecs,"
-                        " sample_rate, bits, track_count, added, genres, composers, sort_name, sort_artist)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (album_id, album.name, album.name, album.title, album.artist, album.year,
-                         _SEP.join(album.codecs), album.sample_rate, album.bits, album.track_count, album.added,
-                         _SEP.join(album.genres), _SEP.join(album.composers), _sort_text(album.name),
-                         _sort_text(album.artist)))
-            names.add(album.name)
+            name = _text(album.name)
+            _run(con, "INSERT OR REPLACE INTO albums(id, name, display_name, title, artist, year, codecs,"
+                      " sample_rate, bits, track_count, added, genres, composers, sort_name, sort_artist)"
+                      " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (album_id, name, name, album.title, album.artist, album.year,
+                  _SEP.join(album.codecs), album.sample_rate, album.bits, album.track_count, album.added,
+                  _SEP.join(album.genres), _SEP.join(album.composers), _sort_text(name),
+                  _sort_text(album.artist)))
+            names.add(name)
         _rename(con, names)
 
     # -- what the Library reads --
@@ -882,7 +960,7 @@ class LibraryDB:
         if where is None:
             return None
         row = con.execute("SELECT a.id FROM albums a JOIN folders d ON d.id = a.id WHERE d.root_id = ? AND d.rel = ?",
-                          (where[0], where[2])).fetchone()
+                          (where[0], _to_db(where[2]))).fetchone()
         return row[0] if row else None
 
     def album_of(self, folder: str | Path) -> Album | None:
@@ -959,18 +1037,61 @@ class LibraryDB:
         """The album folders with music first seen after `since` (and after their library folder's
         first look) that haven't been opened since it arrived; newest first. `opened`: {album
         folder: when opened}. (watcher.new_albums's rule, from the database.)"""
+        return [folder for folder, seen in self.new_album_times(since) if seen > opened.get(str(folder), 0.0)]
+
+    def new_album_times(self, since: float) -> list[tuple[Path, float]]:
+        """(album folder, when its newest music was first seen) for the albums with music first
+        seen after `since` and after their library folder's first look; newest first. Whether
+        each was opened since is left to the caller (new_albums). A library folder whose first look
+        hasn't finished has no new music: everything in it is arriving for the first time."""
         newest: dict[int, float] = {}
         with self._reading() as con:
-            for root_id, built in con.execute("SELECT id, built FROM roots").fetchall():
+            for root_id, built in con.execute("SELECT id, built FROM roots WHERE built > 0").fetchall():
                 for album_id, seen in con.execute(
                         "SELECT d.album_folder_id, max(f.seen) FROM files f JOIN folders d ON d.id = f.folder_id"
                         " WHERE f.seen > ? AND f.missing_since IS NULL AND d.root_id = ? GROUP BY d.album_folder_id",
                         (max(since, built), root_id)):
                     newest[album_id] = seen
             paths = _folder_paths(con, list(newest))
-        fresh = [(seen, paths[album_id]) for album_id, seen in newest.items()
-                 if seen > opened.get(paths[album_id], 0.0)]
-        return [Path(folder) for _seen, folder in sorted(fresh, key=lambda pair: (-pair[0], pair[1].lower()))]
+        found = sorted(((seen, paths[album_id]) for album_id, seen in newest.items()),
+                       key=lambda pair: (-pair[0], pair[1].lower()))
+        return [(Path(folder), seen) for seen, folder in found]
+
+    def albums_tracks(self, folders: Iterable[str | Path]) -> dict[Path, list[Track]]:
+        """Each album's tracks in play order, from the database alone (nothing on disk is looked
+        at, so a whole library loads quickly): {album folder: tracks}. A folder that isn't an album
+        in the library is left out."""
+        wanted = {os.fspath(folder) for folder in folders}
+        by_album: dict[int, list[Track]] = {}
+        with self._reading() as con:
+            ids = {album_id: folder for album_id, folder in _folder_paths(con, [row[0] for row in con.execute(
+                "SELECT id FROM albums")]).items() if folder in wanted}
+            for chunk in _chunks(list(ids)):
+                for row in con.execute(_ALBUM_TRACKS + f" WHERE t.album_id IN ({', '.join('?' * len(chunk))})"
+                                       " AND f.missing_since IS NULL", chunk):
+                    by_album.setdefault(row[0], []).append(_track(row[1:]))
+        return {Path(ids[album_id]): play_order(Path(ids[album_id]), tracks) for album_id, tracks in by_album.items()}
+
+    def file_times(self) -> dict[str, tuple[float, float]]:
+        """{music file: (when it arrived, when the database first saw it)} for every file in the
+        library (not those missing)."""
+        return {_join(root, rel, name): (added, seen) for root, rel, name, added, seen in self._con().execute(
+            "SELECT r.path, d.rel, f.name, f.added, f.seen FROM files f JOIN folders d ON d.id = f.folder_id"
+            " JOIN roots r ON r.id = d.root_id WHERE f.missing_since IS NULL")}
+
+    def files(self) -> dict[str, tuple[int, int, float, float, list[Track]]]:
+        """{music file: (size, modified ns, added, seen, its tracks)} for every file in the library
+        (not those missing). The whole library in memory: for checks, not for the player."""
+        found: dict[str, tuple[int, int, float, float, list[Track]]] = {}
+        with self._reading() as con:
+            for root, rel, name, size, mtime, added, seen in con.execute(
+                    "SELECT r.path, d.rel, f.name, f.size, f.mtime_ns, f.added, f.seen FROM files f"
+                    " JOIN folders d ON d.id = f.folder_id JOIN roots r ON r.id = d.root_id"
+                    " WHERE f.missing_since IS NULL"):
+                found[_join(root, rel, name)] = (size, mtime, added, seen, [])
+            for row in con.execute(_TRACK_SELECT + " WHERE f.missing_since IS NULL ORDER BY t.id"):
+                found[_join(row[0], row[1], row[2])][4].append(_track(row))
+        return found
 
     # -- song search --
     def search_songs(self, query: str, limit: int = SEARCH_LIMIT) -> SongHits:
@@ -1033,54 +1154,51 @@ class LibraryDB:
         completed = duration > 0 and seconds_heard >= duration * 0.95
         with self._writing(bump=False) as con:
             con.execute("INSERT INTO plays(key, played_at, seconds_heard, completed) VALUES (?, ?, ?, ?)",
-                        (_key(key), time.time() if when is None else when, float(seconds_heard), int(completed)))
+                        (_to_db(_key(key)), time.time() if when is None else when, float(seconds_heard),
+                         int(completed)))
         return True
 
     def play_counts(self, keys: Iterable) -> dict[str, int]:
         """{key: times played} for these songs (0 for one never played)."""
-        keys = [_key(k) for k in keys]
-        counts = dict.fromkeys(keys, 0)
+        counts = dict.fromkeys((_key(k) for k in keys), 0)
         with self._reading() as con:
-            for chunk in _chunks(list(counts)):
-                counts.update(con.execute(f"SELECT key, count(*) FROM plays WHERE key IN"
-                                          f" ({', '.join('?' * len(chunk))}) GROUP BY key", chunk).fetchall())
+            counts.update(_keys_in(con, "SELECT key, count(*) FROM plays WHERE key IN ({marks}) GROUP BY key",
+                                   list(counts)))
         return counts
 
     def last_played(self, keys: Iterable) -> dict[str, float]:
         """{key: when last played} for the songs among these that have been played."""
         keys = list(dict.fromkeys(_key(k) for k in keys))
-        found: dict[str, float] = {}
         with self._reading() as con:
-            for chunk in _chunks(keys):
-                found.update(con.execute(f"SELECT key, max(played_at) FROM plays WHERE key IN"
-                                         f" ({', '.join('?' * len(chunk))}) GROUP BY key", chunk).fetchall())
-        return found
+            return dict(_keys_in(con, "SELECT key, max(played_at) FROM plays WHERE key IN ({marks}) GROUP BY key",
+                                 keys))
 
     def most_played(self, n: int = 50) -> list[tuple[str, int]]:
         """The `n` songs played most: (key, times), most first (the latest played first on a tie)."""
-        return [(key, count) for key, count, _last in self._con().execute(
+        return [(_from_db(key), count) for key, count, _last in self._con().execute(
             "SELECT key, count(*) AS times, max(played_at) AS last FROM plays GROUP BY key"
             " ORDER BY times DESC, last DESC LIMIT ?", (n,))]
 
     def recently_played(self, n: int = 50) -> list[tuple[str, float]]:
         """The `n` songs played last: (key, when), latest first."""
-        return self._con().execute("SELECT key, max(played_at) AS last FROM plays GROUP BY key"
-                                   " ORDER BY last DESC LIMIT ?", (n,)).fetchall()
+        return [(_from_db(key), last) for key, last in self._con().execute(
+            "SELECT key, max(played_at) AS last FROM plays GROUP BY key ORDER BY last DESC LIMIT ?", (n,))]
 
     def is_favourite(self, key) -> bool:
-        return self._con().execute("SELECT 1 FROM favourites WHERE key = ?", (_key(key),)).fetchone() is not None
+        return self._con().execute("SELECT 1 FROM favourites WHERE key = ?",
+                                   (_to_db(_key(key)),)).fetchone() is not None
 
     def set_favourite(self, key, on: bool = True, when: float | None = None) -> None:
         with self._writing(bump=False) as con:
             if on:
                 con.execute("INSERT OR IGNORE INTO favourites(key, added) VALUES (?, ?)",
-                            (_key(key), time.time() if when is None else when))
+                            (_to_db(_key(key)), time.time() if when is None else when))
             else:
-                con.execute("DELETE FROM favourites WHERE key = ?", (_key(key),))
+                con.execute("DELETE FROM favourites WHERE key = ?", (_to_db(_key(key)),))
 
     def favourites(self) -> list[str]:
         """Every favourite's key, newest first."""
-        return [row[0] for row in self._con().execute("SELECT key FROM favourites ORDER BY added DESC, key")]
+        return [_from_db(row[0]) for row in self._con().execute("SELECT key FROM favourites ORDER BY added DESC, key")]
 
     # -- moving over from library_index.json --
     def import_json_index(self, path: str | Path | None = None,
@@ -1092,10 +1210,12 @@ class LibraryDB:
         counting the rows; then the JSON is renamed library_index.json.migrated (a backup).
         Returns whether it was brought across — if not (none, damaged, another folder, an older
         format), the library is simply looked through from scratch. `progress(done, total)`."""
+        from . import library_index   # (it uses this module: imported here, not at the top)
+
         path = Path(path) if path is not None else library_index.index_path()
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("format") != library_index.FORMAT:
+            if data.get("format") != READ_FORMAT:
                 return False
             built = float(data.get("built", 0.0))
             entries = []
@@ -1113,7 +1233,7 @@ class LibraryDB:
                 if found is None:
                     return False
                 root_id = found[0]
-                root = con.execute("SELECT path FROM roots WHERE id = ?", (root_id,)).fetchone()[0]
+                root = _from_db(con.execute("SELECT path FROM roots WHERE id = ?", (root_id,)).fetchone()[0])
                 if con.execute("SELECT 1 FROM files f JOIN folders d ON d.id = f.folder_id WHERE d.root_id = ? LIMIT 1",
                                (root_id,)).fetchone():
                     return False   # already has its own rows: those are newer
@@ -1127,7 +1247,7 @@ class LibraryDB:
                     file_id = con.execute(
                         "INSERT INTO files(folder_id, name, size, mtime_ns, added, seen, read_format)"
                         " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (folder_id, base, size, mtime, added, seen, READ_FORMAT)).lastrowid
+                        (folder_id, _to_db(base), size, mtime, added, seen, READ_FORMAT)).lastrowid
                     self._insert_tracks(con, file_id, album_id, [track_row(t) for t in tracks])
                     albums.add(album_id)
                     if progress is not None and (done % 1000 == 0 or done == total):
@@ -1205,7 +1325,7 @@ def _upgrade(con: sqlite3.Connection, version: int, tables: set[str]) -> None:
 
 def _find_root(con: sqlite3.Connection, root: str) -> tuple[int, float] | None:
     """(id, first-look time) of a library folder, or None."""
-    rows = con.execute("SELECT id, path, built FROM roots").fetchall()
+    rows = [(root_id, _from_db(path), built) for root_id, path, built in con.execute("SELECT id, path, built FROM roots")]
     for root_id, path, built in rows:
         if path == root:
             return root_id, built
@@ -1220,19 +1340,19 @@ def _root(con: sqlite3.Connection, root: str) -> tuple[int, float]:
     found = _find_root(con, root)
     if found is not None:
         return found
-    return con.execute("INSERT INTO roots(path) VALUES (?)", (root,)).lastrowid, 0.0
+    return con.execute("INSERT INTO roots(path) VALUES (?)", (_to_db(root),)).lastrowid, 0.0
 
 
 def _folder(con: sqlite3.Connection, root_id: int, rel: str) -> tuple[int, int]:
     """(folder id, its album folder's id), adding the folder (and its album folder) when new."""
     row = con.execute("SELECT id, album_folder_id FROM folders WHERE root_id = ? AND rel = ?",
-                      (root_id, rel)).fetchone()
+                      (root_id, _to_db(rel))).fetchone()
     if row is not None:
         return row[0], row[1]
     album_rel = _album_rel(rel)
     album_id = _folder(con, root_id, album_rel)[0] if album_rel != rel else None
     folder_id = con.execute("INSERT INTO folders(root_id, rel, album_folder_id) VALUES (?, ?, ?)",
-                            (root_id, rel, album_id)).lastrowid
+                            (root_id, _to_db(rel), album_id)).lastrowid
     if album_id is None:
         con.execute("UPDATE folders SET album_folder_id = id WHERE id = ?", (folder_id,))
         album_id = folder_id
@@ -1242,6 +1362,7 @@ def _folder(con: sqlite3.Connection, root_id: int, rel: str) -> tuple[int, int]:
 def _locate(con: sqlite3.Connection, folder: str) -> tuple[int, str, str] | None:
     """(library folder id, its path, `folder` below it) for a folder in the library, else None."""
     for root_id, root in con.execute("SELECT id, path FROM roots ORDER BY length(path) DESC").fetchall():
+        root = _from_db(root)
         try:
             return root_id, root, _rel(root, folder)
         except ValueError:
@@ -1252,13 +1373,16 @@ def _locate(con: sqlite3.Connection, folder: str) -> tuple[int, str, str] | None
 def _folders_under(con: sqlite3.Connection, root_id: int, rel: str, whole_tree: bool) -> list[tuple[int, str, str]]:
     """(id, rel, cue_sig) of the stored folders an album at `rel` takes in: itself and its "CD1" /
     "Disc 2" folders — or, `whole_tree`, every folder below it."""
-    if rel:
-        prefix = rel + os.sep
+    prefix = rel + os.sep
+    if rel and isinstance(_to_db(rel), str):
         rows = con.execute("SELECT id, rel, cue_sig FROM folders WHERE root_id = ?"
                            " AND (rel = ? OR (rel >= ? AND rel < ?))",   # (itself, or a folder inside it)
                            (root_id, rel, prefix, prefix + "\U0010ffff")).fetchall()
-    else:
+    else:   # (the whole library folder, or a folder whose name isn't valid Unicode: sorted out here)
         rows = con.execute("SELECT id, rel, cue_sig FROM folders WHERE root_id = ?", (root_id,)).fetchall()
+    rows = [(folder_id, _from_db(sub), sig) for folder_id, sub, sig in rows]
+    if rel:
+        rows = [row for row in rows if row[1] == rel or row[1].startswith(prefix)]
     if whole_tree:
         return rows
     return [row for row in rows if row[1] == rel
@@ -1283,7 +1407,7 @@ def _rename(con: sqlite3.Connection, names: Iterable[str]) -> None:
         rows = con.execute("SELECT a.id, d.rel, r.path FROM albums a JOIN folders d ON d.id = a.id"
                            " JOIN roots r ON r.id = d.root_id WHERE a.name = ?", (name,)).fetchall()
         for album_id, rel, root in rows:
-            shown = f"{name}  ({Path(_join(root, rel)).parent.name})" if len(rows) > 1 and rel else name
+            shown = _text(f"{name}  ({Path(_join(root, rel)).parent.name})" if len(rows) > 1 and rel else name)
             con.execute("UPDATE albums SET display_name = ?, sort_name = ? WHERE id = ?",
                         (shown, _sort_text(shown), album_id))
 
@@ -1328,7 +1452,7 @@ def _ranked(rows: list, words: list[str], whole_words: bool) -> list[SongHit]:
     for row in rows:
         track = _track(row)
         year = track.year
-        stem = os.path.splitext(row[2])[0]
+        stem = os.path.splitext(_from_db(row[2]))[0]
         texts = (track.title, track.artist, track.album, track.album_artist, track.composer, track.genre,
                  str(year) if year else "", stem)
         tokens = [searchfold.tokens(text) for text in texts]
@@ -1342,7 +1466,7 @@ def _ranked(rows: list, words: list[str], whole_words: bool) -> list[SongHit]:
         best = next((i for i, yes in enumerate(hit) if yes), len(texts))
         key = (not whole, best, sort_name(track.artist), natural_key(track.album), track.disc_no or 0,
                track.track_no if track.track_no is not None else 10_000, natural_key(track.title))
-        album = Path(_join(row[0], _album_rel(row[1])))
+        album = Path(_join(row[0], _album_rel(_from_db(row[1]))))
         ranked.append((key, SongHit(row[3], track, album, FIELD_NAMES[best] if 3 <= best < len(texts) else "")))
     ranked.sort(key=lambda pair: pair[0])
     return [hit for _key, hit in ranked]

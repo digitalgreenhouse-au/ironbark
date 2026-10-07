@@ -14,7 +14,8 @@ import pytest
 import soundfile as sf
 from tagging import text, write_id3
 
-from ironbark import APP_NAME, OLD_APP_NAME, audiofile, cuesheet, dragdrop, library, library_index, playlists
+from ironbark import (APP_NAME, OLD_APP_NAME, audiofile, cuesheet, dragdrop, library, library_db, library_index,
+                     playlists)
 from ironbark import settings, watcher
 from ironbark.audiofile import CuePath
 from ironbark.library import Track, title_from_filename
@@ -63,16 +64,16 @@ def dates(index: LibraryIndex) -> dict[str, tuple[float, float]]:
 def test_an_unplugged_library_drive_leaves_the_index_alone(music, app):
     index = LibraryIndex(music)
     index.refresh()
-    before, saved = dates(index), (app / "library_index.json").read_bytes()
+    before, counts = dates(index), index.db.counts()
     since = time.time()
     unplugged = music.with_name("Music (unplugged)")
     music.rename(unplugged)
 
     diff = index.refresh()
     assert diff.error and diff.nothing and not diff.removed
-    assert dates(index) == before and (app / "library_index.json").read_bytes() == saved
+    assert dates(index) == before and index.db.counts() == counts      # nothing marked missing, nothing gone
     assert index.changes().error and not index.changes().removed
-    assert LibraryIndex(music).entries.keys() == before.keys()        # the saved file still holds it all
+    assert LibraryIndex(music).entries.keys() == before.keys()        # the database still holds it all
 
     unplugged.rename(music)                                           # the drive comes back
     diff = index.refresh()
@@ -266,7 +267,7 @@ def test_a_file_name_with_a_lone_surrogate_doesnt_stop_the_index_saving(tmp_path
     index = LibraryIndex(root)
     diff = index.refresh()
     assert len(diff.added) == 2
-    assert (app / "library_index.json").is_file()
+    assert (app / library_db.FILE_NAME).is_file()        # (0.31: the database, where JSON once was)
     again = LibraryIndex(root)
     assert str(odd) in again.entries and again.refresh().nothing
     playlist = playlists.path_for("Odd names")
