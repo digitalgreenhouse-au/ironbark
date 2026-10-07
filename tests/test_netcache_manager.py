@@ -556,7 +556,7 @@ def test_a_copy_that_fails_its_check_twice_is_never_played_and_is_skipped_until_
     result = m.prepare(path)
     assert isinstance(result, Unavailable) and result.permanent and "twice" in result.reason
     assert item.visible == 0 and item.gen not in item.failed_gens   # (the bytes that failed are gone)
-    assert "Downloading it again" in m.notices[0] and "isn't played from the cache" in m.notices[-1]
+    assert "Downloading it again" in m.notices[0] and m.notices[-1].endswith("so the song is skipped for now.")
     reads = len(share.reads("bad.flac"))
     time.sleep(0.6)
     seen = []

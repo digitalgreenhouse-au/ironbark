@@ -15,7 +15,9 @@ deleted while it's being read: on Windows with CreateFileW and FILE_SHARE_DELETE
 The bytes of a copy may be in more than one file: the unbroken run from the start (the .part, or
 the finished copy once renamed) and "islands" fetched ahead of it (after a seek ahead). Each read
 asks the item where its bytes are now; an island merged into the .part meanwhile (and deleted) is
-simply looked for again.
+simply looked for again. Bytes recorded as here that still can't be read (the file was deleted or
+cut short behind the cache's back) are reported to the item (`Item.lose`): readers stop waiting on
+that version and the cache fetches the song again.
 """
 
 from __future__ import annotations
@@ -87,9 +89,14 @@ class GrowingFile(io.RawIOBase):
         return self._pos
 
     def _give_up(self, reason: str) -> int:
+        """Note why on the gate (the first reason stays) and read nothing: 0."""
         if not self.gate.gave_up:
             self.gate.gave_up = reason
         return 0
+
+    def _stop_waiting(self, reason: str) -> bool:
+        self._give_up(reason)
+        return False
 
     def _wait_for(self, end: int) -> bool:
         """Wait until bytes [position, end) of this version are on disk. False (and the gate notes
@@ -100,15 +107,15 @@ class GrowingFile(io.RawIOBase):
         try:
             while True:
                 if gate.cancel is not None and gate.cancel():
-                    return not self._give_up("cancel")
+                    return self._stop_waiting("cancel")
                 with item.cond:
                     if item.has_range(self.gen, self._pos, end):
                         return True
                     if item.gen_failed(self.gen):
-                        return not self._give_up("failed")
+                        return self._stop_waiting("failed")
                     left = gate.deadline - time.monotonic()
                     if left <= 0:
-                        return not self._give_up("patience")
+                        return self._stop_waiting("patience")
                     item.cond.wait(min(left, WAIT_SLICE_S))
         finally:
             gate.waiting = False
@@ -168,7 +175,10 @@ class GrowingFile(io.RawIOBase):
             while done < n:
                 got = self._read_piece(self._pos + done, view[done:n])
                 if not got:
-                    return self._give_up("failed")   # the copy on disk is shorter than it said
+                    if self.item.has_now(self.gen, self._pos + done, end):
+                        # Recorded as here, yet unreadable: deleted or cut short behind the cache's back.
+                        self.item.lose(self.gen)
+                    return self._give_up("failed")
                 done += got
             self._pos = end
             return n

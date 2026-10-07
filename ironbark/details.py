@@ -152,6 +152,14 @@ def tone_of(text: str) -> str:
 
 
 COPY_FAILED = "✗ This played from a copy that didn't match the original. Downloading it again."
+COPY_SKIPPED = "✗ This played from a copy that didn't match the original. The song is skipped for now."
+
+
+def copy_failed_text(copy: str) -> str:
+    """The warning for a song played from a copy that failed its check ("" for any other copy):
+    a fresh copy is downloading ("failed"), or — failed again — the song is skipped for now
+    ("rejected")."""
+    return {"failed": COPY_FAILED, "rejected": COPY_SKIPPED}.get(copy, "")
 
 
 def copy_note(copy: str) -> str:
@@ -251,8 +259,8 @@ def network_hover(network) -> str:
         return ""
     if network.phase != "playing":
         return network.detail or network_line(network)[0]
-    if network.copy == "failed":
-        return COPY_FAILED
+    if copy_failed_text(network.copy):
+        return copy_failed_text(network.copy)
     parts = ["Playing the local copy"]
     if network.cached < 1.0:
         speed = fmt_speed(network.speed)
@@ -284,8 +292,8 @@ def source_rows(track, network) -> list[tuple[str, str]]:
         downloaded += f" · checked: {checked}"
     elif network.copy == "checking":
         downloaded += " · being checked"
-    elif network.copy == "failed":
-        downloaded = COPY_FAILED
+    elif copy_failed_text(network.copy):
+        downloaded = copy_failed_text(network.copy)
     elif network.copy == "stale":
         downloaded = ("✗ Playing an older copy: the file on the drive has changed since; the new version "
                       "is downloading")
@@ -306,8 +314,8 @@ def describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, 
     the network playback cache: against its copy on this computer, said so)."""
     text, tone = _describe_proof(proof, output, gain, trim, lossy, float_source, bits, codec, level, fading)
     copy = getattr(proof, "copy", "") if proof is not None else ""
-    if copy == "failed":
-        return f"{COPY_FAILED} {text}", "warn"
+    if copy_failed_text(copy):
+        return f"{copy_failed_text(copy)} {text}", "warn"
     note = copy_note(copy)
     if note and proof is not None and proof.sent > 0:
         text = f"{text.replace('the file', 'the copy')} · {note}"

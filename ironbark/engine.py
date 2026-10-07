@@ -37,7 +37,9 @@ from the buffer unheard; if the buffer runs nearly dry, playback pauses at the q
 of the last block (a stall marker in the queue) and the stream plays exact zeros — so a lost
 device is still noticed — until the music is back, from exactly where it stopped. After 30 s of
 that silence the device is let go; it carries on by itself within 5 minutes, on the same device
-at the same volume, else waits for play. Nothing is ever faded, scaled or skipped for it.
+at the same volume, else waits for play. Nothing is ever faded, scaled or skipped for it. If the
+copy's bytes go missing from this computer mid-song (deleted behind the cache's back), the song
+is started again from that spot on a fresh copy ("Preparing…") rather than waiting for them.
 
 All public Player methods are safe to call from any thread.
 """
@@ -150,7 +152,7 @@ class NetworkView:
     auto: bool                 # starts / carries on by itself
     percent: int | None = None
     detail: str = ""           # the cache's own words for where it has got to
-    copy: str = ""             # the copy playing: "downloading", "checking", "verified", "failed", "stale"
+    copy: str = ""             # the copy playing: "downloading", "checking", "verified", "failed", "rejected", "stale"
     checks: str = ""           # the checks its complete copy passed (e.g. "size+identity+decode+flac-md5")
     cached: float = 0.0        # fraction of this song's file on this computer
     next_cached: float | None = None
@@ -258,6 +260,7 @@ class _Source:
         self._closed = False
         self.dead = False
         self.stalls: list[float] = []   # when each pause for the network began (perf_counter)
+        self.length_due = False         # an MP3 copy still downloading: its length is checked once it's complete
         self.samplerate, self.channels, self.total_frames = self.file.samplerate, self.file.channels, self.file.frames
         self.bits = BITS.get(self.file.subtype)  # None for floating-point files and MP3s
         self.name = audiofile.display_name(self.path)
@@ -317,7 +320,8 @@ class _Session:
     next song before it's opened, and whether a song waiting for the network may carry on."""
 
     def __init__(self, path, gain_ref, on_end, device=None, want_exclusive=False, start_at=0.0, events=None,
-                 monitors=None, index: int = -1, follow=None, on_advance=None, on_lost=None, preparer=None):
+                 monitors=None, index: int = -1, follow=None, on_advance=None, on_lost=None, preparer=None,
+                 on_refetch=None):
         first = _Source(path, index)
         first.heard = True
         self._src = first          # the file being heard
@@ -329,13 +333,19 @@ class _Session:
         self._gain_ref = gain_ref  # callable(path) -> the linear gain for that file right now
         self._on_end = on_end
         self._on_lost = on_lost or (lambda session: None)
+        self._on_refetch = on_refetch or (lambda session: None)   # the copy's bytes went missing: start it again
+        self._refetch_asked = False
         self._follow = follow      # callable(index) -> (index, path) of what plays after it, or None
         self._on_advance = on_advance or (lambda session, previous, source: None)
         self._preparer = preparer
         self.handoff = ""          # why the next track couldn't join on, when it couldn't
-        self.waiting: WaitInfo | None = None   # waiting for the network (decoder sets it; callback clears it)
+        # Waiting for the network: only the decoder sets it (see `waiting`); the callback notes the
+        # markers it has played past instead of clearing it, so it can never wipe out a wait the
+        # decoder has just begun.
+        self._wait: WaitInfo | None = None
         self._serial = 0           # stall markers queued so far
         self._resumed_serial = 0   # the decoder has carried on after every stall up to this one
+        self._passed_serial = 0    # the callback has played on past every stall marker up to this one
         self._awaiting: tuple | None = None    # (index, path) of a next song still downloading
 
         # The buffer holds about BUFFER_SECONDS of music whatever the rate (0.26 s at 384 kHz in a fixed
@@ -405,6 +415,19 @@ class _Session:
         if start_at > 0:
             self.seek(start_at)
         self._decoder = threading.Thread(target=self._decode_loop, name="flac-decoder", daemon=True)
+
+    @property
+    def waiting(self) -> WaitInfo | None:
+        """Waiting for the network (the decoder reached bytes not downloaded yet), or None — also
+        once a committed pause's marker has been played past."""
+        wait = self._wait
+        if wait is not None and wait.committed and wait.serial <= self._passed_serial:
+            return None
+        return wait
+
+    @waiting.setter
+    def waiting(self, wait: WaitInfo | None) -> None:
+        self._wait = wait   # (the decoder's thread only)
 
     # About the file being heard.
     total_frames = property(lambda self: self._src.total_frames)
@@ -565,6 +588,8 @@ class _Session:
                 if block is None:
                     state = _ENDED
                     continue
+                if reading.length_due and reading.local.ready_path() is not None:
+                    self._check_length(reading)   # (its copy has just become complete)
                 self._put((generation, reading, position, block))
                 position += len(block)
                 got += len(block)
@@ -886,6 +911,11 @@ class _Session:
         outlook = preparer.outlook(source.local, frame / self.samplerate)
         if getattr(outlook, "permanent", False):
             return self._cut_short(source, frame, generation, outlook.reason)
+        if getattr(outlook, "phase", "") == "lost" and not self._refetch_asked:
+            # Its bytes went missing from this computer: they'll never come to this version, so the
+            # player starts the song again from here on a fresh copy (asked once; it closes this session).
+            self._refetch_asked = True
+            self._on_refetch(self)
         return _WAITING, None
 
     def _carry_on_from(self, source: _Source, frame: int, wait: WaitInfo):
@@ -927,6 +957,12 @@ class _Session:
             self._queue.not_empty.notify()
         if not wait.seek:   # (a seek past what's downloaded isn't the network failing: no longer wait next time)
             source.stalls.append(time.perf_counter())
+            note = getattr(self._preparer, "note_stall", None)
+            if note is not None:
+                try:
+                    note(source.local)
+                except Exception:  # noqa: BLE001 — only what the cache learns from it
+                    log.exception("telling the cache about a pause for the network")
 
     def _cut_short(self, source: _Source, frame: int, generation: int, why: str):
         """The rest of this song will never arrive (its file changed or went away mid-song): the
@@ -965,8 +1001,14 @@ class _Session:
         return self._carry_into(after, None, position, got, generation)
 
     def _check_length(self, source: _Source):
-        """An MP3 with no length header can stop early (see audiofile.mp3_shortfall): say so."""
+        """An MP3 with no length header can stop early (see audiofile.mp3_shortfall): say so. A copy
+        still downloading can't be counted yet: it's checked again once it's complete (the decoder
+        looks after every block), as long as the song is still being read."""
+        source.length_due = False
         try:
+            if source.local.remote and source.local.ready_path() is None:
+                source.length_due = audiofile.is_mp3(source.file)
+                return
             short = audiofile.mp3_shortfall(source.file, source.local)
         except Exception:  # noqa: BLE001 — only a warning: never worth stopping playback for
             log.exception("checking the length of %s", source.name)
@@ -1117,9 +1159,7 @@ class _Session:
                     event.silent += time.perf_counter() - stall.silent_since
                     event.last = time.time()
                     break
-        wait = self.waiting
-        if wait is not None and wait.serial == stall.serial:
-            self.waiting = None
+        self._passed_serial = max(self._passed_serial, stall.serial)   # (the wait it ended is over)
         return True
 
     def _silent(self, now: float, stall: _Stall | None = None):
@@ -1381,7 +1421,12 @@ class Player:
         self._monitors: list[queue.Queue] = []  # see monitor()
         self._suspended_at: float | None = None  # see suspend(): paused with the device let go
         self._silent_run = 0  # tracks in a row that ended with nothing heard (see _ended)
-        # ("end", session) / ("advance", session, previous, new) / ("lost", session)
+        # (path, stall times) of a song whose session closed while it waited for the network: its
+        # next session carries on counting them (each resume waits twice as long after each).
+        self._carried_stalls: tuple | None = None
+        self._starting = False   # _start is under way (see active)
+        # ("end", session) / ("advance", session, previous, new) / ("lost", session) / ("refetch", session)
+        # / ("ready", None, token)
         self._ended_events: queue.Queue = queue.Queue()
         threading.Thread(target=self._advance_loop, name="player-control", daemon=True).start()
 
@@ -1447,11 +1492,20 @@ class Player:
         if preparer is not None:
             preparer.position_hint(path, seconds)
 
+    def active(self) -> bool:
+        """Something plays, is paused, or waits to start (for the network, or after the device was
+        let go); False once stopped. No lock."""
+        return (self._session is not None or self._preparing is not None or self._suspended_at is not None
+                or self._starting)
+
     def upcoming(self, n: int) -> list:
-        """The song playing (or about to: preparing), then up to `n` that follow it, as the engine
-        will play them (Up next first): [(list position or queued song, path), …]. Stops where
-        playback is set to stop, at repeat one and at a song already listed. No lock: it reads
-        lists that are replaced whole, as the decoder does (the network playback cache calls it)."""
+        """The song playing (or about to: preparing; or paused), then up to `n` that follow it, as
+        the engine will play them (Up next first): [(list position or queued song, path), …]. Stops
+        where playback is set to stop, at repeat one and at a song already listed; [] when stopped.
+        No lock: it reads lists that are replaced whole, as the decoder does (the network playback
+        cache calls it)."""
+        if not self.active():
+            return []
         at = self._current()
         track = self._track_at(at)
         if track is None:
@@ -1475,7 +1529,7 @@ class Player:
         to start; [] when stopped. No lock (lists replaced whole, as upcoming reads them): the
         network playback cache keeps these copies under "Keep cached tracks: until playback
         finishes"."""
-        if self._session is None and self._preparing is None:
+        if not self.active():
             return []
         return [track.path for track in self.tracks] + [queued.track.path for queued in self.queue]
 
@@ -1810,6 +1864,7 @@ class Player:
     def stop(self):
         with self._lock:
             self.stop_after, self._fade = None, None
+            self._carried_stalls = None
             self._close_session()
 
     def next(self):
@@ -1978,6 +2033,13 @@ class Player:
         forward past files that won't open. A song on a network drive not ready yet waits
         ("Preparing…", see _wait_to_start) instead: no device is opened for it until it starts.
         `force`: play was pressed while it waited (it starts if a few seconds are here)."""
+        self._starting = True   # (active() meanwhile: the cache keeps the song about to play wanted)
+        try:
+            self._start_now(index, start_at, transition, force, resume)
+        finally:
+            self._starting = False
+
+    def _start_now(self, index, start_at: float, transition: str, force: bool, resume: bool):
         self._close_session()
         self._message = ""
         self._fade = self._resume_with = None
@@ -2016,7 +2078,11 @@ class Player:
                                    on_advance=lambda s, previous, new: self._ended_events.put(
                                        ("advance", s, previous, new)),
                                    on_lost=lambda s: self._ended_events.put(("lost", s)),
-                                   preparer=self._preparer)
+                                   preparer=self._preparer,
+                                   on_refetch=lambda s: self._ended_events.put(("refetch", s)))
+                carried, self._carried_stalls = self._carried_stalls, None
+                if carried is not None and carried[0] == session._path:
+                    session._src.stalls = list(carried[1])   # (the same song, taken back after a network pause)
                 session.start()
             except audiofile.Waiting:   # (its opening bytes weren't all here after all: wait for them)
                 self._wait_to_start(index, start_at, transition, resume=resume)
@@ -2053,6 +2119,7 @@ class Player:
         if self._session:
             self._session.close()
             self._session = None
+        self._plan_changed()   # (the cache lets go of what this was downloading, unless it plays on)
 
     # -- songs waiting for the network (the network playback cache) ------------------------
     def _prepare_play(self, path, start_at: float, force: bool):
@@ -2144,16 +2211,28 @@ class Player:
             if fade is not None and (self._session is not None or self._preparing is not None):
                 self._fade = fade
 
-    def _release_for_network(self, session: _Session):
+    def _release_for_network(self, session: _Session, refetch: bool = False):
         """Silent for HOLD_RELEASE_S waiting for the network: let go of the sound device (in
         bit-perfect mode other apps are silent while it's held), keep the spot, and carry on by
         itself — the same device, the same volume — if the network is back within AUTO_RESUME_S
-        of the silence starting."""
+        of the silence starting. `refetch`: the copy's bytes went missing from this computer — let
+        go at once and start the song again from the same spot once enough of a fresh copy is here
+        ("Preparing…"; paused by hand, it waits for play). The pauses for the network so far carry
+        over to the song's next session either way."""
         position = session.position   # (the last sample heard: where it carries on)
         silent_for = session.waiting_for(time.perf_counter())
-        at, queued = self._current(), self.queued_now
+        at, queued, paused = self._current(), self.queued_now, session.paused
+        stalls = (session._path, list(session._src.stalls))
         self._close_session()
         self.queued_now = queued
+        self._carried_stalls = stalls
+        if refetch:
+            log.info("%s: its copy on this computer went missing; started again from %.1f s on a fresh copy",
+                     session._track_name, position)
+            self._wait_to_start(at, position, "carried on from a fresh copy (the one on this computer went missing)")
+            if paused and self._preparing is not None:
+                self._preparing.auto = False
+            return
         log.info("%s: no music from the network for %.0f s; the sound device is let go", session._track_name,
                  silent_for)
         self._wait_to_start(at, position, "carried on after a pause for the network", resume=True,
@@ -2309,6 +2388,8 @@ class Player:
                         self._joined(session, *details)
                     elif kind == "lost":
                         self._lost(session)
+                    elif kind == "refetch":
+                        self._release_for_network(session, refetch=True)
                     else:
                         self._ended(session)
             except Exception:  # noqa: BLE001 — this thread must never die: nothing would move on again

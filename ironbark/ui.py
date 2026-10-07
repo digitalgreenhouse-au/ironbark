@@ -95,7 +95,7 @@ from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
 from .testsignals_window import TestSignalsWindow
-from .details import (COPY_FAILED, NowPlayingWindow, cache_mark, copy_note, network_hover, network_line,
+from .details import (NowPlayingWindow, cache_mark, copy_failed_text, copy_note, network_hover, network_line,
                       network_now_line, output_line)
 from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
@@ -4768,8 +4768,8 @@ class PlayerWindow:
             copy = getattr(proof, "copy", "")   # (played from the network playback cache: its copy)
             if proof is not None and proof.mismatch_at is not None:
                 text, tone = f"{text} · ✗ the audio sent differed from the file at {fmt_time(proof.mismatch_at)}", "warn"
-            elif copy == "failed":
-                text, tone = f"{text} · {COPY_FAILED}", "warn"
+            elif copy_failed_text(copy):
+                text, tone = f"{text} · {copy_failed_text(copy)}", "warn"
             elif tone == "good" and proof is not None and proof.complete and proof.untouched:
                 text += f" · proven sample for sample ({fmt_time(proof.checked)} checked)"
                 if copy:

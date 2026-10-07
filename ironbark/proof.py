@@ -85,7 +85,8 @@ class Proof:
     changed_from: float | None = None  # where the first changed (gain other than 1) block started
     max_gain: float = 1.0         # highest gain applied to any block (above 1.0: turned up)
     copy: str = ""                # played from a cached copy: "downloading", "checking", "verified", "failed",
-                                  # "stale" (see audiofile.LocalTrack.copy_state); "" for a file on this computer
+                                  # "rejected", "stale" (see audiofile.LocalTrack.copy_state); "" for a file
+                                  # on this computer
 
     @property
     def untouched(self) -> bool:
