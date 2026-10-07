@@ -522,6 +522,13 @@ def _elements(root: tk.Tk, style: ttk.Style) -> None:
     from . import shapes   # (shapes draws with this module's colours: imported when it's needed)
 
     pictures = shapes.element_pictures()
+    natural = {name: picture.size for name, (picture, _border) in pictures.items()}
+    # Ttk repeats a picture's middle to fill its element, one draw call per copy: drawn with a
+    # middle a few pixels across, a heading or row the width of a big window took seconds to paint.
+    # So the middles are made wide (or long, for a scrollbar's thumb), while each element still asks
+    # for its natural size (its width and height options), so nothing is laid out differently.
+    pictures = {name: (shapes.widened(picture, border, *_drawn_size(name, picture.size)), border)
+                for name, (picture, border) in pictures.items()}
     images = getattr(root, "_dg_style_images", None)
     if images is not None:
         for name, (picture, _border) in pictures.items():
@@ -531,20 +538,41 @@ def _elements(root: tk.Tk, style: ttk.Style) -> None:
     images = root._dg_style_images = {name: ImageTk.PhotoImage(picture, master=root)
                                       for name, (picture, _border) in pictures.items()}
     border = {name: b for name, (_picture, b) in pictures.items()}
+
+    def size(name: str) -> dict:
+        return {"width": natural[name][0], "height": natural[name][1]}
+
     for prefix, where in (("Round", "BG"), ("Card", "SURFACE")):
         name = f"field {where}"
         style.element_create(f"{prefix}.field", "image", images[name], ("disabled", images[name + " off"]),
-                             ("focus", images[name + " focus"]), border=border[name], padding=0, sticky="nswe")
+                             ("focus", images[name + " focus"]), border=border[name], padding=0, sticky="nswe",
+                             **size(name))
     style.element_create("Round.chevron", "image", images["chevron"], ("disabled", images["chevron off"]),
                          ("pressed", images["chevron hot"]), ("active", images["chevron hot"]), sticky="")
-    style.element_create("Round.heading", "image", images["heading"], border=border["heading"], sticky="nswe")
+    style.element_create("Round.heading", "image", images["heading"], border=border["heading"], sticky="nswe",
+                         **size("heading"))
     style.element_create("Round.selection", "image", images["clear"], ("selected", images["selection"]),
-                         border=border["selection"], sticky="nswe")
+                         border=border["selection"], sticky="nswe", **size("selection"))
     # (A scrollbar finds its thumb by the element's name: it must end in ".thumb".)
     for axis, element in (("v", "Slim.Vertical.Scrollbar.thumb"), ("h", "Slim.Horizontal.Scrollbar.thumb")):
         name = f"thumb {axis}"
         style.element_create(element, "image", images[name], ("pressed", images[name + " hot"]),
-                             ("active", images[name + " hot"]), border=border[name], sticky="nswe")
+                             ("active", images[name + " hot"]), border=border[name], sticky="nswe", **size(name))
+
+
+ELEMENT_MIDDLE = 1024   # px: how far a style picture's plain middle is stretched (see _elements)
+
+
+def _drawn_size(name: str, size: tuple[int, int]) -> tuple[int, int]:
+    """The size a style picture is drawn at: wide (rows, headings, fields), or long along a
+    scrollbar thumb's own direction only (across, its rounded profile must stay as drawn)."""
+    if name.startswith("chevron"):
+        return size
+    if name.startswith("thumb v"):
+        return size[0], ELEMENT_MIDDLE
+    if name.startswith("thumb h"):
+        return ELEMENT_MIDDLE, size[1]
+    return ELEMENT_MIDDLE, max(size[1], px(3 * CONTROL_H))
 
 
 def apply(root: tk.Tk) -> None:

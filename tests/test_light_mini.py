@@ -221,7 +221,8 @@ def make_window(tmp_path, monkeypatch):
     sf.write(song, np.zeros((44100, 2), dtype=np.int16), 44100, subtype="PCM_16")
     made = []
 
-    def make(**prefs):
+    def make(*, scaling: float | None = None, **prefs):
+        """scaling: lay the window out as at that display scaling (1.0 = 100%, 1.5 = 150%)."""
         base = dict(media_controls=False, watch_music=False, clip_guard=False, exclusive=False,
                     library_folder=str(tmp_path / "Music"), geometry="420x640+120+120", always_on_top=False)
         settings.save({**settings.DEFAULTS, **base, **prefs})
@@ -229,6 +230,9 @@ def make_window(tmp_path, monkeypatch):
             root = tk.Tk()
         except tk.TclError as error:
             pytest.skip(f"no display: {error}")
+        if scaling:
+            root.tk.call("tk", "scaling", scaling * 96 / 72)
+        theme._scale = theme.scale(root)   # this root's (an earlier test's root may have had another)
         errors = []
         root.report_callback_exception = lambda *info: errors.append(info)
         track = Track(path=song, title="Song One", artist="Artist", album="Album", duration=200.0,

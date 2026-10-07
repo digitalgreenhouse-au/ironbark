@@ -207,6 +207,29 @@ def at_least(size: tuple[int, int], border: tuple[int, int, int, int]) -> tuple[
     return max(size[0], left + right + 2), max(size[1], top + bottom + 2)
 
 
+def widened(picture: Image.Image, border: tuple[int, int, int, int], width: int, height: int) -> Image.Image:
+    """A 9-slice picture made at least `width` × `height` by stretching its plain middle (the corners
+    stay as drawn). Ttk repeats an image element's middle to fill it, one copy per Tk draw call, so a
+    middle a few pixels across costs thousands of calls on a wide list row or heading; a wide middle,
+    a handful. (The element is still asked for at its natural size: see theme._elements.)"""
+    left, top, right, bottom = border
+    w, h = picture.size
+    new_w, new_h = max(w, width), max(h, height)
+    if (new_w, new_h) == (w, h):
+        return picture
+    xs = ((0, left, 0, left), (left, w - right, left, new_w - right), (w - right, w, new_w - right, new_w))
+    ys = ((0, top, 0, top), (top, h - bottom, top, new_h - bottom), (h - bottom, h, new_h - bottom, new_h))
+    out = Image.new(picture.mode, (new_w, new_h))
+    for x0, x1, nx0, nx1 in xs:
+        for y0, y1, ny0, ny1 in ys:
+            if x1 > x0 and y1 > y0 and nx1 > nx0 and ny1 > ny0:
+                piece = picture.crop((x0, y0, x1, y1))
+                if piece.size != (nx1 - nx0, ny1 - ny0):
+                    piece = piece.resize((nx1 - nx0, ny1 - ny0), Image.Resampling.NEAREST)
+                out.paste(piece, (nx0, ny0))
+    return out
+
+
 def element_pictures() -> dict[str, tuple[Image.Image, tuple[int, int, int, int]]]:
     """Every picture the ttk styles draw with (theme._elements makes them image elements), by name:
     (picture, its 9-slice border — left, top, right, bottom). The border's corners stay as drawn and
