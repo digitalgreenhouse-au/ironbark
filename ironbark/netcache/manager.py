@@ -1986,9 +1986,9 @@ class _Writer:
             if f.seek(0, os.SEEK_END) < claimed:
                 # Bytes readers were told are here have gone (the file was deleted or cut short
                 # behind the cache's back): never fill the hole with zeros — that would play as
-                # silence and pass as downloaded. This version starts again from nothing.
+                # silence and pass as downloaded.
                 f.close()
-                raise Changed(f"{path.name} on this computer is shorter than recorded")
+                raise self._cut_behind(path)
             f.seek(claimed)
             f.truncate()   # (nothing past what readers were told is there)
             self.files[key] = f
@@ -1999,14 +1999,21 @@ class _Writer:
         if f is not None:
             f.close()
 
+    def _cut_behind(self, path: Path) -> Changed:
+        """A file of this version found shorter than recorded: its readers are told the copy here
+        went missing (the player starts the song again on a fresh copy from where it was — it isn't
+        taken for the file on the drive having changed), and this version starts again from nothing."""
+        self.item.lose(self.gen)
+        return Changed(f"{path.name} on this computer is shorter than recorded")
+
     def write(self, island: Island | None, offset: int, data: bytes) -> bool:
         item = self.item
         f = self._open(island)
         at = offset - (0 if island is None else island.start)
         if f.seek(0, os.SEEK_END) < at:
             # Cut short behind the cache's back since it was opened: writing here would leave a hole
-            # of zeros that plays as silence. This version starts again from nothing.
-            raise Changed(f"{self._path(island).name} on this computer is shorter than recorded")
+            # of zeros that plays as silence.
+            raise self._cut_behind(self._path(island))
         f.seek(at)
         f.write(data)
         f.flush()

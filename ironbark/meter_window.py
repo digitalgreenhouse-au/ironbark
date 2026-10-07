@@ -81,13 +81,15 @@ def _copies_here(track: Path, cancel: threading.Event, every: bool) -> bool:
     """(On Auto's worker.) Wait until songs of `track`'s album that are on a network drive have
     complete copies on this computer (the network playback cache) — `every` song, or just `track`
     — looking every COPIES_LOOK_S. Nothing is fetched for it. False if cancelled first."""
-    try:
-        files = album_files(track)[1]
-    except OSError:
-        return False
-    wanted = files if every else files[:1]
+    wanted = None
     while not cancel.is_set():
-        if all(audiofile.local_copy(path) is not None for path in wanted):
+        if wanted is None:
+            try:
+                files = album_files(track)[1]
+                wanted = files if every else files[:1]
+            except OSError:
+                pass   # (its folder can't be listed just now — the network, say: looked at again)
+        if wanted is not None and all(audiofile.local_copy(path) is not None for path in wanted):
             return True
         cancel.wait(COPIES_LOOK_S)
     return False

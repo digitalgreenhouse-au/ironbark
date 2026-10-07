@@ -181,7 +181,7 @@ class WaitInfo:
     """A session waiting for the network: the decoder reached bytes not downloaded yet."""
     since: float               # time.perf_counter() when the read gave up
     frame: int                 # where playback carries on from (once committed: the cut)
-    reason: str                # audiofile.Waiting's reason
+    reason: str                # audiofile.Waiting's reason; "lost" once the copy here is known to be gone
     serial: int = 0            # the stall marker's number, once committed
     committed: bool = False    # the pause will be heard: the stall marker is queued
     silent_since: float | None = None   # the first request answered with silence (perf_counter)
@@ -214,7 +214,8 @@ class PlaybackEvent:
     when: float      # time.time()
     track: str
     position: float  # seconds into the track
-    kind: str        # "dropout", "near miss", "damaged", "cut short" or "network pause" (never a dropout)
+    kind: str        # "dropout", "near miss", "damaged", "cut short", "network pause" or "fetched again"
+                     # (the last two are never dropouts)
     cause: str
     count: int = 1   # a stutter (gaps less than 2 s apart) is one event with a count
     silent: float = 0.0  # seconds of silence, all its gaps together
@@ -903,6 +904,9 @@ class _Session:
             if preparer is not None and preparer.resumable(source.local, frame, 0, quick=True):
                 return self._carry_on_from(source, frame, wait)
             if self._queued_seconds() <= STALL_COMMIT_S:
+                if preparer is not None and getattr(preparer.outlook(source.local, frame / self.samplerate),
+                                                    "phase", "") == "lost":
+                    wait.reason = "lost"   # (the copy here went missing: not the network failing)
                 self._commit(source, generation)
             return _WAITING, None
         stalls = source.recent_stalls(time.perf_counter())
@@ -911,10 +915,16 @@ class _Session:
         outlook = preparer.outlook(source.local, frame / self.samplerate)
         if getattr(outlook, "permanent", False):
             return self._cut_short(source, frame, generation, outlook.reason)
-        if getattr(outlook, "phase", "") == "lost" and not self._refetch_asked:
+        if (getattr(outlook, "phase", "") == "lost" and not self._refetch_asked
+                and (wait.silent_since is not None or self.paused)):
             # Its bytes went missing from this computer: they'll never come to this version, so the
-            # player starts the song again from here on a fresh copy (asked once; it closes this session).
+            # player starts the song again from here on a fresh copy (asked once; it closes this
+            # session) — once the music queued has played out to the quiet cut, so it never stops
+            # part-way through a waveform.
             self._refetch_asked = True
+            self._event("fetched again", "the copy on this computer went missing, so playback stopped at a "
+                                         "quiet sample (or where it was paused) and carries on from there on a "
+                                         "fresh copy")
             self._on_refetch(self)
         return _WAITING, None
 
@@ -955,7 +965,9 @@ class _Session:
             wait.serial, wait.frame, wait.committed = self._serial, cut, True
             items.append((generation, source, cut, _Stall(self._serial)))
             self._queue.not_empty.notify()
-        if not wait.seek:   # (a seek past what's downloaded isn't the network failing: no longer wait next time)
+        # (A seek past what's downloaded, or a copy here gone missing, isn't the network failing: it
+        # neither makes the next waits longer nor counts against the server.)
+        if not wait.seek and wait.reason != "lost":
             source.stalls.append(time.perf_counter())
             note = getattr(self._preparer, "note_stall", None)
             if note is not None:
@@ -1174,6 +1186,8 @@ class _Session:
             wait.silent_since = now
             if not first:
                 return   # (the same silence, now waiting for later bytes: not a second pause)
+            if wait.reason == "lost":
+                return   # (not the network: the report says "fetched again" as the fresh copy is asked for)
             why = "the download stopped" if wait.reason == "failed" else "the network didn't keep up"
             self._event("network pause", f"{why}, so playback paused at a quiet sample until the music had "
                                          "downloaded (it plays from the copy on this computer)")
@@ -2226,6 +2240,7 @@ class Player:
         self._close_session()
         self.queued_now = queued
         self._carried_stalls = stalls
+        self._position_hint(session._path, position)   # (a fresh copy is fetched from where it carries on)
         if refetch:
             log.info("%s: its copy on this computer went missing; started again from %.1f s on a fresh copy",
                      session._track_name, position)

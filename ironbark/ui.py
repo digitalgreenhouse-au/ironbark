@@ -1861,7 +1861,7 @@ class PlayerWindow:
         if manager is not None and tab is not None and tab.tracks:
             try:
                 on = manager.any_remote(track.path for track in tab.tracks)
-            except Exception:
+            except Exception:   # noqa: BLE001 — only whether a column shows
                 log.info("couldn't tell whether a tab has network songs", exc_info=True)
         self.playlist.set_cache_column(on)
         if on:

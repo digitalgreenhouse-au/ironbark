@@ -180,6 +180,11 @@ class Classifier:
                 self._types[letter] = kind
         return kind
 
+    def _under_roots(self, text: str) -> bool:
+        """Is this file (or folder, spelt with its last separator) inside a OneDrive folder?"""
+        here = os.path.normcase(text)
+        return any(here.startswith(root) for root in self._roots)
+
     def _is_cloud(self, text: str) -> bool:
         here = os.path.normcase(text)
         if not any(here.startswith(root) for root in self._roots):
@@ -223,9 +228,10 @@ class Classifier:
 
     def any_remote(self, paths) -> bool:
         """Is any of `paths` on the network (a share, a mapped drive, an online-only OneDrive file)?
-        Quick for a whole library: a drive letter is looked up once, and only files under a OneDrive
-        folder are looked at one by one."""
+        Quick for a whole library: a drive letter is looked up once, whether a folder is inside a
+        OneDrive folder once, and only files inside one are looked at one by one."""
         letters: dict[str, bool] = {}
+        folders: dict[str, bool] = {}   # folder (with its last separator) -> inside a OneDrive folder
         for path in paths:
             if isinstance(path, UrlPath):
                 continue
@@ -241,8 +247,13 @@ class Classifier:
                     remote = letters[letter] = self._type_of(letter) == DRIVE_REMOTE
                 if remote:
                     return True
-            if self._roots and self._is_cloud(text):
-                return True
+            if self._roots:
+                folder = text[:max(text.rfind("\\"), text.rfind("/")) + 1]
+                inside = folders.get(folder)
+                if inside is None:
+                    inside = folders[folder] = self._under_roots(folder)
+                if inside and self._is_cloud(text):
+                    return True
         return False
 
     def unc(self, path) -> str | None:

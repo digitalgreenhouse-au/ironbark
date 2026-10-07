@@ -252,6 +252,26 @@ def test_the_writer_never_fills_a_file_cut_short_behind_its_back(tmp_path):
         writer.write(None, 6000, b"z" * 1000)
     writer.close()
     assert m.store.part_path(item).stat().st_size == 100       # (no hole of zeros made)
+    assert item.gen in item.lost_gens                          # (and its readers are told)
+
+
+def test_a_copy_the_download_finds_gone_is_fetched_again_not_cut_short_as_changed(tmp_path):
+    m, clock = idle_manager(tmp_path)
+    item = _part_item(m, "d.wav", b"w" * 5000)
+    gen = item.gen
+    played = audiofile.LocalTrack(unc("d.wav"), item, gen)
+    played.acquire()                                           # (a song paused for the network mid-way)
+    m.store.part_path(item, gen).unlink()                      # deleted while its download was idle
+    with pytest.raises(Changed):
+        manager_mod._Writer(m.store, item, gen, clock)          # the download carries on first, and finds it gone
+    with m._lock:
+        m._new_generation(item, None)                          # (as the I/O thread does then)
+    outlook = m.outlook(played, 0.0)
+    assert isinstance(outlook, manager_mod.NotReady) and outlook.phase == "lost"   # not "the file … changed"
+    assert not m.resumable(played, 0, 0)
+    m._handle(m._inbox.get_nowait())
+    assert gen in item.lost_gens and item.gen == gen + 1
+    played.release()
 
 
 def test_a_song_whose_copy_goes_missing_carries_on_from_a_fresh_copy_at_once(tmp_path, fake_card, quick_watch,
@@ -557,3 +577,182 @@ def test_a_whole_librarys_paths_are_classified_by_drive_letter():
     assert looked == ["C:"]                                      # once, not 5,000 times
     assert c.any_remote([Path("C:/Music/a.flac"), Path("Z:/Music/b.flac")])
     assert c.any_remote([Path("//nas/share/c.flac")]) and not c.any_remote(["\\\\.\\C:\\x.flac"])
+
+
+def test_whether_a_folder_is_inside_onedrive_is_worked_out_once_per_folder():
+    from netfakes import FakeClassifier
+    roots, files = [], []
+
+    class OneDrive(FakeClassifier):
+        def _under_roots(self, text):
+            roots.append(text)
+            return super()._under_roots(text)
+
+        def _is_cloud(self, text):
+            files.append(text)
+            return text.endswith("online-only.flac")
+
+    c = OneDrive()
+    c._roots = ["c:\\users\\x\\onedrive\\"]
+    songs = [Path(f"C:/Music/Album {k % 5}/{k}.flac") for k in range(5000)]
+    assert not c.any_remote(songs)
+    assert len(roots) == 5 and files == []                       # (no file outside OneDrive looked at)
+    inside = [Path(f"C:/Users/X/OneDrive/Music/{k}.flac") for k in range(3)]
+    assert not c.any_remote(songs + inside) and len(files) == 3
+    assert c.any_remote(songs + inside + [Path("C:/Users/X/OneDrive/Music/online-only.flac")])
+    assert not c.any_remote([Path("C:/Users/X/OneDriveOld/a.flac")])   # (only inside the folder itself)
+
+
+# -- a copy gone missing: fetched again once the music queued has played out to its quiet cut ----------------
+def _lose_mid_song(tmp_path, prep):
+    """A player on a song whose copy has 2 s of its 4 here, read up to there; then its .part is
+    deleted behind the cache's back (its bytes still recorded as here)."""
+    _, data, ref, _ = music(tmp_path, "a.wav", 4.0)
+    copy = prep.add(FakeCopy(tmp_path / "cache", "a.wav", data))
+    copy.arrive(seconds=2.0)
+    p = Player(preparer=prep)
+    p.set_volume(1.0)
+    p.set_tracks([Track(copy.source, "A", duration=4.0)])
+    p.play(0)
+    s = p._session
+    card = Card(s)
+    card.play_while(lambda: s.waiting is None, keep=12)
+    copy.lose_file()
+    copy.arrive()
+    # Played on until the pause is committed, with music still queued before its marker.
+    card.play_while(lambda: s._queued_seconds() > engine.STALL_COMMIT_S and not s.waiting.committed, keep=0,
+                    pace=0.02)
+    assert wait_until(lambda: s.waiting.committed, 3)
+    return p, s, card, copy, ref
+
+
+def test_a_lost_copy_lets_the_music_queued_play_out_to_its_quiet_cut_first(tmp_path, fake_card):
+    prep = FakePreparer()
+    p, s, card, copy, ref = _lose_mid_song(tmp_path, prep)
+    cut = s.waiting.frame
+    assert s._queue.qsize() > 1                                  # music still queued before the marker
+    time.sleep(0.5)                                              # (the card isn't asking just now)
+    assert p._session is s and not fake_card[0].closed           # never stopped part-way through the music
+    card.play_while(lambda: p._session is s, keep=0, pace=0.01)
+    assert fake_card[0].closed and p._preparing is not None
+    position = p._preparing.start_at
+    assert int(round(position * RATE)) == cut                    # let go at the quiet cut, and carries on there
+    played = card.audio
+    played = np.delete(played, silent_frames(played), axis=0)
+    assert len(played) == cut and np.array_equal(played, ref[:cut])
+    assert ("hint", copy.source, position) in prep.calls        # (the fresh copy is fetched from there)
+    # Not the network: no pause counted against the server, nor making the next wait longer.
+    assert ("stall", copy.source) not in prep.calls and s._src.stalls == []
+    kinds = [event.kind for event in p.events]
+    assert "fetched again" in kinds and "network pause" not in kinds and "dropout" not in kinds
+    copy.renew()
+    copy.arrive()
+    prep.tick()
+    assert wait_until(lambda: p._session is not None, 3)
+    assert p._session._src.stalls == []
+    second = Card(p._session)
+    second.play_to_end()
+    got = second.audio
+    got = np.delete(got, silent_frames(got), axis=0)
+    assert np.array_equal(np.concatenate([played, got]), ref)   # nothing skipped, nothing played twice
+    p.stop()
+
+
+def test_a_lost_copy_while_paused_by_hand_waits_for_play(tmp_path, fake_card):
+    prep = FakePreparer()
+    p, s, card, copy, ref = _lose_mid_song(tmp_path, prep)
+    cut = s.waiting.frame
+    p.pause()                                                    # (paused before the pause was heard)
+    assert wait_until(lambda: p._session is not s, 3)
+    position = p._preparing.start_at
+    assert position * RATE < cut                                 # (where it was paused: before the cut)
+    assert p._preparing.auto is False and p.status().state.name == "PAUSED"
+    assert [event.kind for event in p.events].count("fetched again") == 1   # (in the playback report)
+    assert ("stall", copy.source) not in prep.calls
+    copy.renew()
+    copy.arrive()
+    prep.tick()
+    time.sleep(0.2)
+    assert p._session is None and "press play" in p.status().message
+    p.play()
+    assert p._session is not None and p.status().position == pytest.approx(position)
+    p.stop()
+
+
+# -- VU Auto's wait copes with an album folder it can't list for a moment -----------------------------------
+def test_vu_autos_wait_lists_the_album_once_and_again_only_if_it_couldnt(monkeypatch, tmp_path):
+    import threading
+    from ironbark import meter_window
+    track = tmp_path / "01.flac"
+    listed, here = [], []
+
+    def album_files(t):
+        listed.append(t)
+        if len(listed) < 3:
+            raise OSError("the specified network name is no longer available")
+        return tmp_path, [track, tmp_path / "02.flac"]
+
+    monkeypatch.setattr(meter_window, "album_files", album_files)
+    monkeypatch.setattr(meter_window, "COPIES_LOOK_S", 0.01)
+    monkeypatch.setattr(audiofile, "local_copy", lambda path: path if len(here) > 5 else here.append(path))
+    assert meter_window._copies_here(track, threading.Event(), every=True)   # (not given up: it waited on)
+    assert len(listed) == 3                                      # listed again only while it couldn't be
+    cancel = threading.Event()
+    cancel.set()
+    assert not meter_window._copies_here(track, cancel, every=True)
+
+
+def test_a_copy_deleted_while_the_network_was_down_carries_on_through_the_real_cache(tmp_path, fake_card,
+                                                                                     monkeypatch):
+    """End to end through the real cache (its scheduler, I/O thread, writer and reader): the network
+    goes and the song pauses at a quiet sample; its partial copy is deleted meanwhile; the network
+    comes back — the song carries on from that spot on a fresh copy: nothing skipped or played twice,
+    never cut short as if the file on the drive had changed."""
+    monkeypatch.setattr(manager_mod, "PROBE_BACKOFF_MIN_S", 0.2)
+    monkeypatch.setattr(manager_mod, "SCHEDULER_TICK_S", 0.05)
+    _, data, ref, _ = music(tmp_path, "a.wav", 6.0)
+    share = FakeShare(rate=200_000)                              # (a little faster than the music)
+    path = share.add("a.wav", data)
+    p = Player()
+    p.set_volume(1.0)
+    m = make_manager(tmp_path / "NetCache", share, None, prefs={"net_mode": "fast", "net_buffer": 1})
+    m.player = p
+    p.set_preparer(m)
+    try:
+        p.set_tracks([Track(path, "A", duration=6.0)])
+        p.play(0)
+        assert wait_until(lambda: p._session is not None, 20)
+        s = p._session
+        item = m.items[key(m, path)]
+        card = Card(s)
+        card.play_while(lambda: item.visible < len(data) // 3, keep=4, pace=0.005)
+        share.transient["a.wav"] = 10 ** 6                       # the network goes
+        pump(card, lambda: s.waiting is not None and s.waiting.silent_since is not None, 20)
+        cut = s.waiting.frame
+        part = m.store.part_path(item, item.gen)
+        assert wait_until(lambda: m.hosts[item.host].state == manager_mod.DOWN, 5)
+
+        def delete():
+            try:
+                part.unlink()                                    # deleted behind the cache's back
+                return True
+            except PermissionError:   # (the download looking in just then holds it: tried again)
+                return False
+
+        assert wait_until(delete, 5)
+        share.rate = 20_000                                      # (slow for now: it shows "Preparing…" a while)
+        share.transient["a.wav"] = 0                             # the network is back
+        pump(card, lambda: p._session is not s, 20)
+        assert "Cut short" not in (s.note or "") and p._preparing is not None
+        assert int(round(p._preparing.start_at * RATE)) == cut   # let go at the cut, and carries on there
+        share.rate = 400_000
+        assert wait_until(lambda: p._session is not None, 20)    # … by itself, once enough of a fresh copy is here
+        second = Card(p._session)
+        second.play_to_end()
+        first = np.delete(card.audio, silent_frames(card.audio), axis=0)
+        got = np.delete(second.audio, silent_frames(second.audio), axis=0)
+        assert len(first) == cut
+        assert np.array_equal(np.concatenate([first, got]), ref)   # nothing skipped, nothing played twice
+    finally:
+        p.stop()
+        m.shutdown()
