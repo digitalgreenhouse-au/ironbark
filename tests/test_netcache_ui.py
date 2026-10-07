@@ -38,7 +38,7 @@ def view(phase="preparing", auto=True, percent=None, detail="", **more):
     return NetworkView(phase, auto, percent, detail, **more)
 
 
-# -- 27. the status line, the hover and the transport ---------------------------------------------------
+# -- the status line, the hover and the transport ---------------------------------------------------
 def test_the_status_line_says_where_a_network_song_has_got_to():
     assert network_line(None) == ("", "plain") and network_line(view("playing")) == ("", "plain")
     assert network_line(view(percent=34))[0] == "Preparing track… 34%"
@@ -184,7 +184,7 @@ def test_the_settings_section_comes_with_its_switch_and_saves_its_choices(make_w
     assert errors == []
 
 
-# -- 28. switched off, nothing of the cache; switched on, it starts after the window and stops with it -----
+# -- switched off, nothing of the cache; switched on, it starts after the window and stops with it -----
 def test_switched_off_nothing_of_the_cache_runs(make_window):
     window, root, player, errors = make_window()
     _pump(root, 0.3)
@@ -293,7 +293,7 @@ def test_a_network_album_is_never_measured_from_part_of_it(monkeypatch, tmp_path
     assert w._album_jobs.empty()                                  # (asked again only after a while)
 
 
-# -- 29. the register of every decode and frame-index call ------------------------------------------------------
+# -- the register of every decode and frame-index call ------------------------------------------------------
 # Every place in ironbark/ that decodes a file (audiofile.open / audiofile.info) or builds a frame index.
 # Each was reviewed for songs on network drives: whole-file tools open by name, so the cache's resolver
 # hands them the complete, checked copy (waiting off the window's thread); playback, its reopens and the

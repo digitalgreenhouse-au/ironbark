@@ -2117,7 +2117,9 @@ class Player:
 
     def _watch_preparing(self):
         """Every watch tick while a song waits for the network: its automatic start lapses after
-        AUTO_RESUME_S; and if the cache's word that it may start went astray, it starts anyway."""
+        AUTO_RESUME_S; if the cache's word that it may start went astray, it starts anyway; and if
+        it turns out it can't be played at all (its file has gone, say), it's skipped (or stopped
+        at) saying why, as when that's known at once — never left "preparing" for minutes."""
         prep = self._preparing
         if prep is None or not prep.auto or self._session is not None:
             return
@@ -2130,12 +2132,17 @@ class Player:
         if track is None:
             return
         try:
-            startable = self._preparer.outlook(track.path, prep.start_at) is None
+            outlook = self._preparer.outlook(track.path, prep.start_at)
         except Exception:  # noqa: BLE001
             log.exception("looking at %s", track.path)
             return
-        if startable:
+        if outlook is None:
             self._ready(prep.token)
+        elif hasattr(outlook, "permanent"):   # Unavailable: _start says why, and skips it or stops there
+            fade = self._fade
+            self._start(prep.at, prep.start_at, prep.transition, resume=prep.resume)
+            if fade is not None and (self._session is not None or self._preparing is not None):
+                self._fade = fade
 
     def _release_for_network(self, session: _Session):
         """Silent for HOLD_RELEASE_S waiting for the network: let go of the sound device (in

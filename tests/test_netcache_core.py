@@ -33,7 +33,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", refuse)
 
 
-# -- 1. classification -------------------------------------------------------------------------------
+# -- classification -------------------------------------------------------------------------------
 @pytest.fixture
 def windows(monkeypatch):
     """Windows' drive calls, replaced and recorded."""
@@ -112,7 +112,7 @@ def test_mapped_and_subst_letters_name_the_same_copy_as_the_server_path(windows)
     assert c.source_key(cue) == c.source_key(Path("\\\\nas\\s\\image.flac"))
 
 
-# -- 6. the start rules -----------------------------------------------------------------------------------
+# -- the start rules -----------------------------------------------------------------------------------
 def test_intelligent_rule_matches_the_worked_examples():
     MB = 1_000_000
     # 1. NAS 16/44.1 FLAC, 30 MB, 5:00, 4 MB/s, steady.
@@ -195,7 +195,7 @@ def test_speed_is_unknown_at_first_then_the_safer_of_two_measures():
     assert speed.gap15(203.0) == pytest.approx(3.0)
 
 
-# -- 8. the store ---------------------------------------------------------------------------------------------
+# -- the store ---------------------------------------------------------------------------------------------
 def _item(store, name, **saved):
     key = "smb:\\\\nas\\s\\" + name
     return Item(store, key=key, kind="share", source="\\\\nas\\s\\" + name, host="nas", ext="flac", **saved)
@@ -320,7 +320,7 @@ def test_the_direct_preparer_is_todays_behaviour(tmp_path):
     assert local.ready_path() == path and local.copy_state() == ""
 
 
-# -- 9. checking a finished download ------------------------------------------------------------------------------
+# -- checking a finished download ------------------------------------------------------------------------------
 def _flac(path: Path, seconds: float = 3.0) -> Path:
     rng = np.random.default_rng(4)
     t = np.arange(int(44100 * seconds)) / 44100

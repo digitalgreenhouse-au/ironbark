@@ -296,18 +296,22 @@ def evict_order(items, protected: set, now: float, keep: str = "limit", in_plan:
     """Items that may be removed, first to go first: (1) expired by the keep policy, (2) partial
     downloads no longer wanted — untouched for 7 days first, then the oldest, (3) failed and stale
     ones, (4) complete copies, least recently used first. Never: leased (being read), protected
-    (playing, lined up, the look-ahead), pinned, or downloading for the current or next song.
+    (playing, lined up, the look-ahead), pinned, downloading for the current or next song, or in
+    the middle of being fetched or checked (an I/O or checking thread has it in hand; it's
+    partial or complete moments later, and can go then).
 
     Keep policies: "none" (don't keep: gone once out of the protected set), "session" (until
     playback finishes: kept while in the playing list or Up next, `session`), "day" (24 hours
     after last played), "limit" (until the cache is full: only the limit removes them)."""
-    from .store import FAILED, PARTIAL, QUEUED, READY, STALE
+    from .store import DOWNLOADED, DOWNLOADING, FAILED, PARTIAL, PROBING, QUEUED, READY, STALE, VERIFYING
     in_plan = in_plan or set()
     session = in_plan if session is None else session
     week = 7 * 24 * 3600
     groups: list[list] = [[], [], [], [], []]
     for item in items:
         if item.leased() or item.key in protected or item.pinned:
+            continue
+        if item.state in (PROBING, DOWNLOADING, DOWNLOADED, VERIFYING):
             continue
         if item.priority is not None and item.priority <= 2:   # CURRENT / NEXT / a demand
             continue

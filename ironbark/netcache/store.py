@@ -157,6 +157,7 @@ class Item:
         self.dirty = True
         self.saved_islands = self.island_claim()   # what the database last heard about the islands
         self.on_demand = None           # (item, gen, start, end, role): wakes the scheduler
+        self.handed_at = -1e18          # when a reader was last handed a copy to open (the manager's clock)
 
     # -- what readers use (audiofile.LocalTrack, GrowingFile) -------------------------------
     def ready_path(self, gen: int, source):

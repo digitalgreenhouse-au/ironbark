@@ -28,7 +28,7 @@ from ironbark.library import Track
 from ironbark.netcache import policy
 from ironbark.netcache.store import VERIFYING
 
-from netfakes import FakeCopy, FakePreparer, FakeShare, make_manager, wait_until
+from netfakes import FakeCopy, FakePreparer, FakeShare, make_manager, manager_mod, wait_until
 
 RATE = 44100
 TIME_INFO = SimpleNamespace(outputBufferDacTime=0.0, currentTime=0.0)
@@ -173,7 +173,7 @@ def stall_and_cut(card: Card, copy: FakeCopy):
     return edge, s.waiting.frame
 
 
-# -- 13. a short hiccup ------------------------------------------------------------------------------
+# -- a short hiccup ------------------------------------------------------------------------------
 def test_a_short_hiccup_is_ridden_out_from_the_buffer_unheard(tmp_path, fake_card):
     _, data, ref, _ = music(tmp_path, "a.wav", 4.0)
     prep = FakePreparer()
@@ -194,7 +194,7 @@ def test_a_short_hiccup_is_ridden_out_from_the_buffer_unheard(tmp_path, fake_car
     s.close()
 
 
-# -- 14. a committed pause, in shared and bit-perfect modes --------------------------------------------
+# -- a committed pause, in shared and bit-perfect modes --------------------------------------------
 @pytest.mark.parametrize("mode", ["shared", "bit-perfect"])
 def test_a_pause_for_the_network_stops_at_a_quiet_sample_and_carries_on_exactly(tmp_path, fake_card, mode,
                                                                                  monkeypatch):
@@ -237,7 +237,7 @@ def test_a_pause_for_the_network_stops_at_a_quiet_sample_and_carries_on_exactly(
     s.close()
 
 
-# -- 15. the music is back before the pause is reached ---------------------------------------------------
+# -- the music is back before the pause is reached ---------------------------------------------------
 def test_recovering_before_the_marker_is_reached_is_seamless(tmp_path, fake_card):
     _, data, ref, _ = music(tmp_path, "a.wav", 4.0)
     prep = FakePreparer()
@@ -262,7 +262,7 @@ def test_recovering_before_the_marker_is_reached_is_seamless(tmp_path, fake_card
     s.close()
 
 
-# -- 17. seeks -----------------------------------------------------------------------------------------
+# -- seeks -----------------------------------------------------------------------------------------
 def test_a_seek_past_the_download_fetches_then_plays_exactly_from_there(tmp_path, fake_card):
     _, data, ref, _ = music(tmp_path, "a.wav", 4.0)
     prep = FakePreparer()
@@ -313,7 +313,7 @@ def test_a_seek_or_stop_during_a_wait_is_taken_at_once(tmp_path, fake_card):
     assert wait_until(lambda: not copy.item.leases, 3)            # (... and the proof's, once it stops waiting)
 
 
-# -- 18. gapless joins into a song still downloading ----------------------------------------------------
+# -- gapless joins into a song still downloading ----------------------------------------------------
 def two_songs(tmp_path):
     _, a_data, a_ref, _ = music(tmp_path, "a.wav", 2.0, seed=1)
     _, b_data, b_ref, _ = music(tmp_path, "b.wav", 2.0, seed=2)
@@ -397,7 +397,7 @@ def test_up_next_changed_during_the_join_window_lines_up_again(tmp_path, fake_ca
     p.stop()
 
 
-# -- 19. the source goes away mid-song ---------------------------------------------------------------------
+# -- the source goes away mid-song ---------------------------------------------------------------------
 def test_a_source_gone_mid_song_is_cut_short_and_playback_moves_on(tmp_path, fake_card):
     _, data, ref, _ = music(tmp_path, "a.wav", 4.0)
     local_path, _, local_ref, _ = music(tmp_path, "next.wav", 1.0, seed=5)
@@ -420,7 +420,7 @@ def test_a_source_gone_mid_song_is_cut_short_and_playback_moves_on(tmp_path, fak
     p.stop()
 
 
-# -- 16. a long wait: the device let go, then taken back --------------------------------------------------
+# -- a long wait: the device let go, then taken back --------------------------------------------------
 @pytest.fixture
 def quick_watch(monkeypatch):
     monkeypatch.setattr(engine, "WATCH_SECONDS", 0.02)
@@ -520,7 +520,7 @@ def test_a_device_lost_during_a_pause_for_the_network_is_still_noticed(tmp_path,
     assert p._session is None                                    # a lost device always waits for play
 
 
-# -- 12. preparing ---------------------------------------------------------------------------------------------
+# -- preparing ---------------------------------------------------------------------------------------------
 def preparing_player(tmp_path, seconds=4.0, need=1.0):
     _, data, ref, _ = music(tmp_path, "a.wav", seconds)
     local_path, _, _, _ = music(tmp_path, "b.wav", 1.0, seed=4)
@@ -628,7 +628,7 @@ def test_a_lost_post_is_caught_by_the_watch(tmp_path, fake_card, quick_watch):
     p.stop()
 
 
-# -- 20. the proof -----------------------------------------------------------------------------------------------
+# -- the proof -----------------------------------------------------------------------------------------------
 def test_the_proof_reads_the_same_bytes_and_never_counts_a_wait(tmp_path):
     from ironbark.proof import SentRecord
     _, data, _, ints = music(tmp_path, "a.wav", 2.0)
@@ -671,7 +671,7 @@ def test_the_proofs_own_thread_waits_for_the_bytes_and_holds_the_copy(tmp_path):
     assert wait_until(lambda: not copy.item.leases, 3)
 
 
-# -- 21. what plays next, as the cache sees it ---------------------------------------------------------------------
+# -- what plays next, as the cache sees it ---------------------------------------------------------------------
 def test_upcoming_follows_up_next_shuffle_repeat_and_stop_after():
     p = Player()
     tracks = [Track(Path(f"{name}.flac"), name) for name in "abcde"]
@@ -773,7 +773,7 @@ def test_levelling_and_the_guard_set_while_a_song_waits_apply_from_its_first_sam
     p.stop()
 
 
-# -- 10 and 11. no network on the window's thread, under the player's lock, in the decoder ----------------------
+# -- no network on the window's thread, under the player's lock, in the decoder ----------------------
 def flac_song(tmp_path, seconds=3.0):
     t = np.arange(int(RATE * seconds)) / RATE
     x = 0.3 * np.sin(2 * np.pi * 330 * t)[:, None] * np.ones((1, 2))
@@ -896,3 +896,28 @@ def test_a_sleep_timer_running_out_while_a_song_waits_for_the_network_still_ends
     prep.tick()
     time.sleep(0.2)
     assert p._session is None
+
+
+def test_a_song_found_gone_while_it_waits_to_start_is_skipped_saying_why(tmp_path, fake_card, quick_watch):
+    p, prep, copy = preparing_player(tmp_path)
+    p.play(0)
+    assert p.status().network.phase == "preparing"
+    prep.gone[copy.source] = "it's no longer on \\\\fakehost\\share"   # (the cache's look at the drive found that)
+    assert wait_until(lambda: p.status().index == 1, 3)                  # never minutes of "Preparing…"
+    status = p.status()
+    assert p._preparing is None and p._session is not None and status.state is State.PLAYING
+    assert status.message == "Skipped a.wav: it's no longer on \\\\fakehost\\share"
+    p.stop()
+
+
+def test_a_song_with_no_room_found_while_it_waits_to_start_stops_there_saying_why(tmp_path, fake_card,
+                                                                                    quick_watch):
+    p, prep, copy = preparing_player(tmp_path)
+    p.play(0)
+    no_room = manager_mod.Unavailable("Not enough free space on C: for the music cache", False)
+    prep.outlook = lambda x, at=0.0: no_room
+    prep.prepare = lambda path, **kwargs: no_room
+    assert wait_until(lambda: p._preparing is None, 3)
+    status = p.status()
+    assert status.index == 0 and status.state is State.PAUSED and p._session is None
+    assert status.message.startswith("Not enough free space")

@@ -751,13 +751,19 @@ class Info:
         return self.frames / self.samplerate if self.samplerate else 0.0
 
 
-def info(path, *, cancel=None, wait=None) -> Info:
+def info(path, *, cancel=None, wait=None, header: bool = False) -> Info:
     """Like soundfile.info, for every format (and CUE track) open() reads. A network song the
-    cache has already looked into is answered from what it found, without reading anything."""
+    cache has already looked into is answered from what it found, without reading anything.
+    `header`: only the format is wanted, as a library scan wants it (on a worker thread) — a
+    network song is then read where it is, just its opening bytes as the library reads its tags,
+    never fetched whole into the cache for it."""
     if _info_hook is not None and not isinstance(path, LocalTrack):
         known = _info_hook(path)
         if known is not None:
             return known
+    if header and not isinstance(path, (LocalTrack, UrlPath)):
+        with _open_path(path) as f:
+            return Info(f.format, f.subtype, f.samplerate, f.channels, f.frames)
     with open(path, cancel=cancel, wait=wait) as f:
         return Info(f.format, f.subtype, f.samplerate, f.channels, f.frames)
 

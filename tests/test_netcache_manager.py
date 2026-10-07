@@ -50,6 +50,12 @@ def managers():
         m.shutdown()
 
 
+def _known(m, path):
+    """_get's arguments for `path`: (key, path, kind, host)."""
+    kind, key, host = m._describe(path)
+    return key, path, kind, host
+
+
 def first_reads(share: FakeShare) -> list[str]:
     order = []
     for name, op, _, _ in share.log:
@@ -74,7 +80,7 @@ def flac_bytes(tmp_path: Path, seconds: float = 3.0, name: str = "src.flac") -> 
     return (tmp_path / name).read_bytes()
 
 
-# -- 22. priorities ---------------------------------------------------------------------------------------
+# -- priorities ---------------------------------------------------------------------------------------
 def test_current_then_next_then_one_more_and_never_song_20(tmp_path, managers):
     share = FakeShare(rate=4_000_000)
     names = [f"{k:02d}.bin" for k in range(1, 21)]
@@ -119,9 +125,8 @@ def test_a_reader_waiting_takes_the_link_within_one_chunk(tmp_path, managers):
     player = FakePlayer([unc("01.bin"), unc("02.bin")])
     m = make_manager(tmp_path / "NetCache", share, player)
     managers.append(m)
-    with pytest.raises(audiofile.NotCached):
-        m.resolve(unc("06.bin"), wait=False)           # known, but not wanted
-    item = m.items[key_of(m, "06.bin")]
+    with m._lock:                                      # known, but not wanted
+        item = m._get(*_known(m, unc("06.bin")))
     assert wait_until(lambda: has(m, "02.bin", lambda i: i.visible > 100_000))
     mark = len(share.log)
     item.demand(item.gen, 0, 1000, "play")             # as a waiting decoder does
@@ -149,7 +154,7 @@ def test_up_next_changes_replan_at_once(tmp_path, managers):
     assert wait_until(lambda: m.items[key_of(m, "02.bin")].state == READY)   # ("one more" picks it up)
 
 
-# -- 23. resuming --------------------------------------------------------------------------------------------
+# -- resuming --------------------------------------------------------------------------------------------
 def test_a_download_resumes_from_its_durable_length_after_a_restart(tmp_path, managers):
     share = FakeShare(rate=400_000)
     data = os.urandom(900_000)
@@ -215,7 +220,7 @@ def test_a_source_that_changes_mid_download_restarts_cleanly(tmp_path, managers)
     assert item.gen > first and item.ready_path(item.gen, unc("song.bin")).read_bytes() == replacement
 
 
-# -- 24. hosts that stop answering -----------------------------------------------------------------------------
+# -- hosts that stop answering -----------------------------------------------------------------------------
 def test_a_stuck_host_gets_no_more_calls_is_probed_and_comes_back(tmp_path, managers, monkeypatch):
     monkeypatch.setattr(manager_mod, "HOST_SLOW_S", 0.15)
     monkeypatch.setattr(manager_mod, "HOST_DOWN_S", 0.3)
@@ -289,7 +294,7 @@ def test_a_file_that_has_gone_is_unavailable(tmp_path, managers):
         m.resolve(unc("gone.flac"), wait=False)
 
 
-# -- 25. eviction ------------------------------------------------------------------------------------------------
+# -- eviction ------------------------------------------------------------------------------------------------
 def _ready(m, name: str, size: int, last_used: float) -> Item:
     key = f"smb:\\\\nas\\s\\{name}"
     item = Item(m.store, key=key, kind="share", source="\\\\nas\\s\\" + name, host="nas", ext="bin",
@@ -474,3 +479,195 @@ def test_whole_file_readers_get_the_complete_copy_and_never_wait_on_the_window_t
         assert audiofile.local_copy(path).is_file()
     finally:
         netcache.uninstall()
+
+
+# -- a download complete but not confirmed, checks that fail, the files behind the cache's back --------------------
+def _failing_at_the_end(share: FakeShare, size: int):
+    """The share's fetcher, except that the read past the last byte (the one that confirms the file
+    ends there) fails once, as if the network went at that moment."""
+    made, tripped = share.fetcher, []
+
+    def fetcher(source):
+        f = made(source)
+        real = f.read
+
+        def read(offset, n):
+            if offset >= size and not tripped:
+                tripped.append(offset)
+                raise manager_mod.Transient("the server didn't answer")
+            return real(offset, n)
+        f.read = read
+        return f
+    share.fetcher = fetcher
+    return tripped
+
+
+def test_a_download_whose_last_read_failed_is_still_checked_and_put_in_place(tmp_path, managers, monkeypatch):
+    monkeypatch.setattr(manager_mod, "PROBE_BACKOFF_MIN_S", 0.05)
+    data = flac_bytes(tmp_path, seconds=3)
+    share = FakeShare()
+    path = share.add("song.flac", data)
+    tripped = _failing_at_the_end(share, len(data))
+    m = make_manager(tmp_path / "NetCache", share, FakePlayer([path]),
+                     prefs={"net_verify": True, "net_mode": "complete"})
+    managers.append(m)
+    key = key_of(m, "song.flac")
+    assert wait_until(lambda: key in m.items and m.items[key].state == READY, 10)
+    item = m.items[key]
+    assert tripped and "decode" in item.verified_by
+    assert item.ready_path(item.gen, path).read_bytes() == data
+    assert isinstance(m.prepare(path), audiofile.LocalTrack)   # (Complete track: it starts)
+
+
+def test_a_complete_download_not_confirmed_when_the_player_closed_is_finished_off_after_a_restart(
+        tmp_path, managers):
+    data = os.urandom(150_000)
+    share = FakeShare()
+    path = share.add("a.bin", data)
+    folder = tmp_path / "NetCache"
+    m = make_manager(folder, share, start=False)
+    key = m.classifier.source_key(path)
+    store = m.store
+    store.open()
+    item = Item(store, key=key, kind="share", source=str(path), host="fakehost", ext="bin", size=len(data),
+                mtime_ns=1_000_000_000, state=PARTIAL, prefix=len(data))
+    store.part_path(item).write_bytes(data)
+    store.save([item])
+    store.close()
+    m = make_manager(folder, share, FakePlayer([path]))
+    managers.append(m)
+    assert wait_until(lambda: key in m.items and m.items[key].state == READY, 10)
+    assert share.reads("a.bin") == [len(data)]            # only the read that confirms where it ends
+    assert m.items[key].ready_path(m.items[key].gen, path).read_bytes() == data
+
+
+def test_a_copy_that_fails_its_check_twice_is_never_played_and_is_skipped_until_asked_again(
+        tmp_path, managers, monkeypatch):
+    monkeypatch.setattr(manager_mod, "FAILED_FORGET_S", 0.5)
+    data = bytearray(flac_bytes(tmp_path, seconds=3))
+    data[data.find(b"fLaC") + 30] ^= 0xFF                 # the FLAC's own MD5 fingerprint is wrong on the drive
+    share = FakeShare(rate=2_000_000)
+    path = share.add("bad.flac", bytes(data))
+    m = make_manager(tmp_path / "NetCache", share, FakePlayer([path]), prefs={"net_verify": True})
+    managers.append(m)
+    key = key_of(m, "bad.flac")
+    assert wait_until(lambda: key in m.items and m.items[key].state == FAILED, 20)
+    item = m.items[key]
+    result = m.prepare(path)
+    assert isinstance(result, Unavailable) and result.permanent and "twice" in result.reason
+    assert item.visible == 0 and item.gen not in item.failed_gens   # (the bytes that failed are gone)
+    assert "Downloading it again" in m.notices[0] and "isn't played from the cache" in m.notices[-1]
+    reads = len(share.reads("bad.flac"))
+    time.sleep(0.6)
+    seen = []
+    assert wait_until(lambda: seen.append(m.prepare(path)) or len(share.reads("bad.flac")) > reads, 10)
+    assert not any(isinstance(r, audiofile.LocalTrack) for r in seen)   # asked again: a fresh download
+
+
+def test_a_complete_copy_whose_source_has_gone_keeps_playing_from_the_cache(tmp_path, managers):
+    data = os.urandom(120_000)
+    share = FakeShare()
+    path = share.add("a.bin", data)
+    m = make_manager(tmp_path / "NetCache", share, FakePlayer([path]))
+    managers.append(m)
+    key = key_of(m, "a.bin")
+    assert wait_until(lambda: key in m.items and m.items[key].state == READY)
+    item = m.items[key]
+    share.remove("a.bin")
+    calls = len(share.log)
+    item.verified_at = 0.0                                # due to be looked at again
+    m._wake.set()
+    assert wait_until(lambda: any(e[1] == "identity" for e in share.log[calls:]), 5)
+    assert wait_until(lambda: item.verified_at > 0.0, 5)
+    assert item.state == READY and isinstance(m.prepare(path), audiofile.LocalTrack)
+
+
+def test_the_writer_never_fills_a_missing_part_with_zeros(tmp_path):
+    m = make_manager(tmp_path / "NetCache", FakeShare(), start=False)
+    m.store.make_folders()
+    item = Item(m.store, key="smb:x", kind="share", source="\\\\h\\s\\x.wav", host="h", ext="wav", size=100_000)
+    item.visible = item.durable = 60_000                  # (as recorded, but the .part was deleted meanwhile)
+    with pytest.raises(manager_mod.Changed):
+        manager_mod._Writer(m.store, item, item.gen, time.monotonic)
+    m.store.part_path(item).write_bytes(b"\1" * 1000)     # ... or cut short
+    with pytest.raises(manager_mod.Changed):
+        manager_mod._Writer(m.store, item, item.gen, time.monotonic)
+    assert m.store.part_path(item).stat().st_size == 1000
+
+
+def test_a_new_version_begun_while_a_copy_is_put_in_place_keeps_it_out_of_use(tmp_path, monkeypatch):
+    m = make_manager(tmp_path / "NetCache", FakeShare(), start=False)
+    m.store.make_folders()
+    path = unc("a.bin")
+    key = m.classifier.source_key(path)
+    item = Item(m.store, key=key, kind="share", source=str(path), host="fakehost", ext="bin", size=1000,
+                state="verifying", verified_by="size+identity")
+    item.visible = item.durable = 1000
+    item.final_name = m.store.final_name_for(item)
+    m.store.part_path(item).write_bytes(b"\2" * 1000)
+    m.items[key] = item
+    m._paths[key] = path
+    m._renames[key] = m._clock()
+    real_replace = os.replace
+
+    def replace(src, dst):
+        m.invalidate(path)                                # (its tags saved through the player, say)
+        real_replace(src, dst)
+    monkeypatch.setattr(manager_mod.os, "replace", replace)
+    m._try_renames(m._clock())
+    assert item.gen == 2 and item.state != READY and item.final_name is None
+    assert not isinstance(m._evaluate(item, path, 0.0, False), audiofile.LocalTrack)
+    monkeypatch.setattr(manager_mod.os, "replace", real_replace)
+    m._sweep()
+    assert not list(m.store.tracks.iterdir())             # the copy of the old version went with it
+
+
+def test_clearing_the_cache_never_deletes_files_under_the_lock_the_player_asks(tmp_path, managers, monkeypatch):
+    m = make_manager(tmp_path / "NetCache", FakeShare())
+    managers.append(m)
+    with m._lock:
+        items = [_ready(m, f"{n}.bin", 100, float(n)) for n in range(1, 4)]
+    real_delete = m.store.delete_file
+    held = []
+
+    def delete(target):
+        held.append(m._lock._is_owned())
+        time.sleep(0.2)                                   # (a slow disk, or a busy one)
+        return real_delete(target)
+    monkeypatch.setattr(m.store, "delete_file", delete)
+    done = m.empty()
+    assert wait_until(lambda: held, 5)
+    started = time.perf_counter()
+    m.progress(unc("1.bin"))                              # as the window does, every moment
+    assert time.perf_counter() - started < 0.1
+    assert done.wait(10)
+    assert held and not any(held)
+    assert not m.items and not any(m.store.final_path(item).exists() for item in items)
+
+
+def test_songs_only_asked_about_arent_counted_or_kept(tmp_path, managers):
+    share = FakeShare()
+    path = share.add("a.bin", os.urandom(1000))
+    m = make_manager(tmp_path / "NetCache", share)
+    managers.append(m)
+    with pytest.raises(audiofile.NotCached):
+        m.resolve(path, wait=False)                      # (an album's loudness: only what's here)
+    assert not m.items
+    with m._lock:
+        m._get(*_known(m, path))
+    assert m.snapshot().songs == 0
+
+
+def test_nothing_being_fetched_or_checked_is_ever_cleared_away():
+    from ironbark.netcache.store import DOWNLOADED, DOWNLOADING, VERIFYING
+
+    def it(key, state):
+        item = Item.__new__(Item)
+        item.key, item.state, item.last_used, item.pinned, item.priority, item.leases = key, state, 1.0, 0, None, {}
+        return item
+
+    items = [it("fetching", DOWNLOADING), it("downloaded", DOWNLOADED), it("checking", VERIFYING),
+             it("partial", PARTIAL), it("ready", READY)]
+    for keep in ("none", "day", "limit", "session"):
+        order = {i.key for i in policy.evict_order(items, set(), 10 * 24 * 3600.0, keep, session=set())}
+        assert order == {"partial", "ready"}

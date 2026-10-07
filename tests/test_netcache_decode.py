@@ -470,3 +470,24 @@ def test_the_scanner_fed_in_pieces_equals_build_index(tmp_path, kind):
         ends = [e for e in seen_end if e is not None]
         assert ends == sorted(ends) and ends[-1] <= want.samples[-1]
     assert len(scanner._buf) < 64   # only a few bytes kept once past the metadata
+
+
+def test_an_album_scan_reads_only_headers_and_never_fetches_a_song_into_the_cache(tmp_path, monkeypatch):
+    from ironbark import library
+    album = tmp_path / "Artist - Album"
+    album.mkdir()
+    x = (np.random.default_rng(5).standard_normal((44100, 2)) * 3000).astype(np.int16)
+    sf.write(album / "01 One.flac", x, 44100, subtype="PCM_16")
+    sf.write(album / "02 Two.flac", x, 44100, subtype="PCM_16")
+    asked = []
+
+    def resolver(path, cancel=None, wait=None):   # (the cache: it would fetch the whole song, or wait 30 s)
+        asked.append(path)
+        raise audiofile.NotCached("not downloaded yet")
+    monkeypatch.setattr(audiofile, "_resolver", resolver)
+    monkeypatch.setattr(audiofile, "_info_hook", lambda path: None)
+    found = library.find_albums(tmp_path)
+    assert [(a.name, a.sample_rate, a.bits) for a in found] == [("Artist - Album", 44100, 16)]
+    assert not asked
+    with pytest.raises(audiofile.NotCached):
+        audiofile.info(album / "01 One.flac")       # (a whole-file reader's info still goes through the cache)

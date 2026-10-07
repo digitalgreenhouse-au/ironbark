@@ -92,6 +92,7 @@ RENAME_RETRY_S = 10.0
 SWEEP_S = 60.0
 DEMAND_HOLD_S = 5.0
 FAILED_FORGET_S = 60.0
+HANDED_OUT_S = 10.0          # a copy handed to a reader this recently isn't cleared away (it's about to be opened)
 TRANSIENT_RETRY_S = 5.0
 FREE_FLOOR_MIN = 2 * 1024 ** 3
 FREE_FLOOR_FRACTION = 0.05
@@ -604,10 +605,14 @@ class Manager:
             if not wait or not self._loaded.wait(READ_WAIT_S):
                 raise audiofile.NotCached("the music cache is still starting", None, "starting")
         with self._lock:
-            item = self._get(key, path, kind, host)
+            item = self.items.get(key) if not wait else self._get(key, path, kind, host)
+            if item is None:   # (not waiting, and nothing of it here: nothing to remember either)
+                raise audiofile.NotCached("this network song hasn't been downloaded yet", None, "not-cached")
             ready = self._ready_track(item, path)
             if ready is not None:
                 return ready
+            if wait:
+                self._retry_if_due(item)
             if item.state == FAILED and item.permanent:
                 raise audiofile.DownloadFailed(item.error or "the file can't be downloaded")
             if not wait:
@@ -641,8 +646,13 @@ class Manager:
     def _ready_track(self, item: Item, path):
         if item.state == READY:
             item.last_used = self._wall()
-            return audiofile.LocalTrack(path, item, item.gen)
+            return self._hand_out(item, path)
         return None
+
+    def _hand_out(self, item: Item, path) -> audiofile.LocalTrack:
+        """The copy for a reader to open (lock held). Until it's opened (and leased) it isn't cleared away."""
+        item.handed_at = self._clock()
+        return audiofile.LocalTrack(path, item, item.gen)
 
     def known_info(self, path) -> audiofile.Info | None:
         """What the probe found about a network song (audiofile.info's shortcut), or None."""
@@ -676,8 +686,9 @@ class Manager:
         with self._lock:
             items = list(self.items.values())
             hosts = {name: h.state for name, h in self.hosts.items()}
-        used = sum(self._bytes_held(item) for item in items)
-        return CacheView(used, len(items), sum(1 for i in items if i.state == READY), hosts)
+        held = [self._bytes_held(item) for item in items]
+        # (Songs only asked about — nothing of them downloaded — aren't "in the cache".)
+        return CacheView(sum(held), sum(1 for n in held if n > 0), sum(1 for i in items if i.state == READY), hosts)
 
     def empty(self) -> threading.Event:
         """Remove everything that isn't in use (done on the scheduler thread; the event is set then)."""
@@ -800,17 +811,21 @@ class Manager:
         A = self._seconds_at(item, measured)
         return float("inf") if A >= measured[1] else A
 
-    def _evaluate(self, item: Item, path, at: float, force: bool):
-        """prepare()'s answer for `item` (lock held)."""
+    def _retry_if_due(self, item: Item) -> None:
+        """A song that couldn't be downloaded is tried again when it's asked for after a while. Lock held."""
         if item.state == FAILED and item.retry_at is not None and self._wall() >= item.retry_at:
             item.state, item.error, item.permanent, item.dirty = QUEUED, None, False, True
+
+    def _evaluate(self, item: Item, path, at: float, force: bool):
+        """prepare()'s answer for `item` (lock held)."""
+        self._retry_if_due(item)
         if item.state == FAILED and item.permanent:
             return Unavailable(item.error or "it couldn't be downloaded", True)
         if item.error == "disk":
             return Unavailable(self._disk_message(item), False)
         ok, need, measured = self._rule(item, path, at, force=force)
         if ok:
-            return audiofile.LocalTrack(path, item, item.gen)
+            return self._hand_out(item, path)
         return self._not_ready(item, path, at, need, measured)
 
     def _not_ready(self, item: Item, path, at: float, need, measured) -> NotReady:
@@ -1067,7 +1082,10 @@ class Manager:
             return False
         if item.retry_at is not None and self._wall() < item.retry_at:
             return False
-        return item.size is None or item.visible < item.size
+        # Still to download — or every byte here but its end not confirmed (the network went at the
+        # last read, or the player closed then): the I/O thread finishes that off too (the source
+        # must still end there and be the same file), so it's checked and put in place like any other.
+        return True
 
     def _assign(self, now: float) -> None:
         with self._lock:
@@ -1075,23 +1093,31 @@ class Manager:
             for item in self.items.values():
                 if item.host and self._needs_bytes(item, now):
                     by_host.setdefault(item.host, []).append(item)
-            for name, host in self.hosts.items():
-                best = None
-                if host.state == UP:
-                    candidates = by_host.get(name, [])
-                    for item in sorted(candidates, key=lambda i: (i.priority, -(i.visible or 0))):
-                        if item.state == READY or self._room_for(item):
+            hosts = list(self.hosts.items())
+        # (Room on the disk is looked at, and the cache swept for it, outside the lock: deleting
+        # files must never hold up the player or the window, which ask this manager every moment.)
+        for name, host in hosts:
+            best = None
+            if host.state == UP:
+                candidates = by_host.get(name, [])
+                for item in sorted(candidates, key=lambda i: (i.priority, -(i.visible or 0))):
+                    if item.state == READY or self._room_for(item):
+                        with self._lock:
                             if item.error == "disk":
                                 item.error = None
-                            best = item
-                            break
-                        if item.priority <= CURRENT:
+                        best = item
+                        break
+                    with self._lock:
+                        if item.priority is not None and item.priority <= CURRENT:
                             if item.error != "disk":
                                 item.error = "disk"
                                 self.notices.append(self._disk_message(item))
                         elif not self._told_full:
                             self._told_full = True
                             self.notices.append("The music cache is full: songs further ahead aren't being downloaded")
+            with self._lock:
+                if best is not None and self.items.get(best.key) is not best:
+                    best = None   # (cleared from the cache meanwhile)
                 with host.cond:
                     if host.assigned is not best:
                         host.assigned = best
@@ -1322,16 +1348,37 @@ class Manager:
             except Exception:   # noqa: BLE001
                 pass
 
+    def _recheck(self, host: Host, w: _Worker, item: Item, fetcher) -> None:
+        """A complete, checked copy's source looked at again, in the background (the copy plays
+        regardless). Changed: the new version downloads for next time. Not there any more: the copy
+        is kept as it is — once complete, a song never depends on the network — and looked at again
+        later. (Not answering: the host's own back-off, as for any call.)"""
+        try:
+            identity = self._call(host, w, fetcher.identity)
+        except Permanent as error:
+            log.info("music cache: %s: %s (its complete copy is kept)", item.source, error)
+            self._close_fetcher(item)
+            with self._lock:
+                if item.state == READY:
+                    item.verified_at, item.dirty = self._wall(), True
+            return
+        with self._lock:
+            if item.state != READY:
+                return
+            if identity.same_file(Identity(item.size or 0, item.mtime_ns)):
+                item.verified_at, item.error, item.dirty = self._wall(), None, True
+            else:
+                self.notices.append(f"“{_name(item)}” has changed on the drive: the new version is downloading")
+                self._new_generation(item, identity)
+
     def _transfer(self, host: Host, w: _Worker, item: Item) -> None:
         fetcher = self._fetcher(item)
+        if item.state == READY:
+            self._recheck(host, w, item, fetcher)
+            return
         identity = self._call(host, w, fetcher.identity)
         with self._lock:
-            if item.state == READY:   # a re-check of a complete copy
-                if identity.same_file(Identity(item.size or 0, item.mtime_ns)):
-                    item.verified_at, item.dirty = self._wall(), True
-                else:
-                    self.notices.append(f"“{_name(item)}” has changed on the drive: the new version is downloading")
-                    self._new_generation(item, identity)
+            if item.state == READY:   # (put in place meanwhile)
                 return
             if item.size is None:
                 item.size, item.mtime_ns, item.dirty = identity.size, identity.mtime_ns, True
@@ -1588,15 +1635,21 @@ class Manager:
             if not result.ok:
                 item.fail_count += 1
                 log.warning("music cache: %s failed its check: %s", item.source, result.problem)
-                self.notices.append(f"The downloaded copy of “{_name(item)}” didn't match the original "
-                                    f"({result.problem}). Downloading it again.")
                 item.failed_gens.add(gen)
+                # Its bytes are never played or checked again: a fresh copy is downloaded — at once
+                # the first time; after a second failure only when the song is asked for again a
+                # while later (until then it's skipped, saying why, like a file that won't open).
+                self._new_generation(item, Identity(item.size or 0, item.mtime_ns))
                 if item.fail_count >= 2:
-                    item.state, item.error, item.permanent, item.dirty = FAILED, result.problem, False, True
+                    self.notices.append(f"The downloaded copy of “{_name(item)}” didn't match the original "
+                                        f"again ({result.problem}): it isn't played from the cache for now.")
+                    item.state, item.permanent, item.dirty = FAILED, True, True
+                    item.error = f"its downloaded copy didn't match the original twice ({result.problem})"
                     item.retry_at = self._wall() + FAILED_FORGET_S
                     item.notify()
                 else:
-                    self._new_generation(item, Identity(item.size or 0, item.mtime_ns))
+                    self.notices.append(f"The downloaded copy of “{_name(item)}” didn't match the original "
+                                        f"({result.problem}). Downloading it again.")
                 return
             item.verified_by, item.verified_at = result.verified_by, self._wall()
             item.info.update({k: v for k, v in result.info.items() if k != "decoded"})
@@ -1609,11 +1662,12 @@ class Manager:
 
     def _try_renames(self, now: float, sweeping: bool = False) -> None:
         for key, first in list(self._renames.items()):
-            item = self.items.get(key)
-            if item is None or item.state != VERIFYING or not item.verified_by:
-                self._renames.pop(key, None)
-                continue
-            part, final = self.store.part_path(item), self.store.final_path(item)
+            with self._lock:
+                item = self.items.get(key)
+                if item is None or item.state != VERIFYING or not item.verified_by:
+                    self._renames.pop(key, None)
+                    continue
+                gen, part, final = item.gen, self.store.part_path(item), self.store.final_path(item)
             try:
                 os.replace(part, final)
             except OSError:
@@ -1622,6 +1676,15 @@ class Manager:
                 continue
             self._renames.pop(key, None)
             with self._lock:
+                if item.gen != gen or item.state != VERIFYING:
+                    # A new version began while this one was put in place (its tags were saved, say):
+                    # this copy is an old version now, kept only while it's read.
+                    with item.cond:
+                        if item.leased(gen):
+                            item.old_files[gen] = final
+                    self._stale.append((item, gen, final))
+                    self._sweep_due = True
+                    continue
                 item.state, item.prefix, item.error, item.fail_count = READY, item.size or 0, None, 0
                 item.durable = item.visible = item.size or item.visible
                 item.open_ready = True
@@ -1709,19 +1772,10 @@ class Manager:
         self._last_sweep = self._clock()
         keep = "none" if everything else self._pref("net_keep")
         session = self._session_keys() if keep == "session" else None
+        # The decisions are made under the lock; the files are deleted outside it (deleting must never
+        # hold up the player or the window, which ask this manager every moment).
         with self._lock:
-            for entry in list(self._stale):
-                item, gen, final = entry
-                if item.leased(gen):
-                    continue
-                gone = self.store.delete_file(self.store.part_path(item, gen))
-                gone = self.store.delete_file(final) and gone
-                gone = self._delete_islands(item, gen) and gone
-                if gone:
-                    self._stale.remove(entry)
-                    item.old.pop(gen, None)
-                    item.old_files.pop(gen, None)
-                    item.old_islands.pop(gen, None)
+            unread = [entry for entry in self._stale if not entry[0].leased(entry[1])]
             for key, first in list(self._renames.items()):
                 if first == float("inf"):
                     self._renames[key] = self._clock()
@@ -1739,25 +1793,49 @@ class Manager:
                 target = -1
             now_wall = self._wall()
             order = policy.evict_order(items, protected, now_wall, keep, in_plan=protected, session=session)
-            removed, freed = [], 0
-            for item in order:
-                if used <= target and not everything and not policy.expired(item, keep, now_wall, session or set()):
-                    break   # (copies past their keep time come first, and go whatever room there is)
+        for entry in unread:   # old versions nobody reads any more
+            item, gen, final = entry
+            gone = self.store.delete_file(self.store.part_path(item, gen))
+            gone = self.store.delete_file(final) and gone
+            gone = self._delete_islands(item, gen) and gone
+            if gone:
+                with self._lock:
+                    if entry in self._stale:
+                        self._stale.remove(entry)
+                    item.old.pop(gen, None)
+                    item.old_files.pop(gen, None)
+                    item.old_islands.pop(gen, None)
+        removed, freed = [], 0
+        for item in order:
+            if used <= target and not everything and not policy.expired(item, keep, now_wall, session or set()):
+                break   # (copies past their keep time come first, and go whatever room there is)
+            with self._lock:
                 with item.cond:
                     if item.leased():
                         continue
-                ok = self.store.delete_file(self.store.part_path(item))
-                ok = self.store.delete_file(self.store.final_path(item)) and ok
-                ok = self._delete_islands(item, item.gen) and ok
-                if not ok:
-                    continue   # still open somewhere (Windows says so): next sweep
-                held = self._bytes_held(item)
-                used -= held
-                freed += held
-                removed.append(item)
+                if self.items.get(item.key) is not item or self._clock() - item.handed_at < HANDED_OUT_S:
+                    continue   # (just handed to a reader, who hasn't opened it yet)
+                # Out of the cache before its files go, so nobody is handed it meanwhile.
                 del self.items[item.key]
-                self._paths.pop(item.key, None)
-                self._renames.pop(item.key, None)
+                path = self._paths.pop(item.key, None)
+                renaming = self._renames.pop(item.key, None)
+                gen = item.gen
+            ok = self.store.delete_file(self.store.part_path(item, gen))
+            ok = self.store.delete_file(self.store.final_path(item)) and ok
+            ok = self._delete_islands(item, gen) and ok
+            if not ok:   # still open somewhere (Windows says so): kept, and tried again next sweep
+                with self._lock:
+                    if item.key not in self.items:
+                        self.items[item.key] = item
+                        if path is not None:
+                            self._paths.setdefault(item.key, path)
+                        if renaming is not None:
+                            self._renames.setdefault(item.key, renaming)
+                continue
+            held = self._bytes_held(item)
+            used -= held
+            freed += held
+            removed.append(item)
         if removed:
             log.info("music cache: removed %d song(s), %.1f MB", len(removed), freed / 1e6)
             try:
@@ -1806,7 +1884,14 @@ class _Writer:
         if f is None:
             path = self._path(island)
             f = open(path, "r+b" if path.exists() else "wb")
-            f.seek(self.item.visible if island is None else island.visible - island.start)
+            claimed = self.item.visible if island is None else island.visible - island.start
+            if f.seek(0, os.SEEK_END) < claimed:
+                # Bytes readers were told are here have gone (the file was deleted or cut short
+                # behind the cache's back): never fill the hole with zeros — that would play as
+                # silence and pass as downloaded. This version starts again from nothing.
+                f.close()
+                raise Changed(f"{path.name} on this computer is shorter than recorded")
+            f.seek(claimed)
             f.truncate()   # (nothing past what readers were told is there)
             self.files[key] = f
         return f
