@@ -111,7 +111,7 @@ def test_the_list_changing_while_a_queued_song_plays():
     p.add_to_queue([q])
     queued, _ = p._follow(1)
     join(p, SimpleNamespace(), queued)
-    p._session = SimpleNamespace(paused=False, close=lambda: None)   # (as if playing)
+    p._session = SimpleNamespace(paused=False, close=lambda: None, relineup=lambda: None)   # (as if playing)
     p.set_tracks([c, b, a], keep_playing=True)                       # e.g. a playlist reordered
     assert p.queued_now is queued and p.index == 1                   # b moved; it's still where the list carries on
     assert p._follow(queued) == (2, a.path)

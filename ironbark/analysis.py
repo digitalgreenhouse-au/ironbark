@@ -328,10 +328,11 @@ def find_cutoff(power: np.ndarray, rate: int) -> tuple[float | None, bool]:
     return cutoff, sharp
 
 
-def _blocks(f: sf.SoundFile, damaged: list, **kwargs):
-    """f.blocks(), except that a file which stops decoding part-way (damaged) ends the loop
-    instead of raising, and says so in `damaged`."""
-    blocks = f.blocks(**kwargs)
+def _blocks(f: sf.SoundFile, damaged: list, blocksize: int, dtype: str = "float64", always_2d: bool = False):
+    """audiofile.blocks() (int32 from a float or lossy file comes out scaled and clipped, as playback
+    sends it), except that a file which stops decoding part-way (damaged) ends the loop instead of
+    raising, and says so in `damaged`."""
+    blocks = audiofile.blocks(f, blocksize, dtype, always_2d)
     while True:
         try:
             block = next(blocks)
@@ -378,12 +379,15 @@ def analyse(
         total = max(1, f.frames)
         done = 0
         damaged: list = []
-        for block in _blocks(f, damaged, blocksize=block_frames, dtype="int32", always_2d=True):
+        # A floating-point file is measured as it is, overs above full scale included (int32 would clip them).
+        dtype = "float64" if is_float else "int32"
+        for block in _blocks(f, damaged, blocksize=block_frames, dtype=dtype, always_2d=True):
             if cancel is not None and cancel.is_set():
                 return None
-            md5.update(pcm_bytes(block, bits))
+            if not is_float:   # (no stored MD5 for float files: WAV / AIFF carry none)
+                md5.update(pcm_bytes(block, bits))
             formats.add(block)
-            x = block.astype(np.float64) / 2**31
+            x = block if is_float else block.astype(np.float64) / 2**31
             meter.add(x)
             tp.add(x)
             # Skip a short final block, as the DR meter does — unless it's the only one.

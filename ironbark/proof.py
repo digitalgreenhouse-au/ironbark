@@ -17,6 +17,7 @@ Two checks:
 
 from __future__ import annotations
 
+import logging
 import threading
 import zlib
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import audiofile
+
+log = logging.getLogger(__name__)
 
 INT32_MAX = 2**31 - 1
 QUIET = 1e-5  # RMS below this (about -100 dBFS) is too quiet to compare
@@ -84,13 +87,19 @@ class SentRecord:
     """The fingerprints of what was sent, and a checker that verifies them against the file.
 
     `add` is called from the audio callback, so it only appends to lists (atomic in
-    CPython); the checker thread only reads them."""
+    CPython) and keeps running totals; the checker thread only reads the lists. `summary`
+    reads the totals, so it costs the same however long the track has played."""
 
     def __init__(self, path, samplerate: int, dtype: str, block_frames: int):
         self.path, self.samplerate, self.dtype, self.block_frames = path, samplerate, dtype, block_frames
         self.segments: list[_Segment] = []
         self._generation = None
         self.mismatch_frame: int | None = None
+        self.unchecked_frames = 0   # sent, but the second decode couldn't read them (damage): not proven
+        self._sent_frames = 0
+        self._checked_frames = 0
+        self._min_gain = 1.0
+        self._changed_from: int | None = None   # frame where the first changed (gain < 1) block started
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -103,6 +112,11 @@ class SentRecord:
         segment.starts.append(start_frame)
         segment.gains.append(gain)
         segment.frames.append(len(sent))
+        if gain < self._min_gain:
+            self._min_gain = gain
+        if gain < 1.0 and self._changed_from is None:
+            self._changed_from = start_frame
+        self._sent_frames += len(sent)
         segment.crcs.append(crc(sent))  # appended last: the checker reads crcs to know what's ready
 
     # -- checker --------------------------------------------------------------
@@ -115,41 +129,52 @@ class SentRecord:
         self._stop.set()
 
     def _check_loop(self, interval: float):
+        reference = None
         try:
-            with audiofile.open(self.path) as reference:  # the same decode path as playback
-                while not self._stop.wait(interval):
-                    self.check(reference)
-                self.check(reference)  # whatever arrived last
+            while True:
+                stopping = self._stop.wait(interval)
+                if reference is None:
+                    reference = audiofile.open(self.path)  # the same decode path as playback
+                if not self.check(reference):
+                    reference.close()  # it can't seek after a decode error: a fresh one next time
+                    reference = None
+                if stopping:
+                    return  # (whatever arrived last has been checked)
         except (OSError, RuntimeError):
             pass  # the file went away: the proof just stops where it got to
+        finally:
+            if reference is not None:
+                reference.close()
 
-    def check(self, reference):
-        """Verify every block sent since last time against an independent decode."""
+    def check(self, reference) -> bool:
+        """Verify every block sent since last time against an independent decode (read the same
+        way as playback: audiofile.read). A block the second decode can't read — a damaged
+        stretch — stays unproven (it doesn't count as checked); then this returns False, as
+        `reference` can't be trusted to seek again, and the rest waits for a fresh one."""
         for segment in list(self.segments):
             ready = len(segment.crcs)
             while segment.checked < ready:
                 k = segment.checked
-                frame = segment.starts[k]
-                reference.seek(frame)
-                block = reference.read(segment.frames[k], dtype=self.dtype, always_2d=True)
+                frame, frames = segment.starts[k], segment.frames[k]
+                try:
+                    reference.seek(frame)
+                    block = audiofile.read(reference, frames, self.dtype)
+                except (RuntimeError, ValueError) as exc:   # (soundfile's errors are RuntimeErrors)
+                    log.info("proof: couldn't read %s at frame %d again: %s", self.path, frame, exc)
+                    self.unchecked_frames += frames
+                    segment.checked += 1
+                    return False
                 if crc(apply_gain(block, segment.gains[k])) != segment.crcs[k] and self.mismatch_frame is None:
                     self.mismatch_frame = frame
+                self._checked_frames += frames
                 segment.checked += 1
+        return True
 
     def summary(self) -> Proof:
-        proof = Proof()
-        sent = checked = 0
-        for segment in list(self.segments):
-            frames, gains, starts = list(segment.frames), list(segment.gains), list(segment.starts)
-            n = len(segment.crcs)
-            sent += sum(frames[:n])
-            checked += sum(frames[:segment.checked])
-            for k, gain in enumerate(gains[:n]):
-                if gain < proof.min_gain:
-                    proof.min_gain = gain
-                if gain < 1.0 and proof.changed_from is None:
-                    proof.changed_from = starts[k] / self.samplerate
-        proof.sent, proof.checked = sent / self.samplerate, checked / self.samplerate
+        proof = Proof(sent=self._sent_frames / self.samplerate, checked=self._checked_frames / self.samplerate,
+                      min_gain=self._min_gain)
+        if self._changed_from is not None:
+            proof.changed_from = self._changed_from / self.samplerate
         if self.mismatch_frame is not None:
             proof.mismatch_at = self.mismatch_frame / self.samplerate
         return proof

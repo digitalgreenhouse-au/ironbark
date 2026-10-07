@@ -20,22 +20,36 @@ proof, the Check and the meters all see just the track, without each having to k
 Not decoded (they raise `Unsupported`, a RuntimeError, so callers' existing error handling
 applies): AAC in .m4a (libsndfile has no AAC decoder) and FLAC inside an Ogg file (libsndfile
 1.2.2 fails on it: "unknown error in flac decoder").
+
+Reading int32 (bit-perfect playback, its proof, the Check) goes through `read` / `blocks`
+here, never straight to libsndfile: its own integer read of a floating-point file isn't scaled
+(0.5 comes out as 0), and it wraps Vorbis and Opus overs round to negative full scale. Those
+files are decoded as floats and converted by `to_int32`, the same way for every reader.
+
+An MP3 with no length header (no Xing / Info / VBRI frame) has its length estimated from its
+first frame, and libsndfile won't decode past that estimate: a VBR one can stop early.
+`mp3_shortfall` spots that by counting the frames.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import struct
+import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
+import numpy as np
 import soundfile as sf
 
-from . import m4a
+from . import m4a, mp3frames
 
 _BasePath = type(Path())   # WindowsPath on Windows, PosixPath on a Mac
 LOSSY_SUBTYPES = {"VORBIS", "OPUS"}
+FLOAT_SUBTYPES = {"FLOAT", "DOUBLE"}
 ALAC_BITS = {"ALAC_16": 16, "ALAC_20": 20, "ALAC_24": 24, "ALAC_32": 32}
+SEEK_CHUNK = 65536  # frames read at a time while a Vorbis seek reads its way to the spot
 
 
 class Unsupported(RuntimeError):
@@ -128,6 +142,47 @@ def is_lossy(f) -> bool:
     return f.format in ("MP3", "MPEG") or f.subtype.startswith("MPEG") or f.subtype in LOSSY_SUBTYPES
 
 
+def is_mp3(f) -> bool:
+    return f.format in ("MP3", "MPEG") or f.subtype.startswith("MPEG")
+
+
+def decodes_as_float(f) -> bool:
+    """Floating-point files and lossy codecs: the decoder's own samples are floats."""
+    return f.subtype in FLOAT_SUBTYPES or is_lossy(f)
+
+
+def to_int32(x: np.ndarray) -> np.ndarray:
+    """Float samples (full scale = ±1.0) as left-justified int32: rounded to the nearest step,
+    overs held at full scale (never wrapped round to the other side)."""
+    return np.clip(np.rint(x * 2.0**31), -2.0**31, 2.0**31 - 1).astype(np.int32)
+
+
+def read(f, frames: int, dtype: str, always_2d: bool = True) -> np.ndarray:
+    """`f.read(frames, dtype)`, except that int32 from a floating-point or lossy file is decoded as
+    float64 and converted by `to_int32` (see the module note). Every int32 reader uses this, so
+    playback, the proof's second decode and the Check all get the very same samples."""
+    if dtype == "int32" and decodes_as_float(f):
+        return to_int32(f.read(frames, dtype="float64", always_2d=always_2d))
+    return f.read(frames, dtype=dtype, always_2d=always_2d)
+
+
+def blocks(f, blocksize: int, dtype: str = "float64", always_2d: bool = False):
+    """`f.blocks()` through `read`: blocks of `blocksize` frames (the last one shorter) to the end."""
+    while True:
+        block = read(f, blocksize, dtype, always_2d)
+        if not len(block):
+            return
+        yield block
+
+
+def set_cancel(f, cancel) -> None:
+    """Let a slow seek (Vorbis reads its way to the spot) be abandoned part-way: `cancel()` true
+    means something newer wants the file (another seek, or a stop). Nothing for other files."""
+    hook = getattr(f, "set_cancel", None)
+    if hook is not None:
+        hook(cancel)
+
+
 # -- opening ------------------------------------------------------------------------
 class _Wrapped:
     """The parts of soundfile.SoundFile the player uses, passed through to `inner`."""
@@ -143,11 +198,10 @@ class _Wrapped:
     closed = property(lambda self: self._inner.closed)
 
     def blocks(self, blocksize: int, dtype: str = "float64", always_2d: bool = False, **_ignored):
-        while True:
-            block = self.read(blocksize, dtype=dtype, always_2d=always_2d)
-            if not len(block):
-                return
-            yield block
+        return blocks(self, blocksize, dtype, always_2d)
+
+    def set_cancel(self, cancel):
+        set_cancel(self._inner, cancel)
 
     def close(self):
         self._inner.close()
@@ -166,13 +220,19 @@ class _ExactSeek(_Wrapped):
         super().__init__(inner)
         self._path = path
         self._pos = 0
+        self._cancel = None
 
     frames = property(lambda self: self._inner.frames)
 
     def tell(self) -> int:
         return self._pos
 
+    def set_cancel(self, cancel):
+        self._cancel = cancel
+
     def seek(self, frames: int, whence: int = io.SEEK_SET) -> int:
+        """Lands on the exact sample — unless the cancel check (see set_cancel) says to give up
+        part-way, when it stops where it got to (tell() says where)."""
         target = {io.SEEK_SET: 0, io.SEEK_CUR: self._pos, io.SEEK_END: self.frames}[whence] + frames
         target = max(0, min(int(target), self.frames))
         if target < self._pos:
@@ -180,7 +240,9 @@ class _ExactSeek(_Wrapped):
             self._inner = sf.SoundFile(self._path)
             self._pos = 0
         while self._pos < target:
-            got = len(self._inner.read(min(target - self._pos, 65536), dtype="float32"))
+            if self._cancel is not None and self._cancel():
+                break
+            got = len(self._inner.read(min(target - self._pos, SEEK_CHUNK), dtype="float32"))
             if not got:
                 break
             self._pos += got
@@ -248,6 +310,9 @@ def _open_file(path):
             return _StreamFile(m4a.CafStream(real))
         except m4a.NotAlac as error:
             raise Unsupported(str(error)) from error
+        except (struct.error, OverflowError, MemoryError, IndexError, ValueError) as error:
+            # A damaged index that slipped past m4a's own checks: still the file's fault, not the player's.
+            raise Unsupported(f"this .m4a file's index is damaged ({error})") from error
     if kind == "oggflac":
         raise Unsupported("FLAC inside an Ogg file can't be played (its decoder doesn't support it) — "
                           "a normal .flac copy of it will play")
@@ -288,3 +353,60 @@ def info(path) -> Info:
     """Like soundfile.info, for every format (and CUE track) open() reads."""
     with open(path) as f:
         return Info(f.format, f.subtype, f.samplerate, f.channels, f.frames)
+
+
+# -- MP3s with no length header -------------------------------------------------------
+_LENGTH_TAGS = (b"Xing", b"Info", b"VBRI")
+_SHORTFALLS_KEPT = 64
+_shortfalls: dict = {}
+_shortfalls_lock = threading.Lock()
+
+
+def _has_length_header(path) -> bool:
+    """Whether the MP3's first frame is a Xing / Info / VBRI frame, which gives the exact length."""
+    with io.open(path, "rb") as f:
+        data = f.read(1 << 16)
+    pos = mp3frames._skip_id3v2(data)
+    if pos >= len(data):
+        with io.open(path, "rb") as f:   # a big ID3 tag (cover art): read past it
+            f.seek(pos)
+            data, pos = f.read(1 << 16), 0
+    while pos + 4 <= len(data):
+        if mp3frames._frame(data, pos, len(data)) is not None:
+            return any(tag in data[pos: pos + 64] for tag in _LENGTH_TAGS)
+        pos = data.find(b"\xff", pos + 1)
+        if pos < 0:
+            break
+    return False
+
+
+def mp3_shortfall(f, path) -> tuple[int, int] | None:
+    """For an MP3 with no length header: (frames libsndfile will decode, frames the file holds)
+    when the first falls short — libsndfile stops at its estimate, so the rest can't be played or
+    measured. None for anything else. `f` is the file opened with `open(path)`. The frames are
+    counted once per file (a few tens of ms) and remembered."""
+    if not is_mp3(f) or cue_of(path) is not None:
+        return None
+    real = os.fspath(path)
+    try:
+        stat = os.stat(real)
+    except OSError:
+        return None
+    key = (real, stat.st_size, stat.st_mtime_ns, f.frames)
+    with _shortfalls_lock:
+        if key in _shortfalls:
+            return _shortfalls[key]
+    result = None
+    try:
+        if not _has_length_header(real):
+            index = mp3frames.build_index(real)
+            held = int(index.samples[-1])
+            if held - f.frames > max(index.sample_rate, held // 100):   # (decoder delay is far less)
+                result = (int(f.frames), held)
+    except (OSError, ValueError):
+        result = None
+    with _shortfalls_lock:
+        while len(_shortfalls) >= _SHORTFALLS_KEPT:
+            _shortfalls.pop(next(iter(_shortfalls)))
+        _shortfalls[key] = result
+    return result
