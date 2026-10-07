@@ -105,8 +105,8 @@ DEFAULTS = {
     # Network playback (the Experimental "Network playback cache"): songs on network drives play from a copy
     "net_mode": "intelligent",   # "intelligent", "fast" (start after the initial buffer) or "complete"
     "net_buffer": 30,            # the initial buffer, in seconds: 10, 30, 60 or 300
-    "net_predownload": "next",   # "off" or "next" (the next song is downloaded while this one plays)
-    "net_keep": "limit",         # cached songs are kept until the cache is full (the oldest then go)
+    "net_predownload": "next",   # "off", "next", "next2" or "queue": how far ahead songs download while one plays
+    "net_keep": "limit",         # "none", "session" (until playback finishes), "day" or "limit" (until full)
     "net_cache_gb": 10,          # the most the cache holds, in GB (0 = no limit)
     "net_verify": True,          # check each finished download (a FLAC's own MD5 fingerprint too)
     "geometry": "",

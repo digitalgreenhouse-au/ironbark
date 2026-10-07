@@ -145,7 +145,7 @@ class GrowingFile(io.RawIOBase):
                 f = self._file_for(where)
                 f.seek(at - (0 if where == "part" else where))
                 got = f.readinto(view[:want])
-            except FileNotFoundError:   # an island merged into the .part (and deleted) meanwhile
+            except OSError:   # an island merged into the .part (and deleted) meanwhile
                 got = 0
             if got:
                 return got

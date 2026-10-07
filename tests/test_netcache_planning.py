@@ -166,8 +166,8 @@ def test_pre_download_fetches_as_far_ahead_as_chosen(tmp_path, managers, choice,
     time.sleep(0.4)
     read = names_read(share)
     extra = read - want
-    # (with everything wanted complete and the link idle, "one more" may start the song after)
-    assert len(extra) <= (1 if choice != "queue" else 0) and (not extra or extra == {f"{fetched}.bin"})
+    # (with everything wanted complete and the link idle, "one more" may start the song after — not when Off)
+    assert len(extra) <= (1 if choice in ("next", "next2") else 0) and (not extra or extra == {f"{fetched}.bin"})
 
 
 def test_songs_not_heard_yet_use_at_most_half_the_cache_limit():
@@ -212,6 +212,74 @@ def test_when_the_link_cant_keep_up_only_this_song_and_the_next_are_fetched(tmp_
     m.items["next.flac"].visible = 39_000_000
     m.items["now.flac"].visible = 30_000_000
     assert m._feasible(window, clock.now)
+
+
+def _flac_item(m, name: str, size: int = 30_000_000, seconds: int = 300) -> Item:
+    item = Item(m.store, key=name, kind="share", source=str(unc(name)), host="nas", ext="flac", size=size)
+    item.info.update(format="FLAC", subtype="PCM_16", rate=44100, channels=2, frames=44100 * seconds,
+                     header_bytes=8000)
+    m.items[name] = item
+    m._paths[name] = unc(name)
+    return item
+
+
+def test_once_what_plays_from_the_seek_on_is_here_the_stretch_behind_waits_its_turn(tmp_path):
+    from ironbark.netcache.store import Island
+    clock = Clock()
+    player = FakePlayer([unc("now.flac"), unc("next.flac")])
+    m = make_manager(tmp_path / "NetCache", FakeShare(), player, clock=clock, start=False)
+    m.classifier.source_key = lambda path: path.name          # (keys as the items above were made)
+    m.classifier.host_of = lambda path: "nas"
+    m._add_host("nas", "share")
+    now, following = _flac_item(m, "now.flac"), _flac_item(m, "next.flac")
+    now.visible = 2_000_000
+    m._positions["now.flac"] = (unc("now.flac"), 200.0, clock.now)   # sought to 3:20
+    m._replan(clock.now)
+    assert (now.priority, following.priority) == (manager_mod.CURRENT, manager_mod.NEXT)
+    with m._lock:
+        offset, limit, island = m._next_range(now)               # fetched from where it plays
+    assert island is not None and 19_000_000 < offset < 20_008_000 and limit == now.size
+    island.visible = now.size                                    # … to the end
+    m._replan(clock.now)
+    assert now.priority == manager_mod.GAP                       # the stretch behind now waits for the next song
+    with m._lock:
+        assert m._next_range(now) == (2_000_000, island.start, None)
+
+
+def test_when_the_link_cant_keep_up_nothing_past_the_next_song_is_wanted(tmp_path):
+    clock = Clock()
+    names = ["a.flac", "b.flac", "c.flac", "d.flac"]
+    m = make_manager(tmp_path / "NetCache", FakeShare(), FakePlayer([unc(n) for n in names]), clock=clock,
+                     start=False, prefs={"net_predownload": "queue"})
+    m.classifier.source_key = lambda path: path.name
+    m.classifier.host_of = lambda path: "nas"
+    host = m._add_host("nas", "share")
+    items = [_flac_item(m, name, size=40_000_000, seconds=120) for name in names]
+    m._replan(clock.now)
+    assert not m.narrowed and [i.priority for i in items] == [manager_mod.CURRENT, manager_mod.NEXT,
+                                                              manager_mod.FOLLOWING, manager_mod.QUEUE]
+    for _ in range(5):
+        clock.now += 1
+        host.speed.add(clock.now, 500_000, 1.0)                  # 0.5 MB/s: 80 MB can't come in 2 minutes
+    m._replan(clock.now)
+    assert m.narrowed and [i.priority for i in items] == [manager_mod.CURRENT, manager_mod.NEXT, None, None]
+
+
+def test_preparing_counts_what_the_open_reads_and_never_goes_back(tmp_path):
+    from ironbark.netcache.store import Island
+    m = make_manager(tmp_path / "NetCache", FakeShare(), start=False)
+    m._loaded.set()
+    item = Item(m.store, key="k", kind="share", source=str(unc("a.mp3")), host="nas", ext="mp3", size=4_000_000)
+    m.items["k"] = item
+    m._add_host("nas", "share")
+    item.visible = 32 * 1024
+    item.islands = [Island(4_000_000 - manager_mod.TAIL_BYTES, 4_000_000)]     # the tail came first
+    before = m._not_ready(item, unc("a.mp3"), 0.0, 10.0, None)
+    assert before.percent == int(100 * (32 * 1024 + manager_mod.TAIL_BYTES) / (64 * 1024 + manager_mod.TAIL_BYTES))
+    item.info.update(open_spans=[[0, 40_000], [3_990_000, 4_000_000]], format="MP3", subtype="MPEG_LAYER_III",
+                     rate=44100, channels=2, frames=44100 * 200)
+    after = m._not_ready(item, unc("a.mp3"), 0.0, 10.0, m._measure(item, unc("a.mp3"), 0.0))
+    assert after.percent >= before.percent                       # (more is known to be needed: never shown going back)
 
 
 # -- keep cached tracks, the cache size ------------------------------------------------------------------
@@ -328,3 +396,26 @@ def test_seconds_in_an_island_and_how_much_of_what_is_needed_is_here():
                               frame_bytes=4) == pytest.approx(1_088_200 // 4 / 44100)
     assert policy.covered([(0, 100), (500, 700)], [(0, 200), (600, 800)]) == pytest.approx(0.5)
     assert policy.covered([], [(0, 10)]) == 0.0
+
+
+def test_a_wait_while_the_server_is_just_slow_says_so(tmp_path, managers):
+    from ironbark.details import network_line
+    from ironbark.engine import NetworkView
+    clock = Clock()
+    m = make_manager(tmp_path / "NetCache", FakeShare(), clock=clock)
+    managers.append(m)
+    host = m._add_host("nas", "share")
+    item = Item(m.store, key="k", kind="share", source=str(unc("a.flac")), host="nas", ext="flac", size=30_000_000)
+    item.info.update(format="FLAC", subtype="PCM_16", rate=44100, channels=2, frames=44100 * 300, header_bytes=8000)
+    m.items["k"] = item
+    for _ in range(5):                                         # 50 kB/s: slower than the song's 100 kB/s
+        clock.now += 1
+        host.speed.add(clock.now, 50_000, 1.0)
+    assert m._slower(item, 45.0) == "the download is slower than the music: building up 45 s"
+    with m._lock:
+        m._host_down(host, clock.now)
+    assert m._slower(item, 45.0) == ""                         # not answering at all: said another way
+    slow = NetworkView("waiting", True, None, m._slower(item, 45.0) or "the download is slower than the music: "
+                       "building up 45 s", at=134.0)
+    assert network_line(slow) == ("Waiting for the network · paused at 2:14 · the download is slower than the "
+                                  "music: building up 45 s", "warn")

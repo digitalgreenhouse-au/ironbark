@@ -170,6 +170,8 @@ def network_line(network, mp3: bool = False) -> tuple[str, str]:
     pct = f" {percent}%" if percent is not None else ""
     if network.phase == "waiting":
         then = "carries on by itself" if network.auto else "press play to carry on"
+        if network.auto and network.detail.startswith("the download is slower"):
+            then = network.detail   # (its server answers, just more slowly than the music plays)
         return f"Waiting for the network · paused at {fmt_clock(network.at)} · {then}", "warn"
     if network.phase == "fetching":
         if mp3:
@@ -229,7 +231,8 @@ def cache_mark(progress) -> tuple[str, str, str]:
         return "●", "accent", "In the cache: plays without the network"
     if progress.state == "failed" or progress.host_state == "down":
         server = server_name(progress.host)
-        why = f"{server} isn't answering" if progress.host_state == "down" else (progress.error or "it couldn't be read")
+        why = (f"{server} isn't answering" if progress.host_state == "down"
+               else progress.error or "it couldn't be read")
         return "!", "warn", f"Couldn't download: {why} · will try again"
     percent = int(progress.fraction * 100)
     if percent > 0:

@@ -833,7 +833,16 @@ class Manager:
         if shown is not None and shown[0] == (at, item.gen):
             pct = max(pct, shown[1])   # (what's needed can grow once the probe knows more: never shown going back)
         self._pct_shown[item.key] = ((at, item.gen), pct)
-        return NotReady("preparing", pct, "preparing", f"Preparing track… {pct}%")
+        return NotReady("preparing", pct, "preparing", self._slower(item, need) or f"Preparing track… {pct}%")
+
+    def _slower(self, item: Item, need) -> str:
+        """While its server answers, but more slowly than the song plays: what the wait is for."""
+        host = self.hosts.get(item.host)
+        rate = self._song_rate(item)
+        v = host.speed.value() if host is not None and host.state != DOWN else None
+        if not v or not rate or need is None or v >= rate:
+            return ""
+        return f"the download is slower than the music: building up {need:.0f} s"
 
     def _needed_ranges(self, item: Item, measured, need) -> list[tuple[int, int]]:
         """The bytes that must be here to start: what the decoder's open reads (once the probe
@@ -978,7 +987,7 @@ class Manager:
                     rank = (CURRENT if position == 0 else NEXT if position == 1 else FOLLOWING if position == 2
                             else QUEUE)
                     wants[key] = min(rank, wants.get(key, rank))
-                elif position > depth and not self.narrowed:
+                elif position > depth and depth and not self.narrowed:   # (Off: nothing ahead at all)
                     extra.append(key)
             for role, (key, rank) in self._explicit.items():
                 if key in self.items:
@@ -1028,7 +1037,8 @@ class Manager:
         """Everything from where the song plays to its end is here; only stretches behind are missing."""
         if item.size is None or item.complete:
             return False
-        if any(r[0] == item.gen and not item.has_range(r[0], r[1], r[2]) for r in self._ranges.get(item.key, {}).values()):
+        if any(r[0] == item.gen and not item.has_range(r[0], r[1], r[2])
+               for r in self._ranges.get(item.key, {}).values()):
             return False
         cursor = self._cursor_byte(item)
         return cursor is not None and cursor > item.visible and item.has_range(item.gen, cursor, item.size)

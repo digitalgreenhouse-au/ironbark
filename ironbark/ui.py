@@ -112,6 +112,7 @@ UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line 
 WHEEL_NOTCH = 120 if sys.platform == "win32" else 1   # Tk's wheel delta for one notch (Windows: 120)
 NETWORK_CACHE = "network_cache"   # the Experimental switch (experiments.py)
 ALBUM_AGAIN_S = 30.0   # a network album not all downloaded yet: its loudness is measured again after this long
+SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: its drive or server isn't answering
 # Settings -> Network playback (the network playback cache): (saved value, what the choice says)
 NET_MODES = (("intelligent", "Intelligent"), ("fast", "Fast start"), ("complete", "Complete track"))
 NET_BUFFERS = ((10, "10 seconds"), (30, "30 seconds"), (60, "1 minute"), (300, "5 minutes"))
@@ -2014,10 +2015,22 @@ class PlayerWindow:
     @staticmethod
     def _read_playlist(path: Path) -> list[Track]:
         """A playlist's songs, in order. Files that aren't there stay listed (marked missing),
-        so a playlist never loses songs just because a drive was unplugged."""
-        return [read_track(song) if song.is_file()
-                else Track(song, title_from_filename(song), missing=True)
-                for song in playlists.read(path)]
+        so a playlist never loses songs just because a drive was unplugged. A drive or server
+        that doesn't answer is asked once: when looking for one of its songs fails slowly (a NAS
+        switched off can take half a minute a look), its other songs are listed as missing without
+        asking again."""
+        silent: set[str] = set()   # drives / servers (path anchors) that didn't answer
+        tracks = []
+        for song in playlists.read(path):
+            anchor = song.anchor.lower()
+            here = False
+            if anchor not in silent:
+                started = time.monotonic()
+                here = song.is_file()
+                if not here and time.monotonic() - started > SLOW_LOOK_S:
+                    silent.add(anchor)
+            tracks.append(read_track(song) if here else Track(song, title_from_filename(song), missing=True))
+        return tracks
 
     def _playlist_tab(self, path: Path) -> Tab | None:
         return next((t for t in self.tabs if t.kind == "playlist" and Path(t.path) == Path(path)), None)

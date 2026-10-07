@@ -490,3 +490,31 @@ def test_up_next_marks_each_network_song_and_the_seek_bar_shows_whats_downloaded
     window._refresh_view()
     assert window.seek.band == ()
     assert errors == []
+
+
+def test_a_playlist_asks_a_server_that_doesnt_answer_only_once(tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+
+    from ironbark import playlists, ui
+    from ironbark.ui import PlayerWindow
+    here = tmp_path / "here.flac"
+    sf.write(here, np.zeros((4410, 2), np.int16), 44100, subtype="PCM_16")
+    songs = [Path(f"//nas/share/{k}.flac") for k in range(5)] + [here]
+    monkeypatch.setattr(playlists, "read", lambda path: songs)
+    monkeypatch.setattr(ui, "SLOW_LOOK_S", 0.05)
+    looked = []
+    real = Path.is_file
+
+    def is_file(self):
+        if self.anchor.lower() == songs[0].anchor.lower():
+            looked.append(self)
+            time.sleep(0.1)                     # (a NAS switched off: a slow "no")
+            return False
+        return real(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    tracks = PlayerWindow._read_playlist(tmp_path / "list.m3u8")
+    assert len(looked) == 1                     # asked once, not five times
+    assert [t.missing for t in tracks] == [True] * 5 + [False]
+    assert [t.path for t in tracks] == songs    # nothing lost from the playlist
