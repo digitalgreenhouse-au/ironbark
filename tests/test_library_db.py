@@ -107,16 +107,17 @@ def test_an_upgrade_step_runs_and_keeps_everything(tmp_path, monkeypatch):
         db.apply(result(ROOT / "A", [song(ROOT / "A", 1, "One", album="A")]))
         db.record_play("x.flac", 300, 300)
     ran = []
+    now = library_db.SCHEMA_VERSION
 
-    def to_2(con):
+    def to_next(con):
         ran.append(True)
         con.execute("ALTER TABLE albums ADD COLUMN rating INTEGER")
 
-    monkeypatch.setattr(library_db, "SCHEMA_VERSION", 2)
-    monkeypatch.setitem(library_db._UPGRADES, 1, to_2)
+    monkeypatch.setattr(library_db, "SCHEMA_VERSION", now + 1)
+    monkeypatch.setitem(library_db._UPGRADES, now, to_next)
     with LibraryDB.open(path) as db:
         assert ran == [True]
-        assert db._con().execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db._con().execute("PRAGMA user_version").fetchone()[0] == now + 1
         assert [a.name for a in db.albums()] == ["A"] and db.play_counts(["x.flac"]) == {"x.flac": 1}
         assert "rating" in {r[1] for r in db._con().execute("PRAGMA table_info(albums)")}
     with LibraryDB.open(path) as db:

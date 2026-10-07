@@ -1001,8 +1001,14 @@ def _prune_history() -> None:
                 path.unlink()
         except OSError:
             pass
+    _sweep_blobs(BLOB_GRACE_SECONDS)
+
+
+def _sweep_blobs(grace: float) -> None:
+    """Delete the blobs no entry refers to any more (only those older than `grace` seconds: a newer
+    one may belong to a save whose entry isn't written yet). Best effort."""
     used = set()
-    for path in folder.glob("TagEdit_*.json"):
+    for path in history_folder().glob("TagEdit_*.json"):
         try:
             used.update(re.findall(r'"history_(?:blob|text)": "([0-9a-f]{64})"', path.read_text(encoding="utf-8")))
         except OSError:
@@ -1010,13 +1016,45 @@ def _prune_history() -> None:
     now = time.time()
     for blob in _blob_folder().glob("*") if _blob_folder().is_dir() else []:
         try:
-            if blob.name not in used and now - blob.stat().st_mtime >= BLOB_GRACE_SECONDS:
+            if blob.name not in used and now - blob.stat().st_mtime >= grace:
                 blob.unlink()
         except OSError:
             pass
 
 
+def unfinished(entry: dict) -> bool:
+    """A save the player hasn't finished with: files still waiting for the player to let go of them,
+    or a save still under way. Its entry is still needed (to finish it, or to undo it)."""
+    return any(isinstance(item, dict) and item.get("state") in UNFINISHED for item in entry.get("files", []))
+
+
+def clear_history() -> int:
+    """Delete the tag history — every saved edit except the unfinished ones (`unfinished`), and the
+    pictures only they held — so those edits can't be undone any more. The music files aren't
+    touched. Returns how many saves went. Reads and deletes files: for a worker thread."""
+    removed = 0
+    for path in history_folder().glob("TagEdit_*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        except ValueError:
+            data = None   # (damaged: it can't be undone anyway)
+        if isinstance(data, dict) and unfinished(data):
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass
+    with _history_lock:   # (a save starting now waits for the sweep, so its new pictures are never swept)
+        _sweep_blobs(BLOB_GRACE_SECONDS if _saves_running else 0)
+    return removed
+
+
 UNFINISHED = ("pending", "waiting", "saving")   # a file's state in a save the player never finished
+_history_lock = threading.Lock()
+_saves_running = 0   # TagSave.run calls under way (their pictures may be in the blob store before their entry)
 STOPPED_REASON = "the player stopped before it was saved — not saved"
 
 
@@ -1132,10 +1170,16 @@ class TagSave:
 
     def run(self, busy: Callable[[Path], bool] = lambda path: False, cancel: threading.Event | None = None,
             progress: Callable[[int, int, Path], None] | None = None) -> list[FileResult]:
+        global _saves_running
+        with _history_lock:
+            _saves_running += 1
         try:
             self._run(busy, cancel, progress)
         except Exception as error:  # noqa: BLE001 — a slip must never leave copies or claims behind
             self.give_up(f"stopped by an unexpected error ({error})")
+        finally:
+            with _history_lock:
+                _saves_running -= 1
         self.progress = (len(self.jobs), len(self.jobs))
         self.done = True
         return self.results

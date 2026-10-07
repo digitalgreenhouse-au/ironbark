@@ -213,7 +213,7 @@ def test_switched_on_the_cache_starts_once_the_window_is_up_and_stops_with_it(ma
 def worker_window(**more):
     from ironbark.ui import PlayerWindow
     w = SimpleNamespace(_peaks={}, _gain_tags={}, _lufs={}, _peak_jobs=queue.Queue(), _peak_wanted=set(),
-                        _level_wanted=set(), **more)
+                        _level_wanted=set(), _stored_peak=lambda path: None, **more)
     w._again_later = PlayerWindow._again_later.__get__(w)
     w._measure_for_levelling = PlayerWindow._measure_for_levelling.__get__(w)
     threading.Thread(target=PlayerWindow._measure_peaks, args=(w,), daemon=True).start()

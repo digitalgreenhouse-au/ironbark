@@ -150,6 +150,9 @@ BY_ID: dict[str, Action] = {a.id: a for a in ACTIONS}
 # the sheet and the README so they can be found too. (keys as shown, what they do, group)
 OTHER_KEYS: tuple[tuple[str, str, str], ...] = (
     ("↓ · Enter", "Search box: go to the list · play (open) the first result", "Library & search"),
+    ("Enter · Shift+Enter · Ctrl+Enter · Alt+Enter",
+     "Library search (Ctrl+K): play · play next · add to Up next · open the album", "Library & search"),
+    ("A – Z · 0 – 9", "Library list: jump to the first name starting with what you type", "Library & search"),
     ("Menu key · Shift+F10", "The selected row's right-click menu", "Tabs & lists"),
     ("Esc", "Close a menu or window (a search box: clear it first)", "Windows & tools"),
     ("A · B · X · Space", "ABX window: hear A, B or X · stop or replay", "Windows & tools"),

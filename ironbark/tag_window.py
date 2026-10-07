@@ -10,7 +10,10 @@ swapped in. A song that's playing waits until the player moves on. Esc, Cancel o
 with edits not yet saved ask "Discard changes?" first (Enter keeps editing), and so do quitting the
 player and Edit tags of other songs (`may_discard`).
 
-Tag history: every save, newest first; Undo puts the old tags back the same careful way.
+Tag history: every save, newest first; Undo puts the old tags back the same careful way. The history
+is read on a worker thread (each save is a file of its own: a long history takes a moment), and so
+are Undo's files. "Clear history…" deletes it, after asking — except the saves still waiting for
+the player to let go of a song, which are needed to finish them.
 """
 
 from __future__ import annotations
@@ -409,13 +412,17 @@ class TagWindow:
 
 
 class TagHistoryWindow:
-    """Every tag save, newest first. Undo puts the old tags back (the same careful way)."""
+    """Every tag save, newest first. Undo puts the old tags back (the same careful way); Clear
+    history… lets the history go."""
 
     def __init__(self, parent: tk.Misc, prefs: dict, on_saved: Callable[[TagSave], None],
-                 busy: Callable[[], set[Path]], confirm: Callable[[str, str], bool] | None = None):
+                 busy: Callable[[], set[Path]], confirm: Callable[[str, str], bool] | None = None,
+                 confirm_clear: Callable[[str, str], bool] | None = None):
         self.prefs, self.on_saved, self.busy = prefs, on_saved, busy
         self.saving: _Saving | None = None
         self.reading = False   # Undo is reading the entry's files (on a thread) before it asks
+        self.loading: dict | None = None   # the history being read (on a thread)
+        self.clearing = False  # Clear history is deleting it (on a thread)
         self.entries: list[dict] = []
         self.win = tk.Toplevel(parent, bg=theme.BG)
         self.win.title("Tag history")
@@ -427,6 +434,8 @@ class TagHistoryWindow:
         self.win.bind("<Escape>", lambda e: self.close())
         self.win.bind("<Configure>", self._moved, add="+")
         self.confirm = confirm or ask(self.win, "Undo")
+        self.confirm_clear = confirm_clear or (lambda message, detail: popups.confirm(
+            self.win, message, detail, ok="Clear history", danger=True))
 
         outer = ttk.Frame(self.win, padding=theme.px(theme.GAP_WIDE))
         outer.pack(fill="both", expand=True)
@@ -440,6 +449,9 @@ class TagHistoryWindow:
         self.undo_button = controls.FlatButton(bottom, "Undo", self.undo, state="disabled",
                                                label="Put this save's old tags back")
         self.undo_button.pack(side="right")
+        self.clear_button = controls.FlatButton(bottom, "Clear history…", self.clear, state="disabled",
+                                                label="Delete the history of tag saves (they can't be undone after)")
+        self.clear_button.pack(side="right", padx=theme.pad(0, theme.GAP))
         table = ttk.Frame(outer)
         table.pack(fill="both", expand=True, pady=theme.pad(8, 0))
         self.tree = ttk.Treeview(table, columns=("when", "what", "files", "state"), show="headings",
@@ -457,7 +469,37 @@ class TagHistoryWindow:
         self.reload()
 
     def reload(self):
-        self.entries = tag_editor.history()
+        """Read the history again, on a worker thread; it's listed once it's in."""
+        found: dict = {}
+        self.loading = found
+
+        def work():
+            try:
+                found["entries"] = tag_editor.history()
+            except Exception as error:  # noqa: BLE001 — said in the window
+                found["error"] = error
+            finally:
+                found["done"] = True
+
+        threading.Thread(target=work, name="tag-history-read", daemon=True).start()
+        self._paint_button()
+        self.win.after(30, self._wait_for_history, found)
+
+    def _wait_for_history(self, found: dict):
+        if not self.win.winfo_exists() or found is not self.loading:
+            return   # closed, or read again since
+        if "done" not in found:
+            self.win.after(30, self._wait_for_history, found)
+            return
+        self.loading = None
+        if "error" in found:
+            self.status.configure(text=f"Couldn't read the tag history: {found['error']}", style="Warn.TLabel")
+            self._paint_button()
+            return
+        self._show(found["entries"])
+
+    def _show(self, entries: list[dict]):
+        self.entries = entries
         self.tree.delete(*self.tree.get_children())
         for i, entry in enumerate(self.entries):
             files = entry.get("files", [])
@@ -468,7 +510,7 @@ class TagHistoryWindow:
             self.tree.insert("", "end", iid=str(i), values=(entry.get("when", ""), entry.get("summary", ""),
                                                             f"{saved} of {len(files)}" if saved != len(files)
                                                             else str(saved), state))
-        if not self.entries:
+        if not self.entries and not self.status.cget("text"):   # (what Clear history said stays)
             self.status.configure(text="No tag edits yet")
         self._paint_button()
 
@@ -478,9 +520,57 @@ class TagHistoryWindow:
 
     def _paint_button(self):
         entry = self._selected()
-        ok = (entry is not None and self.saving is None and not self.reading and not entry.get("undone_by")
+        idle = self.saving is None and not self.reading and not self.clearing and self.loading is None
+        ok = (entry is not None and idle and not entry.get("undone_by")
               and any(f.get("saved") for f in entry.get("files", [])))
         self.undo_button.configure(state="normal" if ok else "disabled")
+        clearable = any(not tag_editor.unfinished(e) for e in self.entries)
+        self.clear_button.configure(state="normal" if idle and clearable else "disabled")
+
+    def clear(self):
+        """Clear history…: asks first (the edits can't be undone after), then deletes it on a thread
+        — keeping the saves still waiting for the player to let go of a song."""
+        if self.saving is not None or self.reading or self.clearing or self.loading is not None:
+            return
+        kept = sum(1 for entry in self.entries if tag_editor.unfinished(entry))
+        going = len(self.entries) - kept
+        if not going:
+            return
+        detail = "Those edits can't be undone after this. The music files themselves aren't touched."
+        if kept:
+            detail += (f"\n\n{_plural(kept, 'save')} still waiting to finish (a song that was playing) "
+                       f"{'is' if kept == 1 else 'are'} kept.")
+        if not self.confirm_clear(f"Clear the tag history ({_plural(going, 'save')})?", detail):
+            return
+        found: dict = {}
+
+        def work():
+            try:
+                found["removed"] = tag_editor.clear_history()
+            except Exception as error:  # noqa: BLE001 — said in the window
+                found["error"] = error
+            finally:
+                found["done"] = True
+
+        self.clearing = True
+        self._paint_button()
+        self.status.configure(text="Clearing the tag history…", style="Muted.TLabel")
+        threading.Thread(target=work, name="tag-history-clear", daemon=True).start()
+        self.win.after(30, self._wait_for_clear, found)
+
+    def _wait_for_clear(self, found: dict):
+        if not self.win.winfo_exists():
+            return
+        if "done" not in found:
+            self.win.after(30, self._wait_for_clear, found)
+            return
+        self.clearing = False
+        if "error" in found:
+            self.status.configure(text=f"Couldn't clear the tag history: {found['error']}", style="Warn.TLabel")
+        else:
+            self.status.configure(text=f"Cleared {_plural(found['removed'], 'save')} from the tag history",
+                                  style="Muted.TLabel")
+        self.reload()
 
     def undo(self, entry: dict | None = None):
         """Read the entry's files on a thread (every file is opened: slow for an album on a network

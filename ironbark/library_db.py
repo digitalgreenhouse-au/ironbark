@@ -36,7 +36,9 @@ inside "Night") is tried; and where this Python's SQLite has no FTS5 at all, eve
 done that slower way.
 
 **Plays and favourites** are keyed by the file's key (audiofile.key: a CUE track is "file#3"),
-not by row, so they survive the track rows being rebuilt.
+not by row, so they survive the track rows being rebuilt. So are the **quality checks**
+(library_check.py: one per song, with the size and modified time of the file it read, so a file
+that changes is checked again).
 
 **Threads**: any thread may read; each gets its own connection (SQLite's write-ahead log, WAL,
 lets readers carry on while a writer writes). Only the indexer should write. A damaged file is set
@@ -54,7 +56,7 @@ import re
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,7 +68,7 @@ from .library import (_DISC_FOLDER, Album, Track, is_music_name, natural_key, pl
                       sort_name, split_cue_images)
 
 FILE_NAME = "library.db"
-SCHEMA_VERSION = 1          # PRAGMA user_version: bump with a step in _UPGRADES (else the library tables are remade)
+SCHEMA_VERSION = 2          # PRAGMA user_version: bump with a step in _UPGRADES (else the library tables are remade)
 # The tag reader's version: bump it when read_track() learns something new, and every file read by
 # an older one is read again in the background (the library stays browsable meanwhile).
 READ_FORMAT = 1
@@ -201,6 +203,19 @@ CREATE INDEX IF NOT EXISTS plays_key ON plays(key, played_at);
 CREATE INDEX IF NOT EXISTS plays_when ON plays(played_at);
 CREATE TABLE IF NOT EXISTS favourites(key TEXT PRIMARY KEY, added REAL NOT NULL) WITHOUT ROWID;
 """
+# (Version 2) The whole-library quality check's results (library_check.py), one per song.
+_CHECK_TABLES = """
+CREATE TABLE IF NOT EXISTS checks(
+    key TEXT PRIMARY KEY,                               -- audiofile.key: the file, "#n" for a CUE track
+    size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,   -- the file as it was read (changed since: check again)
+    format INTEGER NOT NULL,                            -- which version of the check made it
+    checked REAL NOT NULL,                              -- when (seconds since 1970)
+    findings TEXT NOT NULL,                             -- what needs a look, worst first ("" = nothing)
+    true_peak REAL,                                     -- linear, 1.0 = full scale (the clipping guard's figure)
+    result TEXT NOT NULL) WITHOUT ROWID;                -- the whole result as JSON ("" = none to keep)
+CREATE INDEX IF NOT EXISTS checks_found ON checks(findings) WHERE findings != '';
+"""
+_TABLES += _CHECK_TABLES
 # The song search index: no text of its own (the rows are tracks.id), already-folded text in,
 # "unicode61" splitting it into words. No prefix index: three times the size for little speed.
 _FTS_TABLE = ("CREATE VIRTUAL TABLE IF NOT EXISTS song_fts USING fts5(" + ", ".join(FTS_COLUMNS)
@@ -209,11 +224,19 @@ _FTS_TRIGGER = ("CREATE TRIGGER IF NOT EXISTS tracks_unindexed AFTER DELETE ON t
                 "BEGIN DELETE FROM song_fts WHERE rowid = old.id; END")
 _LIBRARY_TABLES = ("song_fts", "tracks", "albums", "files", "folders", "roots", "meta")
 _KEPT_TABLES = {"plays": {"id", "key", "played_at", "seconds_heard", "completed"},
-                "favourites": {"key", "added"}}
+                "favourites": {"key", "added"},
+                "checks": {"key", "size", "mtime_ns", "format", "checked", "findings", "true_peak", "result"}}
+_CHECK_COLUMNS = "key, size, mtime_ns, format, checked, findings, true_peak, result"
 
 # Upgrades from one schema version to the next: {old version: fn(connection)}. A version with no
 # way up has its library tables made again (they're only a record of the music files).
-_UPGRADES: dict[int, Callable[[sqlite3.Connection], None]] = {}
+def _to_2(con: sqlite3.Connection) -> None:
+    """1 → 2: the quality check's table."""
+    for statement in _statements(_CHECK_TABLES):
+        con.execute(statement)
+
+
+_UPGRADES: dict[int, Callable[[sqlite3.Connection], None]] = {1: _to_2}
 
 _TRACK_FIELDS = ("cue_sheet", "cue_number", "cue_start", "cue_end", "title", "artist", "album", "album_artist",
                  "composer", "genre", "date", "year", "track_no", "disc_no", "duration", "sample_rate", "bits",
@@ -228,6 +251,13 @@ _TRACK_SELECT = ("SELECT r.path, d.rel, f.name, t.id, " + ", ".join(f"t.{n}" for
                  + " FROM tracks t JOIN files f ON f.id = t.file_id JOIN folders d ON d.id = f.folder_id"
                  " JOIN roots r ON r.id = d.root_id")
 _ALBUM_TRACKS = "SELECT t.album_id, " + _TRACK_SELECT[len("SELECT "):]   # (the album's id, then as _TRACK_SELECT)
+# As _TRACK_SELECT, then the file's size, modified time and missing_since (the quality check's list)
+_CHECK_SELECT = _TRACK_SELECT.replace(" FROM tracks t", ", f.size, f.mtime_ns, f.missing_since FROM tracks t", 1)
+# Just what the quality check reads of each song (LibraryDB.check_list), folder by folder.
+_CHECK_LIST = ("SELECT r.path, d.rel, f.name, t.cue_sheet, t.cue_number, t.cue_start, t.cue_end, t.bits, t.md5,"
+               " t.duration, t.sample_rate, t.misnamed, t.unsupported, f.size, f.mtime_ns, f.missing_since"
+               " FROM tracks t JOIN files f ON f.id = t.file_id JOIN folders d ON d.id = f.folder_id"
+               " JOIN roots r ON r.id = d.root_id ORDER BY r.id, d.rel, f.name, t.cue_number")
 
 
 # -- what a look at one folder found ---------------------------------------------------------------------
@@ -366,14 +396,19 @@ def _join(root, rel, name="") -> str:
     return os.path.join(folder, name) if name else folder
 
 
+def _track_path(root, rel, name, cue_sheet, cue_number, cue_start, cue_end) -> Path:
+    """A song's path from its stored parts: a CuePath (its stretch of the file) for a CUE track."""
+    text = _join(root, rel, name)
+    return (Path(text) if cue_number is None
+            else CuePath(text, cue=CueRange(_from_db(cue_sheet), cue_number, cue_start, cue_end)))
+
+
 def _track(row) -> Track:
     """A Track from a _TRACK_SELECT row."""
     (root, rel, name, _id, cue_sheet, cue_number, cue_start, cue_end, title, artist, album, album_artist, composer,
      genre, date, _year, track_no, disc_no, duration, sample_rate, bits, channels, bitrate, size, codec, md5,
      encoder, float_samples, bitrate_mode, channel_mode, misnamed, unsupported, compilation, details) = row
-    text = _join(root, rel, name)
-    path = (Path(text) if cue_number is None
-            else CuePath(text, cue=CueRange(_from_db(cue_sheet), cue_number, cue_start, cue_end)))
+    path = _track_path(root, rel, name, cue_sheet, cue_number, cue_start, cue_end)
     return Track(path=path, title=title, artist=artist, album=album, track_no=track_no, disc_no=disc_no,
                  duration=duration, sample_rate=sample_rate, bits=bits, channels=channels, bitrate=bitrate,
                  encoder=encoder, md5=int(md5, 16) if md5 else 0, size=size, codec=codec,
@@ -637,13 +672,14 @@ class LibraryDB:
     def _start_again(self, why: str) -> Path | None:
         """Set the file aside (library.db.damaged-dd-mm-yyyy) and start an empty one, keeping the
         library folders, plays and favourites that can still be read."""
-        roots, plays, favourites = self._salvage()
+        roots, plays, favourites, checks = self._salvage()
         aside = self._set_aside()
         self._prepare_file()
         with self._writing() as con:
             con.executemany("INSERT OR IGNORE INTO roots(path) VALUES (?)", [(r,) for r in roots])
             con.executemany("INSERT INTO plays(key, played_at, seconds_heard, completed) VALUES (?, ?, ?, ?)", plays)
             con.executemany("INSERT OR IGNORE INTO favourites(key, added) VALUES (?, ?)", favourites)
+            con.executemany(f"INSERT OR IGNORE INTO checks({_CHECK_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", checks)
         self.problem = (why + (f" as {aside.name}" if aside else "")
                         + ", and the library is being looked through again.")
         return aside
@@ -718,16 +754,16 @@ class LibraryDB:
         file went (None if there was no file)."""
         return self._start_again("The library database was damaged: it was set aside")
 
-    def _salvage(self) -> tuple[list, list, list]:
+    def _salvage(self) -> tuple[list, list, list, list]:
         found = []
         for sql in ("SELECT path FROM roots", "SELECT key, played_at, seconds_heard, completed FROM plays",
-                    "SELECT key, added FROM favourites"):
+                    "SELECT key, added FROM favourites", f"SELECT {_CHECK_COLUMNS} FROM checks"):
             try:
                 rows = self._con().execute(sql).fetchall()
             except sqlite3.Error:
                 rows = []
             found.append([row[0] for row in rows] if sql.startswith("SELECT path") else rows)
-        return found[0], found[1], found[2]
+        return found[0], found[1], found[2], found[3]
 
     @property
     def generation(self) -> int:
@@ -1228,6 +1264,67 @@ class LibraryDB:
                 rows += con.execute(_TRACK_SELECT + f" WHERE t.id IN ({', '.join('?' * len(chunk))})", chunk).fetchall()
         return SongHits(_ranked(rows, words, whole_words=False), min(count, COUNT_CAP), count > COUNT_CAP)
 
+    # -- songs for the Library's song views --
+    def song_ids(self, order: str = "title", reverse: bool = False) -> list[int]:
+        """Every song's id (not those missing), sorted by a column of the Library's Songs view —
+        title, artist, album, year, quality or time (`reverse`: that column the other way round;
+        unknown years stay last) — then by artist, album, disc and track. The column's names sort as
+        the albums do (folded, "The" left off, 2 before 10); the ones after it plainly, ignoring case
+        (a Python sort key for every name of every song took four times as long)."""
+        terms = _SONG_ORDER.get(order, _SONG_ORDER["title"])
+        first = ", ".join(f"{expr}{' DESC' if desc != (reverse and flips) else ''}" for expr, flips, desc in terms)
+        con = self._con()
+        con.create_function("ib_sort", 1, _sort_text, deterministic=True)
+        return [row[0] for row in con.execute(
+            "SELECT t.id FROM tracks t JOIN files f ON f.id = t.file_id WHERE f.missing_since IS NULL"
+            f" ORDER BY {first}, t.artist COLLATE NOCASE, t.album COLLATE NOCASE, t.disc_no, t.track_no,"
+            " t.title COLLATE NOCASE, t.id")]
+
+    def songs(self, ids: Iterable[int]) -> list[SongHit]:
+        """These songs (by tracks.id) with their album folders, in the order asked; unknown ids
+        left out."""
+        ids = list(ids)
+        found: dict[int, SongHit] = {}
+        with self._reading() as con:
+            for chunk in _chunks(ids):
+                for row in con.execute(_TRACK_SELECT + f" WHERE t.id IN ({', '.join('?' * len(chunk))})", chunk):
+                    found[row[3]] = _hit(row)
+        return [found[i] for i in ids if i in found]
+
+    def songs_by_keys(self, keys: Iterable) -> list[SongHit]:
+        """The songs with these play / favourite keys (audiofile.key: a CUE track is "file#3"), in
+        the order asked, each song once; one that isn't in the library (or is missing) is left out."""
+        seen: set[int] = set()
+        return [hit for _asked, hit in self.songs_for_keys(keys) if not (hit.id in seen or seen.add(hit.id))]
+
+    def songs_for_keys(self, keys: Iterable) -> list[tuple[str, SongHit]]:
+        """(key, song) for each of these keys that finds a song in the library, in the order asked.
+        Two keys can find one song — its file written another way ("c:\\music" and "C:\\Music":
+        Windows doesn't mind the case) — so a song can come more than once, and the key that found
+        it needn't be the song's own (audiofile.key of its path)."""
+        keys = list(dict.fromkeys(_key(k) for k in keys))
+        by_folder: dict[str, list[tuple[str, str, int | None]]] = {}   # folder -> (key, file name, CUE track)
+        for key in keys:
+            path, mark, number = key.rpartition("#")
+            cue = int(number) if mark and number.isdecimal() else None
+            folder, name = os.path.split(path if cue is not None else key)
+            by_folder.setdefault(folder, []).append((key, name, cue))
+        ids: dict[str, int] = {}
+        with self._reading() as con:
+            for folder, asked in by_folder.items():   # (a folder's songs in one read: thousands of keys stay quick)
+                place = _locate(con, folder)
+                if place is None:
+                    continue
+                found = {(_from_db(name), cue): track_id for name, cue, track_id in con.execute(
+                    "SELECT f.name, t.cue_number, t.id FROM tracks t JOIN files f ON f.id = t.file_id"
+                    " JOIN folders d ON d.id = f.folder_id"
+                    " WHERE d.root_id = ? AND d.rel = ? AND f.missing_since IS NULL", (place[0], _to_db(place[2])))}
+                for key, name, cue in asked:
+                    if (name, cue) in found:
+                        ids[key] = found[(name, cue)]
+        hits = {hit.id: hit for hit in self.songs(dict.fromkeys(ids.values()))}
+        return [(key, hits[ids[key]]) for key in keys if key in ids and ids[key] in hits]
+
     # -- plays and favourites --
     def record_play(self, key, seconds_heard: float, duration: float, when: float | None = None) -> bool:
         """A song was listened to for `seconds_heard` of its `duration`: stored as a play when it
@@ -1283,6 +1380,64 @@ class LibraryDB:
     def favourites(self) -> list[str]:
         """Every favourite's key, newest first."""
         return [_from_db(row[0]) for row in self._con().execute("SELECT key FROM favourites ORDER BY added DESC, key")]
+
+    # -- the whole-library quality check (library_check.py) --
+    def check_songs(self) -> list[tuple[Track, int, int, bool]]:
+        """Every song, with its file's size and modified time as last seen and whether the file is
+        missing just now: what the quality check works through, folder by folder."""
+        with self._reading() as con:
+            return [(_track(row[:-3]), row[-3], row[-2], row[-1] is not None) for row in con.execute(
+                _CHECK_SELECT + " ORDER BY r.id, d.rel, f.name, t.cue_number")]
+
+    def check_list(self) -> Iterator[tuple]:
+        """What the quality check needs of every song, one at a time, folder by folder (a big
+        library's whole Tracks would cost hundreds of megabytes, and seconds, at every run's start):
+        (path, bits, MD5, duration, sample rate, misnamed, unsupported, size, modified ns, missing)
+        — the path as text (a CuePath for a CUE track: its stretch of the file), the file's size and
+        time as last seen, and whether it's missing just now. Read to the end (it holds a read open
+        meanwhile)."""
+        with self._reading() as con:
+            for (root, rel, name, cue_sheet, cue_number, cue_start, cue_end, bits, md5, duration, rate, misnamed,
+                 unsupported, size, mtime, missing) in con.execute(_CHECK_LIST):
+                path = (_join(root, rel, name) if cue_number is None
+                        else _track_path(root, rel, name, cue_sheet, cue_number, cue_start, cue_end))
+                yield (path, bits, int(md5, 16) if md5 else 0, duration, rate, misnamed, unsupported, size, mtime,
+                       missing is not None)
+
+    def check_states(self) -> dict[str, tuple[int, int, int]]:
+        """{song key: (size, modified ns, format)} for every stored check."""
+        return {_from_db(key): (size, mtime, fmt) for key, size, mtime, fmt in self._con().execute(
+            "SELECT key, size, mtime_ns, format FROM checks")}
+
+    def save_check(self, key, size: int, mtime_ns: int, format: int, findings: str, true_peak: float | None,
+                   result: str, when: float | None = None) -> None:
+        """Keep a song's check (in place of any before). `key`: audiofile.key of its path (or the path)."""
+        with self._writing(bump=False) as con:
+            con.execute(f"INSERT OR REPLACE INTO checks({_CHECK_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (_to_db(_key(key)), int(size), int(mtime_ns), int(format),
+                         time.time() if when is None else when, findings,
+                         None if true_peak is None else float(true_peak), result))
+
+    def check_of(self, key) -> tuple[int, int, int, float, str, float | None, str] | None:
+        """A song's stored check: (size, modified ns, format, when, findings, true peak, result JSON)."""
+        row = self._con().execute("SELECT size, mtime_ns, format, checked, findings, true_peak, result FROM checks"
+                                  " WHERE key = ?", (_to_db(_key(key)),)).fetchone()
+        return tuple(row) if row is not None else None
+
+    def flagged_checks(self) -> list[tuple[str, str, float, str]]:
+        """(key, findings, when, result JSON) of every stored check that found something."""
+        return [(_from_db(key), findings, checked, result) for key, findings, checked, result in self._con().execute(
+            "SELECT key, findings, checked, result FROM checks WHERE findings != ''")]
+
+    def forget_checks(self, keys: Iterable) -> int:
+        """Drop these songs' checks (songs gone from the library); how many there were."""
+        keys = [_to_db(_key(k)) for k in keys]
+        gone = 0
+        with self._writing(bump=False) as con:
+            for chunk in _chunks(keys):
+                gone += con.execute(f"DELETE FROM checks WHERE key IN ({', '.join('?' * len(chunk))})",
+                                    chunk).rowcount
+        return gone
 
     # -- moving over from library_index.json --
     def import_json_index(self, path: str | Path | None = None,
@@ -1524,6 +1679,24 @@ _TOP_HITS = ("SELECT r.path, d.rel, f.name, t.id, " + ", ".join(f"t.{n}" for n i
              + f" FROM (SELECT rowid AS id, {_BM25} AS score FROM song_fts WHERE song_fts MATCH ?"
              " ORDER BY score LIMIT ?) AS s JOIN tracks t ON t.id = s.id JOIN files f ON f.id = t.file_id"
              " JOIN folders d ON d.id = f.folder_id JOIN roots r ON r.id = d.root_id ORDER BY s.score")
+
+
+# The Songs view's sorts: (SQL, flips with a reversed sort?, descending?) for each column's first
+# ORDER BY terms. Lossy files come first by quality (as the album list's Quality column).
+_SONG_ORDER = {
+    "title": (("ib_sort(t.title)", True, False),),
+    "artist": (("ib_sort(t.artist)", True, False),),
+    "album": (("ib_sort(t.album)", True, False),),
+    "year": (("t.year IS NULL", False, False), ("t.year", True, False)),
+    "quality": (("t.codec IN ('MP3', 'Vorbis', 'Opus', 'AAC')", True, True), ("t.bits", True, False),
+                ("t.sample_rate", True, False)),
+    "time": (("t.duration", True, False),),
+}
+
+
+def _hit(row) -> SongHit:
+    """A SongHit (no search words) from a _TRACK_SELECT row: the track and its album folder."""
+    return SongHit(row[3], _track(row), Path(_join(row[0], _album_rel(_from_db(row[1])))))
 
 
 def _ranked(rows: list, words: list[str], whole_words: bool) -> list[SongHit]:

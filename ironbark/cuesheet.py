@@ -276,7 +276,13 @@ def parse(text: str, source: Path | None = None) -> CueSheet:
 
 
 def decode(data: bytes) -> str:
-    """A text file's bytes as text: a .cue sheet, or a playlist (playlists.py). Tried in turn:
+    """A text file's bytes as text (decode_with, without saying how)."""
+    return decode_with(data)[0]
+
+
+def decode_with(data: bytes) -> tuple[str, str]:
+    """A text file's bytes as text, and the encoding that read them: a .cue sheet, or a playlist
+    (playlists.py). Tried in turn:
     - a byte-order mark says which (UTF-8, or UTF-16 as Windows Notepad saves "Unicode");
     - UTF-16 without one: plain text never holds zero bytes, UTF-16 has one beside every letter;
     - UTF-8 (a file name that isn't valid Unicode, as playlists.write saves it, comes back as it was);
@@ -296,10 +302,10 @@ def decode(data: bytes) -> str:
     attempts += [("utf-8", data), (locale.getencoding(), data)]
     for encoding, body in attempts:
         try:
-            return body.decode(encoding, errors="surrogatepass" if encoding == "utf-8" else "strict")
+            return body.decode(encoding, errors="surrogatepass" if encoding == "utf-8" else "strict"), encoding
         except (UnicodeDecodeError, LookupError):
             pass
-    return data.decode("cp1252", errors="replace")
+    return data.decode("cp1252", errors="replace"), "cp1252"
 
 
 def read(path: str | Path) -> CueSheet:

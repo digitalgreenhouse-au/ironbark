@@ -51,7 +51,13 @@ Volume levelling (Settings → Sound, off by default; levelling.py): each song's
 ahead of play beside the clipping guard's (`_apply_levelling`) and handed to the player per file.
 Stop after the current song and the sleep timer (sleep.py): in the track menu and the Up next list,
 and Ctrl+. / Ctrl+Shift+S, for this session only (`stop_after_current`, `set_sleep_timer`).
-Lyrics: key L (lyrics_window.py)."""
+Lyrics: key L (lyrics_window.py).
+
+The whole-library quality check (library_check.py, opt-in from the Library's Needs a look) runs on
+its own thread and worker processes; it carries on CHECK_AFTER_MS after start-up when it was left
+on, looks again when the watcher finds changed music, holds off while a blind test or test signals
+run, and stops with the player. Its stored results serve Now Playing's Check and the clipping
+guard's true peaks (`_stored_peak`)."""
 
 from __future__ import annotations
 
@@ -73,8 +79,9 @@ from typing import Callable
 from PIL import ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
-               dragdrop, experiments, keys, levelling, library_db, library_index, logs, loudness, mediakeys,
-               placement, playlists, popups, settings, sleep, tag_editor, theme, tkgc, updates, watcher)
+               dragdrop, experiments, keys, levelling, library_check, library_db, library_index, logs, loudness,
+               mediakeys, placement, playlists, popups, quick_search, recycle, settings, sleep, tag_editor, theme,
+               tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -83,6 +90,7 @@ from .details import (COPY_FAILED, NowPlayingWindow, cache_mark, copy_note, netw
                       network_now_line, output_line)
 from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
+from .favourites import Favourites
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
 from .library_window import LibraryWindow, adding_folder
@@ -96,6 +104,7 @@ from .scope_window import ScopeWindow
 from .spectrogram_window import SpectrogramWindow
 from .tag_window import TagHistoryWindow, TagWindow
 from .playlist_view import PlaylistView, _fold
+from .quick_search import QuickSearch
 from .tabbar import IconButton, MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
 
 log = logging.getLogger(__name__)
@@ -123,6 +132,8 @@ NET_SIZES = ((1, "1 GB"), (5, "5 GB"), (10, "10 GB"), (25, "25 GB"), (50, "50 GB
 QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
+CHECK_AFTER_MS = 60000  # a library quality check left on carries on this long after start-up
+FAVOURITES_WAIT_S = 6.0  # longest closing waits for a ♥ to be stored (the database can be busy for 5 s)
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
 THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
@@ -332,6 +343,13 @@ class PlayerWindow:
         self._abx: AbxWindow | None = None
         self._testsignals: TestSignalsWindow | None = None
         self._library: LibraryWindow | None = None
+        self._quick: QuickSearch | None = None       # the song search panel (Ctrl+K), made when first opened
+        # Favourite songs (♥): read from the library database on a worker, then kept here.
+        self.favourites = Favourites(lambda: self._index().db)
+        self.favourites.changed.append(self._favourites_changed)
+        # The whole-library quality check: off until chosen in the Library; the choice is kept.
+        self.checker = library_check.Checker(lambda: self._index().db, state=self.prefs.get("library_check", "off"),
+                                             on_state=lambda state: self.prefs.update(library_check=state))
         self._tag_window: TagWindow | None = None
         self._tag_history: TagHistoryWindow | None = None
         self._help: HelpWindow | None = None
@@ -473,6 +491,7 @@ class PlayerWindow:
         if settings.problem:   # a damaged settings file was set aside at start: said once
             self._set_notice(settings.problem, 12000)
         self._poll_job = self.root.after(POLL_MS, self._poll)
+        self.favourites.load()
         if self.watch_music.get():
             self._start_watching(INDEX_AFTER_MS / 1000)
         else:
@@ -481,6 +500,7 @@ class PlayerWindow:
         self._update_job = self.root.after(UPDATE_FIRST_MS, self._update_tick)
         if experiments.enabled(self.prefs, NETWORK_CACHE):
             self.root.after_idle(self._start_cache)   # (once the window is up: no I/O to speak of)
+        self._check_job = self.root.after(CHECK_AFTER_MS, self.checker.kick)   # (nothing unless it was left on)
         # Up and running: from here Python's cycle collector runs only on this thread (tkgc.py).
         self.collector = tkgc.Collector(root)
         self.collector.start()
@@ -613,7 +633,9 @@ class PlayerWindow:
         self.undo_link.bind("<Button-1>", lambda e: self.undo())
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
-                                     on_heading_menu=self._heading_menu)
+                                     on_heading_menu=self._heading_menu,
+                                     on_search_library=lambda query: self.find_in_library(query),
+                                     is_favourite=lambda track: track in self.favourites)
         self.playlist.set_columns(self.prefs.get("track_columns") or ())
         # "Up next (3) · Song": shown above the status line only while songs are queued; click
         # for the list. (Packed from the bottom, ahead of the track list, like the status line.)
@@ -1177,12 +1199,77 @@ class PlayerWindow:
         self.root.lift()
         self._open_settings()
 
-    def find_in_library(self):
-        """Ctrl+K / Ctrl+Shift+F: search the whole library. For now that's the Library window's search
-        box (albums, artists, years, genres, composers), opened or brought forward and ready to type in."""
-        self.open_library()
+    def find_in_library(self, query: str | None = None):
+        """Ctrl+K / Ctrl+Shift+F, from any window: the song search panel over this window
+        (quick_search.py), ready to type in. `query`: search for that (the track list's "Search the
+        whole library")."""
+        if self.mini_mode:
+            self.toggle_mini()
+        if self.root.state() == "iconic":
+            self.root.deiconify()
+        self.root.lift()
+        if self._quick is None:
+            self._quick = QuickSearch(self.root, self._index, self.song_actions(), top=lambda: self.bar.winfo_height())
+        self._quick.open(query)
+
+    def song_actions(self) -> quick_search.Actions:
+        """What the search panel and the Library's song views can ask of the player."""
+        return quick_search.Actions(
+            play_song=self.play_song, queue_tracks=self._queue_tracks,
+            open_album=lambda album, play: self.open_tab("album", album, play=play, interrupt=play),
+            queue_album=self.queue_album, playlists=self._known_playlists, add_to_playlist=self.add_to_playlist,
+            new_playlist=self.new_playlist, show_in_library=lambda album: self.open_library(album=album),
+            show_artist=lambda name: self.open_library(view="artists", search=name),
+            drag=self._found_drag, favourites=self.favourites)
+
+    def play_song(self, track: Track, album: Path):
+        """Play a song found in the library: its album opens in a tab (or its tab comes to the front)
+        and plays from that song, the album carrying on after it. Asked for by name, so it plays
+        even if something else is playing."""
+        album, key = Path(album), audiofile.key(track.path)
+        self._mark_opened(album)
+        index = next((i for i, tab in enumerate(self.tabs) if tab.same("album", album)), None)
+        if index is None:
+            self.tabs.append(Tab("album", str(album)))
+            index = len(self.tabs) - 1
+        tab = self.tabs[index]
+        if tab.tracks is not None and not tab.loading:
+            self.select_tab(index)
+            found = next((i for i, t in enumerate(tab.tracks) if audiofile.key(t.path) == key), None)
+            if found is not None:
+                self._play_tab(index, found)
+                return
+            self._forget_songs(tab)   # (not in the tab as it was read: read it again, then play)
+        tab.resume_path, tab.resume_at, tab.last_index = key, 0.0, -1
+        self.select_tab(index, then_play=True)
+
+    def _found_drag(self, carried, x_root: int, y_root: int, phase: str):
+        """A song (a list of one) or an album (its folder) dragged out of the search panel or the
+        Library's song views: onto a tab adds it there (nowhere else: the panel covers the window)."""
+        target = self._drop_target(x_root, y_root) if phase != "cancel" else None
+        if target is not None and target[0] != "tab":
+            target = None
+        album = carried if isinstance(carried, Path) else None
+        what = (f"“{album.name}”" if album is not None
+                else "the song" if len(carried) == 1 else f"{len(carried)} songs")
+        if phase == "move":
+            self._show_drop_target(target, what)
+            return
+        self._clear_drop_target()
+        if phase != "drop" or target is None:
+            return
+        tab = self.tabs[target[1]]
+        if album is not None:
+            self.add_album_to_current(album, tab=tab)
+        else:
+            tracks = [t for t in carried if not t.missing]
+            self._set_notice(self._add_tracks_to_tab(tab, tracks, [audiofile.key(t.path) for t in tracks]))
+
+    def _favourites_changed(self):
+        """A song was made a favourite (or not), or the stored list arrived: the ♥ marks follow."""
+        self.playlist.refresh_titles()
         if self._library is not None and self._library.win.winfo_exists():
-            self._library.focus_search()
+            self._library.favourites_changed()
 
     def toggle_full_screen(self):
         """F11 is kept for a full-screen view to come (so it isn't given another meaning meanwhile):
@@ -1802,6 +1889,10 @@ class PlayerWindow:
                 continue
             if path in self._peaks or path not in self._peak_wanted:
                 continue
+            stored = self._stored_peak(path)
+            if stored is not None:   # (the library check read it already: known at once)
+                self._peaks[path] = stored
+                continue
             unwanted = _Unwanted(lambda path=path: path not in self._peak_wanted)
             try:
                 peak = true_peak(path, unwanted)
@@ -1834,6 +1925,11 @@ class PlayerWindow:
             tags = self._gain_tags[path]
             need_lufs = path not in self._lufs and (tags is None or tags.track_gain is None)
             need_peak = path not in self._peaks
+            if need_peak:
+                stored = self._stored_peak(path)
+                if stored is not None:
+                    self._peaks[path] = stored
+                    need_peak = False
             if need_lufs or need_peak:
                 unwanted = _Unwanted(lambda: path not in self._level_wanted)
                 try:
@@ -1883,6 +1979,36 @@ class PlayerWindow:
                 result = (None, None)
             if result is not None:   # (None: cancelled — asked again if it's wanted again)
                 self._album_lufs[folder] = result[0]
+
+    def _stored_peak(self, path: Path) -> float | None:
+        """(On a worker.) A song's true peak from the library quality check, when it has been checked
+        and its file hasn't changed since; None to measure it."""
+        try:
+            return library_check.stored_peak(self._index().db, path)
+        except Exception:   # (a database that can't be read just now: measured as before)
+            log.info("couldn't read the stored check of %s", path, exc_info=True)
+            return None
+
+    def _stored_check(self, path: Path):
+        """(On a short-lived worker, for Now Playing.) A song's stored check and when it was made, or None."""
+        db = self._index().db
+        try:
+            return library_check.stored(db, path)
+        except Exception:
+            log.info("couldn't read the stored check of %s", path, exc_info=True)
+            return None
+        finally:
+            db.release()
+
+    def _remember_check(self, track: Track, result, file) -> None:
+        """(On Now Playing's worker.) Keep its check, so the library check needn't read the file again."""
+        db = self._index().db
+        try:
+            library_check.remember(db, track, result, file)
+        except Exception:
+            log.info("couldn't keep the check of %s", track.path, exc_info=True)
+        finally:
+            db.release()
 
     def _want_album(self, folder: Path, track_path: Path):
         if folder == self._album_wanted or self._album_later.get(folder, 0.0) > time.monotonic():
@@ -2100,8 +2226,10 @@ class PlayerWindow:
             return
         added = f"Added {len(tracks)} song{'' if len(tracks) == 1 else 's'} to “{path.stem}”"
         if tab is not None and tab.tracks is not None:
-            self._save_playlist(path, tab.tracks + list(tracks))
-            self._set_notice(added)
+            if self._save_playlist(path, tab.tracks + list(tracks)):
+                self._set_notice(added)
+            return
+        if not self._may_rewrite(path):
             return
         self._writing_playlists.add(path)
         result: dict = {}
@@ -2130,9 +2258,28 @@ class PlayerWindow:
         threading.Thread(target=work, name="playlist-add", daemon=True).start()
         self.root.after(50, finish)
 
+    def _may_rewrite(self, path: Path) -> bool:
+        """A playlist another program saved in an older encoding (a Windows code page) is written back
+        as UTF-8, which could keep a misread name wrong for good: ask first. True to go ahead."""
+        encoding = playlists.fallback_encoding(path)
+        if not encoding:
+            return True
+        self._for_prompt()
+        return popups.confirm(
+            self.root, f"Save “{path.stem}” as UTF-8?",
+            f"This playlist was saved by another program in an older text format ({encoding}). Saving this "
+            "change writes it as UTF-8, which today's players read.",
+            detail=("If a song's name has letters that format can't hold, it may have been misread when the "
+                    "playlist was opened (the song shows as missing) — and it would be saved that way. "
+                    "Don't save leaves the file exactly as it is."),
+            ok="Save as UTF-8", cancel="Don't save", tone="warn")
+
     def _save_playlist(self, path: Path, tracks: list[Track]) -> bool:
         """Write the playlist, and update its tab (and the music, if it's playing from it). False
-        when it couldn't be written (the reason has been shown)."""
+        when it couldn't be written (the reason has been shown) or wasn't (a playlist in an older
+        encoding, left as it is)."""
+        if not self._may_rewrite(path):
+            return False
         try:
             playlists.write(path, tracks)
         except (OSError, ValueError) as exc:   # (ValueError: a name the file's encoding can't hold)
@@ -2203,6 +2350,9 @@ class PlayerWindow:
             add.add(path.stem, lambda p=path: self.add_to_playlist(p, tracks))
         add.add_separator()
         add.add("New playlist…", lambda: self.new_playlist(tracks))   # (Ctrl+N makes an empty one)
+        favourite = all(track in self.favourites for track in tracks)
+        menu.add("Remove from favourites" if favourite else "Add to favourites",
+                 lambda: self.favourites.set(tracks, not favourite), quick_search.HEART)
         if self._tag_editing():
             menu.add_separator()
             menu.add("Edit tags…" if single else f"Edit tags of these {len(rows)} songs…",
@@ -2275,23 +2425,56 @@ class PlayerWindow:
         self._refresh_tabs()
 
     def delete_playlist(self, index: int):
+        """Delete a playlist: to the Recycle Bin, so it can be restored — or, on a drive that has
+        none (a network drive, a USB stick), for good once that's been said."""
         tab = self.tabs[index]
-        name = Path(tab.path).stem
+        path = Path(tab.path)
+        name = path.stem
         self._for_prompt()
-        if not popups.confirm(self.root, f"Delete the playlist “{name}”?",
-                              "Only the playlist goes; the songs themselves aren't touched.",
-                              ok="Delete", danger=True):
-            return
-        if tab not in self.tabs:   # (closed while the box was up)
+        binned = recycle.can_recycle(path)
+        if binned:
+            asked = popups.confirm(self.root, f"Delete the playlist “{name}”?",
+                                   f"It goes to the {recycle.BIN_NAME}, so it can be restored from there. The songs "
+                                   "themselves aren't touched.", ok="Delete", danger=True)
+        else:
+            asked = popups.confirm(self.root, f"Delete the playlist “{name}” for good?",
+                                   f"It's on a drive with no {recycle.BIN_NAME} (a network drive or a USB stick), so "
+                                   "it can't be restored. The songs themselves aren't touched.",
+                                   ok="Delete for good", danger=True)
+        if not asked or tab not in self.tabs:   # (closed while the box was up)
             return
         index = self.tabs.index(tab)
         self.close_tab(index, remember=False)
-        try:
-            Path(tab.path).unlink()
-        except OSError as exc:
-            self._set_notice(f"Couldn't delete the playlist file: {exc}")
+        if not binned:
+            try:
+                path.unlink()
+            except OSError as exc:
+                self._set_notice(f"Couldn't delete the playlist file: {exc}")
+                return
+            self._set_notice(f"Deleted the playlist “{name}”")
             return
-        self._set_notice(f"Deleted the playlist “{name}”")
+        result: dict = {}
+
+        def work():   # (the shell's delete runs a message loop of its own: never on this thread)
+            try:
+                recycle.recycle(path)
+            except OSError as exc:
+                result["error"] = exc
+            finally:
+                result["done"] = True
+
+        def finish():
+            if "done" not in result:
+                self.root.after(50, finish)
+            elif "error" in result:
+                self._set_notice(f"Couldn't move the playlist to the {recycle.BIN_NAME} ({result['error']}): "
+                                 "it's still where it was", 10000)
+            else:
+                self._set_notice(f"Moved the playlist “{name}” to the {recycle.BIN_NAME}: restore it from there "
+                                 "to have it back", 10000)
+
+        threading.Thread(target=work, name="playlist-delete", daemon=True).start()
+        self.root.after(50, finish)
 
     # -- opening things ------------------------------------------------------
     def choose_folder(self):
@@ -2359,10 +2542,11 @@ class PlayerWindow:
         self._set_notice(message)
         on_done(message)
 
-    def open_library(self, view: str | None = None):
+    def open_library(self, view: str | None = None, album: Path | None = None, search: str | None = None):
         """The Library window (one at a time): an open one is brought to the front as it was, search
         and all (Ctrl+L) — unless the library folders have been changed in Settings since: then it's
-        made afresh for the new folders. `view`: show that view (e.g. "recent" for new music)."""
+        made afresh for the new folders. `view`: show that view (e.g. "recent" for new music);
+        `album`: show (and select) that album; `search`: search the Library for that."""
         if view is not None:
             self.prefs["library_view"] = view
         if (self._library is not None and self._library.win.winfo_exists()
@@ -2371,10 +2555,14 @@ class PlayerWindow:
         if self._library is not None and self._library.win.winfo_exists():
             if view is not None:
                 self._library.set_view(view)
+            if album is not None or search is not None:
+                self._library.show(album=album, search=search)
             self._library.lift()
             return
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         current = Path(tab.path) if tab and tab.kind == "album" else None
+        if album is not None:
+            current = Path(album)
         library = LibraryWindow(self.root, self._library_roots(), current,
                                 on_choose=lambda path: self.open_tab("album", path, play=True),
                                 on_root_changed=self._set_library_folders,
@@ -2386,8 +2574,11 @@ class PlayerWindow:
                                 geometry=self.prefs["library_geometry"],
                                 on_moved=lambda geometry: self.prefs.update(library_geometry=geometry),
                                 on_edit_tags=self.edit_album_tags, can_edit_tags=self._tag_editing,
-                                new_albums=lambda: self._new_albums)
+                                new_albums=lambda: self._new_albums, actions=self.song_actions(),
+                                on_add_tracks=self._add_tracks_to_current, checker=self.checker)
         self._library = self._with_keys(library, "library", library.key_handlers())
+        if album is not None or search:
+            library.show(album=album, search=search or None)
 
     # -- the library index --------------------------------------------------------------------------
     def _index(self) -> library_index.LibraryIndex:
@@ -2405,8 +2596,8 @@ class PlayerWindow:
 
     def _library_albums(self, root: Path) -> list:
         """Every album in the library, from the database, when `root` is one of the library
-        folders (a "library" tab: Load all); else every album found under `root`. (A worker
-        thread's work.)"""
+        folders (a "library" tab: the Library's "Open all albums in a tab"); else every album found
+        under `root`. (A worker thread's work.)"""
         index = self._index()
         if Path(root) in index.roots:
             if not index.built:
@@ -2815,6 +3006,9 @@ class PlayerWindow:
         changed = False
         for report in reports:
             changed = changed or not report.diff.nothing
+        if changed:
+            self.checker.kick()   # (new or changed music: checked as it arrives, when the check is on)
+        for report in reports:
             text = watcher.note(report, len(watcher.arrived(report, self._new_albums)))
             if text:
                 self._set_notice(text, NEW_MUSIC_NOTE_MS)
@@ -3136,7 +3330,7 @@ class PlayerWindow:
                 on_spectrogram=self.show_spectrogram,
                 on_scope=self.show_scope, on_compare=self.show_compare, on_abx=self.show_abx,
                 on_testsignals=self.show_testsignals, on_lyrics=self.show_lyrics,
-                prefs=self.prefs))
+                prefs=self.prefs, stored=self._stored_check, remember=self._remember_check))
 
     def show_meters(self):
         """VU, PPM, RMS and true-peak meters (one window at a time)."""
@@ -3203,6 +3397,7 @@ class PlayerWindow:
         else:
             path, position = self._playing_file()
             self._abx = self._with_keys(AbxWindow(self.root, self.player, self.prefs, path_a=path, start_s=position))
+            self._hold_check_while(self._abx.win, "abx")
 
     def show_testsignals(self):
         """Hardware test: test signals, THD+N, J-test, frequency response (one window at a time)."""
@@ -3210,6 +3405,14 @@ class PlayerWindow:
             self._testsignals.lift()
         else:
             self._testsignals = self._with_keys(TestSignalsWindow(self.root, self.player, self.prefs))
+            self._hold_check_while(self._testsignals.win, "testsignals")
+
+    def _hold_check_while(self, window: tk.Misc, reason: str):
+        """The library quality check holds off while a blind test or a measurement has this window open
+        (its worker processes would compete for the computer); it carries on once it closes."""
+        self.checker.hold(reason)
+        window.bind("<Destroy>", lambda e: self.checker.hold(reason, False) if e.widget is window else None,
+                    add="+")
 
     def show_help(self):
         """F1 / ?: every keyboard shortcut, with a filter box (one window at a time)."""
@@ -3631,6 +3834,19 @@ class PlayerWindow:
         release = self.update_available
         webbrowser.open(release.url if release is not None else updates.DOWNLOAD_PAGE)
 
+    def _add_tracks_to_current(self, tracks: list[Track]) -> str:
+        """Songs (from the Library's song views) onto the bottom of the tab on show, or a new tab of
+        their own when none is open. Returns what was done, to say."""
+        tracks = [t for t in tracks if not t.missing]
+        if not tracks:
+            return "Nothing to add"
+        if not 0 <= self.current < len(self.tabs):
+            self.open_files_tab([t.path for t in tracks])
+            return "Opened in a new tab"
+        message = self._add_tracks_to_tab(self.tabs[self.current], tracks, [audiofile.key(t.path) for t in tracks])
+        self._set_notice(message)
+        return message
+
     def _add_tracks_to_tab(self, tab: Tab, tracks: list[Track], extras: list[str]) -> str:
         """Add songs to the bottom of a tab (a drop, or songs dragged onto it). A playlist saves
         them into its .m3u8; any other tab keeps `extras` so they're there after a restart, and
@@ -3948,9 +4164,12 @@ class PlayerWindow:
                     self._guarded(self._retry_tag_saves)
             if self._index_updated:
                 self._index_updated = False
+                self.checker.kick()   # (a tag edit changed the files: checked again)
                 if self._library is not None and self._library.win.winfo_exists():
                     self._guarded(self._library.reload)
             self._guarded(self._watch_reports)
+            if not self.favourites.ready:
+                self._guarded(self.favourites.take_loaded)
             self._guarded(self._take_requests)
             self._guarded(self._take_cache_notices)
             self._guarded(self._take_update)
@@ -4229,8 +4448,8 @@ class PlayerWindow:
             return
         try:
             for step in (self._save_on_close, self._stop_timers, self._stop_media, self.watcher.stop,
-                         self._record_last_play, self._stop_indexing, self.player.close, self._stop_cache,
-                         self._last_tag_tries):
+                         self._record_last_play, self._stop_indexing, self._stop_checking, self._store_favourites,
+                         self.player.close, self._stop_cache, self._last_tag_tries):
                 try:
                     step()
                 except Exception:
@@ -4247,8 +4466,18 @@ class PlayerWindow:
         """A look at the library under way stops after the folder in hand (the next start carries on)."""
         self._index().indexer.cancel()
 
+    def _stop_checking(self):
+        """The library quality check stops the songs in hand (stored results stay; it carries on next time)."""
+        self.checker.close(timeout=1.0)
+
+    def _store_favourites(self):
+        """A ♥ given or taken just before closing is stored before the player goes: its writer is a
+        background thread, which would otherwise stop with the player and the change be lost."""
+        if not self.favourites.flush(timeout=FAVOURITES_WAIT_S):
+            log.warning("closing: a favourite change wasn't stored in time")
+
     def _stop_timers(self):
-        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job):
+        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job, self._check_job):
             if job is not None:
                 self.root.after_cancel(job)
 

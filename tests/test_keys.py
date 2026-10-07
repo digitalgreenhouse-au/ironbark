@@ -638,7 +638,7 @@ def test_ctrl_k_in_a_search_box_keeps_what_was_typed(make_window):
     entry.event_generate("<Control-Key-k>")                 # (Tk's entries deleted to the end of the line)
     _pump(root, 0.3)
     assert window.playlist.query.get() == "abcdef"
-    assert window._library is not None and window._library.win.winfo_exists()   # …and the search opened
+    assert window._quick is not None and window._quick.is_open   # …and the song search opened
     assert not errors
 
 

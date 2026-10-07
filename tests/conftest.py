@@ -19,6 +19,8 @@
 - A test run reaches nothing system-wide: no window registers with Windows' media panel or the
   taskbar, and no keyboard hook is installed (DG_LIVE_WINDOWS=1 allows the live checks that do).
   And it runs at below-normal priority, so the computer's other programs come first.
+- Nothing a test deletes goes to the computer's real Recycle Bin (recycle.py): it's deleted, and
+  noted in `binned`.
 """
 from __future__ import annotations
 
@@ -144,6 +146,23 @@ def _nothing_system_wide(monkeypatch):
 
     monkeypatch.setattr(mediakeys, "start_windows", lambda hub, hwnd: None)
     monkeypatch.setattr(mediakeys, "KeyboardHook", _NoKeyboardHook)
+
+
+binned: list[str] = []   # what tests "sent to the Recycle Bin" (deleted instead, and noted here)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_recycle_bin(monkeypatch):
+    """Nothing a test deletes goes to the computer's real Recycle Bin: it's deleted, and noted in
+    `binned`."""
+    from ironbark import recycle
+
+    def delete(full):
+        os.remove(full)
+        binned.append(full)
+
+    monkeypatch.setattr(recycle, "_shell_delete", delete)
+    monkeypatch.setattr(recycle, "_to_mac_bin", delete)
 
 
 @pytest.fixture

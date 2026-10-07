@@ -4,6 +4,9 @@ They live in a "Playlists" folder next to the settings, but any .m3u / .m3u8 fil
 opened. Paths are written in full so a playlist works wherever it's copied; relative paths
 in playlists from elsewhere are resolved against the playlist's own folder.
 
+Playlists are written as UTF-8. One another program saved in an older encoding (a Windows code
+page) is read in that (`fallback_encoding` says which), and the player asks before saving over it.
+
 A CUE sheet track (one track of a long file) is written as its file's path with a
 "#IRONBARK-CUE:<track number>" line before it. Other players skip the comment and play the whole
 file; this player reads it back as that one track. While the track can't be found (the drive is
@@ -60,6 +63,21 @@ def unused_name(base: str = "Playlist") -> str:
     while f"{base} {n}".lower() in taken:
         n += 1
     return f"{base} {n}"
+
+
+def fallback_encoding(path: Path) -> str:
+    """The older encoding a playlist had to be read in — "" when it's UTF-8 or UTF-16 (or can't be
+    read just now) — named for people: "Windows-1252", "Windows code page 932"."""
+    try:
+        _text, encoding = cuesheet.decode_with(Path(path).read_bytes())
+    except OSError:
+        return ""
+    name = encoding.lower().replace("_", "-")
+    if name.startswith("utf"):
+        return ""
+    if name.startswith("cp") and name[2:].isdigit():
+        return "Windows-1252" if name == "cp1252" else f"Windows code page {name[2:]}"
+    return encoding
 
 
 def read(path: Path) -> list[Path]:

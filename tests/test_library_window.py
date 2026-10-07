@@ -74,7 +74,9 @@ def wait_for_albums(window, root):
 
 
 def column(window, name, parent=""):
-    return [window.tree.set(iid, name) for iid in window.tree.get_children(parent)]
+    """A column's text down the list (groups are rows of the list, not Tk parents; `parent`, a
+    group row's key: the albums under it)."""
+    return [str(value) for value in window.column_values(name, parent or None)]
 
 
 def test_browse_views_sorting_and_search(root, music):
@@ -91,17 +93,17 @@ def test_browse_views_sorting_and_search(root, music):
     assert column(w, "album") == ["21", "Hits", "Tommy"] and w.tree.heading("year", "text") == "Year ▼"
     w.set_view("artists")
     assert column(w, "album") == ["Adele", "The Who", "Various Artists"]   # groups, "The" ignored
-    groups = w.tree.get_children()
+    groups = list(w._groups)
     assert column(w, "album", groups[2]) == ["Hits"] and [str(x) for x in w.tree.cget("show")] == ["tree", "headings"]
     w.set_view("genres")
     assert column(w, "album") == ["Dance", "Pop", "No genre"]
-    assert column(w, "album", w.tree.get_children()[1]) == ["21", "Hits"]
+    assert column(w, "album", list(w._groups)[1]) == ["21", "Hits"]
     w.search_var.set("adele")
     w._flush_search()                # (the list follows the box after a pause in typing)
-    assert column(w, "album") == ["Pop"] and column(w, "album", w.tree.get_children()[0]) == ["21"]
+    assert column(w, "album") == ["Pop"] and column(w, "album", list(w._groups)[0]) == ["21"]
     w.search_var.set("dance")      # Dance's own name matches (all of it); Hits is also Pop
     w._flush_search()
-    assert column(w, "album") == ["Dance", "Pop"] and column(w, "album", w.tree.get_children()[1]) == ["Hits"]
+    assert column(w, "album") == ["Dance", "Pop"] and column(w, "album", list(w._groups)[1]) == ["Hits"]
     w.search_var.set("")
     w.set_view("recent")
     assert w.sort == ("added", True) and w.tree.heading("added", "text") == "Added ▼"
@@ -225,3 +227,4 @@ def test_up_next_line_and_list(root):
     w._paint_up_next()
     root.update()
     assert not w.up_next_label.winfo_ismapped() and not w.up_next_pop.is_open
+

@@ -108,19 +108,29 @@ def quality_rank(album: Album) -> tuple:
     return (1 if album.sample_rate else 2, album.bits, album.sample_rate)
 
 
+def album_label(album: Album) -> str:
+    """How an album is named in lists: its album tag, the folder's name only when it isn't tagged."""
+    return album.title or album.name
+
+
+def _name_key(album: Album) -> tuple:
+    return sort_name(album_label(album)), sort_name(album.name)
+
+
 def sort_key(column: str):
-    """Key function for sorting albums by a column (blanks / unknowns go last when ascending)."""
+    """Key function for sorting albums by a column (blanks / unknowns go last when ascending). The
+    album column sorts by the name shown (album_label)."""
     if column == "artist":
-        return lambda a: (not a.artist, sort_name(a.artist), sort_name(a.name))
+        return lambda a: (not a.artist, sort_name(a.artist), _name_key(a))
     if column == "year":
-        return lambda a: (a.year is None, a.year or 0, sort_name(a.name))
+        return lambda a: (a.year is None, a.year or 0, _name_key(a))
     if column == "quality":
-        return lambda a: (quality_rank(a), sort_name(a.name))
+        return lambda a: (quality_rank(a), _name_key(a))
     if column == "tracks":
-        return lambda a: (a.track_count, sort_name(a.name))
+        return lambda a: (a.track_count, _name_key(a))
     if column == "added":
-        return lambda a: (a.added, sort_name(a.name))
-    return lambda a: sort_name(a.name)
+        return lambda a: (a.added, _name_key(a))
+    return _name_key
 
 
 def sort_albums(albums: list[Album], column: str = "album", reverse: bool = False) -> list[Album]:

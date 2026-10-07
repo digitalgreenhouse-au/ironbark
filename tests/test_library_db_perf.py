@@ -106,3 +106,25 @@ def test_bringing_a_big_json_index_across(big, tmp_path):
         print(f"library_index.json with {SIZE:,} songs brought across in {took:.1f} s")
         assert moved and db.counts()["tracks"] == SIZE
         assert took < 60
+
+
+def test_the_song_views_are_quick(big):
+    """The Library's Songs view: every song's id in a column's order (on the query thread, so the
+    window never waits for it), then a page of rows as it scrolls; Most played / Favourites: a few
+    hundred songs found by their keys."""
+    from ironbark import audiofile
+
+    path, _files = big
+    with LibraryDB.open(path) as db:
+        for order in ("title", "artist", "year", "quality"):
+            took, ids = timed(db.song_ids, order, repeat=2)
+            print(f"song_ids({order}) {len(ids):,} songs in {took * 1000:.0f} ms")
+            assert len(ids) == SIZE and took < 0.6
+        page = ids[25_000:25_200]
+        took, hits = timed(db.songs, page, repeat=3)
+        print(f"a page of {len(hits)} songs {took * 1000:.1f} ms")
+        assert len(hits) == 200 and took < 0.030
+        keys = [audiofile.key(hit.track.path) for hit in db.songs(ids[::100])]
+        took, found = timed(db.songs_by_keys, keys, repeat=2)
+        print(f"songs_by_keys {len(keys)} keys {took * 1000:.1f} ms")
+        assert len(found) == len(keys) and took < 0.300

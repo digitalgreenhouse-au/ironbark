@@ -577,6 +577,7 @@ def test_undo_reads_the_files_off_the_tk_thread(root, tmp_path, monkeypatch):
     monkeypatch.setattr(tag_editor, "undo_jobs", recording)
     saves = []
     hw = TagHistoryWindow(root, {}, on_saved=saves.append, busy=lambda: set(), confirm=lambda m, d: True)
+    _wait(root, lambda: hw.loading is None)   # (the history too is read off the Tk thread)
     hw.undo(hw.entries[0])
     _wait(root, lambda: saves)
     assert threads and threads[0] is not threading.main_thread()

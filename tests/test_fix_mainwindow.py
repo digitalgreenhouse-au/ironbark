@@ -277,7 +277,7 @@ def test_editing_a_playlist_that_isnt_playing_keeps_its_place(tmp_path):
     tab = Tab("playlist", str(path), tracks=list(tracks))
     tab.last_index, tab.resume_at = 4, 200.0               # paused at 3:20 on song 5
     w = SimpleNamespace(tabs=[Tab("album", "C:/A"), tab], playing_tab=0, current=0,
-                        _show_current_tab=lambda: None)
+                        _show_current_tab=lambda: None, _may_rewrite=lambda p: True)
     w._playlist_tab = lambda p: PlayerWindow._playlist_tab(w, p)
     w._tab_index = lambda t: PlayerWindow._tab_index(w, t)
     PlayerWindow._save_playlist(w, path, tracks[:1] + tracks[2:])     # song 2 removed
@@ -473,7 +473,8 @@ def test_the_clipping_guard_measures_only_what_is_wanted_and_survives_errors(mon
             raise KeyError("something unexpected")
         return 1.0
     monkeypatch.setattr(analysis, "true_peak", true_peak)
-    w = SimpleNamespace(_peaks={}, _peak_jobs=queue.Queue(), _peak_wanted={Path("odd.flac"), Path("now.flac")})
+    w = SimpleNamespace(_peaks={}, _peak_jobs=queue.Queue(), _peak_wanted={Path("odd.flac"), Path("now.flac")},
+                        _stored_peak=lambda path: None)   # (none from the library check: measured)
     for name in ("skipped 1.flac", "skipped 2.flac", "odd.flac", "now.flac"):
         w._peak_jobs.put(Path(name))
     threading.Thread(target=PlayerWindow._measure_peaks, args=(w,), daemon=True).start()

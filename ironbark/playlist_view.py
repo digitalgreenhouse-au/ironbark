@@ -22,6 +22,11 @@ The look (0.20.0): the row under the pointer lights up, the playing song is mark
 its number, green bold text) even when another row is selected, album header rows read
 "Album · Artist" with the quality on the right, the scrollbar is slim and only there when the list
 is longer than the window, and the search box has a magnifier and a × to clear it.
+
+A search that finds nothing in the tab offers the whole library instead: a "Search the whole
+library (Ctrl+Shift+F)" row under "No matches" (click it, or Enter on it) hands the words to the
+song search panel (`on_search_library`). A favourite song shows a ♥ before its title
+(`is_favourite`; `refresh_titles` after the favourites change).
 """
 
 from __future__ import annotations
@@ -38,6 +43,8 @@ SEARCH_DELAY_MS = 150
 OPTIONAL_COLUMNS = ("artist", "album")  # columns that can be switched on
 DRAG_START = 6  # px at 100%: move this far with the button down and a press becomes a drag
 PLAYING_MARK = "♪"   # (0.20.0) in the # column of the playing song
+FAVOURITE_MARK = "♥"
+SEARCH_LIBRARY = "Search the whole library (Ctrl+Shift+F)"
 
 
 def _clock(seconds: float) -> str:
@@ -74,7 +81,9 @@ def _quality(track: Track) -> str:
 def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40) -> Callable[[], None]:
     """Share a list's width between its stretchy columns (by `weights`) once the fixed ones have
     their room, whenever it's resized or columns are switched on / off. (Tk itself never shrinks
-    columns to fit, so extra columns would push the last ones out of sight.) Returns the fitter."""
+    columns to fit, so extra columns would push the last ones out of sight.) A stretchy column gets
+    at least `minimum` — unless the list is too narrow for that, when they share what's left, so
+    the fixed columns (a year, a time) always keep their room. Returns the fitter."""
     for column in weights:
         tree.column(column, stretch=False)  # sized here, not by Tk
 
@@ -91,8 +100,17 @@ def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40
         stretchy = [c for c in shown if c in weights]
         total = sum(weights[c] for c in stretchy) or 1
         room = max(0, width - fixed - 4)
+        least = minimum if room >= minimum * len(stretchy) else 1   # (too narrow: they give way, not the fixed ones)
+        widths = {c: max(least, int(room * weights[c] / total)) for c in stretchy}
+        over = sum(widths.values()) - room
+        for column in sorted(stretchy, key=lambda c: -widths[c]):   # (each at its minimum: the widest give way)
+            if over <= 0:
+                break
+            cut = min(over, widths[column] - least)
+            widths[column] -= cut
+            over -= cut
         for column in stretchy:
-            tree.column(column, width=max(minimum, int(room * weights[column] / total)))
+            tree.column(column, width=widths[column])
 
     tree.bind("<Configure>", fit, add="+")
     return fit
@@ -152,9 +170,13 @@ class PlaylistView:
     def __init__(self, parent: tk.Misc, on_play: Callable[[int], None],
                  on_menu: Callable[[list[int], tk.Event], None] = lambda rows, event: None,
                  on_drag: Callable[[list[int], int, int, str], None] = lambda rows, x, y, phase: None,
-                 on_heading_menu: Callable[[tk.Event], None] = lambda event: None):
+                 on_heading_menu: Callable[[tk.Event], None] = lambda event: None,
+                 on_search_library: Callable[[str], None] | None = None,
+                 is_favourite: Callable[[Track], bool] = lambda track: False):
         self.on_play = on_play
         self.on_heading_menu = on_heading_menu
+        self.on_search_library = on_search_library
+        self.is_favourite = is_favourite
         self.columns: tuple[str, ...] = ()  # optional columns on show (see set_columns)
         self.on_menu = on_menu
         self.flat = False
@@ -217,6 +239,7 @@ class PlaylistView:
         self.tree.bind("<Motion>", self._hover_row, add="+")
         self.tree.bind("<Leave>", lambda e: self._set_hover(None), add="+")
         self.tree.bind("<Double-Button-1>", lambda e: self.activate())
+        self.tree.bind("<ButtonRelease-1>", self._released, add="+")
         self.tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
             self.tree.bind(key, lambda e: self._context(popups.row_event(self.tree)) or "break")
@@ -232,6 +255,7 @@ class PlaylistView:
         self.tree.tag_configure("album", background=theme.BG, foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("playing", foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("note", foreground=theme.MUTED)
+        self.tree.tag_configure("link", foreground=theme.ACCENT_TEXT)
 
     def _palette_changed(self, _palette):
         """Treeview row colours aren't widget options, so theme.use can't swap them itself. (The
@@ -284,6 +308,8 @@ class PlaylistView:
         track = self._tracks[i]
         show_artist = (searching or self.flat) and track.artist and "artist" not in self.columns
         title = f"{track.title}  ·  {track.artist}" if show_artist else track.title
+        if self.is_favourite(track):
+            title = f"{FAVOURITE_MARK} {title}"
         if not track.missing:
             return title
         if isinstance(track.path, audiofile.UrlPath):
@@ -362,6 +388,11 @@ class PlaylistView:
                 tree.insert("", "end", iid="none", tags=("note",), values=("", "No matches", "", "", ""))
                 self._made.add("none")
             listed.append("none")
+            if self.on_search_library is not None:   # nothing here: offer the whole library
+                if "library" not in self._made:
+                    tree.insert("", "end", iid="library", tags=("link",), values=("", SEARCH_LIBRARY, "", "", ""))
+                    self._made.add("library")
+                listed.append("library")
         # A row the search hides can't stay selected or focused: Enter would play a song out of sight.
         listing = set(listed)
         hidden = [iid for iid in tree.selection() if iid not in listing]
@@ -413,6 +444,28 @@ class PlaylistView:
         rows = self._songs
         if rows:
             self.on_play(int(rows[0]))
+        elif "library" in self._listed:   # no matches: Enter searches the whole library
+            self.search_library()
+
+    def search_library(self):
+        """Hand the words typed to the whole-library search (the "Search the whole library" row)."""
+        if self.on_search_library is not None:
+            self.on_search_library(self.query.get().strip())
+
+    def _released(self, event):
+        if self.tree.identify_row(event.y) == "library" and "library" in self._listed:
+            self.search_library()
+
+    def refresh_titles(self):
+        """Song rows' titles again (a favourite's ♥ came or went), only where one changed."""
+        searching = bool(self.query.get().split())
+        for iid in self._made:
+            if iid.isdigit():
+                i = int(iid)
+                title = self._title(i, searching)
+                if self._titles.get(i) != title:
+                    self.tree.set(iid, "title", title)
+                    self._titles[i] = title
 
     # -- right-click and editing -------------------------------------------------
     def rows_of(self, iid: str) -> list[int]:
@@ -435,7 +488,7 @@ class PlaylistView:
             self.on_heading_menu(event)
             return
         iid = self.tree.identify_row(event.y)
-        if not iid or iid == "none":
+        if not iid or iid in ("none", "library"):
             return
         self.tree.selection_set(iid)
         self.tree.focus(iid)
@@ -532,5 +585,8 @@ class PlaylistView:
         if not selection or selection[0] == "none":
             return False
         iid = selection[0]
+        if iid == "library":
+            self.search_library()
+            return True
         self.on_play(self._album_start[iid] if iid in self._album_start else int(iid))
         return True
