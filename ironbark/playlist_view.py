@@ -36,6 +36,11 @@ A search that finds nothing in the tab offers the whole library instead: a "Sear
 library (Ctrl+Shift+F)" row under "No matches" (click it, or Enter on it) hands the words to the
 song search panel (`on_search_library`). A favourite song shows a ♥ before its title
 (`is_favourite`; `refresh_titles` after the favourites change).
+
+A tab with songs on a network drive (with the network playback cache on) gets a narrow "Cached"
+column before Time (`set_cache_column`): how much of each song is on this computer, as Up next
+shows it — ● in the cache, ◐ 72%, ○ waiting, ! couldn't download. The window works the marks out
+for the rows on screen (`visible_tracks`) and hands them in (`set_marks`).
 """
 
 from __future__ import annotations
@@ -53,6 +58,8 @@ SEARCH_DELAY_MS = 150
 OPTIONAL_COLUMNS = ("artist", "album")  # columns that can be switched on in the narrow window
 WIDE_COLUMNS = layout.OPTIONAL           # …and in a wide one (where Format is one too)
 QUALITY_W = 72      # px at 100%: the Format column ("24/96", "FLAC", "Opus")
+CACHE_W = 60        # px at 100%: the Cached column ("◐ 72%")
+VISIBLE_MOST = 200  # visible_tracks never hands back more rows than this
 SEARCH_MAX = 520    # px at 100%: the search box's widest, in a wide window's header row
 # How a wide window shares the list's width: by weight, Artist and Album never past their caps (px at
 # 100%), whatever is left to the title. The narrow window shares 2 / 1 / 1 with no caps.
@@ -231,7 +238,10 @@ class PlaylistView:
         self._made: set[str] = set()            # rows made in the tree, listed or hidden
         self._titles: dict[int, str] = {}       # the title each made song row shows
         self._listed: set[str] = set()          # rows listed now
+        self._rows: list[str] = []              # …in order, top to bottom (album headers too)
         self._songs: list[str] = []             # song rows listed now, top to bottom
+        self.cache_column = False               # the Cached column shows (a tab with network songs)
+        self._marks: dict[int, str] = {}        # each song's mark in it, by index
 
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
@@ -260,7 +270,7 @@ class PlaylistView:
         table.pack(fill="both", expand=True)
         self.table = table
         # height=4: ask for little, then grow into whatever room the window has.
-        self.tree = ttk.Treeview(table, columns=("no", "title", "artist", "album", "quality", "time"),
+        self.tree = ttk.Treeview(table, columns=("no", "title", "artist", "album", "quality", "cache", "time"),
                                  show="headings", selectmode="browse", height=4,
                                  displaycolumns=("no", "title", "time"))
         self.tree.heading("no", text="#", anchor="e")
@@ -268,12 +278,14 @@ class PlaylistView:
         self.tree.heading("artist", text="Artist", anchor="w")
         self.tree.heading("album", text="Album", anchor="w")
         self.tree.heading("quality", text="Format", anchor="w")
+        self.tree.heading("cache", text="Cached", anchor="w")
         self.tree.heading("time", text="Time", anchor="e")
         self.tree.column("no", width=theme.px(38), stretch=False, anchor="e")
         self.tree.column("title", width=theme.px(240), stretch=True, anchor="w")
         self.tree.column("artist", width=theme.px(120), stretch=True, anchor="w")
         self.tree.column("album", width=theme.px(120), stretch=True, anchor="w")
         self.tree.column("quality", width=theme.px(QUALITY_W), stretch=False, anchor="w")
+        self.tree.column("cache", width=theme.px(CACHE_W), stretch=False, anchor="w")
         self.tree.column("time", width=theme.px(52), stretch=False, anchor="e")
         self._weights = dict(NARROW_WEIGHTS)   # changed in place by set_tier (the fitter reads them)
         self._caps: dict[str, int] = {}
@@ -382,7 +394,8 @@ class PlaylistView:
             shown = layout.columns_for(self.tier, self.wide_columns, self.varies)
         quality_moved = ("quality" in shown) != ("quality" in self.shown)
         self.shown = tuple(shown)
-        self.tree.configure(displaycolumns=("no", "title", *self.shown, "time"))
+        cache = ("cache",) if self.cache_column else ()
+        self.tree.configure(displaycolumns=("no", "title", *self.shown, *cache, "time"))
         if quality_moved:   # an album row's quality: in the Format column while it shows, else under Time
             for header in (iid for iid in self._made if iid.startswith("a")):
                 self.tree.set(header, "time", "" if "quality" in self.shown else self.tree.set(header, "quality"))
@@ -413,6 +426,33 @@ class PlaylistView:
         if abs(pad - self._search_pad) > 2:
             self._search_pad = pad
             self.search.pack_configure(padx=(0, pad))
+
+    def set_cache_column(self, on: bool):
+        """Show the Cached column (the tab has songs on a network drive), or hide it."""
+        if on != self.cache_column:
+            self.cache_column = on
+            self._show_columns()
+
+    def set_marks(self, marks: dict[int, str]):
+        """Songs' marks in the Cached column, by index ("" for none); only rows whose mark changed
+        are written."""
+        for index, mark in marks.items():
+            if self._marks.get(index, "") == mark:
+                continue
+            self._marks[index] = mark
+            iid = str(index)
+            if iid in self._made:
+                self.tree.set(iid, "cache", mark)
+
+    def visible_tracks(self) -> list[tuple[int, Track]]:
+        """(index, song) of the song rows on screen now (at most VISIBLE_MOST)."""
+        rows = self._rows
+        if not rows:
+            return []
+        first, last = self.tree.yview()
+        lo = max(0, int(first * len(rows)))
+        hi = min(len(rows), int(last * len(rows)) + 1, lo + VISIBLE_MOST)
+        return [(int(iid), self._tracks[int(iid)]) for iid in rows[lo:hi] if iid.isdigit()]
 
     def set_count(self, text: str):
         """The tab's count in a wide window's header row, e.g. "Album · 13 songs · 51:57"."""
@@ -451,6 +491,7 @@ class PlaylistView:
         self._haystacks = None
         self._last_search = None
         self.hovered = None
+        self._marks = {}
         if self._made:   # every row of the last list, hidden ones too
             self.tree.delete(*self._made)
         self._made.clear()
@@ -523,7 +564,7 @@ class PlaylistView:
                 if header not in self._made:
                     quality = _quality(tracks[start])
                     tree.insert("", "end", iid=header, tags=("album",),
-                                values=("", album_heading(tracks[start:end], folder), "", "", quality,
+                                values=("", album_heading(tracks[start:end], folder), "", "", quality, "",
                                         "" if "quality" in self.shown else quality))
                     self._made.add(header)
                 listed.append(header)
@@ -536,7 +577,7 @@ class PlaylistView:
                     playing = i == self.playing
                     tree.insert("", "end", iid=iid, tags=("playing",) if playing else (),
                                 values=(PLAYING_MARK if playing else number, title, track.artist, track.album,
-                                        _quality(track), _clock(track.duration)))
+                                        _quality(track), self._marks.get(i, ""), _clock(track.duration)))
                     self._made.add(iid)
                 elif self._titles[i] != title:
                     tree.set(iid, "title", title)
@@ -545,12 +586,13 @@ class PlaylistView:
                 self._songs.append(iid)
         if words and not self._songs:
             if "none" not in self._made:
-                tree.insert("", "end", iid="none", tags=("note",), values=("", "No matches", "", "", "", ""))
+                tree.insert("", "end", iid="none", tags=("note",), values=("", "No matches", "", "", "", "", ""))
                 self._made.add("none")
             listed.append("none")
             if self.on_search_library is not None:   # nothing here: offer the whole library
                 if "library" not in self._made:
-                    tree.insert("", "end", iid="library", tags=("link",), values=("", SEARCH_LIBRARY, "", "", "", ""))
+                    tree.insert("", "end", iid="library", tags=("link",),
+                                values=("", SEARCH_LIBRARY, "", "", "", "", ""))
                     self._made.add("library")
                 listed.append("library")
         # A row the search hides can't stay selected or focused: Enter would play a song out of sight.
@@ -562,6 +604,7 @@ class PlaylistView:
             tree.focus("")
         tree.set_children("", *listed)
         self._listed = listing
+        self._rows = listed
 
     # -- search ----------------------------------------------------------------
     @property

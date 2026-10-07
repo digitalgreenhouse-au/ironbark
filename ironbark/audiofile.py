@@ -180,7 +180,8 @@ class LocalTrack:
             self.item.release(self.gen)
 
     def copy_state(self) -> str:
-        """"" (a local file), "downloading", "checking", "verified", "failed" or "stale"."""
+        """"" (a local file), "downloading", "checking", "verified", "stale", "failed" (it failed its
+        check: a fresh copy downloads) or "rejected" (failed again: the song is skipped for now)."""
         return "" if self.item is None else self.item.copy_state(self.gen)
 
 

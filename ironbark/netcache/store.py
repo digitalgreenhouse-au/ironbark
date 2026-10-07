@@ -147,6 +147,7 @@ class Item:
         self.old_files: dict[int, Path] = {}   # … and, for an old complete copy, its file
         self.old_islands: dict[int, list[Island]] = {}   # … and the islands it had
         self.failed_gens: set[int] = set()     # versions whose check failed (a play from one is warned of)
+        self.lost_gens: set[int] = set()       # versions whose bytes went missing from this computer (see lose)
         self.open_ready = False         # the probe opened it and every byte that read is here
         self.open_end: int | None = self.info.get("open_end")
         self.scanner = None             # flacframes.Scanner, fed as bytes arrive (FLAC)
@@ -154,9 +155,11 @@ class Item:
         self.transfer_ok = False        # every byte read as asked, same identity start to end
         self.permanent = False          # FAILED because the source is gone or refused
         self.room_check = False         # the I/O thread found no room for it: the scheduler looks
+        self.plan_check = False         # its size was only just learnt: the scheduler looks before fetching it
         self.dirty = True
         self.saved_islands = self.island_claim()   # what the database last heard about the islands
         self.on_demand = None           # (item, gen, start, end, role): wakes the scheduler
+        self.on_lost = None             # (item, gen): bytes it holds went missing (the scheduler looks)
         self.handed_at = -1e18          # when a reader was last handed a copy to open (the manager's clock)
 
     # -- what readers use (audiofile.LocalTrack, GrowingFile) -------------------------------
@@ -191,8 +194,13 @@ class Item:
         return bool(self.leases) if gen is None else self.leases.get(gen, 0) > 0
 
     def copy_state(self, gen: int) -> str:
+        """"downloading", "checking", "verified", "stale" (an older version), "failed" (it failed its
+        check: a fresh copy downloads) or "rejected" (it failed its check and the song is skipped for
+        now: nothing downloads until it's asked for again a while later)."""
         if gen in self.failed_gens:
-            return "failed"
+            return "rejected" if self.state == FAILED and self.permanent else "failed"
+        if gen in self.lost_gens:
+            return "downloading"   # (its bytes went missing here: fetched again)
         if gen != self.gen:
             return "stale"
         if self.state == READY:
@@ -205,12 +213,16 @@ class Item:
 
     def has(self, gen: int, end: int) -> bool:
         """Bytes [0, end) of version `gen` are on disk and readable."""
+        if gen in self.lost_gens:
+            return False
         if gen == self.gen:
             return self.visible >= end or self.state == READY
         return end <= self.old.get(gen, 0)
 
     def _runs(self, gen: int) -> tuple[int, list[Island]]:
         """(the end of the unbroken run from the start, the islands) of version `gen`."""
+        if gen in self.lost_gens:
+            return 0, []
         if gen == self.gen:
             return (int(self.size or 0) if self.state == READY else self.visible), self.islands
         return self.old.get(gen, 0), self.old_islands.get(gen, [])
@@ -270,7 +282,20 @@ class Item:
         return int(self.size or 0)
 
     def gen_failed(self, gen: int) -> bool:
-        return gen != self.gen or self.state == FAILED
+        return gen != self.gen or self.state == FAILED or gen in self.lost_gens
+
+    def lose(self, gen: int) -> None:
+        """A reader couldn't read bytes of version `gen` that are recorded as here (the file was
+        deleted or cut short behind the cache's back): nobody waits on them any more, and the cache
+        is told, to look and fetch the song again. Called from the reader's own thread: quick."""
+        with self.cond:
+            if gen in self.lost_gens:
+                return
+            self.lost_gens.add(gen)
+            self.cond.notify_all()
+        hook = self.on_lost
+        if hook is not None:
+            hook(self, gen)
 
     def notify(self) -> None:
         with self.cond:
@@ -288,6 +313,8 @@ class Item:
             return open_shared(part)
         except FileNotFoundError:
             final = self.ready_path(gen, None) or self.old_files.get(gen)
+            if final is None and gen == self.gen and self.final_name:
+                final = self.store.final_path(self)   # (renamed to its final name a moment ago)
             if final is None:
                 raise
             return open_shared(final)

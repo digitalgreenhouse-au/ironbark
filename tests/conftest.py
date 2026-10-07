@@ -1,7 +1,7 @@
 """Shared test set-up.
 
-- On Windows the test windows are made on a hidden desktop of their own, so a test run never
-  puts windows in front of whatever the person at the computer is doing. They are still real
+- On Windows the test windows are made on a hidden desktop of their own (one per run), so a test
+  run never puts windows in front of whatever the person at the computer is doing. They are still real
   windows — mapped, laid out and measured exactly as on the visible desktop. Set
   IRONBARK_TESTS_VISIBLE=1 to watch them on the normal desktop instead.
 - Every test gets its own empty cache folder (settings.cache_folder: where the library database
@@ -36,7 +36,10 @@ import pytest
 
 from ironbark import settings   # makes no window, so it may come before the desktop switch
 
-HIDDEN_DESKTOP = "IronbarkTests"
+# One hidden desktop per test run: two runs at once (two branches' suites, say) would otherwise
+# share one, and a window of the other run sitting over this one's fools any check of what's at a
+# point on the screen (winfo_containing).
+HIDDEN_DESKTOP = f"IronbarkTests-{os.getpid()}"
 
 
 def _use_hidden_desktop():

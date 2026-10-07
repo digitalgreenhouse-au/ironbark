@@ -145,10 +145,15 @@ def test_pauses_on_a_song_make_its_next_start_wait_longer_even_after_the_device_
     path = unc("a.flac")
     need0 = m._rule(item, path, 10.0)[1]
     local = type("L", (), {"item": item, "gen": item.gen, "source": path})()
-    m.resumable(local, 44100 * 10, 1)                          # the player: one pause on this song
+    m.note_stall(local)                                        # the player: one pause on this song
+    m.resumable(local, 44100 * 10, 1)
     m.resumable(local, 44100 * 10, 1)                          # (asked again: still one)
     assert len(host.stalls) == 1
     assert m._rule(item, path, 10.0)[1] == pytest.approx(min(290.0, need0 * 2))   # a fresh start (after a release) too
+    clock.now += policy.STALLS_UNSTABLE_S + 10                 # (two pauses within two minutes would be unstable)
+    m.note_stall(local)                                        # a second pause, in a new session of the same song
+    assert len(host.stalls) == 2
+    assert m._rule(item, path, 10.0)[1] == pytest.approx(min(290.0, need0 * 4))
     clock.now += policy.STALL_STEP_WINDOW_S + 1
     assert m._rule(item, path, 10.0)[1] == pytest.approx(need0)
 

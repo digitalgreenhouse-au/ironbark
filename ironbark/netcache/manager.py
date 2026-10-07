@@ -36,8 +36,10 @@ Each server's speed, longest gap, failures and quality are saved in netcache.db,
 begins from them (if under an hour old) rather than from nothing.
 
 Every method the player calls (`prepare`, `notify_when_startable`, `forget`, `resumable`,
-`outlook`, `plan_changed`, `position_hint`, `progress`) is a dictionary look-up under a short
-lock: no I/O.
+`note_stall`, `outlook`, `plan_changed`, `position_hint`, `progress`) is a dictionary look-up
+under a short lock: no I/O. The roles prepare() gives (the song about to play, the one lined up
+next) last only while the player's plan still has those songs there: once playback moves on or
+stops, a song it left isn't kept downloading at the front of the queue.
 Lock order: the player's lock, then this manager's lock, then an item's `cond`. The manager never
 takes the player's lock; it reaches the player only through the `post` callables it was given.
 """
@@ -244,13 +246,13 @@ class Manager:
         self.items: dict[str, Item] = {}
         self.hosts: dict[str, Host] = {}
         self._paths: dict[str, object] = {}         # key -> a path that names it (for the plan)
-        self._explicit: dict[str, tuple[str, int]] = {}   # role -> (key, priority) from prepare()
+        self._explicit: dict[str, tuple[str, int, int]] = {}   # role -> (key, priority, when asked) from prepare()
+        self._asked = 0                           # prepare() calls so far (when each role was asked for)
         self._asks: dict[str, int] = {}
         self._demands: dict[str, float] = {}
         self._positions: dict[str, tuple] = {}    # key -> (path, seconds into the track, when told)
         self._ranges: dict[str, dict] = {}        # key -> {role: (gen, start, end, when)}: readers waiting
-        self._stall_counts: dict[str, int] = {}   # key -> the pauses for the network the player last reported
-        self._stall_times: dict[str, deque] = {}  # key -> when each began
+        self._stall_times: dict[str, deque] = {}  # key -> when each pause for the network began
         self._current_key: str | None = None      # the song playing (or about to), if it's a network one
         self._warm: dict[str, dict] = {}          # host -> its saved figures, until it's first used
         self._last_host_save = -1e18
@@ -377,6 +379,12 @@ class Manager:
 
     def _wire(self, item: Item) -> None:
         item.on_demand = self._on_demand
+        item.on_lost = self._on_lost
+
+    def _on_lost(self, item: Item, gen: int) -> None:
+        """A reader found bytes of `item` missing from this computer (called from its thread: quick)."""
+        self._inbox.put(("lost", item, gen))
+        self._wake.set()
 
     def _on_demand(self, item: Item, gen: int, start: int, end: int, role: str) -> None:
         """A reader is waiting for bytes (called from the reader's own thread: quick). The player
@@ -408,7 +416,9 @@ class Manager:
             return NotReady("starting", None, "starting", "Getting the music cache ready…")
         with self._lock:
             item = self._get(key, path, kind, host)
-            self._explicit["play" if role == "play" else "next"] = (key, CURRENT if role == "play" else NEXT)
+            self._asked += 1
+            self._explicit["play" if role == "play" else "next"] = (key, CURRENT if role == "play" else NEXT,
+                                                                    self._asked)
             if role == "play":
                 self._positions[key] = (path, at, self._clock())
             elif role == "join":
@@ -432,14 +442,15 @@ class Manager:
 
     def resumable(self, local, frame: int, stalls: int, quick: bool = False) -> bool:
         """After a pause for the network: may playback carry on from `frame` (of the track)? The
-        start rule there, asking for twice as much after each recent pause (`stalls`). `quick`:
-        before the pause is heard: carry on once policy.QUICK_RESUME_S is here (or all of it)."""
+        start rule there, asking for twice as much after each recent pause (`stalls`, the player's
+        count for this play; the pauses note_stall heard of count too). `quick`: before the pause
+        is heard: carry on once policy.QUICK_RESUME_S is here (or all of it)."""
         item = getattr(local, "item", None)
         if item is None:
             return True
         with self._lock:
-            if not quick:
-                self._note_stalls(item, stalls)
+            if local.gen in item.lost_gens:
+                return False   # (its bytes went missing here: the player starts it again from a fresh copy)
             if local.gen != item.gen:
                 return local.ready_path() is not None or item.has(local.gen, item.size_of(local.gen))
             rate = item.info.get("rate") or 0
@@ -451,7 +462,9 @@ class Manager:
     def outlook(self, x, at: float = 0.0):
         """What prepare() would say now about starting (or carrying on) at `at` seconds, with
         nothing asked for: None (it may), NotReady (with its progress) or Unavailable. `x` is a
-        path, or the LocalTrack playing (then about that very version of the copy)."""
+        path, or the LocalTrack playing (then about that very version of the copy: NotReady with
+        phase "lost" when its bytes went missing from this computer — the player then starts the
+        song again from where it was, on a fresh copy)."""
         local = x if isinstance(x, audiofile.LocalTrack) else None
         if local is not None and not local.remote:
             return None
@@ -467,6 +480,8 @@ class Manager:
             item = local.item if local is not None else self.items.get(key)
             if item is None:
                 return NotReady("preparing", None, "preparing", "Preparing track…")
+            if local is not None and local.gen in item.lost_gens:
+                return NotReady("lost", None, "lost", "The copy on this computer went missing: fetching it again…")
             if local is not None and local.gen != item.gen:
                 if local.ready_path() is not None or item.has(local.gen, item.size_of(local.gen)):
                     return None
@@ -497,24 +512,27 @@ class Manager:
             self._positions[key] = (path, seconds, self._clock())
         self._wake.set()
 
-    def _note_stalls(self, item: Item, stalls: int) -> None:
-        """The player counts `stalls` recent pauses for the network on this song: a rise is a new
-        pause (it counts toward the server's quality, and a later start of the song waits longer).
-        Lock held."""
-        before = self._stall_counts.get(item.key, 0)
-        self._stall_counts[item.key] = stalls
-        if stalls <= before:
+    def note_stall(self, local) -> None:
+        """The player paused for the network on this song (a pause heard, not a seek's wait for its
+        bytes): it counts toward the server's quality, and the song's next resumes and starts — a
+        device let go and taken back included — wait for twice as much after each recent one."""
+        item = getattr(local, "item", None)
+        if item is None:
             return
-        now = self._clock()
-        host = self.hosts.get(item.host)
-        times = self._stall_times.setdefault(item.key, deque(maxlen=16))
-        for _ in range(stalls - before):
-            times.append(now)
+        with self._lock:
+            now = self._clock()
+            self._stall_times.setdefault(item.key, deque(maxlen=16)).append(now)
+            host = self.hosts.get(item.host)
             if host is not None:
                 host.stalls.append(now)
 
     def _recent_stalls(self, key: str, now: float) -> int:
         return sum(1 for when in self._stall_times.get(key, ()) if now - when <= policy.STALL_STEP_WINDOW_S)
+
+    def any_remote(self, paths) -> bool:
+        """Is any of these songs on a network drive (so the cache would play it)? No I/O beyond
+        looking up a drive letter, or a OneDrive file's attributes."""
+        return self.classifier.any_remote(paths)
 
     def progress(self, path) -> Progress | None:
         kind, key, host = self._describe(path)
@@ -955,20 +973,23 @@ class Manager:
         kind = message[0]
         if kind == "verified":
             self._verified(*message[1:])
+        elif kind == "lost":
+            self._lost(*message[1:])
         elif kind == "empty":
             self._sweep(everything=True)
             message[1].set()
 
     # -- the plan ---------------------------------------------------------------------------------
-    def _upcoming(self, n: int) -> list:
+    def _upcoming(self, n: int) -> list | None:
+        """The player's plan (see Player.upcoming), or None when there's none to read this time."""
         upcoming = getattr(self.player, "upcoming", None)
         if upcoming is None:
-            return []
+            return None
         try:
             return list(upcoming(n))
         except Exception:   # noqa: BLE001 — the player's list changed under us: next tick
             log.debug("upcoming() failed", exc_info=True)
-            return []
+            return None
 
     def _replan(self, now: float) -> None:
         """Every item's priority from the player's plan, prepare()'s roles, tools' asks and readers'
@@ -977,15 +998,29 @@ class Manager:
         fetch this song and the next before this one ends, only those two. Items dropping out of
         the plan keep their bytes (resumable)."""
         depth = PREDOWNLOAD_DEPTH.get(self._pref("net_predownload"), 1)
-        upcoming = self._upcoming(depth + 1)
+        with self._lock:
+            asked = self._asked   # (roles asked for after the plan is read are left for the next look)
+        # (One more than Pre-download looks at, at least the song after next: the decoder may line
+        # that one up already, with short songs.)
+        planned = self._upcoming(max(depth + 1, 2))
         window: list[tuple] = []   # (position, key, path, kind, host)
-        for position, (_, path) in enumerate(upcoming):
+        keys_at: list[str] = []    # every planned song's key ("" for one on this computer)
+        for position, (_, path) in enumerate(planned or ()):
             kind, key, host = self._describe(path)
-            if kind is Kind.LOCAL or kind is Kind.URL:
+            keys_at.append(key)
+            if kind is Kind.LOCAL or kind is Kind.URL or position > depth + 1:
                 continue
             window.append((position, key, path, kind, host))
         wants: dict[str, int] = {}
         with self._lock:
+            if planned is not None:
+                # prepare()'s roles last only while the plan still has those songs there: playback
+                # moving on (to a song on this computer, say) or stopping lets go of them.
+                for role, (key, rank, when) in list(self._explicit.items()):
+                    if when > asked:
+                        continue
+                    if (role == "play" and keys_at[:1] != [key]) or (role == "next" and key not in keys_at[1:]):
+                        del self._explicit[role]
             for _, key, path, kind, host in window:
                 self._get(key, path, kind, host)
             self._current_key = next((key for position, key, *_ in window if position == 0), None)
@@ -1004,7 +1039,7 @@ class Manager:
                     wants[key] = min(rank, wants.get(key, rank))
                 elif position > depth and depth and not self.narrowed:   # (Off: nothing ahead at all)
                     extra.append(key)
-            for role, (key, rank) in self._explicit.items():
+            for role, (key, rank, _) in self._explicit.items():
                 if key in self.items:
                     wants[key] = min(rank, wants.get(key, rank))
             for key in self._asks:
@@ -1021,10 +1056,13 @@ class Manager:
                     del self._demands[key]
                 elif key in self.items:
                     wants[key] = DEMAND
-            # "One more": everything wanted is complete and the links are idle -> the song after.
+            # "One more": everything wanted is complete and the links are idle -> the song after
+            # (within the budget for songs not heard yet, like the rest).
             if extra and all(self.items[k].state == READY for k in wants) and not any(
                     h.assigned is not None for h in self.hosts.values()):
-                wants.setdefault(extra[0], FOLLOWING)
+                sizes = [self.items[key].size for _, key, *_ in ahead if key in chosen] + [self.items[extra[0]].size]
+                if policy.within_budget(sizes, self._limit()) == len(sizes):
+                    wants.setdefault(extra[0], FOLLOWING)
             for item in self.items.values():
                 rank = wants.get(item.key)
                 if rank is not None and CURRENT <= rank and item.islands and self._only_gaps_left(item):
@@ -1120,6 +1158,8 @@ class Manager:
                     best = None   # (cleared from the cache meanwhile)
                 with host.cond:
                     if host.assigned is not best:
+                        if best is not None:
+                            best.plan_check = False   # (looked at again with its size known: still wanted)
                         host.assigned = best
                         host.cond.notify_all()
                 if best is not None:
@@ -1330,7 +1370,7 @@ class Manager:
             finally:
                 with host.cond:
                     if host.assigned is item and (item.state in (READY, DOWNLOADED, VERIFYING, FAILED)
-                                                  or item.complete or item.room_check):
+                                                  or item.complete or item.room_check or item.plan_check):
                         host.assigned = None
                 self._wake.set()
 
@@ -1382,6 +1422,11 @@ class Manager:
                 return
             if item.size is None:
                 item.size, item.mtime_ns, item.dirty = identity.size, identity.mtime_ns, True
+                if item.priority in (FOLLOWING, QUEUE):
+                    # A song further ahead whose size is only now known: the plan looks again (songs
+                    # not heard yet stay within their budget) before any of it is fetched.
+                    item.plan_check = True
+                    return
             elif not identity.same_file(Identity(item.size, item.mtime_ns)):
                 self._new_generation(item, identity)
             if item.state != DOWNLOADING:
@@ -1511,6 +1556,46 @@ class Manager:
             item.retry_at = self._wall() + FAILED_FORGET_S
             self._close_fetcher(item)
         item.notify()
+
+    def _lost(self, item: Item, gen: int) -> None:
+        """A reader found bytes of `item`'s version `gen` missing (scheduler thread). If they really
+        are gone from this computer (deleted or cut short behind the cache's back), that version is
+        given up: never filled in with anything, its readers stop waiting, and — if it's the current
+        one — the song downloads again as a new version. A false alarm (a file renamed to its final
+        name just then) is simply cleared."""
+        with self._lock:
+            if self.items.get(item.key) is not item:
+                return
+            files = self._files_of(item, gen)
+        if not any(_shorter(path, length, also) for path, length, also in files):
+            with item.cond:
+                item.lost_gens.discard(gen)
+                item.cond.notify_all()
+            return
+        log.warning("music cache: part of the copy of %s on this computer went missing; fetching it again",
+                    item.source)
+        with self._lock:
+            if gen == item.gen:
+                self._new_generation(item, Identity(item.size, item.mtime_ns) if item.size else None)
+        item.notify()
+        self._wake.set()
+
+    def _files_of(self, item: Item, gen: int) -> list[tuple[Path, int, Path | None]]:
+        """The files version `gen` of `item` is recorded as having on disk: (file, at least this long,
+        or else this one — a .part renamed to its final name). Lock held."""
+        if gen == item.gen:
+            if item.state == READY:
+                return [(self.store.final_path(item), int(item.size or 0), None)]
+            prefix, islands = item.visible, item.islands
+            final = self.store.final_path(item) if item.final_name else None
+        else:
+            if gen in item.old_files:
+                return [(item.old_files[gen], item.old_sizes.get(gen, 0), None)]
+            prefix, islands, final = item.old.get(gen, 0), item.old_islands.get(gen, []), None
+        files = [(self.store.part_path(item, gen), prefix, final)]
+        files += [(self.store.island_path(item, island.start, gen), island.visible - island.start, None)
+                  for island in islands]
+        return files
 
     def _new_generation(self, item: Item, identity: Identity | None) -> None:
         """The source changed (or the copy failed its check): start a new version from byte 0.
@@ -1642,7 +1727,7 @@ class Manager:
                 self._new_generation(item, Identity(item.size or 0, item.mtime_ns))
                 if item.fail_count >= 2:
                     self.notices.append(f"The downloaded copy of “{_name(item)}” didn't match the original "
-                                        f"again ({result.problem}): it isn't played from the cache for now.")
+                                        f"again ({result.problem}), so the song is skipped for now.")
                     item.state, item.permanent, item.dirty = FAILED, True, True
                     item.error = f"its downloaded copy didn't match the original twice ({result.problem})"
                     item.retry_at = self._wall() + FAILED_FORGET_S
@@ -1849,6 +1934,19 @@ def _name(item: Item) -> str:
     return item.source.replace("\\", "/").rsplit("/", 1)[-1]
 
 
+def _shorter(path: Path | None, length: int, also: Path | None = None) -> bool:
+    """Is this file missing, or shorter than `length` (and so is `also`, if given)?"""
+    for candidate in (path, also):
+        if candidate is None:
+            continue
+        try:
+            if os.stat(candidate).st_size >= length:
+                return False
+        except OSError:
+            pass
+    return length > 0
+
+
 def _union(ranges) -> list[tuple[int, int]]:
     merged: list[list[int]] = []
     for start, end in sorted(r for r in ranges if r[1] > r[0]):
@@ -1888,9 +1986,9 @@ class _Writer:
             if f.seek(0, os.SEEK_END) < claimed:
                 # Bytes readers were told are here have gone (the file was deleted or cut short
                 # behind the cache's back): never fill the hole with zeros — that would play as
-                # silence and pass as downloaded. This version starts again from nothing.
+                # silence and pass as downloaded.
                 f.close()
-                raise Changed(f"{path.name} on this computer is shorter than recorded")
+                raise self._cut_behind(path)
             f.seek(claimed)
             f.truncate()   # (nothing past what readers were told is there)
             self.files[key] = f
@@ -1901,10 +1999,22 @@ class _Writer:
         if f is not None:
             f.close()
 
+    def _cut_behind(self, path: Path) -> Changed:
+        """A file of this version found shorter than recorded: its readers are told the copy here
+        went missing (the player starts the song again on a fresh copy from where it was — it isn't
+        taken for the file on the drive having changed), and this version starts again from nothing."""
+        self.item.lose(self.gen)
+        return Changed(f"{path.name} on this computer is shorter than recorded")
+
     def write(self, island: Island | None, offset: int, data: bytes) -> bool:
         item = self.item
         f = self._open(island)
-        f.seek(offset - (0 if island is None else island.start))
+        at = offset - (0 if island is None else island.start)
+        if f.seek(0, os.SEEK_END) < at:
+            # Cut short behind the cache's back since it was opened: writing here would leave a hole
+            # of zeros that plays as silence.
+            raise self._cut_behind(self._path(island))
+        f.seek(at)
         f.write(data)
         f.flush()
         with item.cond:

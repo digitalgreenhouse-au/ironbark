@@ -6,7 +6,8 @@
 - `FakeClassifier`: classifies by spelling only — never asks Windows about this computer's drives.
 - `make_manager`: a Manager on a temp folder with all of the above.
 - `FakeCopy` / `FakePreparer`: the player's side: a cached copy whose download the test moves
-  on by hand (read through the real waiting reader), and the preparer interface over it.
+  on by hand (read through the real waiting reader), and the preparer interface over it — a copy
+  whose bytes go missing here (`lose_file`) and the fresh version the cache starts (`renew`) too.
 """
 from __future__ import annotations
 
@@ -246,6 +247,18 @@ class FakeCopy:
             self.item.final_name, self.item.state = final, READY
             self.item.cond.notify_all()
 
+    def lose_file(self) -> None:
+        """The .part is deleted behind the cache's back (its bytes are still recorded as here)."""
+        self.part.unlink()
+
+    def renew(self) -> None:
+        """The cache gave that version up and starts a fresh one from nothing (the test moves it on)."""
+        with self.item.cond:
+            self.item.gen += 1
+            self.item.visible = 0
+            self.item.cond.notify_all()
+        self.part.write_bytes(self.data)
+
     def fail(self, reason: str = "it's no longer on the share") -> None:
         from ironbark.netcache.store import FAILED
         with self.item.cond:
@@ -276,7 +289,9 @@ class FakePreparer:
         self.copies[copy.source] = copy
         return copy
 
-    def _ok(self, copy: FakeCopy, at: float, need: float) -> bool:
+    def _ok(self, copy: FakeCopy, at: float, need: float, gen: int | None = None) -> bool:
+        if (copy.item.gen if gen is None else gen) in copy.item.lost_gens:
+            return False
         return copy.complete or copy.item.visible >= copy.byte_at(at + need)
 
     def _not_ready(self, copy: FakeCopy, at: float):
@@ -325,7 +340,11 @@ class FakePreparer:
         if copy is None:
             return True
         need = policy.QUICK_RESUME_S if quick else self.need * 2 ** stalls
-        return self._ok(copy, frame / copy.rate, need)
+        self.calls.append(("resumable", local.source, stalls, quick))
+        return self._ok(copy, frame / copy.rate, need, local.gen)
+
+    def note_stall(self, local) -> None:
+        self.calls.append(("stall", local.source))
 
     def outlook(self, x, at: float = 0.0):
         path = getattr(x, "source", x)
@@ -334,6 +353,8 @@ class FakePreparer:
             return None
         if path in self.gone:
             return manager_mod.Unavailable(self.gone[path], True)
+        if getattr(x, "gen", None) in copy.item.lost_gens:
+            return manager_mod.NotReady("lost", None, "lost", "The copy on this computer went missing")
         if self._ok(copy, at, self.need):
             return None
         return self._not_ready(copy, at)

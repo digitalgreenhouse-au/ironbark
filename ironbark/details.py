@@ -39,6 +39,7 @@ MIXER = "Windows" if sys.platform == "win32" else "system"
 METER_FLOOR_DB = -60.0
 METER_FALL_DB = 2.0  # how far the bars fall back per refresh, so they're readable
 REFRESH_MS = 100
+INDEX_LOOK_S = 2.0      # a network song with no complete copy yet: looked for again this often (its live bitrate)
 WINDOWS_CHECK_SECONDS = 3.0
 TONE_STYLE = {"good": "GoodValue.TLabel", "warn": "WarnValue.TLabel", "plain": "TLabel", "muted": "Muted.TLabel"}
 # (0.22.0) The same tones for a live number (fixed-width digits: theme.numbers).
@@ -152,6 +153,14 @@ def tone_of(text: str) -> str:
 
 
 COPY_FAILED = "✗ This played from a copy that didn't match the original. Downloading it again."
+COPY_SKIPPED = "✗ This played from a copy that didn't match the original. The song is skipped for now."
+
+
+def copy_failed_text(copy: str) -> str:
+    """The warning for a song played from a copy that failed its check ("" for any other copy):
+    a fresh copy is downloading ("failed"), or — failed again — the song is skipped for now
+    ("rejected")."""
+    return {"failed": COPY_FAILED, "rejected": COPY_SKIPPED}.get(copy, "")
 
 
 def copy_note(copy: str) -> str:
@@ -251,8 +260,8 @@ def network_hover(network) -> str:
         return ""
     if network.phase != "playing":
         return network.detail or network_line(network)[0]
-    if network.copy == "failed":
-        return COPY_FAILED
+    if copy_failed_text(network.copy):
+        return copy_failed_text(network.copy)
     parts = ["Playing the local copy"]
     if network.cached < 1.0:
         speed = fmt_speed(network.speed)
@@ -284,8 +293,8 @@ def source_rows(track, network) -> list[tuple[str, str]]:
         downloaded += f" · checked: {checked}"
     elif network.copy == "checking":
         downloaded += " · being checked"
-    elif network.copy == "failed":
-        downloaded = COPY_FAILED
+    elif copy_failed_text(network.copy):
+        downloaded = copy_failed_text(network.copy)
     elif network.copy == "stale":
         downloaded = ("✗ Playing an older copy: the file on the drive has changed since; the new version "
                       "is downloading")
@@ -306,8 +315,8 @@ def describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, 
     the network playback cache: against its copy on this computer, said so)."""
     text, tone = _describe_proof(proof, output, gain, trim, lossy, float_source, bits, codec, level, fading)
     copy = getattr(proof, "copy", "") if proof is not None else ""
-    if copy == "failed":
-        return f"{COPY_FAILED} {text}", "warn"
+    if copy_failed_text(copy):
+        return f"{copy_failed_text(copy)} {text}", "warn"
     note = copy_note(copy)
     if note and proof is not None and proof.sent > 0:
         text = f"{text.replace('the file', 'the copy')} · {note}"
@@ -627,6 +636,7 @@ class NowPlayingWindow:
         self._album_cancel = threading.Event()  # only the window closing stops an album measurement
         self._album_state: dict | None = None
         self._rip_cancel = threading.Event()   # only the window closing stops a rip check
+        self._closed = threading.Event()
         self._rip_state: dict | None = None
         self._log_state: dict | None = None    # the check against the rip log under way
         self._job = None
@@ -887,10 +897,14 @@ class NowPlayingWindow:
 
         def work():
             # (A song on a network drive: its complete copy on this computer, once there is one —
-            # never the network itself. Not remembered until then, so it's looked at again later.)
-            source = audiofile.local_copy(path)
-            if source is None:
-                return
+            # never the network itself. Looked for again while the song is on show, so the live
+            # bitrate comes as soon as its copy is complete, mid-song.)
+            while True:
+                source = audiofile.local_copy(path)
+                if source is not None:
+                    break
+                if path != self._track_path or self._closed.wait(INDEX_LOOK_S):
+                    return
             try:
                 index = builder(source)
             except Exception:  # noqa: BLE001 — no live bitrate is fine; the average still shows
@@ -1442,6 +1456,7 @@ class NowPlayingWindow:
         self._cancel.set()
         self._album_cancel.set()
         self._rip_cancel.set()
+        self._closed.set()
         if self._job:
             self.win.after_cancel(self._job)
         self.win.destroy()

@@ -677,6 +677,8 @@ def test_upcoming_follows_up_next_shuffle_repeat_and_stop_after():
     tracks = [Track(Path(f"{name}.flac"), name) for name in "abcde"]
     p.set_tracks(tracks)
     p.index = 1
+    assert p.upcoming(3) == []                                # stopped: nothing plays, nothing to fetch
+    p._suspended_at = 0.0                                     # (paused, the device let go: it plays on from here)
     assert [path.stem for _, path in p.upcoming(3)] == ["b", "c", "d", "e"]
     assert [path.stem for _, path in p.upcoming(10)] == ["b", "c", "d", "e"]   # (the end of the list)
     q = Track(Path("q.flac"), "q")
