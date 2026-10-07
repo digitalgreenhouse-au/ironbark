@@ -13,7 +13,12 @@ Songs (a second row of views): **Songs** — every song in the library, sortable
 search box searching every song through the database's index; **Most played** and **Recently
 played** (from the plays the database counts); **Favourites** (♥: right-click any song — here, in a
 tab or in the search panel — and choose Add to favourites). A song plays in its album (Enter or a
-double-click: the album opens in a tab and plays from that song); right-click for the rest.
+double-click: the album opens in a tab and plays from that song); right-click for the rest. Several
+songs can be selected (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A): Play next, Add to queue, Add
+to playlist, the favourites and Add to the tab take them all — a selection running past the rows
+of the Songs view read so far is read on the query thread first — and a drag carries those read.
+Plays and Last played can be added as columns (right-click the headings); they're read for the
+rows on show only, on the query thread.
 
 **Needs a look** (the last song view): what the whole-library quality check (library_check.py) found —
 damaged files and MD5 mismatches, clues to a lossy or upsampled source or a padded bit depth,
@@ -58,14 +63,14 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import (browse, controls, indexer, keys, library_check, library_db, library_index, placement, popups,
-               searchfold, theme)
+from . import (audiofile, browse, controls, indexer, keys, library_check, library_db, library_index, placement,
+               popups, searchfold, theme)
 from .browse import album_label
 from .favourites import HEART
 from .library import Album, Track, sort_name
 from .library_db import SongHit
 from .playlist_view import TreeDrag, _fold, fit_columns
-from .quick_search import Actions, add_song_items, count_text, song_name, song_values
+from .quick_search import Actions, add_song_items, album_text, count_text, shared_catalogue, song_name, song_values
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
 
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)
@@ -76,9 +81,11 @@ VIEWS = browse.VIEWS + SONG_VIEWS
 VIEW_TITLES = {**browse.VIEW_TITLES, "songs": "Songs", "most_played": "Most played",
                "recently_played": "Recently played", "favourites": "Favourites", "needs_look": "Needs a look"}
 # Every column the list can show; each view shows some of them (DISPLAYED).
-COLUMNS = ("album", "artist", "year", "quality", "tracks", "added", "title", "time", "plays", "found")
+COLUMNS = ("album", "artist", "year", "quality", "tracks", "added", "title", "time", "plays", "found", "last")
 HEADINGS = {"album": "Album", "artist": "Artist", "year": "Year", "quality": "Quality", "tracks": "Tracks",
-            "added": "Added", "title": "Title", "time": "Time", "plays": "Plays", "found": "Found"}
+            "added": "Added", "title": "Title", "time": "Time", "plays": "Plays", "found": "Found",
+            "last": "Last played"}
+SONG_EXTRAS = (("plays", "Plays"), ("last", "Last played"))   # optional song-view columns (right-click a heading)
 DISPLAYED = {"songs": ("title", "artist", "album", "year", "quality", "time"),
              "most_played": ("title", "artist", "album", "plays", "time"),
              "recently_played": ("title", "artist", "album", "added", "time"),
@@ -94,6 +101,8 @@ PLAYED_LIMIT = 500       # songs Most played / Recently played list
 PAGE = 200               # the Songs view's rows are read this many at a time
 PAGES_KEPT = 25          # …and this many pages kept (others are read again when scrolled back to)
 LOAD_ALL_WARN = 10_000   # songs: opening more than this in one tab asks first
+ALBUM_THREAD_AT = 5_000  # albums: a library this big is grouped, searched and sorted on the query thread
+COUNTS_KEPT = 20_000     # play counts / last-played times remembered (the rows shown lately)
 _NUMERIC = {"year", "tracks", "time", "plays"}
 
 
@@ -200,6 +209,84 @@ def song_text(pair: tuple) -> str:
     return text
 
 
+def _plays_and_last(db, keys: list[str]) -> tuple[dict[str, int], dict[str, float]]:
+    """(The query thread.) How often each song was played, and when last."""
+    return db.play_counts(keys), db.last_played(keys)
+
+
+def _library_albums(index) -> tuple[list[Album], dict[int, str]]:
+    """(The query thread.) The library folders' albums, and each one's folded search text by the
+    album's id() — from the album list the search panel shares (read again first if the library has
+    changed since: quick_search.Catalogue), so the two windows hold one copy."""
+    catalogue = shared_catalogue(index.db)
+    catalogue.update(index.db, max_age=0)
+    albums, texts = catalogue.snapshot()
+    kept = [(album, text) for album, text in zip(albums, texts) if index.holds(album.path)]
+    return [album for album, _text in kept], {id(album): text for album, text in kept}
+
+
+@dataclass(frozen=True)
+class AlbumRows:
+    """An album view's list as `_album_rows` works it out: the rows, what each stands for, the albums
+    listed (each once) and the row keys of albums and groups."""
+    rows: list[tuple]
+    items: list[tuple[str, object]]
+    shown: list[Album]
+    rows_map: dict[str, Album]
+    groups: dict[str, str]
+    searched: bool
+
+
+def _album_values(album: Album, new) -> tuple:
+    name = album_label(album)
+    name = NEW_DOT + name if album.path in new else name
+    return (name, album.artist, album.year or "", album.quality, album.track_count, added_text(album.added),
+            "", "", "", "", "")
+
+
+def _album_rows(albums: list[Album], texts: dict[int, str], view: str, words: list[str], column: str,
+                reverse: bool, closed: frozenset[str], new: frozenset) -> AlbumRows:
+    """(The query thread for a big library, else Tk's.) A browse view's rows: its groups (artists,
+    genres, …) with their albums, those the search words find (an album by its folded text; a whole
+    group when its own name holds them), sorted; a folded group shows just its heading. Nothing here
+    touches Tk."""
+    grouped = view not in ("albums", "recent")
+    rows: list[tuple] = []
+    items: list[tuple[str, object]] = []
+    shown: dict[Path, Album] = {}
+    rows_map: dict[str, Album] = {}
+    groups: dict[str, str] = {}
+    for g, group in enumerate(browse.group_albums(albums, view)):
+        if words and grouped and all(w in _fold(group.name) for w in words):
+            listed = group.albums  # the artist / genre / year itself matches: all of it
+        elif words:
+            listed = [a for a in group.albums if all(w in (texts.get(id(a)) or album_text(a)) for w in words)]
+        else:
+            listed = group.albums
+        if not listed:
+            continue
+        listed = browse.sort_albums(listed, column if column in ALBUM_COLUMNS else "album", reverse)
+        for album in listed:
+            shown.setdefault(album.path, album)
+        parent = ""
+        if grouped:
+            parent = f"g{g}"
+            folded = not words and group.name in closed
+            songs = sum(a.track_count for a in listed)
+            rows.append((parent, (group.name, count_text(len(listed), "album"), "", "", songs, "", "", "", "", "", ""),
+                         ("group",), CLOSED_MARK if folded else OPEN_MARK))
+            items.append(("group", group.name))
+            groups[parent] = group.name
+            if folded:
+                continue
+        for n, album in enumerate(listed):
+            iid = f"{parent}a{n}"
+            rows.append((iid, _album_values(album, new), ("new",) if album.path in new else ()))
+            items.append(("album", album))
+            rows_map[iid] = album
+    return AlbumRows(rows, items, list(shown.values()), rows_map, groups, bool(words))
+
+
 def _read_page(db, pages: SongPages, page: int, ids: list[int]) -> list[SongHit] | None:
     """(The query thread.) A page of the Songs view's rows — None, unread, when the list has moved
     well away from it before its turn came (a scrollbar dragged through a big library asks for
@@ -223,6 +310,9 @@ class SongRows:
 
     def row(self, index: int) -> tuple:
         return self.make_row(*self.pairs[index])
+
+    def key(self, index: int) -> str:
+        return f"s{self.pairs[index][0].id}"
 
     def index_of(self, key: str) -> int | None:
         if self._index is None:
@@ -277,11 +367,19 @@ class SongPages:
         self.pages.move_to_end(page)
         return found.get(self.ids[index])
 
+    def peek(self, index: int) -> SongHit | None:
+        """The song at `index` if its page has been read (nothing is asked for)."""
+        found = self.pages.get(index // PAGE)
+        return found.get(self.ids[index]) if found is not None else None
+
+    def key(self, index: int) -> str:
+        return f"s{self.ids[index]}"
+
     def row(self, index: int) -> tuple:
         self.near = index
         hit = self.hit(index)
         if hit is None:
-            return (f"s{self.ids[index]}", ("",) * 6 + ("…", "", "", ""), ("loading",))
+            return (f"s{self.ids[index]}", ("",) * 6 + ("…", "", "", "", ""), ("loading",))
         return self.make_row(hit, None)
 
     def index_of(self, key: str) -> int | None:
@@ -316,7 +414,9 @@ class LibraryWindow:
                  new_albums: Callable[[], list[Path]] = lambda: [],
                  actions: Actions | None = None,
                  on_add_tracks: Callable[[list[Track]], str] | None = None,
-                 checker: library_check.Checker | None = None):
+                 checker: library_check.Checker | None = None,
+                 song_columns: tuple[str, ...] = (),
+                 on_song_columns: Callable[[list[str]], None] = lambda columns: None):
         # The library folders (one, or several); on_root_changed(folders) when "Add folder…" adds one.
         self.roots: list[Path] = library_db.outermost([root_folder] if isinstance(root_folder, (str, Path))
                                                       else root_folder)
@@ -335,6 +435,15 @@ class LibraryWindow:
         self.actions = actions or Actions()   # what a song's Play / Add to queue / … do (the player's)
         self.on_add_tracks = on_add_tracks    # songs onto the tab on show; returns what to say
         self.checker = checker                # the whole-library quality check (the player's), if any
+        # The song views' optional columns (Plays, Last played) and what's known for the rows shown.
+        self.song_columns = tuple(c for c, _label in SONG_EXTRAS if c in song_columns)
+        self.on_song_columns = on_song_columns
+        self._counts: OrderedDict[str, tuple[int, float | None]] = OrderedDict()
+        self._counts_wanted: dict[str, None] = {}
+        self._counts_job = None
+        self._counts_asked: int | None = None      # the newest read of them on its way
+        self._selection_asked: int | None = None   # a selection being read on the query thread…
+        self._selection_then: Callable | None = None   # …and what's done with it once it's here
         self._new: set[Path] = set()
         self.on_moved = on_moved
         self.view = view if view in VIEWS else "albums"
@@ -348,7 +457,9 @@ class LibraryWindow:
         # A refresh running in the background: a dict until the album list it brought is on show.
         self._refresh: dict | None = None
         self._fill_job = None                  # a search waiting for a pause in typing
-        self._folds: dict[str, str] = {}       # text -> folded, for searching (cleared with each new album list)
+        self._album_texts: dict[int, str] = {}   # id(album) -> its folded search text (with each album list)
+        self._album_rows_asked: int | None = None   # the album list being worked out on the query thread…
+        self._album_rows_keep: bool | None = None   # …and whether the list stays where it was when it's here
         self._queries = indexer.Queries(self.index.db)   # the album list is read here, off Tk's thread
         self._events: queue.SimpleQueue = self.index.listen()
         self._asked: int | None = None         # the album list asked for and not yet here
@@ -430,7 +541,7 @@ class LibraryWindow:
         self.tree = self.list.tree
         self.scrollbar = self.list.scrollbar
         widths = {"album": 220, "artist": 140, "year": 48, "quality": 64, "tracks": 60, "added": 96, "title": 220,
-                  "time": 52, "plays": 52, "found": 260}
+                  "time": 52, "plays": 52, "found": 260, "last": 96}
         for column in COLUMNS:
             anchor = "e" if column in _NUMERIC else "w"
             self.tree.heading(column, text=HEADINGS[column], anchor=anchor,
@@ -444,7 +555,7 @@ class LibraryWindow:
         self.drag: TreeDrag | None = None
         self.tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
-            self.tree.bind(key, lambda e: self._context(popups.row_event(self.tree)) or "break")
+            self.tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
         self._on_drag = on_drag
         self.drag = TreeDrag(self.tree, self._carried, self._dragged)
 
@@ -490,10 +601,11 @@ class LibraryWindow:
         freed there fails)."""
         if event.widget is not self.win:
             return
-        for job in (self._fill_job, self._tick_job):
+        for job in (self._fill_job, self._tick_job, self._counts_job):
             if job is not None:
                 self.win.after_cancel(job)
-        self._fill_job = self._tick_job = None
+        self._fill_job = self._tick_job = self._counts_job = None
+        self._selection_then = None
         self.index.unlisten(self._events)
         self._queries.stop()
         if self.search_var is not None:
@@ -506,7 +618,7 @@ class LibraryWindow:
         self.albums, self._shown, self._items = [], [], []
         self._songs = self._pages = None
         self._rows.clear()
-        self._folds.clear()
+        self._album_texts = {}
 
     # -- the index -------------------------------------------------------------------------------
     def _load(self):
@@ -528,7 +640,7 @@ class LibraryWindow:
 
     def _ask_albums(self) -> int:
         """Ask the query thread for the album list (the newest ask is the one shown)."""
-        self._asked = self._queries.ask("albums", self.index.albums)
+        self._asked = self._queries.ask("albums", _library_albums, self.index)
         self._again = False
         return self._asked
 
@@ -566,6 +678,15 @@ class LibraryWindow:
             if answer.kind == "songs":
                 news = self._take_songs(answer) or news
                 continue
+            if answer.kind == "counts":
+                pages = self._take_counts(answer) or pages
+                continue
+            if answer.kind == "selection":
+                self._take_selection(answer)
+                continue
+            if answer.kind == "album_rows":
+                news = self._take_album_rows(answer) or news
+                continue
             if answer.kind != "albums" or answer.ask != self._asked:
                 continue   # one replaced by a newer ask
             news = True
@@ -582,6 +703,7 @@ class LibraryWindow:
             job = self._refresh
             if job is not None and job.get("final") == answer.ask:
                 self._refresh = None   # the refresh's albums are on show: it's finished
+                self._songs_have = None   # (a song view read before it ended is read again)
             if self._again:
                 self._ask_albums()
         if pages:
@@ -642,16 +764,10 @@ class LibraryWindow:
         else:
             self._fill_songs(keep=True)
 
-    def _set_albums(self, albums: list[Album]):
-        self.albums = albums
-        self._folds.clear()   # (the search's folded texts were for the albums before)
-
-    def _fold_text(self, text: str) -> str:
-        """`_fold`, remembered: a search pause would otherwise fold every album's text again."""
-        folded = self._folds.get(text)
-        if folded is None:
-            folded = self._folds[text] = _fold(text)
-        return folded
+    def _set_albums(self, found: tuple[list[Album], dict[int, str]]):
+        """The album list (shared with the search panel: quick_search.shared_catalogue) and each
+        album's folded search text, by the album's id()."""
+        self.albums, self._album_texts = found
 
     # -- views and sorting ---------------------------------------------------------------------------
     def set_view(self, view: str):
@@ -709,9 +825,13 @@ class LibraryWindow:
         self._fill()
 
     def _flush_search(self):
-        """Words typed but not yet searched for: search now, so a quick Enter or Down acts on them."""
-        if self._fill_job is not None:
-            self._fill()
+        """Words typed but not yet searched for (or the search still on its way from the query
+        thread): search now, so a quick Enter or Down acts on them."""
+        if self._fill_job is not None or self._album_rows_asked is not None:
+            if len(self.albums) >= ALBUM_THREAD_AT:
+                self._fill(now=True)
+            else:
+                self._fill()
 
     def _clear_search(self):
         """The search box's × or Esc: empty it (Esc in an empty box closes the window, as before)."""
@@ -728,6 +848,8 @@ class LibraryWindow:
     def sort_by(self, column: str):
         """Click a heading: sort by it; click it again to reverse."""
         current, reverse = self.sort
+        if column == "last" or (column == "plays" and self.view != "most_played"):
+            return   # (read for the rows on show only: the list can't be sorted by them)
         newest_first = column in ("added", "plays")
         self._sorts[self.view] = (column, not reverse if column == current else newest_first)
         self._fill()
@@ -742,12 +864,9 @@ class LibraryWindow:
 
     # -- list ----------------------------------------------------------------
     def _values(self, album: Album) -> tuple:
-        name = album_label(album)
-        name = NEW_DOT + name if album.path in self._new else name
-        return (name, album.artist, album.year or "", album.quality, album.track_count, added_text(album.added),
-                "", "", "", "")
+        return _album_values(album, self._new)
 
-    def _fill(self):
+    def _fill(self, now: bool = False):
         if self._fill_job is not None:   # (this shows the search as it stands: a pending one would only repeat it)
             self.win.after_cancel(self._fill_job)
             self._fill_job = None
@@ -755,7 +874,8 @@ class LibraryWindow:
         self._paint_views()
         self._paint_headings()
         songs = self.view in SONG_VIEWS
-        self.tree.configure(displaycolumns=DISPLAYED[self.view] if songs else ALBUM_COLUMNS)
+        self.list.multiple = songs   # (several songs can be picked; albums one at a time)
+        self.tree.configure(displaycolumns=self._song_display() if songs else ALBUM_COLUMNS)
         self.search.hint.configure(text="Search every song: title, artist, album, composer…" if songs
                                    else "Search albums, artists, years, genres")
         self._paint_check()
@@ -767,63 +887,53 @@ class LibraryWindow:
         if not self.load_all_button.winfo_manager():
             self.load_all_button.pack(side="right", before=self.status)
         self.open_button.configure(text="Open in new tab")
-        self._fill_albums()
+        self._fill_albums(now=now)
 
-    def _fill_albums(self, keep: bool = False):
+    def _fill_albums(self, keep: bool = False, now: bool = False):
+        """List the albums of the view on show, as searched for and sorted. A big library (from
+        ALBUM_THREAD_AT albums) is grouped, searched and sorted on the query thread, the list on show
+        staying until the new one is here — unless `now` (Enter or ↓ straight after typing, Show in
+        Library: they act on the list at once)."""
         self._songs_listed = None   # (the list holds albums now)
         words = [_fold(w) for w in self.search_var.get().split()]
         column, reverse = self.sort
         grouped = self.view not in ("albums", "recent")
         self.tree.configure(show="tree headings" if grouped else "headings")
         self._fit()
-        self._rows.clear()
-        self._groups.clear()
-        rows: list[tuple] = []
-        items: list[tuple[str, object]] = []
-        shown: dict[Path, Album] = {}
-        closed = self._closed.setdefault(self.view, set())
-        for g, group in enumerate(browse.group_albums(self.albums, self.view)):
-            if words and grouped and all(w in self._fold_text(group.name) for w in words):
-                albums = group.albums  # the artist / genre / year itself matches: all of it
-            else:
-                albums = [a for a in group.albums if not words or browse.matches(a, words, self._fold_text)]
-            if not albums:
-                continue
-            albums = browse.sort_albums(albums, column if column in ALBUM_COLUMNS else "album", reverse)
-            for album in albums:
-                shown.setdefault(album.path, album)
-            parent = ""
-            if grouped:
-                parent = f"g{g}"
-                count = len(albums)
-                folded = not words and group.name in closed
-                songs = sum(a.track_count for a in albums)
-                rows.append((parent, (group.name, count_text(count, "album"), "", "", songs, "", "", "", "", ""),
-                             ("group",), CLOSED_MARK if folded else OPEN_MARK))
-                items.append(("group", group.name))
-                self._groups[parent] = group.name
-                if folded:
-                    continue
-            for n, album in enumerate(albums):
-                iid = f"{parent}a{n}"
-                rows.append((iid, self._values(album), ("new",) if album.path in self._new else ()))
-                items.append(("album", album))
-                self._rows[iid] = album
-        self._shown = list(shown.values())
-        self._items = items
-        source = ListSource(rows)
+        args = (self.albums, self._album_texts, self.view, words, column, reverse,
+                frozenset(self._closed.setdefault(self.view, set())), frozenset(self._new))
+        if len(self.albums) >= ALBUM_THREAD_AT and not now:
+            self._album_rows_asked = self._queries.ask("album_rows", _album_rows, *args)
+            self._album_rows_keep = keep if self._album_rows_keep is None else self._album_rows_keep and keep
+            return
+        self._album_rows_asked = self._album_rows_keep = None
+        self._show_albums(_album_rows(*args), keep)
+
+    def _show_albums(self, listed: AlbumRows, keep: bool):
+        self._rows, self._groups = listed.rows_map, listed.groups
+        self._shown, self._items = listed.shown, listed.items
         select = None
         if not keep and self.current is not None:
-            select = next((i for i, (kind, album) in enumerate(items)
+            select = next((i for i, (kind, album) in enumerate(listed.items)
                            if kind == "album" and album.path == self.current), None)
         self.list.on_jump = self._jump
-        self.list.set_source(source, keep=keep, select=select)
+        self.list.set_source(ListSource(listed.rows), keep=keep, select=select)
         count = len(self._shown)
         self.load_all_button.configure(
-            text=f"Open {'these' if words else 'all'} {count:,} album{'' if count == 1 else 's'} in a tab",
+            text=f"Open {'these' if listed.searched else 'all'} {count:,} album{'' if count == 1 else 's'} in a tab",
             state="normal" if count else "disabled")
         self._paint_status()
         self._paint_buttons()
+
+    def _take_album_rows(self, answer) -> bool:
+        """The album list worked out on the query thread came in (True: it's on show now)."""
+        if answer.ask != self._album_rows_asked:
+            return False
+        keep, self._album_rows_asked, self._album_rows_keep = self._album_rows_keep, None, None
+        if answer.error is not None or self.view in SONG_VIEWS:
+            return False
+        self._show_albums(answer.value, bool(keep))
+        return True
 
     # -- the song views ---------------------------------------------------------------------------------
     def _query(self) -> str:
@@ -959,6 +1069,18 @@ class LibraryWindow:
         self.list.on_jump = self._jump
         self.list.set_source(SongRows(pairs, self._song_row), keep=keep)
 
+    def _song_display(self) -> tuple[str, ...]:
+        """The columns a song view shows: its own, and the optional ones ticked (before Time)."""
+        base = DISPLAYED[self.view]
+        if self.view == "needs_look":
+            return base
+        extras = tuple(c for c in self.song_columns if c not in base
+                       and not (c == "last" and self.view == "recently_played"))   # (its Played is that)
+        if "time" not in base:
+            return base + extras
+        at = base.index("time")
+        return base[:at] + extras + base[at:]
+
     def _song_row(self, hit: SongHit, extra) -> tuple:
         favourites = self.actions.favourites
         title, artist, album, year, quality, clock = song_values(hit, favourite=favourites is not None
@@ -966,8 +1088,81 @@ class LibraryWindow:
         added = added_text(extra) if self.view == "recently_played" and extra else ""
         plays = extra if self.view == "most_played" and extra else ""
         found = extra.text if isinstance(extra, library_check.Look) else ""
-        return (f"s{hit.id}", (album, artist, year, quality, "", added, title, clock, plays, found),
+        last = ""
+        shown = self.song_columns
+        if shown and self.view != "needs_look":
+            counted = self._counted(hit.track)
+            if counted is not None:
+                if "plays" in shown and self.view != "most_played":
+                    plays = f"{counted[0]:,}" if counted[0] else ""
+                if "last" in shown and counted[1]:
+                    last = added_text(counted[1])
+        return (f"s{hit.id}", (album, artist, year, quality, "", added, title, clock, plays, found, last),
                 ("information",) if isinstance(extra, library_check.Look) and extra.information_only else ())
+
+    # -- plays and last played, for the rows on show ------------------------------------------------
+    def _counted(self, track: Track) -> tuple[int, float | None] | None:
+        """(times played, when last) for a song on show; None while it's being read (asked for here)."""
+        key = audiofile.key(track.path)
+        found = self._counts.get(key)
+        if found is not None:
+            self._counts.move_to_end(key)
+            return found
+        if key not in self._counts_wanted:
+            self._counts_wanted[key] = None
+            if self._counts_job is None:
+                self._counts_job = self.win.after_idle(self._ask_counts)
+        return None
+
+    def _ask_counts(self):
+        """The rows drawn asked for counts not known yet: read them on the query thread (a newer ask,
+        which takes in every key still wanted, replaces one on its way)."""
+        self._counts_job = None
+        if self._counts_wanted:
+            self._counts_asked = self._queries.ask("counts", _plays_and_last, self.index.db, list(self._counts_wanted))
+
+    def _take_counts(self, answer) -> bool:
+        """Plays and last-played times came in: True to draw the rows on show again. (Only the newest
+        ask's: one asked before a play was counted would bring the counts from before it.)"""
+        if answer.ask != self._counts_asked:
+            return False
+        self._counts_asked = None
+        if answer.error is not None or answer.value is None:
+            self._counts_wanted.clear()   # (asked again when next drawn)
+            return False
+        counts, lasts = answer.value
+        for key, count in counts.items():
+            self._counts[key] = (count, lasts.get(key))
+            self._counts_wanted.pop(key, None)
+        while len(self._counts) > COUNTS_KEPT:
+            self._counts.popitem(last=False)
+        return self.view in SONG_VIEWS
+
+    def plays_changed(self):
+        """A play was counted: the Plays and Last played columns read their counts again."""
+        self._counts.clear()
+        self._counts_wanted.clear()
+        self._counts_asked = None   # (one on its way has the counts from before)
+        if self.win.winfo_exists() and self.view in SONG_VIEWS and self.song_columns:
+            self.list.refresh()
+
+    def set_song_columns(self, columns):
+        """The song views' optional columns (Plays, Last played) on show; saved by the player."""
+        self.song_columns = tuple(c for c, _label in SONG_EXTRAS if c in columns)
+        self.on_song_columns(list(self.song_columns))
+        if self.view in SONG_VIEWS:
+            self.tree.configure(displaycolumns=self._song_display())
+            self._fit()
+            self.list.refresh()
+
+    def _heading_menu(self, event):
+        """Right-click a song view's headings: its optional columns."""
+        menu = popups.PopupMenu(self.win)
+        for column, label in SONG_EXTRAS:
+            on = column in self.song_columns
+            menu.add_check(label, on, lambda c=column, on=on: self.set_song_columns(
+                [x for x in self.song_columns if x != c] + ([] if on else [c])))
+        menu.popup(event.x_root, event.y_root)
 
     def _ask_page(self, page: int, ids: list[int]):
         serial = self._page_serial
@@ -1281,6 +1476,50 @@ class LibraryWindow:
     def _selected_song(self) -> SongHit | None:
         return self._hit_at(self.list.selection()) if self.view in SONG_VIEWS else None
 
+    def _peek_hit(self, index: int) -> SongHit | None:
+        """The song at `index` if it has been read (a page of the Songs view not read yet: None)."""
+        if self._pages is not None and self.list.source is self._pages:
+            return self._pages.peek(index) if 0 <= index < len(self._pages) else None
+        return self._hit_at(index)
+
+    def _selected_songs(self, then: Callable[[list[SongHit]], None]) -> bool:
+        """Every song selected, handed to `then`: at once when they've all been read, else once the
+        query thread has read the rest (Ctrl+A over the whole Songs view). False with none selected."""
+        if self.view not in SONG_VIEWS:
+            return False
+        self.list.sync()
+        indices = self.list.selected_indices()
+        if not indices:
+            return False
+        hits = [self._peek_hit(i) for i in indices]
+        if all(hit is not None for hit in hits):
+            then(hits)
+            return True
+        pages = self._pages if self._pages is not None and self.list.source is self._pages else None
+        if pages is None:
+            then([hit for hit in hits if hit is not None])
+            return True
+        ids = [pages.ids[i] for i in indices]
+        db = self.index.db
+        self._selection_then = then
+        self._selection_asked = self._queries.ask("selection", db.songs, ids)
+        self._say(f"Reading {count_text(len(ids), 'song')}…")
+        return True
+
+    def _take_selection(self, answer):
+        if answer.ask != self._selection_asked:
+            return
+        then, self._selection_then, self._selection_asked = self._selection_then, None, None
+        if answer.error is not None:
+            self._say(f"Couldn't read the songs: {answer.error}")
+        elif then is not None and self.win.winfo_exists():
+            self._paint_status()
+            then(answer.value)
+
+    def select_all(self) -> bool:
+        """Ctrl+A in a song view: every song listed (albums are picked one at a time)."""
+        return self.view in SONG_VIEWS and self.list.select_all()
+
     def _paint_buttons(self):
         if not self.win.winfo_exists():
             return
@@ -1296,9 +1535,8 @@ class LibraryWindow:
 
     def _add_selected(self):
         if self.view in SONG_VIEWS:
-            hit = self._selected_song()
-            if hit is not None and self.on_add_tracks is not None:
-                self._say(self.on_add_tracks([hit.track]))
+            if self.on_add_tracks is not None:
+                self._selected_songs(lambda hits: self._say(self.on_add_tracks([hit.track for hit in hits])))
             return
         album = self._selected_album()
         if album is not None and self.on_add is not None:
@@ -1315,25 +1553,29 @@ class LibraryWindow:
             self._say(f"Adding “{album_label(album)}” to Up next…")
             self.on_queue(album.path, front)
 
-    def _queue_song(self, hit: SongHit, front: bool):
-        self.actions.queue_tracks([hit.track], front)
-        name = song_name(hit.track)
-        self._say(f"“{name}” will play next" if front else f"Added “{name}” to Up next")
+    def _queue_songs(self, hits: list[SongHit], front: bool):
+        if not hits:
+            return
+        self.actions.queue_tracks([hit.track for hit in hits], front)
+        what = f"“{song_name(hits[0].track)}”" if len(hits) == 1 else count_text(len(hits), "song")
+        self._say(f"{what} will play next" if front else f"Added {what} to Up next")
 
     def _context(self, event):
         """Right-click an album: open it, add it to the tab on show, or line it up in Up next. A song:
         play it, line it up, add it to a playlist or to the favourites."""
+        if self.view in SONG_VIEWS and self.tree.identify_region(event.x, event.y) == "heading":
+            self._heading_menu(event)
+            return
         index = self.list.index_at(event.y)
         if index is None:
             return
-        self.list.select(index, see=False)
+        self.list.sync()
+        if not self.list.is_selected(index):   # (a right-click inside the selection keeps it)
+            self.list.select(index, see=False)
         hit = self._hit_at(index) if self.view in SONG_VIEWS else None
         if hit is not None:
-            menu = popups.PopupMenu(self.win)
-            add_song_items(menu, self.actions, [hit], {"play": keys.hint("library_open"),
-                                                        "next": keys.hint("library_play_next"),
-                                                        "queue": keys.hint("library_queue")}, show_in_library=False)
-            menu.popup(event.x_root, event.y_root)
+            x, y = event.x_root, event.y_root
+            self._selected_songs(lambda hits: self._song_menu(hits, x, y))
             return
         album = self._selected_album()
         if album is None:
@@ -1355,11 +1597,24 @@ class LibraryWindow:
         menu.add("Show in Explorer", lambda: self.actions.show_in_explorer(album.path))
         menu.popup(event.x_root, event.y_root)
 
+    def _song_menu(self, hits: list[SongHit], x_root: int, y_root: int):
+        if not hits or not self.win.winfo_exists():
+            return
+        menu = popups.PopupMenu(self.win)
+        add_song_items(menu, self.actions, hits, {"play": keys.hint("library_open"),
+                                                  "next": keys.hint("library_play_next"),
+                                                  "queue": keys.hint("library_queue")}, show_in_library=False)
+        menu.popup(x_root, y_root)
+
     # -- dragging ---------------------------------------------------------------------------------
     def _carried(self, iid: str):
-        """What a dragged row carries: an album's folder, or a song (as a list of one)."""
+        """What a dragged row carries: an album's folder, or songs (a list: the song, or every song
+        selected that has been read, when it's one of several selected)."""
         index = self.list.index_of_iid(iid)
         if self.view in SONG_VIEWS:
+            if index is not None and self.list.is_selected(index) and self.list.selected_count() > 1:
+                hits = [self._peek_hit(i) for i in self.list.selected_indices()]
+                return [hit.track for hit in hits if hit is not None] or None
             hit = self._hit_at(index)
             return [hit.track] if hit is not None else None
         album = self._rows.get(iid)
@@ -1436,6 +1691,7 @@ class LibraryWindow:
     def key_handlers(self) -> dict:
         """What the keyboard table's Library keys do here (keys.Keys.attach)."""
         return {"library_search": lambda: self.focus_search(), "library_open": lambda: self._choose_selected(),
+                "library_select_all": lambda: self.select_all(),
                 "library_queue": lambda: self.queue_selected(front=False),
                 "library_play_next": lambda: self.queue_selected(front=True),
                 "library_view": lambda key: self.cycle_view(-1 if "Shift" in key else 1),
@@ -1446,13 +1702,9 @@ class LibraryWindow:
         self.search.entry.select_range(0, "end")
 
     def queue_selected(self, front: bool):
-        """Ctrl+Enter / Ctrl+Shift+Enter: the selected album (or song) into Up next (at the end / next)."""
+        """Ctrl+Enter / Ctrl+Shift+Enter: the selected album (or songs) into Up next (at the end / next)."""
         if self.view in SONG_VIEWS:
-            hit = self._selected_song()
-            if hit is None:
-                return False
-            self._queue_song(hit, front)
-            return True
+            return self._selected_songs(lambda hits: self._queue_songs(hits, front))
         album = self._selected_album()
         if album is None:
             return False
@@ -1482,6 +1734,8 @@ class LibraryWindow:
             self.current = Path(album)
             if self.view in SONG_VIEWS:
                 self.set_view("albums")
+            if self._album_rows_asked is not None:   # (on its way: list the albums here and now)
+                self._fill(now=True)
             index = self._album_index(self.current)
             if index is None and self.search_var.get():
                 self.search_var.set("")   # (not among the results on show: list them all)
@@ -1489,7 +1743,7 @@ class LibraryWindow:
                 index = self._album_index(self.current)
             if index is None and self.view not in ("albums", "recent"):
                 self._closed.setdefault(self.view, set()).clear()   # (in a folded group: open them)
-                self._fill_albums(keep=True)
+                self._fill_albums(keep=True, now=True)
                 index = self._album_index(self.current)
             if index is not None:
                 self.list.select(index)

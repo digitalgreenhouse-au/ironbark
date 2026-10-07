@@ -52,9 +52,10 @@ SLOT_STEP = 8            # cover slots snap down to whole steps: fewer covers fe
 TEXT_GAP = 10            # between the cover and the caption
 TAB_MAX = {COLUMN: 200, SPLIT: 200, SPLIT_M: 240, SPLIT_L: 240}   # a tab's widest on the strip
 
-# Optional track-list columns, in the order they show, and the ones each tier may show.
-OPTIONAL = ("artist", "album", "quality")
-ALLOWED = {COLUMN: frozenset(), SPLIT: frozenset({"artist"}),
+# Optional track-list columns, in the order they show, and the ones each tier may show. (Plays —
+# how often each song has been played — is never on by itself: it shows only when ticked.)
+OPTIONAL = ("artist", "album", "quality", "plays")
+ALLOWED = {COLUMN: frozenset(), SPLIT: frozenset({"artist", "plays"}),
            SPLIT_M: frozenset(OPTIONAL), SPLIT_L: frozenset(OPTIONAL)}
 
 

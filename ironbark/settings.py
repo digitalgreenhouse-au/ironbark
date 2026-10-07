@@ -94,7 +94,8 @@ DEFAULTS = {
     "library_view": "albums",    # the Library's view: albums/artists/genres/years/composers/recent, or a song
                                  # view: songs/most_played/recently_played/favourites/needs_look
     "library_check": "off",      # the whole-library quality check: "off", "on" (keeps new music checked) or "paused"
-    "track_columns": [],         # optional track-list columns on show: "artist", "album"
+    "library_song_columns": [],  # the Library's song views' optional columns on show: "plays", "last" (last played)
+    "track_columns": [],         # optional track-list columns on show: "artist", "album", "plays"
     "wide_track_columns": ["artist", "album", "quality"],   # …in a wide window (each shown only when
                                                             # its value varies between the tab's songs)
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
@@ -449,6 +450,8 @@ _CHECKS = {
     "net_keep": _one_of("none", "session", "day", "limit"),
     "net_cache_gb": _one_of(1, 5, 10, 25, 50, 0),
     "library_check": lambda value: value if value in ("off", "on", "paused") else _BAD,
+    "library_song_columns": lambda value: ([v for v in value if v in ("plays", "last")] if isinstance(value, list)
+                                           else _BAD),
 }
 
 

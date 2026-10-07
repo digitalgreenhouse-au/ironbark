@@ -54,6 +54,7 @@ import random
 import sys
 import threading
 import time
+from array import array
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -1400,7 +1401,11 @@ class Player:
         self._preparer = preparer
         self._preparing: Preparing | None = None   # a song waiting to start until it has downloaded enough
         self._prepare_serial = 0
+        # The list playing. Never copied (a tab of a whole library can hold 200,000 songs, read a page
+        # at a time: library_tracks.LibraryTrackList) and never changed in place by the window: a
+        # change hands over a new list. Songs are found in it by path (`_find`).
         self.tracks: list[Track] = []
+        self._paths: tuple | None = None   # (the list, {path: its first place}) — made once per list
         self.index = -1
         # Up next ("Play next" / "Add to queue"): songs that play before the list carries on.
         # Replaced whole on every change, so the decoder can read it without the lock. While a
@@ -1429,7 +1434,7 @@ class Player:
         self._fade: tuple[float, float] | None = None
         self._clock = time.monotonic
         self._resume_with: Queued | None = None  # stopped after a song with this one from Up next to come
-        self._order: list[int] = []
+        self._order: range | array = range(0)   # play order: list positions (a range when not shuffled)
         self.transition = ""  # how the track playing began (Status.transition)
         self.events: collections.deque = collections.deque(maxlen=50)  # dropouts / near misses, all tracks
         self._monitors: list[queue.Queue] = []  # see monitor()
@@ -1453,13 +1458,15 @@ class Player:
             active = self._session is not None or self._preparing is not None   # (preparing counts as playing)
             if keep_playing and active and 0 <= self.index < len(self.tracks):
                 path = self.tracks[self.index].path
-                current = next((i for i, t in enumerate(tracks) if t.path == path), None)
+                current = self._find(tracks, path)
             if keep_playing and active and self.queued_now is not None:
                 # A queued song is playing: it carries on; the list carries on after it from the
                 # same song as before (if it's still there).
                 path = self.tracks[self.index].path if 0 <= self.index < len(self.tracks) else None
-                self.tracks = list(tracks)
-                self.index = next((i for i, t in enumerate(tracks) if t.path == path), -1)
+                self.tracks = tracks
+                self._let_go_of_paths()
+                found = self._find(tracks, path) if path is not None else None
+                self.index = found if found is not None else -1
                 self._rebuild_order(first=self.index if self.index >= 0 else None)
                 self._relineup()
                 return
@@ -1469,11 +1476,51 @@ class Player:
                 self._session.renumber(current)
             else:
                 self._preparing.at = current
-            self.tracks = list(tracks)
-            self.index = current if current is not None else (0 if self.tracks else -1)
+            self.tracks = tracks
+            self._let_go_of_paths()
+            self.index = current if current is not None else (0 if len(tracks) else -1)
             self._rebuild_order(first=current)
             self._message = ""
             self._relineup()
+
+    def _let_go_of_paths(self):
+        """The paths of a list no longer playing aren't kept (with that list: it may be a big one)."""
+        found = self._paths
+        if found is not None and found[0] is not self.tracks:
+            self._paths = None
+
+    def _find(self, tracks, path) -> int | None:
+        """The first place of the song with this path in `tracks` (None: not there), through a dict
+        made once per list rather than a look at every song. A list read from the library database
+        finds it itself (among the songs read: it never reads the database for this). No lock: the
+        dict is replaced whole, so the decoder can ask too."""
+        finder = getattr(tracks, "index_of_path", None)
+        if finder is not None:
+            return finder(path)
+        found = self._paths
+        if found is None or found[0] is not tracks:
+            places: dict = {}
+            for i, track in enumerate(tracks):
+                places.setdefault(track.path, i)
+            found = self._paths = (tracks, places)
+        return found[1].get(path)
+
+    def order_around(self, index: int, before: int = 1, after: int = 8) -> list[int]:
+        """List positions round `index` in play order — `before` it and `after` it (round the ends
+        with repeat all) — which a list read a page at a time keeps read, so the engine finds every
+        song it asks for already there. No lock (it reads lists replaced whole)."""
+        order = self._order
+        count = len(order)
+        if not count or not 0 <= index < len(self.tracks):
+            return []
+        try:
+            at = order.index(index)
+        except ValueError:
+            return [index]
+        span = range(at - before, at + after + 1)
+        if self.repeat == "all":
+            return list(dict.fromkeys(order[p % count] for p in span))
+        return [order[p] for p in span if 0 <= p < count]
 
     def _relineup(self):
         """What plays next may have changed: the session re-checks the track it has lined up (and
@@ -1545,7 +1592,10 @@ class Player:
         finishes"."""
         if not self.active():
             return []
-        return [track.path for track in self.tracks] + [queued.track.path for queued in self.queue]
+        tracks = self.tracks
+        loaded = getattr(tracks, "loaded", None)   # (a list read a page at a time: the songs read)
+        return [track.path for track in (loaded() if loaded is not None else tracks)] + \
+            [queued.track.path for queued in self.queue]
 
     # -- Up next -----------------------------------------------------------------
     # Each change takes the lock (the player's thread rewrites the list too, as a queued song
@@ -1687,13 +1737,18 @@ class Player:
                 self._relineup()
 
     def _rebuild_order(self, first: int | None = None):
+        """The play order: the list's own (a range: nothing held per song) or a shuffled one (a
+        compact array, `first` at its head)."""
         count = len(self.tracks)
         if not self.shuffle:
-            self._order = list(range(count))
+            self._order = range(count)
             return
-        rest = [i for i in range(count) if i != first]
+        rest = array("l", range(count))
+        if first is not None and 0 <= first < count:
+            rest[first] = rest[-1]   # (first moves out; the last fills its place)
+            rest = rest[:-1]
         random.shuffle(rest)
-        self._order = ([first] if first is not None and 0 <= first < count else []) + rest
+        self._order = (array("l", [first]) + rest) if first is not None and 0 <= first < count else rest
 
     def _step(self, index: int, step: int) -> int | None:
         """The track after (step=1) or before (step=-1) `index` in play order. None past either
@@ -2305,7 +2360,7 @@ class Player:
         elif 0 <= source.index < len(tracks) and tracks[source.index].path == source.path:
             self.index, self.queued_now = source.index, None
         else:  # the list changed while it was lined up
-            index = next((i for i, t in enumerate(tracks) if t.path == source.path), None)
+            index = self._find(tracks, source.path)
             if index is not None:
                 self.index = source.index = index
             else:  # taken out of the list: what follows carries on from where the list was

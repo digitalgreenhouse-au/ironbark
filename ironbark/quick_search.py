@@ -7,8 +7,9 @@ What's found (searchfold.py's folding: case and accents ignored, "lodz" finds Ł
   best 200 are listed, with how many there are ("1,234 songs", or "1,000+" for the slow kind of
   search). A song found by something other than its title, artist or album says where
   ("composer: Bach").
-- **Albums** and **Artists**, from a list of the library's albums (`Catalogue`) kept on the query
-  thread and read again whenever the library has changed.
+- **Albums** and **Artists**, from a list of the library's albums (`Catalogue`) read on a query
+  thread and read again whenever the library has changed — one copy, shared with the Library window
+  (`shared_catalogue`).
 
 The search runs on the panel's own "library-query" thread (indexer.Queries): 120 ms after the last
 key, at 2 letters or more; a newer search stops the one running (latest wins). Results come back
@@ -37,8 +38,10 @@ import dataclasses
 import os
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
+import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -110,40 +113,75 @@ class Actions:
 # -- the search, on the query thread (nothing here touches Tk) --------------------------------------
 @dataclass
 class Catalogue:
-    """The library's albums, for the Albums and Artists sections: read on the query thread, and read
-    again there when the library has changed (LibraryDB.generation) — at most every REREAD_S while
-    it keeps changing (its first look changes it with every folder, and reading and folding every
-    album would slow each search typed meanwhile). Only that thread uses it."""
+    """The library's albums, for the Albums and Artists sections and the Library window's album views:
+    read on a query thread, and read again there when the library has changed (LibraryDB.generation)
+    — for the search panel at most every REREAD_S while it keeps changing (its first look changes it
+    with every folder, and reading and folding every album would slow each search typed meanwhile);
+    for the Library window as soon as it has (`update(db, max_age=0)`). One is shared by both
+    (`shared_catalogue`): the album list and each album's folded text (browse.matches' own, the
+    text the Library's album search looks through) are held once. A read swaps the lists whole, under
+    a lock, so any query thread may read or update it."""
     REREAD_S = 10.0
     generation: int | None = None
     read_at: float = 0.0
     albums: list[Album] = field(default_factory=list)
     texts: list[str] = field(default_factory=list)                     # each album's folded search text
     artists: list[tuple[str, str, int]] = field(default_factory=list)  # (name, folded, albums)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
-    def update(self, db) -> None:
-        generation = db.generation
-        if generation == self.generation or (
-                self.generation is not None and time.monotonic() - self.read_at < self.REREAD_S):
-            return
-        albums = db.albums()
-        self.albums = albums
-        self.texts = [searchfold.fold(" ".join([a.name, a.title, a.artist, str(a.year or ""), *a.genres,
-                                                *a.composers])) for a in albums]
-        counts: dict[str, list] = {}
-        for album in albums:
-            if album.artist:
-                counts.setdefault(searchfold.fold(album.artist), [album.artist, 0])[1] += 1
-        self.artists = sorted(((name, folded, n) for folded, (name, n) in counts.items()),
-                              key=lambda item: sort_name(item[0]))
-        self.generation, self.read_at = generation, time.monotonic()
+    def update(self, db, max_age: float | None = None) -> None:
+        """Read the albums again if the library has changed since they were read (and they were read
+        more than `max_age` seconds ago: REREAD_S by default)."""
+        wait = self.REREAD_S if max_age is None else max_age
+        with self._lock:
+            generation = db.generation
+            if generation == self.generation or (
+                    self.generation is not None and time.monotonic() - self.read_at < wait):
+                return
+            albums = db.albums()
+            texts = [album_text(a) for a in albums]
+            counts: dict[str, list] = {}
+            for album in albums:
+                if album.artist:
+                    counts.setdefault(searchfold.fold(album.artist), [album.artist, 0])[1] += 1
+            artists = sorted(((name, folded, n) for folded, (name, n) in counts.items()),
+                             key=lambda item: sort_name(item[0]))
+            self.albums, self.texts, self.artists = albums, texts, artists
+            self.generation, self.read_at = generation, time.monotonic()
+
+    def snapshot(self) -> tuple[list[Album], list[str]]:
+        """(the albums, each one's folded search text) as last read: lists never changed in place."""
+        with self._lock:
+            return self.albums, self.texts
 
     def find(self, words: list[str]) -> tuple[list[Album], int, list[tuple[str, int]], int]:
         """(albums matching, how many, artists matching (name, albums), how many)."""
-        albums = [a for a, text in zip(self.albums, self.texts) if all(w in text for w in words)]
+        with self._lock:
+            listed, texts, known = self.albums, self.texts, self.artists
+        albums = [a for a, text in zip(listed, texts) if all(w in text for w in words)]
         albums.sort(key=lambda a: (sort_name(a.artist), a.year or 0, sort_name(album_label(a))))
-        artists = [(name, n) for name, folded, n in self.artists if all(w in folded for w in words)]
+        artists = [(name, n) for name, folded, n in known if all(w in folded for w in words)]
         return albums[:ALBUM_LIMIT], len(albums), artists[:ARTIST_LIMIT], len(artists)
+
+
+def album_text(album: Album) -> str:
+    """What an album search looks through (browse.matches' text): name, title, artist, year, genres
+    and composers, folded."""
+    return searchfold.fold(" ".join([album.name, album.title, album.artist, str(album.year or ""),
+                                     *album.genres, *album.composers]))
+
+
+_catalogues: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()   # library database -> its Catalogue
+_catalogues_lock = threading.Lock()
+
+
+def shared_catalogue(db) -> Catalogue:
+    """The one Catalogue of this library database (the search panel's and the Library window's)."""
+    with _catalogues_lock:
+        found = _catalogues.get(db)
+        if found is None:
+            found = _catalogues[db] = Catalogue()
+        return found
 
 
 @dataclass(frozen=True)
@@ -248,7 +286,7 @@ class QuickSearch:
         self.layout = "narrow"
         self._closed: set[str] = set()               # sections folded shut
         self._queries: indexer.Queries | None = None
-        self._catalogue = Catalogue()
+        self._catalogue: Catalogue | None = None
         self._asked: int | None = None
         self._search_job = self._poll_job = None
         self._focus_before: tk.Misc | None = None
@@ -294,7 +332,7 @@ class QuickSearch:
         tree.bind("<Escape>", lambda e: None if self.drag.active else self._escape() or "break", add="+")
         tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):   # the keyboard's menu key: the selected result's menu
-            tree.bind(key, lambda e: self._context(popups.row_event(tree)) or "break")
+            tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
 
         self.status = ttk.Label(inner, text="", style="Muted.TLabel", anchor="w")
         self.status.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
@@ -454,7 +492,7 @@ class QuickSearch:
             if self._queries is not None:
                 self._queries.stop()
             self._queries = indexer.Queries(db)
-            self._catalogue = Catalogue()
+            self._catalogue = shared_catalogue(db)
         self._asked = self._queries.ask("search", search_library, db, self._catalogue, text, interrupt=True)
         self._say("Searching…" if self.results is None else self.status.cget("text"))
         if self._poll_job is None:

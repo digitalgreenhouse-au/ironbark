@@ -75,30 +75,38 @@ def test_enter_and_down_straight_after_typing_act_on_what_was_typed(root):
     assert view.tree.selection() == ("1",) and view.tree.focus() == "1" and view._search_job is None
 
 
-def test_a_search_lists_rows_instead_of_remaking_them(root, monkeypatch):
+def test_a_search_makes_only_the_rows_on_show_and_folds_each_song_once(root, monkeypatch):
     tracks = [Track(Path(f"C:/M/Album {a}/{t:02d}.flac"), f"Song {a} {t}", artist=f"Artist {a % 7}",
                     album=f"Album {a}", track_no=t + 1) for a in range(60) for t in range(10)]
     view = playlist_view.PlaylistView(root, on_play=lambda i: None)
     view.set_tracks(tracks)
+    _pump(root, 0.1)
+    page = view.list.page()
     folded = []
     real = playlist_view._haystack
     monkeypatch.setattr(playlist_view, "_haystack", lambda track: folded.append(1) or real(track))
     made = []
     insert = view.tree.insert
     monkeypatch.setattr(view.tree, "insert", lambda *a, **k: made.append(1) or insert(*a, **k))
-    monkeypatch.setattr(view.tree, "delete", lambda *a: pytest.fail("a search deleted rows"))
     for query in ("song 1", "song 12", "song 12 3", "artist 3", "", "song 12"):
+        made.clear()
         view.query.set(query)
         view._render()
         words = query.split()
         expected = [str(i) for i, t in enumerate(tracks) if all(w in real(t) for w in words)]
         assert view._songs == expected, query
-        assert [r for r in view.tree.get_children() if r.isdigit()] == expected
-    assert made == [] and len(folded) == len(tracks)     # every row made once; each song folded once
+        shown = [r for r in view.tree.get_children() if r.isdigit()]
+        assert shown and shown == expected[:len(shown)], query          # the first finds, from the top
+        assert len(view.tree.get_children()) <= page and len(made) <= 2 * page, query   # only rows on show
+    assert len(folded) == len(tracks)                    # each song folded once, however often it's searched
+    view.query.set("song 12 3")
+    view._render()
     assert view.tree.set("123", "title") == "Song 12 3  ·  Artist 5"   # searching: the artist with the title
     view.query.set("")
     view._render()
+    view.select(123)                                     # (scrolled to: it's far down the list)
     assert view.tree.set("123", "title") == "Song 12 3"
+    view.list.scroll_to(0)
     assert view.tree.set(view.tree.get_children()[0], "title").startswith("Album 0")
 
 
