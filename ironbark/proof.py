@@ -34,14 +34,19 @@ AUDIBLE_CHECK_HZ = 18000  # when Windows resamples, compare below this (see comp
 
 
 def apply_gain(block: np.ndarray, gain: float, out: np.ndarray | None = None) -> np.ndarray:
-    """What the player sends for `block` at `gain` (the volume and clipping guard together).
-    Used by the audio callback and by the checker, so both compute exactly the same thing."""
+    """What the player sends for `block` at `gain` (the volume, clipping guard, volume levelling
+    and a sleep timer's fade together). Used by the audio callback and by the checker, so both
+    compute exactly the same thing. Exactly 1.0 leaves the samples untouched; above 1.0 (volume
+    levelling turning a quiet track up, as far as its peak allows) anything past full scale is
+    clipped there."""
     if out is None:
         out = np.empty_like(block)
-    if gain >= 1.0:
+    if gain == 1.0:
         out[...] = block  # untouched samples
     elif block.dtype == np.float32:
         np.multiply(block, np.float32(gain), out=out)
+        if gain > 1.0:
+            np.clip(out, -1.0, 1.0, out=out)
     else:
         scaled = np.rint(block * gain)
         out[...] = np.clip(scaled, -INT32_MAX - 1, INT32_MAX).astype(np.int32)
@@ -72,11 +77,12 @@ class Proof:
     checked: float = 0.0          # of which, verified against the file
     mismatch_at: float | None = None  # seconds into the track of the first block that differed
     min_gain: float = 1.0         # lowest gain applied to any block (1.0 = untouched throughout)
-    changed_from: float | None = None  # where the first changed (gain < 1) block started
+    changed_from: float | None = None  # where the first changed (gain other than 1) block started
+    max_gain: float = 1.0         # highest gain applied to any block (above 1.0: turned up)
 
     @property
     def untouched(self) -> bool:
-        return self.min_gain >= 1.0
+        return self.min_gain >= 1.0 and self.max_gain <= 1.0
 
     @property
     def complete(self) -> bool:
@@ -99,7 +105,8 @@ class SentRecord:
         self._sent_frames = 0
         self._checked_frames = 0
         self._min_gain = 1.0
-        self._changed_from: int | None = None   # frame where the first changed (gain < 1) block started
+        self._max_gain = 1.0
+        self._changed_from: int | None = None   # frame where the first changed (gain other than 1) block started
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -114,7 +121,9 @@ class SentRecord:
         segment.frames.append(len(sent))
         if gain < self._min_gain:
             self._min_gain = gain
-        if gain < 1.0 and self._changed_from is None:
+        if gain > self._max_gain:
+            self._max_gain = gain
+        if gain != 1.0 and self._changed_from is None:
             self._changed_from = start_frame
         self._sent_frames += len(sent)
         segment.crcs.append(crc(sent))  # appended last: the checker reads crcs to know what's ready
@@ -172,7 +181,7 @@ class SentRecord:
 
     def summary(self) -> Proof:
         proof = Proof(sent=self._sent_frames / self.samplerate, checked=self._checked_frames / self.samplerate,
-                      min_gain=self._min_gain)
+                      min_gain=self._min_gain, max_gain=self._max_gain)
         if self._changed_from is not None:
             proof.changed_from = self._changed_from / self.samplerate
         if self.mismatch_frame is not None:

@@ -75,10 +75,11 @@ def window(root, prefs, tracks, **extra):
     """Just enough of a PlayerWindow for the track menu and the tag-editing methods."""
     w = SimpleNamespace(root=root, prefs=prefs, tabs=[Tab("album", "C:/Music/Album")], current=0,
                         playlist=SimpleNamespace(columns=(), selected_rows=lambda: [0, 1]),
-                        opened=[], _tag_window=None, _tag_history=None, **extra)
+                        opened=[], _tag_window=None, _tag_history=None, sleep_timer=None,
+                        player=SimpleNamespace(stop_after=None), **extra)
     w.tabs[0].tracks = tracks
-    for name in ("_menu", "_track_menu", "_columns_menu", "_tag_editing", "edit_selected_tags", "edit_album_tags",
-                 "show_tag_history"):
+    for name in ("_menu", "_track_menu", "_columns_menu", "_sleep_menu", "stop_after_current", "_tag_editing",
+                 "edit_selected_tags", "edit_album_tags", "show_tag_history"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
     w._known_playlists = lambda: []
     w.edit_tags = lambda tracks: w.opened.append(("edit", len(tracks))) if w._tag_editing() else None

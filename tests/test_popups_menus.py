@@ -336,7 +336,8 @@ def test_track_and_tab_menus(make_window, shown_menus, tmp_path, monkeypatch):
     event = SimpleNamespace(x_root=root.winfo_rootx() + 40, y_root=root.winfo_rooty() + 200)
     window._track_menu([0], event)
     menu = shown_menus[-1]
-    assert menu.labels() == ["Play", "Play next", "Add to queue", "Add to playlist", "Columns"]
+    assert menu.labels() == ["Play", "Play next", "Add to queue", "Add to playlist", "Stop after the current song",
+                             "Sleep timer", "Columns"]
     menu.invoke("Columns")
     menu.invoke("Artist")                                    # a tick item: switches the column on
     assert "artist" in window.playlist.columns and window.prefs["track_columns"] == ["artist"]

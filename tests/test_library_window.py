@@ -134,12 +134,14 @@ def test_up_next_line_and_list(root):
     body.pack(fill="both", expand=True)
     status = tk.Label(body)
     status.pack(side="bottom")
-    w = SimpleNamespace(player=player, root=root, scale=1.0, _up_next_key=None, prefs={}, _notice="")
+    w = SimpleNamespace(player=player, root=root, scale=1.0, _up_next_key=None, prefs={}, _notice="",
+                        sleep_timer=None)
     w.playlist = PlaylistView(body, on_play=lambda i: None)
     w.up_next_label = tk.Label(body)
     w.up_next_pop = Popover(root, width=300)
     w._set_notice = lambda text, ms=0: setattr(w, "_notice", text)
-    for name in ("_paint_up_next", "_fill_up_next", "_show_up_next", "_up_next_top", "_unqueue", "_queue_tracks"):
+    for name in ("_paint_up_next", "_fill_up_next", "_show_up_next", "_up_next_top", "_unqueue", "_queue_tracks",
+                 "stop_after_current", "_sleep_menu", "_menu"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
     root.deiconify()
     root.geometry("320x400")
@@ -152,6 +154,12 @@ def test_up_next_line_and_list(root):
     root.update()
     rows = [c for c in w.up_next_pop.body.winfo_children() if isinstance(c, MenuRow)]
     assert [r.label.cget("text") for r in rows] == ["three — X", "one — X", "two — X"]
+    # Below the songs: when to stop (reached by the arrow keys too).
+    stops = [r for r in w.up_next_pop.menu_rows() if r not in rows]
+    assert [r.label.cget("text") for r in stops] == ["Stop after the current song", "Sleep timer…"]
+    stops[0].command()
+    assert player.stop_after == "song" and w._notice == "Stops after this song"
+    player.set_stop_after(None)
     w._unqueue(1)
     assert player.up_next() == [tracks[2], tracks[1]]
     player.clear_queue()

@@ -48,7 +48,7 @@ import numpy as np
 import sounddevice as sd
 
 from . import audiofile, devices
-from .library import Track, format_rate
+from .library import Track, album_folder, format_rate
 from .proof import Proof, SentRecord, apply_gain
 
 log = logging.getLogger(__name__)
@@ -65,6 +65,8 @@ DAMAGE_SKIPS = 5      # a stretch that won't decode: skip on past it, twice as f
 STALL_SECONDS = 3.0   # playing, but no request from the sound card for this long: the device has gone
 WATCH_SECONDS = 1.0   # how often the player's own thread checks for that
 CLOSE_WAIT = 0.25     # how long closing waits for the decoder to let go of its files
+FADE_FLOOR_DB = -60.0  # a fade-out falls evenly (in dB) to this, then to silence
+STOP_AFTER_MODES = ("song", "album")   # stop at the end of this song / of this album
 
 _READING, _ENDED, _IDLE = "reading", "ended", "idle"   # the decoder's state (see _Session._decode)
 _NOT_YET = object()   # _Source.lined_up before the decoder has read to the file's end
@@ -100,7 +102,11 @@ class Status:
     message: str = ""
     output: OutputInfo | None = None
     gain: float = 1.0                 # the volume setting (1.0 = untouched)
-    trim: float = 1.0                 # clipping guard for this track (1.0 = none)
+    trim: float = 1.0                 # this track's own gain: the clipping guard and volume levelling together
+    guard: float = 1.0                # the clipping guard's part of it (1.0 = none)
+    levelling: object = None          # volume levelling on this track (levelling.Levelling), or None
+    fading: bool = False              # the sleep timer is fading the music out
+    stop_after: str = ""              # "song" / "album": playback stops at the end of this song / album
     levels: tuple[float, ...] = ()    # peak of the latest block per channel, 0..1 (before volume)
     track_peak: float = 0.0           # highest peak so far this track, 0..1
     buffer: float = 0.0               # decoded audio waiting, as a fraction of the buffer
@@ -962,6 +968,14 @@ class Player:
         self.repeat = "off"
         # Clipping guard: a small turn-down for loud tracks (see set_trim), by file.
         self._trims: dict = {}
+        # Volume levelling (off unless chosen): a gain per file (see set_levelling).
+        self._levels: dict = {}
+        # "Stop after this song" / "… this album" (see set_stop_after), and the sleep timer's
+        # fade-out: (when it began, how long it lasts), read by the audio thread without a lock.
+        self.stop_after: str | None = None
+        self._fade: tuple[float, float] | None = None
+        self._clock = time.monotonic
+        self._resume_with: Queued | None = None  # stopped after a song with this one from Up next to come
         self._order: list[int] = []
         self.transition = ""  # how the track playing began (Status.transition)
         self.events: collections.deque = collections.deque(maxlen=50)  # dropouts / near misses, all tracks
@@ -1103,8 +1117,36 @@ class Player:
             trims.pop(next(iter(trims)))
         self._trims = trims  # replaced whole: the audio thread reads it without a lock
 
-    def trim_for(self, path) -> float:
+    def set_levelling(self, path, level=None):
+        """Volume levelling for one file (a levelling.Levelling: its `gain` may be above 1.0 when
+        the track's peak leaves room), set ahead for the next track like the clipping guard. The
+        guard still applies: a track it turns down gets the smaller of the two gains (trim_for).
+        `path` None clears them all (levelling switched off: every track as before)."""
+        if path is None:
+            self._levels = {}
+            return
+        levels = {p: v for p, v in self._levels.items() if p != path}
+        if level is not None:
+            levels[path] = level
+        while len(levels) > TRIMS_KEPT:
+            levels.pop(next(iter(levels)))
+        self._levels = levels  # replaced whole: the audio thread reads it without a lock
+
+    def levelling_for(self, path):
+        return self._levels.get(path)
+
+    def guard_for(self, path) -> float:
         return self._trims.get(path, 1.0)
+
+    def trim_for(self, path) -> float:
+        """A file's own gain: its clipping guard, or its levelling gain when that's smaller. A
+        track the guard leaves alone (1.0: it wouldn't clip) takes its levelling gain as it is,
+        turned up included (levelling holds that under the track's own peak itself)."""
+        guard = self._trims.get(path, 1.0)
+        level = self._levels.get(path)
+        if level is None:
+            return guard
+        return level.gain if guard >= 1.0 else min(guard, level.gain)
 
     def _current_trim(self) -> float:
         track = self._track_at(self._current())
@@ -1142,12 +1184,71 @@ class Player:
         """(index, path) of what plays after tracks[index] (or after a queued song), for the
         decoder as a track nears its end; Up next comes first, so a queued song joins on
         gaplessly too. Called without the lock (the decoder mustn't wait on it), so it reads a
-        snapshot."""
+        snapshot. Nothing joins on after a song that playback is to stop after."""
+        if self._stops_after(index):
+            return None
         following = self._next_after(index)
         track = self._track_at(following)
         if track is None:
             return None
         return following, track.path
+
+    # -- stop after this song / album, and the sleep timer's fade ----------------------
+    def set_stop_after(self, mode: str | None):
+        """Stop cleanly at the end of the song playing ("song") or at the end of its album
+        ("album": the song after it is from another album, or there's none); None = carry on.
+        It applies to whatever is playing when the end comes, and ends the gapless chain there
+        (the decoder drops a next song it has lined up but not yet sent)."""
+        with self._lock:
+            self.stop_after = mode if mode in STOP_AFTER_MODES else None
+            self._relineup()
+
+    def _stops_after(self, at) -> bool:
+        """Does playback stop at the end of `at` (a list position or a queued song)? "song": only
+        the song playing (`_current`). "album": any song whose next one is from another album —
+        the decoder reads ahead, so with short songs it may be asking about one lined up already."""
+        mode = self.stop_after
+        if mode is None or at is None:
+            return False
+        if mode == "song":
+            return at == self._current()   # (a queued song is compared by identity)
+        track, following = self._track_at(at), self._track_at(self._next_after(at))
+        return (track is None or following is None
+                or album_folder(audiofile.real_path(following.path)) != album_folder(audiofile.real_path(track.path)))
+
+    def fade_out(self, seconds: float) -> bool:
+        """Fade the music out over `seconds` (evenly in dB down to FADE_FLOOR_DB, then silence),
+        then pause, letting go of the device: the sleep timer. Every block sent at the fade's
+        gain is recorded in the proof as a change of level. False when nothing is playing."""
+        with self._lock:
+            session = self._session
+            if session is None or session.paused or seconds <= 0:
+                return False
+            self._fade = (self._clock(), float(seconds))
+            return True
+
+    def cancel_fade(self):
+        self._fade = None
+
+    def _fade_factor(self) -> float:
+        fade = self._fade
+        if fade is None:
+            return 1.0
+        done = (self._clock() - fade[0]) / fade[1]
+        if done <= 0:
+            return 1.0
+        return 0.0 if done >= 1 else 10 ** (FADE_FLOOR_DB * done / 20)
+
+    def _faded(self):
+        """The fade has run its course: pause at this spot with the device let go, as suspend()."""
+        session = self._session
+        self._fade = None
+        if session is None:
+            return
+        position, queued = session.position, self.queued_now
+        self._close_session()
+        self._suspended_at, self.queued_now = position, queued
+        self._message = "Sleep timer: faded out and paused · press play to carry on"
 
     # -- transport -----------------------------------------------------------
     def play(self, index: int | None = None, start_at: float = 0.0):
@@ -1160,6 +1261,9 @@ class Player:
                     self._session.set_paused(False)
                     return
                 if self._session:
+                    return
+                if self._resume_with is not None and any(q is self._resume_with for q in self.queue):
+                    self._start(self._resume_with)  # stopped after a song: Up next's song comes next
                     return
                 start_at = self._suspended_at or start_at  # carry on where suspend() left it
                 if self.queued_now is not None and self._suspended_at is not None:
@@ -1176,6 +1280,7 @@ class Player:
 
     def pause(self):
         with self._lock:
+            self._fade = None   # (pausing by hand ends a sleep timer's fade: play resumes at full level)
             if self._session:
                 self._session.set_paused(True)
 
@@ -1191,17 +1296,20 @@ class Player:
             position, queued = session.position, self.queued_now
             self._close_session()
             self._suspended_at, self.queued_now = position, queued  # play() carries on with the same song
+            self._fade = None
             return True
 
     def toggle_pause(self):
         with self._lock:
             if self._session and not self._session.paused:
+                self._fade = None
                 self._session.set_paused(True)
             else:
                 self.play()
 
     def stop(self):
         with self._lock:
+            self.stop_after, self._fade = None, None
             self._close_session()
 
     def next(self):
@@ -1304,6 +1412,11 @@ class Player:
             index = -1 if self.queued_now is not None else self.index
             status = Status(state, index, track, min(position, duration), duration,
                             message, output, self._volume ** 2, self._current_trim())
+            if track is not None:
+                status.guard = self.guard_for(track.path)
+                status.levelling = self.levelling_for(track.path)
+            status.fading = self._fade is not None and session is not None
+            status.stop_after = self.stop_after or ""
             if session is not None:
                 status.levels = session.levels if not session.paused else (0.0,) * session.channels
                 status.track_peak = session.track_peak
@@ -1340,16 +1453,18 @@ class Player:
 
     # -- internals -----------------------------------------------------------
     def _gain(self, path=None) -> float:
-        """The gain for a file (the track playing if none given): volume, then its clipping guard."""
-        if path is None:
-            return self._volume ** 2 * self._current_trim()
-        return self._volume ** 2 * self.trim_for(path)
+        """The gain for a file (the track playing if none given): volume, then its own gain (the
+        clipping guard / volume levelling), then the sleep timer's fade while there is one."""
+        trim = self._current_trim() if path is None else self.trim_for(path)
+        gain = self._volume ** 2 * trim
+        return gain * self._fade_factor() if self._fade is not None else gain
 
     def _start(self, index, start_at: float = 0.0, transition: str = "started"):
         """Start playing tracks[index] (or a queued song, which then leaves Up next); skips
         forward past files that won't open."""
         self._close_session()
         self._message = ""
+        self._fade = self._resume_with = None
         self.transition = transition
         tried: set = set()
         while index is not None and self._track_at(index) is not None:
@@ -1427,12 +1542,16 @@ class Player:
         position, queued, name = session.position, self.queued_now, session.device_name
         self._close_session()
         self._suspended_at, self.queued_now = position, queued  # play() carries on with the same song
+        self._fade = None
         self._message = f"{name} stopped playing (disconnected?): press play to carry on"
 
     def _ended(self, session: _Session):
         """The chain of tracks has played out: start what's next (with a gap), or stop at the end."""
         current = self._current()
         following = self._next_after(current)
+        if self._stops_after(current):
+            self._stopped_after(current, following)
+            return
         # A track that gave no music ends at once: repeating it (or going round a list of them)
         # would start stream after stream for ever.
         self._silent_run = 0 if session.delivered else self._silent_run + 1
@@ -1452,6 +1571,22 @@ class Player:
             self.queued_now = None
             self._message = "End of album"
 
+    def _stopped_after(self, current, following):
+        """Playback has reached the end of the song (or album) it was to stop after: stop there,
+        with what comes next ready, so play carries on from it."""
+        mode, track = self.stop_after, self._track_at(current)
+        self.stop_after = None
+        self._close_session()
+        if isinstance(following, Queued):
+            self._resume_with = following
+        elif following is not None:
+            self.index = following
+        else:
+            self.index = self._order[0] if self._order else 0  # the end of the list: ready to play it again
+        name = f"“{track.title}”" if track is not None and track.title else "this song"
+        self._message = ("Stopped at the end of the album, as asked" if mode == "album"
+                         else f"Stopped after {name}, as asked")
+
     def _advance_loop(self):
         # Runs on its own thread: PortAudio's finished-callback must not open streams itself. Between
         # events it watches for a device that has stopped asking for audio without saying so.
@@ -1468,6 +1603,8 @@ class Player:
                         if session is not None and session.stalled(time.perf_counter()):
                             log.warning("%s: no requests for audio in %.0f s", session.device_name, STALL_SECONDS)
                             self._lost(session)
+                        elif self._fade is not None and self._fade_factor() == 0.0:
+                            self._faded()
                         continue
                     if session is not self._session:
                         continue  # user already moved on

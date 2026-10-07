@@ -38,6 +38,9 @@ DEFAULTS = {
     "open_at_home": False,       # start up at home rather than where it was last left
     "clip_guard": True,          # turn down recordings that would clip the converter (crackle)
     "clip_headroom": 0.0,        # (0.24.0) "My DAC has headroom": dB above full scale it can take (0 = off)
+    "levelling": "off",          # Settings → Sound → Volume levelling: "off", "track", "album" or "smart"
+    "levelling_preamp": 0.0,     # …its pre-amp, dB (−6 … +6), added to every levelling gain
+    "lyrics_geometry": "",       # the Lyrics window (key L)
     "clip_geometry": "",         # (0.24.0) the Clipping window
     "clip_zoom": "wide",         # its live view: "wide" (50 ms), "mid" (5 ms) or "close" (30 samples)
     "show_art": True,            # the big album cover; off gives the track list the room
