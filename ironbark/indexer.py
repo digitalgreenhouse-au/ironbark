@@ -5,7 +5,12 @@ library database (library_db.py) — and the query thread that reads it for the 
 
 1. Each library folder is checked first. One that isn't there (a drive unplugged, a network share
    asleep), can't be listed, or is suddenly empty while music is stored for it (the mount point of
-   an unplugged drive) changes nothing: an `Unreachable` event, and the diff's `error` says why.
+   an unplugged drive) changes nothing: an `Unreachable` event, and the diff's `error` says why. So
+   does another drive in its place (a backup drive given the music drive's letter): the drive a
+   library folder's music was found on is noted (`volume_of`), and a different one counts only
+   once it holds the same music (copied onto a new drive), or has stayed a week (`MISSING_DAYS`).
+   A library folder replaced by one holding the same music (Settings → Library → Change…: the
+   drive back under another letter) is moved, not read again (LibraryDB.move_root).
 2. A walk of its folders with os.scandir: each file's size and times come with the listing, so
    there's no extra call per file (that matters on a network drive). A folder that can't be listed
    is "unknown": everything stored for it and below it stays as it was.
@@ -18,13 +23,17 @@ library database (library_db.py) — and the query thread that reads it for the 
 5. Each folder is stored in its own transaction (LibraryDB.apply), so a cancel or a crash loses at
    most the folder in hand: the next look carries on from there, since what wasn't read yet still
    looks new or changed.
-6. Folders gone from their parent's listing are marked missing (kept, with their dates, in case a
-   drive comes back); missing files go for good after a later look at the whole folder that went
-   cleanly, or after a week (LibraryDB.purge_missing). A library folder's first look counts as
-   finished (LibraryDB.mark_built: only then can anything be new music) once a look at all of it
-   has gone cleanly. A folder the system won't let anyone list (access denied) doesn't hold that
-   up — it would be the same on every look — but one that failed some other way (a network drive
-   dropping out) does: its music would otherwise all look new once it could be read.
+6. Folders gone from their parent's listing are marked missing before anything is stored (kept,
+   with their dates, in case a drive comes back or they turn up elsewhere: a file found under a
+   new name with a missing one's size and time is that file, moved — LibraryDB.apply); missing
+   files go for good after a week (LibraryDB.purge_missing), so an album put back from the Recycle
+   Bin within it is as it was. A library folder's first look counts as finished
+   (LibraryDB.mark_built: only then can anything be new music) once a look at all of it has gone
+   cleanly. A folder the system won't let anyone list (access denied) doesn't hold that up — it
+   would be the same on every look — and nor, from its second look, does one its parent lists but
+   that can't be opened by that name (a Mac's "R.E.M." on a shared drive, a path too long for
+   Windows): the diff's `unreadable` names those. One that failed some other way (a network drive
+   dropping out) does hold it up: its music would otherwise all look new once it could be read.
 
 Files a caller says are still being written (`hold`: watcher.Settling) are left for the next look.
 What a look finds is said on every listener's queue (`listen`): Started, Progress, AlbumsChanged,
@@ -84,6 +93,7 @@ class Diff:
     changed: list[Path] = field(default_factory=list)
     removed: list[Path] = field(default_factory=list)
     waiting: list[Path] = field(default_factory=list)   # still being copied: left for next time
+    unreadable: list[Path] = field(default_factory=list)   # folders listed that can't be opened by their names
     error: str = ""          # a library folder couldn't be looked at: nothing stored for it was changed
     cancelled: bool = False  # stopped part-way (cancel): the next look carries on from there
 
@@ -96,11 +106,20 @@ class Diff:
         parts = [f"{len(self.added)} new" if self.added else "",
                  f"{len(self.changed)} changed" if self.changed else "",
                  f"{len(self.removed)} gone" if self.removed else "",
-                 f"{len(self.waiting)} still copying" if self.waiting else ""]
+                 f"{len(self.waiting)} still copying" if self.waiting else "",
+                 self.unreadable_note()]
         return " · ".join(p for p in parts if p)
 
+    def unreadable_note(self) -> str:
+        """e.g. "2 folders can't be read: R.E.M., Vol." ("" when every folder could be)."""
+        if not self.unreadable:
+            return ""
+        names = ", ".join(path.name or str(path) for path in self.unreadable[:2])
+        more = " …" if len(self.unreadable) > 2 else ""
+        return f"{len(self.unreadable)} folder{'' if len(self.unreadable) == 1 else 's'} can't be read: {names}{more}"
+
     def sort(self) -> Diff:
-        for part in (self.added, self.changed, self.removed, self.waiting):
+        for part in (self.added, self.changed, self.removed, self.waiting, self.unreadable):
             part.sort(key=lambda p: str(p).lower())
         return self
 
@@ -167,6 +186,7 @@ class _Job:
     added: list[str] = field(default_factory=list)     # what the diff says once it's stored
     changed: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
+    retried: list[str] = field(default_factory=list)   # couldn't be read last time: "changed" once read
 
 
 @dataclass
@@ -176,8 +196,8 @@ class _Root:
     jobs: list[_Job] = field(default_factory=list)
     vanished: list[int] = field(default_factory=list)     # stored folders gone from their parent's listing
     vanished_files: list[str] = field(default_factory=list)
-    # Every folder could be listed, or was refused for good (access denied): a first look can count
-    # as finished, and what went missing before it can go.
+    # Every folder could be listed, or was refused for good (access denied, or a name that can't be
+    # opened): a first look can count as finished.
     clean: bool = True
 
 
@@ -387,21 +407,21 @@ class Indexer:
                 diff.removed += [Path(p) for p in plan.vanished_files]
             return
         built = {plan.path: bool(db.built(plan.path)) for plan in plans}
+        for plan in plans:   # (first: a folder renamed or moved is then found as moved, not as new music)
+            if plan.vanished:
+                self._albums |= db.mark_missing(plan.vanished, now=self._now())
+                diff.removed += [Path(p) for p in plan.vanished_files]
         self._store([job for plan in plans for job in plan.jobs],
                     self.gentle if all(built.values()) else self.fast, diff, started)
         self._set_progress(Progress("tidying", started=started), force=True)
         for plan in plans:
-            if plan.vanished:
-                self._albums |= db.mark_missing(plan.vanished, now=self._now())
-                diff.removed += [Path(p) for p in plan.vanished_files]
             if only is not None:
                 continue
-            if plan.clean:
-                db.purge_missing(plan.path, before=started)   # (what went missing just now waits a look)
-                if not built[plan.path]:
-                    db.mark_built(plan.path, self._now())
-            else:
-                db.purge_missing(plan.path)
+            # What's been missing a week goes for good — never sooner: another drive in the place of
+            # this one, or an album put back from the Recycle Bin, keeps everything stored till then.
+            db.purge_missing(plan.path)
+            if plan.clean and not built[plan.path]:
+                db.mark_built(plan.path, self._now())
         if only is None and db.needs_refold:
             # The songs' search texts were folded another way (searchfold changed), or stored before
             # this SQLite could index them: brought up to date, a batch at a time (a cancel resumes later).
@@ -416,9 +436,42 @@ class Indexer:
     def _store_roots(self, roots: list[str]) -> None:
         """The library folders are these: the database's list follows (one taken off it goes, with
         everything stored for it — only here, under the look's lock, so no look still under way
-        for it can store anything after)."""
-        if {Path(r) for r in self.db.roots()} != {Path(r) for r in roots}:
-            self.db.set_roots(roots)
+        for it can store anything after). One taken off whose music a new one holds (the same
+        files, sizes and times: a drive back under another letter, the music copied to a new
+        drive) is moved instead, keeping its dates, plays, favourites and checks."""
+        stored = self.db.roots()
+        if {Path(r) for r in stored} == {Path(r) for r in roots}:
+            return
+        new = [r for r in roots if not any(Path(r) == Path(s) for s in stored)]
+        for old in [s for s in stored if not any(Path(s) == Path(r) for r in roots)]:
+            samples = self.db.sample_files(old)
+            place = next((r for r in new if samples and os.path.isdir(r) and _same_music(r, samples)), None)
+            if place is not None and self.db.move_root(old, place):
+                new.remove(place)
+        self.db.set_roots(roots)
+
+    def _same_drive(self, root: str, dry: bool) -> str:
+        """"" when the library folder is on the drive its music was found on; else why it isn't
+        looked at. A different drive in its place counts as the library's only once it holds the
+        same music (copied onto a new drive), or has been there MISSING_DAYS (the drive replaced
+        for good); until then nothing stored for the folder changes."""
+        found = volume_of(root)
+        if found is None:
+            return ""
+        db, now = self.db, time.time()
+        stored = db.volume(root)
+        if stored is None or stored[0] == found:
+            if not dry and (stored is None or stored[1] is not None):
+                db.set_volume(root, found)
+            return ""
+        since = stored[1] if stored[1] is not None else now
+        if _same_music(root, db.sample_files(root)) or now - since >= library_db.MISSING_DAYS * 86400:
+            if not dry:
+                db.set_volume(root, found)
+            return ""
+        if not dry and stored[1] is None:
+            db.set_volume(root, stored[0], since)
+        return f"A different drive is at {root}"
 
     def _plan(self, plan: _Root, hold, only: set[str] | None, diff: Diff, started: float,
               json_index: Path | None, dry: bool) -> str:
@@ -427,12 +480,16 @@ class Indexer:
         root, db = plan.path, self.db
         if not os.path.isdir(root):
             return f"Can't see the library folder {root}"
+        why = self._same_drive(root, dry)
+        if why:
+            return why
         if not dry and only is None:
             self._bring_across(root, json_index, started)
         stored = db.folders(root)
         denied: set[str] = set()
+        closed: set[str] = set()
         if only is None:
-            listed, unlisted, denied = self._walk(root, started)
+            listed, unlisted, denied, closed = self._walk(root, started)
             if root in unlisted:
                 return f"Can't read the library folder {root}"
         else:
@@ -450,7 +507,11 @@ class Indexer:
                 return f"The library folder {root} is empty"
         if not os.path.isdir(root):   # (a drive can go while it's being walked)
             return f"Can't see the library folder {root}"
-        plan.clean = all(folder in denied for folder in unlisted)
+        # A folder its parent lists but that can't be opened by that name counts as refused for good
+        # once it has failed before (its row says so): it would be the same on every look.
+        plan.clean = all(folder in denied or (folder in closed and folder in stored
+                                              and not stored[folder].listed_ok) for folder in unlisted)
+        diff.unreadable += [Path(folder) for folder in closed]
         cue_folders = db.cue_track_folders([state.id for state in stored.values()])
         for folder, (listing, cue_sig, unknown) in listed.items():
             state = stored.get(folder)
@@ -463,6 +524,8 @@ class Indexer:
             state = stored.get(folder)
             if state is not None and state.listed_ok:
                 plan.jobs.append(_Job(root, folder, {}, [], state.cue_sig, listed_ok=False))
+            elif state is None and folder in closed:   # (noted, so the next look knows it failed before)
+                plan.jobs.append(_Job(root, folder, {}, [], "", listed_ok=False))
         if only is None:
             hidden = tuple(os.path.join(folder, "") for folder in unlisted)
             for folder, state in stored.items():
@@ -478,10 +541,12 @@ class Indexer:
     def _walk(self, root: str, started: float):
         """Every folder under `root` (skipping system folders): {folder: (music files {name: (size,
         modified ns, created s)}, cue_signature, names that couldn't be looked at)}; the folders
-        that couldn't be listed; and those among them the system refused (access denied)."""
+        that couldn't be listed; those among them the system refused (access denied); and those
+        its parent listed that can't be opened by that name (_cant_open)."""
         listed: dict[str, tuple[dict, str, set[str]]] = {}
         unlisted: list[str] = []
         denied: set[str] = set()
+        closed: set[str] = set()
         stack = [root]
         while stack:
             if self._cancel.is_set():
@@ -493,11 +558,13 @@ class Indexer:
                 unlisted.append(folder)
                 if isinstance(error, PermissionError):
                     denied.add(folder)
+                elif folder != root and _cant_open(error):
+                    closed.add(folder)
                 continue
             listed[folder] = (listing, sig, unknown)
             stack += sorted(subfolders, key=str.lower, reverse=True)
             self._set_progress(Progress("looking", len(listed), 0, folder, started))
-        return listed, unlisted, denied
+        return listed, unlisted, denied, closed
 
     def _compare(self, root: str, folder: str, listing: dict, cue_sig: str, unknown: set[str],
                  state: FolderState | None, files: dict[str, FileState], held_cue_tracks: bool,
@@ -507,11 +574,14 @@ class Indexer:
             old = files.get(name)
             if old is not None and not old.missing:
                 listing[name] = (old.size, old.mtime_ns, 0.0)
-        added, changed, reread, back, waiting = [], [], [], [], []
+        added, changed, reread, retried, back, waiting = [], [], [], [], [], []
         for name, stat in list(listing.items()):
             old = files.get(name)
             if old is None:
                 found = added
+            elif old.mtime_ns == -1 and old.size == stat[0] and not old.missing:
+                retried.append(name)  # couldn't be read last time: tried again ("changed" only once read)
+                continue
             elif (old.size, old.mtime_ns) != stat[:2]:
                 found = changed      # (a file back again but different, too: it keeps its dates)
             elif old.missing:
@@ -536,17 +606,18 @@ class Indexer:
             return None   # no music here, and none stored (a folder of .cue files alone, say)
         cue_changed = cue_sig != (state.cue_sig if state is not None else "")
         relisted = state is not None and not state.listed_ok
-        if not (added or changed or reread or back or removed or cue_changed or relisted):
+        if not (added or changed or reread or retried or back or removed or cue_changed or relisted):
             return None
         whole = bool(cue_sig) or held_cue_tracks or cue_changed
         if whole and waiting:
             return None   # its files split into tracks together: the whole folder waits for the copy
-        to_read = added + changed + reread
+        to_read = added + changed + reread + retried
         if whole and listing and (to_read or back or removed or cue_changed):
             names, count = None, len(listing)
         else:
             names, count = to_read, len(to_read)
-        return _Job(root, folder, listing, names, cue_sig, count, added=added, changed=changed, removed=removed)
+        return _Job(root, folder, listing, names, cue_sig, count, added=added, changed=changed, removed=removed,
+                    retried=retried)
 
     def _bring_across(self, root: str, json_index: Path | None, started: float) -> None:
         """Before a library folder's first look: the old library_index.json, if it was for this
@@ -641,6 +712,8 @@ class Indexer:
     def _apply(self, result: FolderResult, job: _Job, diff: Diff) -> None:
         self._albums |= self.db.apply(result, now=self._now())
         _note(diff, job)
+        failed = set(result.retry)   # (a file that still can't be read is tried again next time, unsaid)
+        diff.changed += [Path(job.folder, name) for name in job.retried if name not in failed]
         self._albums_changed()
 
     def _albums_changed(self, force: bool = False, everything: bool = False) -> None:
@@ -717,6 +790,39 @@ def _note(diff: Diff, job: _Job) -> None:
     diff.added += [Path(job.folder, name) for name in job.added]
     diff.changed += [Path(job.folder, name) for name in job.changed]
     diff.removed += [Path(job.folder, name) for name in job.removed]
+
+
+def volume_of(folder: str) -> int | None:
+    """Which drive a folder is on — os.stat's st_dev: on Windows the volume's serial number, which
+    stays with the drive whatever letter it's given — or None where that can't be told."""
+    try:
+        return os.stat(folder).st_dev or None
+    except OSError:
+        return None
+
+
+def _same_music(root: str, samples: list[tuple[str, int, int]]) -> bool:
+    """Does `root` hold these stored files (path below the library folder, size, modified ns: a
+    sample from across it) — most of them, as they were? A modified time may differ by the 2 s a
+    FAT-formatted drive keeps. No samples: there's nothing stored to tell by, so yes."""
+    if not samples:
+        return True
+    found = 0
+    for rel, size, mtime in samples:
+        try:
+            st = os.stat(os.path.join(root, rel))
+        except OSError:
+            continue
+        found += st.st_size == size and abs(st.st_mtime_ns - mtime) <= 2_000_000_000
+    return found * 4 >= len(samples) * 3
+
+
+def _cant_open(error: OSError) -> bool:
+    """A folder its parent has just listed that can't be opened by that name — a name Windows
+    lists but won't open (ending in a dot or a space: made on a Mac), or a path longer than it
+    takes — rather than one that failed just now."""
+    return (isinstance(error, (FileNotFoundError, NotADirectoryError))
+            or getattr(error, "winerror", None) in (3, 123, 206))   # (path not found, bad name, too long)
 
 
 def _list_some(root: str, only: set[str]):

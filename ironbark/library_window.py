@@ -1424,6 +1424,8 @@ class LibraryWindow:
                 text += f" · {self.index.last_diff.error} just now, so these may be out of date"
             elif self.index.last_diff is not None and not self.index.last_diff.nothing:
                 text += f" · updated: {self.index.last_diff.note()}"
+            elif self.index.last_diff is not None and self.index.last_diff.unreadable:
+                text += f" · {self.index.last_diff.unreadable_note()}"
             note = self._check_note()
             if note:   # (before the folder's name too, which can be long)
                 text = f"{note} · {text}"

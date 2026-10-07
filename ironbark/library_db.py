@@ -79,10 +79,14 @@ COUNT_CAP = 1000            # the slower searches stop counting here ("1,000+")
 PLAY_FRACTION = 0.5         # heard this much of a song (or PLAY_SECONDS) and it counts as played
 PLAY_SECONDS = 240.0
 BUSY_S = 5.0                # how long a connection waits for another writer (another copy of the player) to finish
+# A small write (a favourite, a play) that still finds the database busy after BUSY_S is tried again
+# after each of these waits (seconds): a long look's transaction can hold it for a while.
+BUSY_WAITS = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 60.0)
 _BATCH = 500                # ids per IN (...) list
 # SQLite's own result codes for a damaged file (the low byte of an extended code): SQLITE_CORRUPT and
 # SQLITE_NOTADB. Anything else (busy, locked, a full disk, a folder that can't be written) isn't damage.
 _DAMAGE_CODES = {11, 26}
+_BUSY_CODES = {5, 6}        # SQLITE_BUSY and SQLITE_LOCKED: another writer has it just now
 
 # The search index's columns, and how much a match in each counts (bm25 weights).
 FTS_COLUMNS = ("title", "artist", "album", "album_artist", "composer", "genre", "year", "path")
@@ -112,6 +116,25 @@ def is_damage(error: BaseException) -> bool:
         return True
     code = getattr(error, "sqlite_errorcode", None)
     return isinstance(error, sqlite3.DatabaseError) and isinstance(code, int) and code & 0xFF in _DAMAGE_CODES
+
+
+def is_busy(error: BaseException) -> bool:
+    """Was the database only busy (another writer holding it longer than BUSY_S)?"""
+    code = getattr(error, "sqlite_errorcode", None)
+    return isinstance(error, sqlite3.OperationalError) and isinstance(code, int) and code & 0xFF in _BUSY_CODES
+
+
+def when_free(write: Callable[[], object], waits: Iterable[float] | None = None):
+    """write(), tried again after each of `waits` (default BUSY_WAITS) while another writer holds
+    the database: a small change is never lost just because a long look was storing the library.
+    Any other error (or busy after the last wait) is raised. For a worker thread: it can wait."""
+    for wait in (*(BUSY_WAITS if waits is None else waits), None):
+        try:
+            return write()
+        except sqlite3.OperationalError as error:
+            if wait is None or not is_busy(error):
+                raise
+            time.sleep(wait)
 
 
 def is_interrupt(error: BaseException) -> bool:
@@ -171,6 +194,7 @@ CREATE TABLE IF NOT EXISTS files(
     UNIQUE(folder_id, name));
 CREATE INDEX IF NOT EXISTS files_seen ON files(seen);
 CREATE INDEX IF NOT EXISTS files_missing ON files(missing_since) WHERE missing_since IS NOT NULL;
+CREATE INDEX IF NOT EXISTS files_gone ON files(size, mtime_ns) WHERE missing_since IS NOT NULL;   -- moved files
 CREATE TABLE IF NOT EXISTS tracks(
     id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     album_id INTEGER NOT NULL,                          -- the album folder's folders.id (= albums.id)
@@ -229,7 +253,10 @@ _KEPT_TABLES = {"plays": {"id", "key", "played_at", "seconds_heard", "completed"
 _CHECK_COLUMNS = "key, size, mtime_ns, format, checked, findings, true_peak, result"
 
 # Upgrades from one schema version to the next: {old version: fn(connection)}. A version with no
-# way up has its library tables made again (they're only a record of the music files).
+# way up has its library tables made again (they're only a record of the music files). An older
+# version opening a newer one's file keeps its plays, favourites and checks tables as they are, extra
+# columns and all (_upgrade), and writes its own version number: so each step must cope with what a
+# newer version already did (CREATE … IF NOT EXISTS; a column added only when it isn't there).
 def _to_2(con: sqlite3.Connection) -> None:
     """1 → 2: the quality check's table."""
     for statement in _statements(_CHECK_TABLES):
@@ -242,8 +269,8 @@ _TRACK_FIELDS = ("cue_sheet", "cue_number", "cue_start", "cue_end", "title", "ar
                  "composer", "genre", "date", "year", "track_no", "disc_no", "duration", "sample_rate", "bits",
                  "channels", "bitrate", "size", "codec", "md5", "encoder", "float_samples", "bitrate_mode",
                  "channel_mode", "misnamed", "unsupported", "compilation", "details", "haystack")
-_INSERT_TRACK = (f"INSERT INTO tracks(file_id, album_id, {', '.join(_TRACK_FIELDS)}) "
-                 f"VALUES ({', '.join('?' * (len(_TRACK_FIELDS) + 2))})")
+_INSERT_TRACK = (f"INSERT INTO tracks(id, file_id, album_id, {', '.join(_TRACK_FIELDS)}) "
+                 f"VALUES ({', '.join('?' * (len(_TRACK_FIELDS) + 3))})")
 _INSERT_FTS = (f"INSERT INTO song_fts(rowid, {', '.join(FTS_COLUMNS)}) "
                f"VALUES ({', '.join('?' * (len(FTS_COLUMNS) + 1))})")
 # A track and where its file is: (root path, folder below the root, file name, track id, fields…)
@@ -273,6 +300,8 @@ class FolderResult:
     # The files read this time: name -> their tracks, as track_row values
     tracks: dict[str, list[tuple]] = field(default_factory=dict)
     retry: list[str] = field(default_factory=list)   # couldn't be read just now: read again next time
+    # Of those, the ones not read at all (only their names are known): what's stored for them stays.
+    unreadable: list[str] = field(default_factory=list)
     cue_sig: str = ""                 # its .cue files (cue_signature)
     listed_ok: bool = True            # False: it couldn't be listed, so everything stored for it stays
     read_format: int = READ_FORMAT
@@ -640,7 +669,7 @@ class LibraryDB:
         try:
             yield con
             if bump:
-                con.execute("UPDATE meta SET value = value + 1 WHERE key = 'generation'")
+                _bump(con)
             con.execute("COMMIT")
         except BaseException:
             if con.in_transaction:
@@ -876,19 +905,59 @@ class LibraryDB:
             gone = [root_id for root_id, path in have if not any(Path(path) == Path(w) for w in wanted)]
             for root_id in gone:
                 con.execute("DELETE FROM roots WHERE id = ?", (root_id,))
+                con.execute("DELETE FROM meta WHERE key = ?", (_volume_key(root_id),))
             if gone:
                 _rename(con, [row[0] for row in con.execute("SELECT DISTINCT name FROM albums")])
 
     def move_root(self, old: str | Path, new: str | Path) -> bool:
         """A library folder has moved (a drive back under another letter, a share mounted somewhere
-        else): everything stored for `old` now belongs to `new`, so nothing has to be read again.
-        False when `old` isn't a library folder or `new` already is one."""
+        else): everything stored for `old` now belongs to `new`, so nothing has to be read again —
+        and the plays, favourites and quality checks of its songs go with them. False when `old`
+        isn't a library folder or `new` already is one."""
         with self._writing() as con:
             found = _find_root(con, str(Path(old)))
             if found is None or _find_root(con, str(Path(new))) is not None:
                 return False
+            was = _from_db(con.execute("SELECT path FROM roots WHERE id = ?", (found[0],)).fetchone()[0])
             con.execute("UPDATE roots SET path = ? WHERE id = ?", (_to_db(str(Path(new))), found[0]))
+            con.execute("DELETE FROM meta WHERE key = ?", (_volume_key(found[0]),))   # (noted afresh by the next look)
+            _rekey(con, os.path.join(was, ""), os.path.join(str(Path(new)), ""), whole=True)
         return True
+
+    def volume(self, root: str | Path) -> tuple[int, float | None] | None:
+        """The drive a library folder's music was found on (the indexer's volume_of), and since when
+        another drive has been seen in its place (None: it hasn't); None when not noted yet."""
+        con = self._con()
+        found = _find_root(con, str(Path(root)))
+        row = None if found is None else con.execute("SELECT value FROM meta WHERE key = ?",
+                                                     (_volume_key(found[0]),)).fetchone()
+        try:
+            serial, since = json.loads(row[0])
+            return int(serial), None if since is None else float(since)
+        except (TypeError, ValueError):
+            return None
+
+    def set_volume(self, root: str | Path, serial: int, since: float | None = None) -> None:
+        """Note the drive a library folder's music is on (and since when another has been in its place)."""
+        with self._writing(bump=False) as con:
+            root_id, _built = _root(con, str(Path(root)))
+            con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                        (_volume_key(root_id), json.dumps([str(serial), since])))
+
+    def sample_files(self, root: str | Path, n: int = 24) -> list[tuple[str, int, int]]:
+        """Up to `n` of the music files stored for a library folder (not missing), from all across it:
+        (path below the library folder, size, modified ns) — to tell whether a folder holds the same music."""
+        con = self._con()
+        found = _find_root(con, str(Path(root)))
+        if found is None:
+            return []
+        ids = [row[0] for row in con.execute(
+            "SELECT f.id FROM files f JOIN folders d ON d.id = f.folder_id WHERE d.root_id = ?"
+            " AND f.missing_since IS NULL AND f.mtime_ns >= 0 ORDER BY f.id", (found[0],))]
+        picked = ids[::max(1, -(-len(ids) // n))]   # (every k-th, k rounded up: at most n, from first to last)
+        return [(os.path.join(_from_db(rel), _from_db(name)), size, mtime) for rel, name, size, mtime in con.execute(
+            "SELECT d.rel, f.name, f.size, f.mtime_ns FROM files f JOIN folders d ON d.id = f.folder_id"
+            f" WHERE f.id IN ({', '.join('?' * len(picked))})", picked)]
 
     def built(self, root: str | Path) -> float:
         """When the library folder's first look finished (0 = it hasn't yet)."""
@@ -942,57 +1011,73 @@ class LibraryDB:
         """Store what a look at one folder found, in one transaction: files read are stored with
         their tracks (a new one dated now, or on a library folder's first look by when it was made;
         a changed one keeps its dates), files gone from the listing are marked missing, files back
-        in it are shown again. A folder that couldn't be listed keeps everything. Returns the ids of
-        the albums that changed (their rows are made again)."""
+        in it are shown again. A new file that is one found missing elsewhere (the same size and
+        modified time: an album folder renamed or moved) takes over that one's dates, and its plays,
+        favourites and checks follow it. A file that couldn't be read at all just now keeps what's
+        stored for it. A folder that couldn't be listed keeps everything. Returns the ids of the
+        albums that changed (their rows are made again); the generation goes up only then."""
         now = time.time() if now is None else now
         root = str(Path(result.root))
-        retry = set(result.retry)
-        with self._writing() as con:
+        retry, unreadable = set(result.retry), set(result.unreadable)
+        with self._writing(bump=False) as con:
             root_id, built = _root(con, root)
-            folder_id, album_id = _folder(con, root_id, _rel(root, os.fspath(result.folder)))
+            rel = _rel(root, os.fspath(result.folder))
+            folder_id, album_id = _folder(con, root_id, rel)
             if not result.listed_ok:
                 con.execute("UPDATE folders SET listed_ok = 0 WHERE id = ?", (folder_id,))
                 return set()
             old = {_from_db(name): (file_id, missing) for file_id, name, missing in con.execute(
                 "SELECT id, name, missing_since FROM files WHERE folder_id = ?", (folder_id,))}
             changed = False
+            # What's gone from the listing first, so a file renamed here is found below as moved.
+            gone = [file_id for name, (file_id, missing) in old.items()
+                    if name not in result.listing and missing is None]
+            if gone:
+                self._hide(con, gone, now)
+                changed = True
+            ids: _TrackIds | None = None
             for name, rows in result.tracks.items():
                 stat = result.listing.get(name)
-                if stat is None or not rows:
-                    continue
+                known = old.get(name)
+                if stat is None or not rows or (known is not None and name in unreadable):
+                    continue   # (not read at all just now: what's stored stays, and it's read again next time)
                 size, mtime, created = stat
                 if name in retry:
                     mtime = -1   # only partly read just now: read it again next time
-                known = old.get(name)
+                ids = ids or _TrackIds(con)
                 if known is not None:
                     file_id = known[0]
                     con.execute("DELETE FROM tracks WHERE file_id = ?", (file_id,))
                     con.execute("UPDATE files SET size = ?, mtime_ns = ?, read_format = ?, missing_since = NULL"
                                 " WHERE id = ?", (size, mtime, result.read_format, file_id))
                 else:
-                    added = now if built else min(created, now)
+                    moved = _moved_here(con, size, mtime, name)
+                    added, seen = (moved[1], moved[2]) if moved else (now if built else min(created, now), now)
                     file_id = con.execute(
                         "INSERT INTO files(folder_id, name, size, mtime_ns, added, seen, read_format)"
                         " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (folder_id, _to_db(name), size, mtime, added, now, result.read_format)).lastrowid
-                self._insert_tracks(con, file_id, album_id, rows)
+                        (folder_id, _to_db(name), size, mtime, added, seen, result.read_format)).lastrowid
+                    if moved:
+                        con.execute("DELETE FROM files WHERE id = ?", (moved[0],))
+                        place = _from_db(con.execute("SELECT path FROM roots WHERE id = ?", (root_id,)).fetchone()[0])
+                        _rekey(con, moved[3], _join(place, rel, name))
+                self._insert_tracks(con, file_id, album_id, rows, ids)
                 changed = True
             for name, (file_id, missing) in old.items():
-                if result.tracks.get(name) and name in result.listing:
-                    continue   # (stored above)
-                if name not in result.listing:
-                    if missing is None:
-                        self._hide(con, [file_id], now)
-                        changed = True
-                    continue
+                if name not in result.listing or (result.tracks.get(name) and name not in unreadable):
+                    continue   # (hidden or stored above)
                 if name in retry:   # couldn't be read just now: what's known stays, read again next time
-                    con.execute("UPDATE files SET mtime_ns = -1 WHERE id = ?", (file_id,))
+                    con.execute("UPDATE files SET size = ?, mtime_ns = -1 WHERE id = ?",
+                                (result.listing[name][0], file_id))
                 if missing is not None:   # back again: shown with the dates it had
                     self._restore(con, [file_id])
                     changed = True
             con.execute("UPDATE folders SET cue_sig = ?, listed_ok = 1 WHERE id = ?", (result.cue_sig, folder_id))
+            if ids is not None:
+                ids.save()
             if changed:
                 self._rebuild_albums(con, {album_id})
+                _bump(con)
         return {album_id} if changed else set()
 
     def mark_missing(self, folder_ids: Iterable[int], now: float | None = None) -> set[int]:
@@ -1037,12 +1122,14 @@ class LibraryDB:
                     " AND NOT EXISTS (SELECT 1 FROM folders c WHERE c.album_folder_id = folders.id"
                     " AND c.id != folders.id)").rowcount:
                 pass
-            con.execute("UPDATE meta SET value = value + 1 WHERE key = 'generation'")
+            _bump(con)
         return len(ids)
 
-    def _insert_tracks(self, con: sqlite3.Connection, file_id: int, album_id: int, rows: list[tuple]) -> None:
+    def _insert_tracks(self, con: sqlite3.Connection, file_id: int, album_id: int, rows: list[tuple],
+                       ids: _TrackIds) -> None:
         for values, fts in rows:
-            track_id = _run(con, _INSERT_TRACK, (file_id, album_id, *values)).lastrowid
+            track_id = ids.take()
+            _run(con, _INSERT_TRACK, (track_id, file_id, album_id, *values))
             if self.fts:
                 _run(con, _INSERT_FTS, (track_id, *fts))
 
@@ -1579,6 +1666,7 @@ class LibraryDB:
                     return False   # already has its own rows: those are newer
                 folders: dict[str, tuple[int, int]] = {}
                 albums: set[int] = set()
+                ids = _TrackIds(con)
                 for done, (name, size, mtime, added, seen, tracks) in enumerate(entries, 1):
                     here, base = os.path.split(name)
                     if here not in folders:
@@ -1588,7 +1676,7 @@ class LibraryDB:
                         "INSERT INTO files(folder_id, name, size, mtime_ns, added, seen, read_format)"
                         " VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (folder_id, _to_db(base), size, mtime, added, seen, READ_FORMAT)).lastrowid
-                    self._insert_tracks(con, file_id, album_id, [track_row(t) for t in tracks])
+                    self._insert_tracks(con, file_id, album_id, [track_row(t) for t in tracks], ids)
                     albums.add(album_id)
                     if progress is not None and (done % 1000 == 0 or done == total):
                         progress(done, total)
@@ -1600,6 +1688,7 @@ class LibraryDB:
                     con.execute("UPDATE folders SET cue_sig = ? WHERE id = ?",
                                 (cue_signature_of(tuple(s) for s in sheet), folder_id))
                 self._rebuild_albums(con, albums)
+                ids.save()
                 con.execute("UPDATE roots SET built = ? WHERE id = ?", (built, root_id))
                 stored = con.execute("SELECT count(*), (SELECT count(*) FROM tracks t JOIN files f ON f.id = t.file_id"
                                      " JOIN folders d ON d.id = f.folder_id WHERE d.root_id = ?) FROM files f"
@@ -1649,7 +1738,9 @@ def _create(con: sqlite3.Connection, fts_ok: bool) -> None:
 def _upgrade(con: sqlite3.Connection, version: int, tables: set[str]) -> None:
     """Bring an older file up to SCHEMA_VERSION step by step (_UPGRADES); without a way up (or from a
     newer version of the player), make the library tables again — they're only a record of the
-    music files — keeping plays and favourites."""
+    music files — keeping plays, favourites and checks. Those are never dropped: a newer version's
+    extra columns stay (this version's writes name their columns); one this version can't write to
+    at all (a column it needs isn't there) is set aside whole, for that newer version to find."""
     while version < SCHEMA_VERSION and version in _UPGRADES:
         _UPGRADES[version](con)
         version += 1
@@ -1659,8 +1750,19 @@ def _upgrade(con: sqlite3.Connection, version: int, tables: set[str]) -> None:
     for name in _LIBRARY_TABLES:
         con.execute(f"DROP TABLE IF EXISTS {name}")
     for name, columns in _KEPT_TABLES.items():
-        if name in tables and {row[1] for row in con.execute(f"PRAGMA table_info({name})")} != columns:
-            con.execute(f"DROP TABLE {name}")   # not kept the way this version keeps it
+        if name not in tables:
+            continue
+        info = con.execute(f"PRAGMA table_info({name})").fetchall()   # (cid, name, type, notnull, default, pk)
+        have = {row[1] for row in info}
+        if columns <= have and not any(row[1] not in columns and row[3] and row[4] is None for row in info):
+            continue   # (usable as it is)
+        for (index,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?"
+                                    " AND sql IS NOT NULL", (name,)).fetchall():
+            con.execute(f'DROP INDEX "{index}"')   # (this version makes its own, by the same names)
+        aside, n = f"{name}_newer", 2
+        while con.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (aside,)).fetchone():
+            aside, n = f"{name}_newer_{n}", n + 1
+        con.execute(f'ALTER TABLE {name} RENAME TO "{aside}"')
 
 
 def _find_root(con: sqlite3.Connection, root: str) -> tuple[int, float] | None:
@@ -1750,6 +1852,62 @@ def _rename(con: sqlite3.Connection, names: Iterable[str]) -> None:
             shown = _text(f"{name}  ({Path(_join(root, rel)).parent.name})" if len(rows) > 1 and rel else name)
             con.execute("UPDATE albums SET display_name = ?, sort_name = ? WHERE id = ?",
                         (shown, _sort_text(shown), album_id))
+
+
+def _bump(con: sqlite3.Connection) -> None:
+    """The library changed: its generation goes up (readers read again)."""
+    con.execute("UPDATE meta SET value = value + 1 WHERE key = 'generation'")
+
+
+def _volume_key(root_id: int) -> str:
+    return f"volume:{root_id}"
+
+
+def _rekey(con: sqlite3.Connection, old: str, new: str, whole: bool = False) -> None:
+    """Plays, favourites and quality checks follow songs to their new place: the song keys `old`
+    and its CUE tracks' ("old#3") become `new`'s — or, `whole`, every key starting with `old` (a
+    folder, ending in its separator). A key that can't be held as text is left as it is."""
+    if not (isinstance(_to_db(old), str) and isinstance(_to_db(new), str)) or old == new:
+        return
+    if whole:   # (keys from `old` up to, not including, `old` with its last character one higher)
+        where, values = "key >= ? AND key < ?", (old, old[:-1] + chr(ord(old[-1]) + 1))
+    else:       # (the file itself, or "file#…": "#" is followed by "$")
+        where, values = "(key = ? OR (key > ? AND key < ?))", (old, old + "#", old + "$")
+    start = len(old) + 1
+    con.execute(f"UPDATE plays SET key = ? || substr(key, ?) WHERE {where}", (new, start, *values))
+    for table in ("favourites", "checks"):   # (one row per key: the songs' own rows win)
+        con.execute(f"UPDATE OR REPLACE {table} SET key = ? || substr(key, ?) WHERE {where}", (new, start, *values))
+
+
+class _TrackIds:
+    """Song ids for one write, never one given before — not even to a song removed since: a tab of
+    the whole library holds songs by id (library_tracks), and an id given again would show another
+    song in its place. The highest given is kept in `meta` (saved with the write)."""
+
+    def __init__(self, con: sqlite3.Connection):
+        self._con = con
+        row = con.execute("SELECT value FROM meta WHERE key = 'last_track_id'").fetchone()
+        top = con.execute("SELECT max(id) FROM tracks").fetchone()[0] or 0
+        self.last = max(int(top), int(row[0]) if row and row[0] is not None else 0)
+
+    def take(self) -> int:
+        self.last += 1
+        return self.last
+
+    def save(self) -> None:
+        self._con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('last_track_id', ?)", (self.last,))
+
+
+def _moved_here(con: sqlite3.Connection, size: int, mtime: int, name: str) -> tuple[int, float, float, str] | None:
+    """A file found missing (gone from its folder) with exactly this size and modified time: the same
+    file, moved or renamed — (its id, added, seen, path) — or None. One with the same name first."""
+    if size <= 0 or mtime < 0:
+        return None
+    row = con.execute(
+        "SELECT f.id, f.added, f.seen, r.path, d.rel, f.name FROM files f JOIN folders d ON d.id = f.folder_id"
+        " JOIN roots r ON r.id = d.root_id WHERE f.missing_since IS NOT NULL AND f.size = ? AND f.mtime_ns = ?"
+        " ORDER BY f.name = ? DESC, f.missing_since DESC LIMIT 1", (size, mtime, _to_db(name))).fetchone()
+    return None if row is None else (row[0], row[1], row[2], _join(row[3], row[4], row[5]))
 
 
 def _split(text: str) -> tuple[str, ...]:
@@ -1858,9 +2016,11 @@ def folder_result(root: str | Path, folder: str | Path, listing: dict[str, tuple
                   tracks: dict[str, list[Track]], retry: Iterable[str] = (), cue_sig: str = "",
                   listed_ok: bool = True) -> FolderResult:
     """A FolderResult from tracks already read: {file name: its tracks}."""
+    retry = list(retry)
+    unreadable = [name for name in retry if tracks.get(name) and all(t.unreadable for t in tracks[name])]
     return FolderResult(root=str(Path(root)), folder=os.fspath(folder), listing=dict(listing),
                         tracks={name: [track_row(t) for t in found] for name, found in tracks.items()},
-                        retry=list(retry), cue_sig=cue_sig, listed_ok=listed_ok)
+                        retry=retry, unreadable=unreadable, cue_sig=cue_sig, listed_ok=listed_ok)
 
 
 def read_folder(root: str | Path, folder: str | Path, listing: dict[str, tuple[int, int, float]],

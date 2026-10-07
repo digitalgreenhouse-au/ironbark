@@ -274,11 +274,13 @@ def plan(db: LibraryDB, keep: bool = True) -> Plan:
     are left for later (their checks kept); songs this player can't decode are left out.
     `keep` False: only counted (the question's estimate holds no songs).
 
-    `gone`: stored checks of songs no longer in the library — but none under a library folder
-    whose first look hasn't finished (a new folder, or the library being read again after its
-    database was remade): its songs aren't all listed yet, and their checks took hours to make."""
+    `gone`: stored checks of songs no longer in a library folder whose first look has finished.
+    None under one whose first look hasn't (a new folder, the library being read again after its
+    database was remade: its songs aren't all listed yet), nor of songs in no library folder now (a
+    folder taken out of the library, or replaced while its drive is away, keeps its checks for when
+    it's back, as it keeps its plays and favourites): their checks took hours to make."""
     states = db.check_states()
-    unread = [os.path.join(os.path.normcase(root), "") for root in db.roots() if not db.built(root)]
+    looked = tuple(os.path.join(os.path.normcase(root), "") for root in db.roots() if db.built(root))
     known: set[str] = set()
     songs: list[Song] = []
     done = count = 0
@@ -297,8 +299,7 @@ def plan(db: LibraryDB, keep: bool = True) -> Plan:
         work += song.work
         if keep:
             songs.append(song)
-    gone = [key for key in states
-            if key not in known and not (unread and os.path.normcase(key).startswith(tuple(unread)))]
+    gone = [key for key in states if key not in known and looked and os.path.normcase(key).startswith(looked)]
     return Plan(songs, done, gone, music, count, work)
 
 
@@ -563,18 +564,23 @@ class Checker:
         left = sum(song.work for song in songs)
         started, measured = time.monotonic(), 0.0
         checked = 0
-        suspects: dict[str, int] = {}   # songs in hand when a worker process died: how many times
+        suspects: dict[str, int] = {}   # songs alone in hand when a worker process died: how many times
+        alone: deque[Song] = deque()    # songs in hand together when one died: each tried again on its own
         pool, flag = self._pool()
         in_flight: dict = {}
         try:
-            while (songs or in_flight) and not stop.is_set():
+            while (songs or alone or in_flight) and not stop.is_set():
                 if pool is None:
-                    song = songs.popleft()
+                    song = (alone or songs).popleft()
                     finished = [(song, check_song(song, stop))]
                 else:
                     finished = []
                     try:
-                        while songs and len(in_flight) < self.workers:   # (one song each: a pause waits for nothing)
+                        if alone and not in_flight:   # (on its own: if its worker dies, it was that song)
+                            future = pool.submit(_check_in_worker, alone[0])
+                            in_flight[future] = alone.popleft()
+                        # (One song each: a pause waits for nothing.)
+                        while not alone and songs and len(in_flight) < self.workers:
                             future = pool.submit(_check_in_worker, songs[0])
                             in_flight[future] = songs.popleft()
                         ready, _rest = wait(in_flight, timeout=0.25, return_when=FIRST_COMPLETED)
@@ -589,16 +595,21 @@ class Checker:
                                 log.exception("the library check couldn't check %s", song.path)
                     except BrokenExecutor:
                         # A worker process died (a file that crashes the decoder, say): start new ones
-                        # and try the songs in hand again — one in hand at CRASHES deaths is damaged.
+                        # and try the songs in hand again. Which song it was is known only when one was
+                        # in hand alone: those in hand together are each tried again on their own, and
+                        # a song alone in hand at CRASHES deaths is damaged.
                         log.warning("a library-check worker process stopped; starting new ones")
                         flag.set()
                         pool.shutdown(wait=False, cancel_futures=True)
-                        for song in in_flight.values():
+                        if len(in_flight) == 1:
+                            song = next(iter(in_flight.values()))
                             suspects[song.key] = suspects.get(song.key, 0) + 1
                             if suspects[song.key] >= CRASHES:
                                 finished.append((song, _undecodable(song)))
                             else:
-                                songs.appendleft(song)
+                                alone.appendleft(song)
+                        else:
+                            alone.extend(in_flight.values())
                         in_flight.clear()
                         pool, flag = self._pool()
                 for song, outcome in finished:

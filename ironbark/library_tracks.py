@@ -17,12 +17,14 @@ list's own loader thread. So:
 - The engine finds a song by its path through `index_of_path` (songs read, then a C-speed scan of
   the ids) instead of looking at every song.
 - The in-tab search runs in the database (`matching`: the folded text it keeps for each song, the
-  same the in-tab filter searches), and Ctrl+A's actions read their songs in one go (`many`).
+  same the in-tab filter searches), and Ctrl+A's actions read their songs in one go (`many`, which
+  renews ids as `_renew` does below).
 - Songs added to the tab later are held as Tracks after the ids (`extras`); `+` makes a new list
   sharing the same reads.
 - A file the library reads again (a tag edit, a new reading format) gets new song ids in the
   database: when an album's ids aren't found any more, its ids now are put in their place
-  (`_renew`), so its songs don't turn up as missing.
+  (`_renew`), so its songs don't turn up as missing. The database never gives an id twice
+  (library_db._TrackIds), so an id that's found is always the song it was.
 
 Nothing here touches Tk. The loader thread reads through its own database connection and lets it
 go when it has nothing left to do.
@@ -263,7 +265,9 @@ class LibraryTrackList(Sequence):
 
     def many(self, indices: Iterable[int]) -> list[Track]:
         """These songs, in this order: the ones read from the LRU, the rest from the database in one go
-        (not kept: a Ctrl+A over the whole tab mustn't push out the songs on show)."""
+        (not kept: a Ctrl+A over the whole tab mustn't push out the songs on show). An album whose
+        songs were read again since (new ids) has its ids now put in place first (`_renew`); only
+        songs gone from the library are left out."""
         indices = list(indices)
         count = len(self.ids)
         shared = self._shared
@@ -279,6 +283,11 @@ class LibraryTrackList(Sequence):
                         found[self.ids[i]] = track
         if missing:
             found.update(shared.db.tracks_by_id(missing))
+            for group in sorted({self._group_of(i) for i in indices if i < count and self.ids[i] not in found}):
+                folder, start, end = self.groups[group]
+                renewed = self._renew(folder, start, min(end, count))
+                if renewed is not None:
+                    found.update(shared.db.tracks_by_id(renewed))
         result = []
         for i in indices:
             if i >= count:

@@ -517,6 +517,9 @@ def test_a_few_albums_tab_is_searched_by_its_own_songs(root, synth_db, monkeypat
         monkeypatch.setattr(library_tracks, "BY_ID_MOST", 3)
         assert tab.matching(["a"]) == [int(i) for i in view._songs] and asked[-1] is None
         view.tree.destroy()
+        view._worker.join(5)
+        # (the tab's own reads finished before the database closes: closing it under a read crashes)
+        assert not tab.waiting() or _wait(root, lambda: not tab.waiting())
 
 
 def test_a_long_playlist_drop_under_the_last_row_on_show_lands_there(root):
