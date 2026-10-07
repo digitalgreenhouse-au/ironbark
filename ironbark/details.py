@@ -7,6 +7,7 @@ scrolls (wheel, slim scrollbar) when it's taller than the screen instead of runn
 
 from __future__ import annotations
 
+import logging
 import math
 import sys
 import threading
@@ -15,7 +16,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from . import controls, loopback, placement, ripcheck, theme
+from . import controls, loopback, placement, ripcheck, theme, toolwin
 from .analysis import (CLIP_RUN, LOSSY_BELOW_HZ, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure,
                        analyse)
 from .engine import Health, OutputInfo, PlaybackEvent, Player, State
@@ -25,6 +26,8 @@ from .formats import FormatFlags
 from .mp3frames import build_index as build_mp3_index
 from .library import LOSSY_CODECS, Track, format_rate
 from .meters import album_files
+
+log = logging.getLogger(__name__)
 
 MIXER = "Windows" if sys.platform == "win32" else "system"
 
@@ -389,13 +392,14 @@ class NowPlayingWindow:
         self._index: FrameIndex | None = None
         self._shown_db: list[float] = []
         self._analysis: Analysis | None = None
-        self._progress = 0.0
+        self._analysis_state: dict | None = None  # the check running: {"path", "progress", "done", "error"}
         self._cancel = threading.Event()
         self._album_cancel = threading.Event()  # only the window closing stops an album measurement
         self._album_state: dict | None = None
         self._rip_cancel = threading.Event()   # only the window closing stops a rip check
         self._rip_state: dict | None = None
         self._job = None
+        self._keep_going = toolwin.KeepGoing(self.win)
 
         # (0.22.0) Everything sits in a panel that scrolls when the window is shorter than it: the
         # window grows with its content (as before) but never past the bottom of the screen.
@@ -566,6 +570,7 @@ class NowPlayingWindow:
         self._track_path = track.path
         self._cancel.set()
         self._cancel = threading.Event()
+        self._analysis_state = None   # (the last track's check is cancelled; its watch stops)
         self._analysis = self._analysis_cache.get(track.path)
         self.title_label.configure(text=track.title)
         self.sub_label.configure(text=track.display_artist_album or track.path.parent.name)
@@ -644,11 +649,13 @@ class NowPlayingWindow:
         track = self.player.status().track
         label = ("Verify & examine (genuine?, dynamics, loudness, stereo)" if track is None or track.is_flac
                  else "Examine (genuine?, dynamics, loudness, stereo)")
-        self.check_button = controls.FlatButton(self.check_frame, label, self._start_analysis, kind="primary")
+        running = self._analysis_state   # (rebuilt while the check runs: still greyed out, still counting)
+        self.check_button = controls.FlatButton(self.check_frame, label, self._start_analysis, kind="primary",
+                                                state="disabled" if running else "normal")
         self.check_button.grid(row=0, column=0, columnspan=2, sticky="w")
         self.check_progress = ttk.Label(self.check_frame, text="", style="Muted.TLabel")
         self.check_progress.grid(row=1, column=0, columnspan=2, sticky="w", pady=theme.pad(theme.GAP_SMALL, 0))
-        self.check_progress.grid_remove()
+        self._say(self.check_progress, f"Reading the whole file… {running['progress']:.0%}" if running else "")
         self._show_album(2)
         self._show_rip(3)
         self._align()
@@ -694,6 +701,9 @@ class NowPlayingWindow:
             try:
                 result = album_measure(files, cancel, progress=lambda p: state.__setitem__("progress", p))
             except (OSError, RuntimeError):
+                result = None
+            except Exception:  # noqa: BLE001 — logged; the button comes back (never greyed out for good)
+                log.exception("measuring the album %s", folder)
                 result = None
             if result is not None:
                 self._album_cache[folder] = result
@@ -791,43 +801,62 @@ class NowPlayingWindow:
 
     def _start_analysis(self):
         track = self.player.status().track
-        if track is None:
+        if track is None or self._analysis_state is not None:
             return
-        self.check_button.configure(state="disabled")
-        self._progress = 0.0
-        cancel = self._cancel
         path = track.path
+        state = {"path": path, "progress": 0.0, "done": False, "error": ""}
+        self._analysis_state = state
+        self.check_button.configure(state="disabled")
+        cancel = self._cancel
 
         def work():
             try:
                 result = analyse(path, track.bits, track.md5,
-                                 progress=lambda p: setattr(self, "_progress", p), cancel=cancel)
+                                 progress=lambda p: state.__setitem__("progress", p), cancel=cancel)
             except (OSError, RuntimeError):  # won't even open: damaged from the start
                 result = Analysis(md5_ok=False, dr=None, peak_dbfs=float("-inf"), damaged_at=0.0,
                                   duration=track.duration)
+            except Exception as exc:  # noqa: BLE001 — not the file's fault: said, and the button comes back
+                log.exception("checking %s", path)
+                result, state["error"] = None, f"{type(exc).__name__}: {exc}"
             if result is not None:
                 self._analysis_cache[path] = result
+            state["done"] = True
 
         threading.Thread(target=work, name="analysis", daemon=True).start()
-        self._watch_analysis(path)
+        self._watch_analysis(state)
 
-    def _watch_analysis(self, path: Path):
-        if not self.win.winfo_exists() or path != self._track_path:
+    def _watch_analysis(self, state: dict):
+        if not self.win.winfo_exists() or state is not self._analysis_state:
+            return   # closed, or another track since (its check was cancelled)
+        if not state["done"]:
+            try:
+                self._say(self.check_progress, f"Reading the whole file… {state['progress']:.0%}")
+            except tk.TclError:
+                pass  # the row is being rebuilt
+            self.win.after(150, self._watch_analysis, state)
             return
-        result = self._analysis_cache.get(path)
-        if result is None:
-            self._say(self.check_progress, f"Reading the whole file… {self._progress:.0%}")
-            self.win.after(150, self._watch_analysis, path)
-            return
-        self._analysis = result
-        self._show_check()
+        self._analysis_state = None
+        self._analysis = self._analysis_cache.get(state["path"])
+        self._show_check()   # the result, or the button again (cancelled, or failed: said below it)
+        if self._analysis is None and state["error"]:
+            self._say(self.check_progress, f"The check failed: {state['error']}")
 
     # -- live ----------------------------------------------------------------
     def _tick(self):
+        if not self.win.winfo_exists():
+            return
+        with self._keep_going:
+            self._step()
+        self._job = self.win.after(REFRESH_MS, self._tick)
+
+    def _step(self):
         status = self.player.status()
         track = status.track
         if track is not None and track.path != self._track_path:
             self._on_track_change(track)
+        if not toolwin.on_screen(self.win):
+            return   # minimised: the live figures aren't drawn
 
         if status.state is State.STOPPED or track is None:
             for key, value in self.values.items():
@@ -839,7 +868,6 @@ class NowPlayingWindow:
             self._draw_meter(())
         else:
             self._update_live(status, track)
-        self._job = self.win.after(REFRESH_MS, self._tick)
 
     def _update_live(self, status, track: Track):
         pos, dur = status.position, status.duration

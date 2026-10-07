@@ -11,6 +11,8 @@
 Sound: audition.py loops the excerpt and switches at the same sample with an identical dip,
 on the player's output and mode, at the player's volume. The player is paused while you listen
 (suspend: it lets go of the sound device) and stays paused — press play there to carry on.
+Another window that plays its own sound (Clipping → Hear it, Test signals) stops this one first,
+and the other way round.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from . import abx, audition, compare, controls, placement, theme
+from . import abx, audition, compare, controls, placement, theme, toolwin
 from .compare_window import FileRow, choose_file
 from .engine import State
 
@@ -134,12 +136,14 @@ class AbxWindow:
         self._duration = 0.0                # A's length in seconds
         self.start_s = 0.0
         self._loading: threading.Thread | None = None
-        self._loaded = None                 # what the loading thread produced (Pair or error text)
+        self._load: dict = {}               # the latest load: {"result": Pair or error text} once done
         self._cancel = threading.Event()
         self._reload_job = None
         self._message = ""
+        self._keep_going = toolwin.KeepGoing(self.win)
         if path_a:
-            self._set_file("A", Path(path_a), start_s)
+            # The path itself: a CUE sheet track's path carries which part of the file it is.
+            self._set_file("A", path_a if isinstance(path_a, Path) else Path(path_a), start_s)
         self._refresh()
         self.win.bind("<Configure>", self._moved, add="+")
         self._job = self.win.after(REFRESH_MS, self._tick)
@@ -226,9 +230,11 @@ class AbxWindow:
             self._refresh()
             return
         self.stop()
+        self.audition = None   # the old excerpt is never heard while this one loads (or if it fails)
         self._cancel.set()
         self._cancel = cancel = threading.Event()
-        self.pair, self._loaded = None, None
+        self.pair = None
+        self._load = load = {}   # (a load started later has its own: this one's result is then ignored)
         start, length = self.start_s, self._length()
 
         def work():
@@ -238,8 +244,7 @@ class AbxWindow:
                 return
             except Exception as exc:  # noqa: BLE001 — shown in the window
                 result = f"Couldn't load the excerpt: {exc}"
-            if not cancel.is_set():
-                self._loaded = result
+            load["result"] = result
 
         self._message = "Loading the excerpt…"
         self._loading = threading.Thread(target=work, name="abx-load", daemon=True)
@@ -247,7 +252,7 @@ class AbxWindow:
         self._refresh()
 
     def _take_loaded(self):
-        loaded, self._loaded = self._loaded, None
+        loaded = self._load.pop("result")
         self._loading = None
         if isinstance(loaded, str):
             self._message = loaded
@@ -269,7 +274,7 @@ class AbxWindow:
         return audition.level_gains(self.pair.difference_db)
 
     def _gains_changed(self):
-        if self.audition is not None and (self.test is None or self.test.done):
+        if self.audition is not None and self.pair is not None and (self.test is None or self.test.done):
             ga, gb = self._gains()
             switcher = self.audition.switcher
             switcher.gains = [ga, gb, ga if switcher.slots[2] is self.pair.a else gb]
@@ -281,12 +286,14 @@ class AbxWindow:
         return self.audition is not None and self.audition.playing
 
     def hear(self, letter: str):
-        if self.audition is None or (letter == "X" and (self.test is None or self.test.done)):
+        if (self.audition is None or self.pair is None
+                or (letter == "X" and (self.test is None or self.test.done))):
             return
         self._last, self._message = letter, ""
         self.audition.switcher.volume = self.player.volume ** 2
         if not self.playing:
-            self.player.suspend()   # the player pauses and lets go of the device while you listen
+            toolwin.take_sound(self)   # another window's sound stops first
+            self.player.suspend()      # the player pauses and lets go of the device while you listen
             try:
                 self.audition.play(SLOTS[letter])
             except Exception as exc:  # noqa: BLE001 — a device that won't open is a message, not a crash
@@ -299,6 +306,13 @@ class AbxWindow:
         if self.audition is not None:
             self.audition.stop()
         self._refresh()
+
+    def sound_taken(self):
+        """Another window started its own sound: this one stops, and says why."""
+        if self.playing:
+            self.audition.stop()
+            self._message = "Stopped: another window is playing"
+            self._refresh()
 
     def _restart(self):
         if self.playing:
@@ -402,7 +416,12 @@ class AbxWindow:
         self._job = None
         if not self.win.winfo_exists():
             return
-        if self._loaded is not None:
+        with self._keep_going:
+            self._step()
+        self._job = self.win.after(REFRESH_MS, self._tick)
+
+    def _step(self):
+        if "result" in self._load:
             self._take_loaded()
         if self.playing:
             self.audition.switcher.volume = self.player.volume ** 2
@@ -410,7 +429,6 @@ class AbxWindow:
                 self.audition.stop()
                 self._message = "Stopped: the player started playing again"
             self._refresh()
-        self._job = self.win.after(REFRESH_MS, self._tick)
 
     def _rewrap(self, event):
         width = max(200, event.width - theme.px(24))
@@ -435,5 +453,6 @@ class AbxWindow:
                 self.win.after_cancel(job)
         if self.audition is not None:
             self.audition.stop()
+        toolwin.give_back_sound(self)
         self.win.destroy()
         self.on_close()

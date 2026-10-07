@@ -397,6 +397,56 @@ def test_clip_audition_experiment_plays_a_and_b_and_goes_away_when_switched_off(
     win.close()
 
 
+def test_clip_audition_lets_go_of_the_last_song_s_loop(root, tmp_path, no_device):
+    from ironbark.clip_window import ClipWindow
+    path, x, places = bursts_file(tmp_path)
+    clean = tmp_path / "clean.wav"
+    sf.write(clean, np.zeros((3 * RATE, 2), np.float32), RATE, subtype="FLOAT")
+    player = WindowPlayer(path)
+    prefs = {}
+    experiments.set_enabled(prefs, "clip_audition", True)
+    win = ClipWindow(root, player, prefs, stream_factory=FakeStream)
+    win.win.update()
+    wait_for(win, lambda: win.audition is not None)
+    win.hear("A")
+    assert win.playing and player.suspended == 1
+    player.track = SimpleNamespace(path=clean)                    # the next song: no overs
+    wait_for(win, lambda: win.scan_path == clean and win.scan_result is not None)
+    assert not win.playing and FakeStream.made[-1].closed         # the old song's loop stopped…
+    assert win.audition is None and win.versions is None          # …and is gone
+    assert win.level_label.cget("text").startswith("No overs in this song")
+    win.hear("A")
+    assert player.suspended == 1 and len(FakeStream.made) == 1    # nothing old is played
+    win.close()
+
+
+def test_clip_window_says_so_when_its_work_fails(root, tmp_path, no_device, monkeypatch):
+    from ironbark.clip_window import ClipWindow
+    path, x, places = bursts_file(tmp_path)
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError("too big")
+    real_scan = clipping.scan
+    monkeypatch.setattr(clipping, "scan", out_of_memory)
+    player = WindowPlayer(path)
+    win = ClipWindow(root, player, {}, stream_factory=FakeStream)
+    win.win.update()
+    wait_for(win, lambda: win._scan_failed)
+    win._tick()
+    assert win.summary.cget("text") == "This file couldn't be read."      # not "Reading…" for ever
+    win.close()
+    # Making the A/B loop fails: said so, and another over can still be tried.
+    monkeypatch.setattr(clipping, "scan", real_scan)
+    monkeypatch.setattr(clipping, "listening_versions", out_of_memory)
+    prefs = {}
+    experiments.set_enabled(prefs, "clip_audition", True)
+    win = ClipWindow(root, player, prefs, stream_factory=FakeStream)
+    win.win.update()
+    wait_for(win, lambda: win._loading is None and "Couldn't" in win.hearing.cget("text"))
+    assert win.level_label.cget("text") != "Making the loop…"
+    win.close()
+
+
 # -- in the player (the real window on temp settings; skipped without a display) ---------------------
 from test_light_mini import _pump, make_window  # noqa: E402,F401  (make_window is a fixture)
 

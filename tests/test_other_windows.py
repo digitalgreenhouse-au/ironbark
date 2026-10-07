@@ -295,6 +295,66 @@ def test_now_playing_lines_up_colours_and_fits(root, tmp_path):
         NowPlayingWindow._analysis_cache.pop(path, None)
 
 
+def test_now_playing_check_stays_greyed_out_while_it_runs(root, tmp_path, monkeypatch):
+    import threading
+    from ironbark import details
+    from ironbark.details import NowPlayingWindow
+    from ironbark.library import read_track
+
+    track = read_track(_flac(tmp_path))
+    release, calls = threading.Event(), []
+
+    def slow(path, bits, md5, progress=None, cancel=None):
+        calls.append(path)
+        progress(0.37)
+        release.wait(10)
+        return None                                   # (as when the check is cancelled)
+
+    monkeypatch.setattr(details, "analyse", slow)
+    win = NowPlayingWindow(root, ShownPlayer(track), prefs={})
+    _pump(root, 0.2)
+    win.check_button.invoke()
+    _pump(root, 0.3)
+    assert win.check_button.instate(["disabled"])
+    win.network_changed()                             # the Check section is rebuilt while it runs
+    _pump(root, 0.3)
+    assert win.check_button.instate(["disabled"]) and "37%" in win.check_progress.cget("text")
+    win.check_button.invoke()
+    assert len(calls) == 1                            # no second check of the same file
+    release.set()
+    _pump(root, 0.6)
+    assert win.check_button.instate(["!disabled"])    # it ended without a result: the button is back…
+    assert not win.check_progress.winfo_manager()     # …and no progress line is left behind
+    win.close()
+    assert not root.errors
+
+
+def test_now_playing_work_that_fails_gives_its_button_back(root, tmp_path, monkeypatch):
+    from ironbark import details
+    from ironbark.details import NowPlayingWindow
+    from ironbark.library import read_track
+
+    track = read_track(_flac(tmp_path))
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError("too big")
+
+    monkeypatch.setattr(details, "album_measure", out_of_memory)
+    monkeypatch.setattr(details, "analyse", out_of_memory)
+    win = NowPlayingWindow(root, ShownPlayer(track), prefs={})
+    _pump(root, 0.2)
+    win.album_button.invoke()
+    _pump(root, 0.6)
+    assert win.album_button.instate(["!disabled"]) and win._album_state is None
+    win.check_button.invoke()
+    _pump(root, 0.6)
+    assert win.check_button.instate(["!disabled"])
+    assert "The check failed" in win.check_progress.cget("text")
+    assert NowPlayingWindow.cached_analysis(track.path) is None   # not mistaken for a damaged file
+    win.close()
+    assert not root.errors
+
+
 def test_now_playing_follows_light(root, tmp_path):
     from ironbark.details import NowPlayingWindow
     from ironbark.library import read_track

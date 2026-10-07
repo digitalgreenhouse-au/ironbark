@@ -5,12 +5,15 @@ strength. Two views:
 - Whole track: the full file at once, read in the background — where the sound stops, and
   how sharply, is easy to see here (a lossy source's wall, an upsampled file's empty top),
   with the cut-off marked (Now Playing → Check's figure when it has one).
-The maths is in spectrum.py.
+The maths is in spectrum.py. The live picture is kept between frames: each frame colours only the
+slices heard since and scrolls them in. Nothing is drawn while nothing changed, or while the
+window is minimised.
 """
 
 from __future__ import annotations
 
 import collections
+import logging
 import queue
 import threading
 import time
@@ -20,7 +23,9 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from . import controls, placement, spectrum, theme
+from . import controls, placement, spectrum, theme, toolwin
+
+log = logging.getLogger(__name__)
 
 REFRESH_MS = 100
 COLUMN_PX = 2           # each live slice (1/25 s of sound) is this many pixels wide
@@ -70,13 +75,17 @@ class SpectrogramWindow:
         self.feed = player.monitor()
         self.blocks: collections.deque = collections.deque(maxlen=64)   # waiting to be heard
         self.live = spectrum.LiveSpectrogram()
-        self._rgb: collections.deque = collections.deque(maxlen=4000)    # live columns as picture rows
-        self._rgb_key = None       # (height, rate) the colour columns were made for
-        self._photo = None
+        self._pixels: np.ndarray | None = None   # the live picture (height x width x RGB), newest on the right
+        self._pixels_key = None    # (height, columns across, rate) it was coloured for
+        self._pixels_made = 0      # the live columns made (_made_total) it shows
+        self._recolour_due = False  # stretched while the window is resized: colour afresh once it settles
+        self._live_photo = None
+        self._photo = None         # the whole-track picture
         self._photo_key = None
         self._key_photo = None
         self._key_height = 0
         self._plot = (0, 0, 1, 1)  # x, y, width, height of the picture area
+        self._drawn = None         # what the canvas shows (see _draw)
         self._track_path = None
         self._lossy_by_design = False  # an MP3: its trimmed top end is by design, not a clue
         self._picture: spectrum.TrackPicture | None = None
@@ -85,6 +94,7 @@ class SpectrogramWindow:
         self._cancel = threading.Event()
         self._relayout_job = None
         self._made_total = 0       # live columns made so far (to redraw only when there's news)
+        self._keep_going = toolwin.KeepGoing(self.win)
         self.win.bind("<Configure>", self._moved, add="+")
         self._job = self.win.after(REFRESH_MS, self._tick)
 
@@ -99,8 +109,15 @@ class SpectrogramWindow:
         self._draw()
 
     def _relayout(self):
-        """After a resize settles: the whole-track picture is re-read at the new size."""
+        """After a resize settles: the live picture is coloured afresh at the new size (it was only
+        stretched meanwhile), the whole-track picture re-read."""
         self._relayout_job = None
+        if self._recolour_due:
+            self._recolour_due = False
+            self._pixels_key = None
+            if self.view.get() == "live":
+                self._drawn = None
+                self._draw()
         if self.view.get() == "track":
             self._start_track()
 
@@ -112,7 +129,8 @@ class SpectrogramWindow:
 
     # -- data ------------------------------------------------------------------------
     def _drain(self) -> bool:
-        """Feed the live picture everything now heard. True if it gained a column."""
+        """Feed the live slices everything now heard (also while they're not on show, so the
+        picture has no gap when they are). True if it gained a column."""
         try:
             while True:
                 self.blocks.append(self.feed.get_nowait())
@@ -124,27 +142,17 @@ class SpectrogramWindow:
             block = self.blocks.popleft()
             made += self.live.add(spectrum.to_float(block["source"]), block["rate"], block.get("path"),
                                   block.get("frame"))
-        if made:
-            self._made_total += made
-            self._colour_new(made)
+        self._made_total += made
         return bool(made)
 
-    def _colour_new(self, count: int):
-        """Turn the newest `count` live columns into picture rows (all of them again if the
-        picture's height or the sample rate changed)."""
-        height = self._plot[3]
-        if not self.live.columns:
-            return
-        rate = self.live.columns[-1][1]
-        if self._rgb_key != (height, rate):
-            self._rgb_key = (height, rate)
-            self._rgb.clear()
-            count = len(self.live.columns)
+    @staticmethod
+    def _stripes(columns, height: int, rate: int) -> np.ndarray:
+        """Live columns as picture stripes (height x COLUMN_PX each, side by side, top row = highest
+        frequency); a column at another sample rate is left dark."""
         starts = spectrum.log_rows(height, rate, spectrum.LIVE_FFT)
-        new = list(self.live.columns)[-count:]
-        for db, r in new:
-            rows = spectrum.to_rows(db, starts)[::-1] if r == rate else np.full(height, spectrum.EMPTY)
-            self._rgb.append(spectrum.colours(rows))
+        stripes = [spectrum.colours(spectrum.to_rows(db, starts)[::-1] if r == rate
+                                    else np.full(height, spectrum.EMPTY)) for db, r in columns]
+        return np.repeat(np.stack(stripes, axis=1), COLUMN_PX, axis=1)
 
     def _start_track(self):
         track = self.player.status().track
@@ -165,6 +173,10 @@ class SpectrogramWindow:
             except (OSError, RuntimeError, ValueError):
                 picture = None
                 self._failed = not cancel.is_set()
+            except Exception:  # noqa: BLE001 — said in the window ("couldn't be read"), never a spinner for ever
+                log.exception("reading the whole track for the spectrogram")
+                picture = None
+                self._failed = not cancel.is_set()
             if picture is not None and not cancel.is_set():
                 self._picture = picture
 
@@ -173,20 +185,35 @@ class SpectrogramWindow:
     def _tick(self):
         if not self.win.winfo_exists():
             return
+        with self._keep_going:
+            self._step()
+        self._job = self.win.after(REFRESH_MS, self._tick)
+
+    def _step(self):
         self._drain()
         if self.view.get() == "track":
             track = self.player.status().track
             if (track.path if track else None) != self._track_path:
                 self._start_track()
-        self._draw()
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        if toolwin.on_screen(self.win):   # minimised: nothing drawn
+            self._draw()
 
     # -- drawing -----------------------------------------------------------------------
     def _draw(self):
+        x0, y0, width, height = self._plot
+        live = self.view.get() == "live"
+        news = (self._made_total if live
+                else (id(self._picture), f"{self._progress:.0%}", self._failed, self._track_path,
+                      id(self.analysis_for(self._track_path)) if self._track_path else None))
+        key = (live, news, self._plot, theme.current.name)
+        if key == self._drawn:      # nothing new: leave the canvas as it is
+            if not live and self._picture is not None:
+                self._draw_position()
+            return
+        self._drawn = key
         c = self.canvas
         c.delete("all")
-        x0, y0, width, height = self._plot
-        if self.view.get() == "live":
+        if live:
             image, rate = self._live_image(width, height)
             if image is None:
                 self.info.configure(text="Live: nothing heard yet. Start the music and the picture scrolls "
@@ -207,21 +234,39 @@ class SpectrogramWindow:
             self._draw_position()
 
     def _live_image(self, width: int, height: int):
-        if self.live.columns and self._rgb_key != (height, self.live.columns[-1][1]):
-            self._colour_new(len(self.live.columns))  # resized: recolour everything kept
-        if not self._rgb:
+        """The live picture, kept between frames: the columns heard since the last frame are
+        coloured and scrolled in from the right. A new size stretches the old picture until the
+        size settles (_relayout); then only the columns on show are coloured afresh."""
+        columns = self.live.columns
+        if not columns:
             return None, None
-        rate = self._rgb_key[1]
-        key = ("live", self._made_total, width, height)
-        if self._photo_key == key:
-            return self._photo, rate
+        rate = columns[-1][1]
         count = max(1, width // COLUMN_PX)
-        recent = list(self._rgb)[-count:]
-        picture = np.zeros((height, count, 3), dtype=np.uint8)
-        picture[:, count - len(recent):] = np.stack(recent, axis=1)
-        picture = np.repeat(picture, COLUMN_PX, axis=1)
-        self._photo, self._photo_key = ImageTk.PhotoImage(Image.fromarray(picture), master=self.win), key
-        return self._photo, rate
+        key = (height, count, rate)
+        new = self._made_total - self._pixels_made
+        old = self._pixels
+        if key != self._pixels_key and old is not None and self._pixels_key and self._pixels_key[2] == rate:
+            stretched = np.asarray(Image.fromarray(old).resize((old.shape[1], height), Image.NEAREST))
+            pixels = np.zeros((height, count * COLUMN_PX, 3), dtype=np.uint8)
+            keep = min(pixels.shape[1], old.shape[1])
+            pixels[:, pixels.shape[1] - keep:] = stretched[:, old.shape[1] - keep:]
+            self._pixels, self._pixels_key, self._recolour_due = pixels, key, True
+        if key != self._pixels_key or new >= count:
+            shown = list(columns)[-min(count, len(columns)):]
+            pixels = np.zeros((height, count * COLUMN_PX, 3), dtype=np.uint8)
+            pixels[:, pixels.shape[1] - len(shown) * COLUMN_PX:] = self._stripes(shown, height, rate)
+            self._pixels, self._pixels_key = pixels, key
+        elif new > 0:
+            stripes = self._stripes(list(columns)[-new:], height, rate)
+            self._pixels[:, :-stripes.shape[1]] = self._pixels[:, stripes.shape[1]:]
+            self._pixels[:, -stripes.shape[1]:] = stripes
+        self._pixels_made = self._made_total
+        image = Image.fromarray(self._pixels)
+        if self._live_photo is not None and (self._live_photo.width(), self._live_photo.height()) == image.size:
+            self._live_photo.paste(image)
+        else:
+            self._live_photo = ImageTk.PhotoImage(image, master=self.win)
+        return self._live_photo, rate
 
     def _track_image(self, width: int, height: int):
         picture = self._picture
@@ -328,12 +373,13 @@ class SpectrogramWindow:
 
     def _draw_position(self):
         """Where the music is now, as a thin line down the whole-track picture."""
+        self.canvas.delete("position")
         status = self.player.status()
         if status.track is None or status.track.path != self._track_path or not self._picture.duration:
             return
         x0, y0, width, height = self._plot
         x = x0 + width * min(1.0, status.position / self._picture.duration)
-        self.canvas.create_line(x, y0, x, y0 + height, fill=theme.TEXT)
+        self.canvas.create_line(x, y0, x, y0 + height, fill=theme.TEXT, tags="position")
 
     # -- window --------------------------------------------------------------------------
     def _moved(self, event):
@@ -352,5 +398,6 @@ class SpectrogramWindow:
             if job:
                 self.win.after_cancel(job)
         self.player.unmonitor(self.feed)
+        self._photo = self._live_photo = self._key_photo = None   # its pictures go with the window, on this thread
         self.win.destroy()
         self.on_close()

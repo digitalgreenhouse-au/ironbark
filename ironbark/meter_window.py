@@ -11,6 +11,7 @@ the scales and the maths are untouched.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -20,9 +21,12 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from . import controls, placement, theme
+from . import controls, placement, theme, toolwin
+from .library import album_folder
 from .loudness import LRA_SETTLING
-from .meters import PPM_TYPES, MeterEngine, Reading, album_alignment, album_alignment_loudness, album_files
+from .meters import PPM_TYPES, MeterEngine, Reading, album_alignment, album_alignment_loudness
+
+log = logging.getLogger(__name__)
 
 REFRESH_MS = 33          # ~30 frames a second
 # Colours: theme.py's METER_* group (the VU face's card, ink, red and rim; the RMS and loudness bars).
@@ -40,6 +44,7 @@ AUTO_FALLBACK = -14.0  # until the first measurement arrives
 ALIGNMENTS = {AUTO: None, AUTO_LOUDNESS: None, "-20 dBFS (SMPTE RP155)": -20.0, "-18 dBFS (EBU R68)": -18.0, "-14 dBFS": -14.0,
               "-12 dBFS": -12.0, "-10 dBFS (loud masters)": -10.0, "-8 dBFS": -8.0}
 AUTO_CACHE_SIZE = 1000  # albums remembered
+_UNSET = object()       # nothing drawn yet: the next reading is drawn whatever it is
 
 
 def vu_fraction(vu_db: float) -> float:
@@ -143,6 +148,8 @@ class MeterWindow:
         self.engine: MeterEngine | None = None
         self._face = None
         self._layout = None
+        self._live_shown = _UNSET   # the reading the needles and bars show
+        self._keep_going = toolwin.KeepGoing(self.win)
         theme.on_change(self._palette_changed)
         self._restart()
         self.win.bind("<Configure>", self._moved, add="+")
@@ -185,10 +192,7 @@ class MeterWindow:
         if mode not in AUTOS or self.engine is None or self.engine.current_path is None:
             return
         track = Path(self.engine.current_path)
-        try:
-            folder, _ = album_files(track)
-        except OSError:
-            return
+        folder = album_folder(track)   # (worked out from the path alone: this runs 30 times a second)
         if self._auto is not None and self._auto["folder"] == folder and self._auto["mode"] == mode:
             return
         if self._auto is not None:
@@ -199,9 +203,9 @@ class MeterWindow:
             cached, lufs = cached
         if isinstance(cached, (int, float)) and not isinstance(cached, bool):
             self._auto = {"folder": folder, "mode": mode, "value": float(cached), "lufs": lufs, "final": True,
-                          "cancel": threading.Event()}
+                          "failed": False, "cancel": threading.Event()}
             return
-        state = {"folder": folder, "mode": mode, "value": None, "lufs": None, "final": False,
+        state = {"folder": folder, "mode": mode, "value": None, "lufs": None, "final": False, "failed": False,
                  "cancel": threading.Event()}
         self._auto = state
 
@@ -220,6 +224,11 @@ class MeterWindow:
                     value = album_alignment(track, on_first=provisional, cancel=state["cancel"])
             except (OSError, RuntimeError):
                 value = None
+                state["failed"] = True
+            except Exception:  # noqa: BLE001 — any failure is said in the window, never "measuring…" for ever
+                log.exception("measuring the album for Auto")
+                value = None
+                state["failed"] = True
             if value is not None and not state["cancel"].is_set():
                 state["value"], state["lufs"], state["final"] = value, lufs, True
 
@@ -257,6 +266,9 @@ class MeterWindow:
                 cache[str(auto["folder"])] = stored
                 while len(cache) > AUTO_CACHE_SIZE:
                     cache.pop(next(iter(cache)))
+        elif auto["failed"]:
+            text = (f"0 VU = {value:g} dBFS · {name}: from this song (the rest of the album couldn't be measured)"
+                    if auto["value"] is not None else f"{name}: couldn't measure this album · 0 VU = {value:g} dBFS")
         elif auto["value"] is not None:
             text = f"0 VU = {value:g} dBFS · {name}: from this song, while the rest of the album is measured…"
         else:
@@ -279,6 +291,7 @@ class MeterWindow:
         self._face = self._render_face(face_w, face_h)
         c.delete("all")
         self._marked = None
+        self._live_shown = _UNSET
         for i in range(2):
             c.create_image(i * (face_w + gap), 0, image=self._face, anchor="nw")
         self._draw_bar_scales()
@@ -372,17 +385,22 @@ class MeterWindow:
     def _tick(self):
         if not self.win.winfo_exists():
             return
-        reading = self.engine.reading_at(time.perf_counter()) if self.engine else None
-        self._follow_album()
-        self._paint_alignment()
-        self._draw_live(reading)
+        with self._keep_going:
+            self._step()
         self._job = self.win.after(REFRESH_MS, self._tick)
 
+    def _step(self):
+        self._follow_album()
+        self._paint_alignment()
+        if toolwin.on_screen(self.win):   # minimised: the engine measures on; nothing is drawn
+            self._draw_live(self.engine.reading_at(time.perf_counter()) if self.engine else None)
+
     def _draw_live(self, reading: Reading | None):
+        if self._layout is None or reading == self._live_shown:
+            return                     # (nothing playing: the same as the frame on show)
+        self._live_shown = reading
         c = self.canvas
         c.delete("live")
-        if self._layout is None:
-            return
         lay = self._layout
         # Needles.
         for i in range(2):
