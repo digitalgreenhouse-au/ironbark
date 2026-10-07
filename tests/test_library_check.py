@@ -154,6 +154,83 @@ def test_a_version_1_database_gains_the_checks_table(tmp_path):
         assert db.check_states() == {"x.flac": (1, 2, 1)}
 
 
+def test_checks_are_kept_while_the_library_is_read_again(tmp_path, music):
+    """The checks outlive the library tables (a damaged database set aside, a version with no way up):
+    a run starting before the library has been read again must not take every check for a song
+    gone — they took hours to make."""
+    path = tmp_path / "library.db"
+    with LibraryDB.open(path, [music]) as db:
+        Indexer(db).check([music])
+        assert db.built(music)
+        checker = Checker(lambda: db, in_process=True)
+        checker.start()
+        assert checker.idle(60)
+        checker.close()
+        stored = db.check_states()
+        assert len(stored) == 5
+        db._con().execute("PRAGMA user_version = 99")     # (the library tables are made again)
+    with LibraryDB.open(path, [music]) as db:
+        assert db.counts()["tracks"] == 0 and not db.built(music) and db.check_states() == stored
+        found = library_check.plan(db)                     # (a run before the library is read again)
+        assert found.gone == [] and found.total == 0
+        Indexer(db).check([music])
+        again = library_check.plan(db)
+        assert again.gone == [] and again.done == 5 and again.count == 0   # nothing to read again
+        db.save_check(os.fspath(tmp_path / "Elsewhere" / "x.flac"), 1, 2, 1, "", None, "")
+        assert library_check.plan(db).gone == [os.fspath(tmp_path / "Elsewhere" / "x.flac")]   # (not the library's)
+
+
+def test_the_check_reads_light_rows_and_the_estimate_holds_no_songs(db, tmp_path):
+    """Working out a run (every run's start, every new album) reads only what the check needs of each
+    song, one at a time — a big library's whole Tracks cost hundreds of megabytes; and the question's
+    estimate only counts. The light rows say the same as whole Tracks, CUE tracks included."""
+    import synthlib
+
+    from ironbark import audiofile
+
+    counted = library_check.plan(db, keep=False)
+    full = library_check.plan(db)
+    assert counted.songs == [] and counted.count == full.count == len(full.songs) == 5
+    assert counted.total == full.total and counted.work == pytest.approx(sum(song.work for song in full.songs))
+    assert library_check.estimate(counted.work, workers=2) == pytest.approx(library_check.estimate(full.songs, 2))
+    assert all(isinstance(song.path, str) and song.path is song.key for song in full.songs)   # (no Path each)
+    root = Path("C:/Music")
+    with LibraryDB.open(tmp_path / "synth.db", [root]) as synth:
+        synthlib.load(synth, root, synthlib.make_library(600, root, seed=3))
+        light = list(synth.check_list())
+        whole = synth.check_songs()
+        assert len(light) == len(whole) == 600
+        cues = 0
+        for (path, bits, md5, duration, rate, misnamed, unsupported, size, mtime, missing), (track, *rest) in zip(
+                light, whole):
+            assert audiofile.key(path) == audiofile.key(track.path) and os.fspath(path) == os.fspath(track.path)
+            assert audiofile.cue_of(path) == audiofile.cue_of(track.path)
+            cues += audiofile.cue_of(path) is not None
+            assert (bits, md5, duration, rate, misnamed, unsupported) == (
+                track.bits, track.md5, track.duration, track.sample_rate, track.misnamed, track.unsupported)
+            assert [size, mtime, missing] == rest
+        assert cues
+
+
+def test_the_upgrade_keeps_the_library_as_it_was(tmp_path, music):
+    """Moving a version 1 file up adds the checks table and nothing else: the songs, albums,
+    favourites and search index stay, so a big library (a NAS) is never read again for it."""
+    path = tmp_path / "library.db"
+    with LibraryDB.open(path, [music]) as db:
+        Indexer(db).check([music])
+        db.set_favourite(os.fspath(music / "Fine" / "01 Fine.flac"), True)
+    with LibraryDB.open(path) as db:
+        before = (db.counts(), db.generation, db.albums())
+        con = db._con()
+        con.execute("DROP TABLE checks")
+        con.execute("PRAGMA user_version = 1")
+    with LibraryDB.open(path) as db:
+        assert db._con().execute("PRAGMA user_version").fetchone()[0] == 2
+        assert (db.counts(), db.generation, db.albums()) == before and not db.needs_refold
+        assert db.favourites() == [os.fspath(music / "Fine" / "01 Fine.flac")]
+        assert [h.track.path.stem for h in db.search_songs("padded").rows] == ["01 Padded"]
+
+
 # -- the checker -------------------------------------------------------------------------------------------
 def test_a_run_checks_every_song_and_needs_a_look_lists_what_it_found(db, music):
     states = []
@@ -204,6 +281,56 @@ def test_stored_results_for_now_playing_and_the_clipping_guard(db):
     library_check.remember(db, track, fresh, (stat.st_size, stat.st_mtime_ns))
     assert library_check.stored(db, clipped)[0].clip_runs == 2
     assert db.check_of(clipped)[4] == "clipping"
+
+
+def test_a_damaged_read_leaves_no_peak_for_the_clipping_guard(db):
+    """A check that stopped at damage measured only the part before it, and the player plays on
+    past the damage: its peak would let the guard (and volume levelling) turn up too far, so none
+    is kept — the guard measures for itself."""
+    checker = Checker(lambda: db, in_process=True)
+    checker.start()
+    assert checker.idle(60)
+    damaged = song_named(db, "Damaged")
+    row = db.check_of(damaged.path)
+    assert row[4] == "damaged" and row[5] is None
+    assert library_check.stored_peak(db, damaged.path) is None
+    partial = library_check.stored(db, damaged.path)[0]
+    assert partial.damaged_at is not None and partial.true_peak       # (a peak was measured, of the start)
+    stat = os.stat(damaged.path)
+    library_check.remember(db, damaged, partial, (stat.st_size, stat.st_mtime_ns))   # (Now Playing's check)
+    assert db.check_of(damaged.path)[5] is None and library_check.stored_peak(db, damaged.path) is None
+    # One stored by an earlier build with its peak: still not used.
+    db.save_check(damaged.path, stat.st_size, stat.st_mtime_ns, library_check.CHECK_FORMAT, "damaged", 0.2, "")
+    assert library_check.stored_peak(db, damaged.path) is None
+
+
+def test_a_song_checked_under_two_spellings_of_its_path_is_listed_once(db):
+    """Now Playing keeps its check by the path it played from; a playlist may write the library's
+    "C:\\…" as "c:\\…". Needs a look lists the song once, by its own key's check — and one checked
+    only the other way is listed too (it used to stop the whole view)."""
+    checker = Checker(lambda: db, in_process=True)
+    checker.start()
+    assert checker.idle(60)
+
+    def other(path) -> str:
+        key = os.fspath(path)
+        return key[0].swapcase() + key[1:]
+
+    clipped, fine = song_named(db, "Clipped").path, song_named(db, "Fine").path
+    stat = os.stat(clipped)
+    db.save_check(other(clipped), stat.st_size, stat.st_mtime_ns, library_check.CHECK_FORMAT, "lossy", None, "",
+                  when=time.time() + 60)
+    listed = library_check.needs_look(db)
+    assert sorted(hit.track.path.stem for hit, _look in listed) == ["01 Clipped", "01 Damaged", "01 Lossy",
+                                                                    "01 Padded"]
+    assert next(look for hit, look in listed if hit.track.path == clipped).words == ("clipping",)
+    assert [hit.track.path.stem for hit, _look in listed] == [
+        hit.track.path.stem for hit, _look in sorted(listed, key=library_check.worst_first)]   # worst first
+    db.forget_checks([os.fspath(fine)])         # (Fine checked only the other way: listed by that check)
+    stat = os.stat(fine)
+    db.save_check(other(fine), stat.st_size, stat.st_mtime_ns, library_check.CHECK_FORMAT, "padded", None, "")
+    found = {hit.track.path.stem: look.words for hit, look in library_check.needs_look(db)}
+    assert found["01 Fine"] == ("padded",) and len(found) == 5
 
 
 def test_pause_hold_stop_and_carrying_on_after_a_restart(db, monkeypatch):

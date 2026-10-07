@@ -24,10 +24,12 @@ line of every view, and the list fills in as it goes.
 
 The list is a virtual_list.VirtualTree, so a library of any size lists as quickly as a small one:
 only the rows on show are in the Treeview. The Songs view reads its rows a page at a time on the
-query thread as they come into view. The album column shows the album's tag (its folder's name only
-when it isn't tagged), text that doesn't fit ends with "…", and the narrow columns (Year, Quality,
-Tracks, Added) always keep their room. Typing letters in the list jumps to the first name that
-starts with them.
+query thread as they come into view; the other song views are read and sorted there, with each
+song's search text, so a list of tens of thousands (Needs a look) costs Tk's thread only the rows on
+show and a quick pick of what's searched for. The album column shows the album's tag (its folder's
+name only when it isn't tagged), text that doesn't fit ends with "…", and the narrow columns (Year,
+Quality, Tracks, Added) always keep their room. Typing letters in the list jumps to the first name
+that starts with them.
 
 New music (0.17.0, watcher.py): an album that arrived since watching began carries a green dot
 until it's opened, the status line says how many ("3 new albums"), and Recently added lists them
@@ -49,20 +51,21 @@ import threading
 import time
 import tkinter as tk
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog
 from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import (audiofile, browse, controls, indexer, keys, library_check, library_db, library_index, placement, popups,
+from . import (browse, controls, indexer, keys, library_check, library_db, library_index, placement, popups,
                searchfold, theme)
 from .browse import album_label
 from .favourites import HEART
 from .library import Album, Track, sort_name
 from .library_db import SongHit
 from .playlist_view import TreeDrag, _fold, fit_columns
-from .quick_search import Actions, add_song_items, count_text, song_values
+from .quick_search import Actions, add_song_items, count_text, song_name, song_values
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
 
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)
@@ -130,15 +133,30 @@ def _jump_text(text) -> str:
 
 # -- the song lists, read on the query thread (no Tk) --------------------------------------------------
 def _most_played(db, n: int = PLAYED_LIMIT) -> list[tuple[SongHit, int]]:
+    """The songs played most, with how often. A song whose plays were kept under two keys (its file
+    written two ways) is listed once, its plays added up."""
     counts = db.most_played(n)
     times = dict(counts)
-    return [(hit, times.get(_key(hit), 0)) for hit in db.songs_by_keys(key for key, _count in counts)]
+    merged: dict[int, list] = {}
+    for key, hit in db.songs_for_keys(key for key, _count in counts):
+        if hit.id in merged:
+            merged[hit.id][1] += times[key]
+        else:
+            merged[hit.id] = [hit, times[key]]
+    return sorted(((hit, plays) for hit, plays in merged.values()), key=lambda pair: -pair[1])
 
 
 def _recently_played(db, n: int = PLAYED_LIMIT) -> list[tuple[SongHit, float]]:
+    """The songs played last, with when (each song once, at its latest play)."""
     played = db.recently_played(n)
     when = dict(played)
-    return [(hit, when.get(_key(hit), 0.0)) for hit in db.songs_by_keys(key for key, _when in played)]
+    latest: dict[int, list] = {}
+    for key, hit in db.songs_for_keys(key for key, _when in played):
+        if hit.id in latest:
+            latest[hit.id][1] = max(latest[hit.id][1], when[key])
+        else:
+            latest[hit.id] = [hit, when[key]]
+    return sorted(((hit, at) for hit, at in latest.values()), key=lambda pair: -pair[1])
 
 
 def _favourite_songs(db, keys: frozenset[str]) -> list[tuple[SongHit, None]]:
@@ -150,8 +168,66 @@ def _favourite_songs(db, keys: frozenset[str]) -> list[tuple[SongHit, None]]:
     return [(hit, None) for hit in db.songs_by_keys(ordered)]
 
 
-def _key(hit: SongHit) -> str:
-    return audiofile.key(hit.track.path)
+@dataclass(frozen=True)
+class SongList:
+    """A song view's songs as the query thread made them ready: (song, extra) pairs in the order
+    asked for, each one's folded search text (`song_text`), and — Needs a look — how many songs
+    have each finding. The window then only picks out what's searched for."""
+    pairs: list
+    texts: list[str]
+    counts: dict[str, int] | None = None
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+
+def _song_list(pairs: list, column: str, reverse: bool) -> SongList:
+    """(The query thread.) A song view's pairs sorted by `column` ("" = as they came), with their
+    search texts."""
+    pairs = list(pairs)
+    if column:
+        pairs.sort(key=_song_sort_key(column), reverse=reverse)
+    looks = [extra for _hit, extra in pairs if isinstance(extra, library_check.Look)]
+    return SongList(pairs, [song_text(pair) for pair in pairs],
+                    library_check.counts(looks) if looks else None)
+
+
+def song_text(pair: tuple) -> str:
+    """What a song view's search looks through: the song's names (and in Needs a look, what was found)."""
+    text = searchfold.haystack(pair[0].track)
+    if isinstance(pair[1], library_check.Look):
+        text += " " + searchfold.fold(pair[1].text)
+    return text
+
+
+def _read_page(db, pages: SongPages, page: int, ids: list[int]) -> list[SongHit] | None:
+    """(The query thread.) A page of the Songs view's rows — None, unread, when the list has moved
+    well away from it before its turn came (a scrollbar dragged through a big library asks for
+    every page it passes: reading them all would hold up the one it stops at)."""
+    if abs(pages.near - page * PAGE) > 2 * PAGE:
+        return None
+    return db.songs(ids)
+
+
+class SongRows:
+    """A song view's RowSource: each row made as it comes into view (a list of any length costs
+    the window nothing to show)."""
+
+    def __init__(self, pairs: list, make_row: Callable[[SongHit, object], tuple]):
+        self.pairs = pairs
+        self.make_row = make_row
+        self._index: dict[str, int] | None = None
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def row(self, index: int) -> tuple:
+        return self.make_row(*self.pairs[index])
+
+    def index_of(self, key: str) -> int | None:
+        if self._index is None:
+            self._index = {f"s{hit.id}": i for i, (hit, _extra) in enumerate(self.pairs)}
+        return self._index.get(key)
 
 
 def _song_sort_key(column: str):
@@ -184,6 +260,7 @@ class SongPages:
         self.ask = ask
         self.pages: OrderedDict[int, dict[int, SongHit]] = OrderedDict()
         self.asked: set[int] = set()
+        self.near = 0   # the last row drawn (where the list is now: read by the query thread)
 
     def __len__(self) -> int:
         return len(self.ids)
@@ -201,6 +278,7 @@ class SongPages:
         return found.get(self.ids[index])
 
     def row(self, index: int) -> tuple:
+        self.near = index
         hit = self.hit(index)
         if hit is None:
             return (f"s{self.ids[index]}", ("",) * 6 + ("…", "", "", ""), ("loading",))
@@ -284,14 +362,17 @@ class LibraryWindow:
         self._songs_asked: int | None = None
         self._songs_have: tuple | None = None
         self._songs_listed: tuple | None = None   # the songs on show were for this (a new copy keeps the place)
-        self._songs: object = None             # list[(SongHit, extra)], SongHits, or a list of ids (Songs, unsearched)
+        self._songs: object = None             # a SongList, SongHits (Songs, searched) or a list of ids (Songs)
         self._pages: SongPages | None = None
         self._page_serial = 0
         self._song_problem = ""
-        # The quality check: its results already listed (checker.changes), when they were last read,
-        # the status last painted, the buttons' look, and the "how long?" asked of the query thread.
+        # The quality check: its results already listed (checker.changes), when they were last read
+        # and how long that took, the status last painted, the buttons' look, and the "how long?"
+        # asked of the query thread.
         self._check_seen = checker.changes if checker is not None else 0
         self._check_read = 0.0
+        self._check_took = 0.0
+        self._songs_asked_at = 0.0
         self._check_status = None
         self._check_look: tuple | None = None
         self._estimate_asked: int | None = None
@@ -748,18 +829,22 @@ class LibraryWindow:
         return bool(found) and max(len(word) for word in found) >= library_db.MIN_SEARCH
 
     def _wanted(self) -> tuple:
-        """What the song view on show needs from the database (it's asked for when it changes)."""
+        """What the song view on show needs from the database (it's asked for when it changes).
+        The views listed whole (all but Songs) end with their sort: they're sorted on the query
+        thread, as they can run to tens of thousands of songs (Needs a look)."""
         if self.view == "songs":
             if self._searching_songs():
                 return ("songs", "search", self._query())
             column, reverse = self.sort
             return ("songs", "all", column or "title", reverse)
+        column, reverse = self.sort
         if self.view == "favourites":
             favourites = self.actions.favourites
-            return ("favourites", frozenset(favourites.keys()) if favourites is not None else frozenset())
+            return ("favourites", frozenset(favourites.keys()) if favourites is not None else frozenset(),
+                    column, reverse)
         if self.view == "needs_look":
-            return ("needs_look", self._check_seen)   # (read again as the check stores more)
-        return (self.view,)
+            return ("needs_look", self._check_seen, column, reverse)   # (read again as the check stores more)
+        return (self.view, column, reverse)
 
     def _want_songs(self):
         """Ask the query thread for the songs the view needs, unless they're here or on their way."""
@@ -776,15 +861,22 @@ class LibraryWindow:
             fn, args = db.search_songs, (wanted[2], SONG_LIMIT)
         elif wanted[0] == "songs":
             fn, args = db.song_ids, (wanted[2], wanted[3])
-        elif wanted[0] == "most_played":
-            fn, args = _most_played, (db,)
-        elif wanted[0] == "recently_played":
-            fn, args = _recently_played, (db,)
-        elif wanted[0] == "needs_look":
-            fn, args = library_check.needs_look, (db,)
         else:
-            fn, args = _favourite_songs, (db, wanted[1])
+            if wanted[0] == "most_played":
+                read, args = _most_played, (db,)
+            elif wanted[0] == "recently_played":
+                read, args = _recently_played, (db,)
+            elif wanted[0] == "needs_look":
+                read, args = library_check.needs_look, (db,)
+            else:
+                read, args = _favourite_songs, (db, wanted[1])
+            column, reverse = wanted[-2], wanted[-1]
+
+            def fn(*args):
+                return _song_list(read(*args), column, reverse)
+
         self._songs_asked = self._queries.ask("songs", lambda: (wanted, fn(*args)), interrupt=True)
+        self._songs_asked_at = time.monotonic()
         self._paint_status()
 
     def _take_songs(self, answer) -> bool:
@@ -799,6 +891,8 @@ class LibraryWindow:
             return True
         self._song_problem = ""
         wanted, value = answer.value
+        if wanted[0] == "needs_look":
+            self._check_took = time.monotonic() - self._songs_asked_at
         self._songs_have, self._songs = wanted, value
         self._pages = None
         if self.view in SONG_VIEWS:
@@ -813,9 +907,9 @@ class LibraryWindow:
         where the list is — by default, when the songs on show were for what the view still wants
         (the same list read again after the library changed, or a sort or search of a short list)."""
         wanted = self._wanted()
-        if keep is None:   # (Needs a look read again as the check goes on: the same list, grown)
-            keep = wanted == self._songs_listed or (wanted[0] == "needs_look" and self._songs_listed is not None
-                                                    and self._songs_listed[0] == "needs_look")
+        listed = self._songs_listed
+        if keep is None:   # (a view listed whole read again — re-sorted, a ♥ more, the check gone on)
+            keep = wanted == listed or (listed is not None and wanted[0] == listed[0] != "songs")
         self.tree.configure(show="headings")
         self._fit()
         self._rows.clear()
@@ -840,28 +934,25 @@ class LibraryWindow:
             self._items = []
             self.list.on_jump = None
             self.list.set_source(self._pages, keep=keep)
-        else:
-            pairs = [(hit, None) for hit in value.rows] if isinstance(value, library_db.SongHits) else list(value)
-            if self.view != "songs":
-                words = searchfold.words(self._query())
-                if words:
-                    pairs = [pair for pair in pairs if all(w in self._song_text(pair) for w in words)]
+        elif isinstance(value, library_db.SongHits):   # (the Songs view's search: the best SONG_LIMIT)
+            pairs = [(hit, None) for hit in value.rows]
             column, reverse = self.sort
-            chosen = self.view != "songs" or "songs" in self._sorts   # (search results: best first, unless sorted)
-            if column and chosen:
+            if column and "songs" in self._sorts:   # (best first, unless sorted)
                 pairs.sort(key=_song_sort_key(column), reverse=reverse)
-            self._items = [("song", pair) for pair in pairs]
-            self.list.on_jump = self._jump
-            self.list.set_source(ListSource([self._song_row(hit, extra) for hit, extra in pairs]), keep=keep)
+            self._list_songs(pairs, keep)
+        else:   # (a SongList, sorted already: only what's searched for is picked out here)
+            words = searchfold.words(self._query())
+            pairs = value.pairs
+            if words:
+                pairs = [pair for pair, text in zip(value.pairs, value.texts) if all(w in text for w in words)]
+            self._list_songs(pairs, keep)
         self._paint_status()
         self._paint_buttons()
 
-    def _song_text(self, pair: tuple) -> str:
-        """What a song view's search looks through: the song's names (and in Needs a look, what was found)."""
-        text = searchfold.haystack(pair[0].track)
-        if isinstance(pair[1], library_check.Look):
-            text += " " + searchfold.fold(pair[1].text)
-        return text
+    def _list_songs(self, pairs: list, keep: bool):
+        self._items = [("song", pair) for pair in pairs]
+        self.list.on_jump = self._jump
+        self.list.set_source(SongRows(pairs, self._song_row), keep=keep)
 
     def _song_row(self, hit: SongHit, extra) -> tuple:
         favourites = self.actions.favourites
@@ -875,16 +966,21 @@ class LibraryWindow:
 
     def _ask_page(self, page: int, ids: list[int]):
         serial = self._page_serial
-        self._queries.ask(f"page:{serial}:{page}", self.index.db.songs, ids)
+        self._queries.ask(f"page:{serial}:{page}", _read_page, self.index.db, self._pages, page, ids)
 
     def _take_page(self, answer) -> bool:
+        """A page of the Songs view's rows came in (True: draw the rows on show again). One left
+        unread because the list had moved on is asked for again if it's on show after all."""
         _kind, serial, page = answer.kind.split(":")
         pages = self._pages
         if pages is None or int(serial) != self._page_serial or answer.error is not None:
             if pages is not None and int(serial) == self._page_serial:
                 pages.asked.discard(int(page))
             return False
-        pages.take(int(page), answer.value)
+        if answer.value is None:
+            pages.asked.discard(int(page))
+        else:
+            pages.take(int(page), answer.value)
         return self.view == "songs"
 
     def _hit_at(self, index: int | None) -> SongHit | None:
@@ -925,7 +1021,7 @@ class LibraryWindow:
                 "favourites": count_text(shown, "favourite")}[self.view]
 
     # -- the quality check ("Needs a look") ------------------------------------------------------------
-    def _needs_look_text(self, value: list, shown: int) -> str:
+    def _needs_look_text(self, value: SongList, shown: int) -> str:
         """Needs a look's status line: the check's progress, then what it found (worst first)."""
         status = self.checker.status if self.checker is not None else None
         if not value:
@@ -937,7 +1033,7 @@ class LibraryWindow:
             else:
                 found = "Nothing needs a look so far"
         else:
-            what = library_check.summary(library_check.counts(look for _hit, look in value))
+            what = library_check.summary(value.counts or {})   # (counted on the query thread)
             if self._query() and shown < len(value):
                 found = f"{shown:,} of {len(value):,} songs: {what}"
             else:
@@ -968,7 +1064,8 @@ class LibraryWindow:
 
     def _follow_check(self) -> bool:
         """(The tick.) Take in the quality check's progress; whether there was any. Needs a look reads
-        its results again (at most every CHECK_REREAD_S) as more are stored."""
+        its results again as more are stored: at most every CHECK_REREAD_S, and — a long list, slow
+        to read — no more than a tenth of the time (the query thread's reading holds up the rest)."""
         checker = self.checker
         if checker is None:
             return False
@@ -978,7 +1075,7 @@ class LibraryWindow:
             self._paint_check()
             news = True
         if (self.view == "needs_look" and checker.changes != self._check_seen and self._songs_asked is None
-                and time.monotonic() - self._check_read >= CHECK_REREAD_S):
+                and time.monotonic() - self._check_read >= max(CHECK_REREAD_S, 10 * self._check_took)):
             self._check_seen, self._check_read = checker.changes, time.monotonic()
             self._want_songs()
         return news
@@ -1017,7 +1114,7 @@ class LibraryWindow:
         then the question (with how long it takes) is asked."""
         if self.checker is None or self._estimate_asked is not None:
             return
-        self._estimate_asked = self._queries.ask("estimate", library_check.plan, self.index.db)
+        self._estimate_asked = self._queries.ask("estimate", library_check.plan, self.index.db, False)
         self._paint_check()
         self._say("Working out how long the check takes…")
 
@@ -1034,11 +1131,11 @@ class LibraryWindow:
     def _confirm_check(self, plan: library_check.Plan):
         if not self.win.winfo_exists() or self.checker is None or self.checker.state != "off":
             return
-        count = len(plan.songs)
+        count = plan.count
         if count:
             already = (f" {count_text(plan.done, 'song')} {'is' if plan.done == 1 else 'are'} checked already."
                        if plan.done else "")
-            seconds = library_check.estimate(plan.songs, self.checker.workers)
+            seconds = library_check.estimate(plan.work, self.checker.workers)
             if not popups.confirm(
                     self.win, "Check every song in the library?",
                     f"{count_text(count, 'song')} ({library_check.music_text(plan.music_s)} of music) "
@@ -1215,7 +1312,8 @@ class LibraryWindow:
 
     def _queue_song(self, hit: SongHit, front: bool):
         self.actions.queue_tracks([hit.track], front)
-        self._say(f"“{hit.track.title}” will play next" if front else f"Added “{hit.track.title}” to Up next")
+        name = song_name(hit.track)
+        self._say(f"“{name}” will play next" if front else f"Added “{name}” to Up next")
 
     def _context(self, event):
         """Right-click an album: open it, add it to the tab on show, or line it up in Up next. A song:

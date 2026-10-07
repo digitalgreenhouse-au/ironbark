@@ -122,6 +122,7 @@ QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the f
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
 CHECK_AFTER_MS = 60000  # a library quality check left on carries on this long after start-up
+FAVOURITES_WAIT_S = 6.0  # longest closing waits for a ♥ to be stored (the database can be busy for 5 s)
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
 THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
@@ -4153,8 +4154,8 @@ class PlayerWindow:
             return
         try:
             for step in (self._save_on_close, self._stop_timers, self._stop_media, self.watcher.stop,
-                         self._record_last_play, self._stop_indexing, self._stop_checking, self.player.close,
-                         self._last_tag_tries):
+                         self._record_last_play, self._stop_indexing, self._stop_checking, self._store_favourites,
+                         self.player.close, self._last_tag_tries):
                 try:
                     step()
                 except Exception:
@@ -4174,6 +4175,12 @@ class PlayerWindow:
     def _stop_checking(self):
         """The library quality check stops the songs in hand (stored results stay; it carries on next time)."""
         self.checker.close(timeout=1.0)
+
+    def _store_favourites(self):
+        """A ♥ given or taken just before closing is stored before the player goes: its writer is a
+        background thread, which would otherwise stop with the player and the change be lost."""
+        if not self.favourites.flush(timeout=FAVOURITES_WAIT_S):
+            log.warning("closing: a favourite change wasn't stored in time")
 
     def _stop_timers(self):
         for job in (self._poll_job, self._media_job, self._theme_job, self._update_job, self._check_job):

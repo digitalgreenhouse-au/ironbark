@@ -148,3 +148,89 @@ def test_show_in_library_selects_the_album(root, music, monkeypatch):
     w.show(search="adele")
     assert w.view == "albums" and column(w, "album") == ["21"]
     w.close()
+
+
+def test_a_song_played_under_two_spellings_of_its_path_is_listed_once(root, music, monkeypatch, tk_thread_rule):
+    """Plays are kept by the path played from — a playlist may write "C:\…" as "c:\…". The song is
+    listed once (two rows with one key used to stop the list), its plays added up."""
+    import os
+
+    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    errors = []
+    root.report_callback_exception = lambda *info: errors.append(info)
+    w = song_window(root, music, [])
+    db = library_index.shared(music).db
+    hits = {hit.track.title: hit for hit in db.songs(db.song_ids())}
+    key = os.fspath(hits["A"].track.path)
+    db.record_play(key, 200, 200, when=1000.0)
+    db.record_play(key[0].swapcase() + key[1:], 200, 200, when=3000.0)
+    db.record_play(hits["B"].track.path, 200, 200, when=2000.0)
+    w.set_view("most_played")
+    wait_for_songs(w, root)
+    assert column(w, "title") == ["A", "B"] and column(w, "plays") == ["2", "1"]
+    w.set_view("recently_played")
+    wait_for_songs(w, root)
+    assert column(w, "title") == ["A", "B"] and column(w, "added")[0] == added_text(3000.0)
+    assert errors == []
+    db.release()
+    w.close()
+
+
+def test_a_long_song_list_is_sorted_off_tk_and_its_rows_made_as_they_show(root, music, monkeypatch, tk_thread_rule):
+    """Needs a look can list tens of thousands of songs (clipping is common in loud masters), and it's
+    read again as the check goes on: the query thread sorts it and folds each song's search text, and
+    Tk's thread makes only the rows on show."""
+    import threading
+
+    from ironbark import library_check, library_window
+    from ironbark.library_db import SongHit
+
+    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+    wait_for_index(w, root)
+    db = library_index.shared(music).db
+    real = db.songs(db.song_ids())
+    many = [(SongHit(n + 1, real[n % 4].track, real[n % 4].album),
+             library_check.Look(("clipping",), f"Clipped when mastered ({n:,} runs stuck at full scale)", 5, 0.0))
+            for n in range(20_000)]
+    monkeypatch.setattr(library_check, "needs_look", lambda db: list(many))
+    sorted_on = []
+    sort_key = library_window._song_sort_key
+    monkeypatch.setattr(library_window, "_song_sort_key",
+                        lambda column: sorted_on.append(threading.current_thread().name) or sort_key(column))
+    made = []
+    w._song_row = lambda hit, extra: made.append(hit.id) or LibraryWindow._song_row(w, hit, extra)
+    w.set_view("needs_look")
+    wait_for_songs(w, root)
+    assert len(w.list.source) == 20_000 and sorted_on and set(sorted_on) == {"library-query"}
+    assert len(made) <= 3 * w.list.page() + 50                # (wait_for_songs itself reads 50)
+    assert w.status.cget("text").startswith("20,000 songs need a look: 20,000 clipped")
+    w.sort_by("artist")
+    wait_for_songs(w, root)
+    assert set(sorted_on) == {"library-query"} and column(w, "artist")[:2] == ["Adele", "Adele"]
+    w.search_var.set("overture")                               # (picked out with the texts folded off Tk)
+    w._flush_search()
+    assert len(w.list.source) == 5_000 and set(column(w, "title")) == {"Overture"}
+    assert w.status.cget("text").startswith("5,000 of 20,000 songs: 20,000 clipped")
+    db.release()
+    w.close()
+
+
+def test_a_page_the_songs_list_has_moved_away_from_is_not_read():
+    """A scrollbar dragged through a big library asks for every page it passes; the ones it has
+    left behind by their turn aren't read (they'd hold up the one it stopped at), and are asked for
+    again if they're on show after all."""
+    from types import SimpleNamespace
+
+    from ironbark.library_window import PAGE, SongPages, _read_page
+    from ironbark.indexer import Answer
+
+    pages = SongPages(list(range(100_000)), lambda hit, extra: ("k", (), ()), lambda page, ids: None)
+    db = SimpleNamespace(songs=lambda ids: [f"read {len(ids)}"])
+    pages.row(50_000)                                          # (the list is drawn there now)
+    assert _read_page(db, pages, 0, list(range(PAGE))) is None
+    assert _read_page(db, pages, 50_000 // PAGE, list(range(PAGE))) == ["read 200"]
+    pages.asked.add(0)
+    window = SimpleNamespace(_pages=pages, _page_serial=3, view="songs")
+    assert LibraryWindow._take_page(window, Answer("page:3:0", 9, None)) is True   # (drawn again: asked again)
+    assert 0 not in pages.asked and 0 not in pages.pages

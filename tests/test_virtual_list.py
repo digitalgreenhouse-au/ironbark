@@ -247,3 +247,74 @@ def test_a_step_through_a_big_list_is_quick(root):
     median = statistics.median(times)
     print(f"\nrefill median {median * 1000:.2f} ms, worst {max(times) * 1000:.2f} ms, {vt.page()} rows")
     assert median < 0.005
+
+
+def test_fitted_text_really_fits_and_is_measured_without_asking_tk_for_every_cell(root):
+    """"…" is fitted from each character's width (asked of Tk once): a page of long names used to
+    take hundreds of whole-text measures — tens of milliseconds a scroll step. What's shown must
+    still fit by Tk's own measure (kerning and fallback fonts only make the real text narrower),
+    and not be cut much shorter than it need be."""
+    import random
+
+    words = ("Ångström Motörhead WAVE LTA AVA Tea ♥ café naïve Œuvre Guðmundsdóttir 東京 Привет — · "
+             "24/96 ffi fl Yes To Wa Łódź Straße AC/DC Guns N' Roses Beyoncé Sigur Rós jalapeño").split()
+    rng = random.Random(7)
+    texts = [" ".join(rng.choice(words) for _ in range(rng.randint(1, 14))) for _ in range(600)]
+    vt = make(root, ListSource([(f"r{i}", (text, text[::-1]), ()) for i, text in enumerate(texts)]))
+    vt.tree.column("title", width=theme.px(150), stretch=False)
+    vt.tree.column("artist", width=theme.px(90), stretch=False)
+    vt.refresh()
+    font = vt._font
+    measured = []
+    real_measure = font.measure
+    font.measure = lambda text, *args: measured.append(text) or real_measure(text, *args)
+    shown = []
+    try:
+        for top in range(0, len(texts), vt.page()):
+            vt.scroll_to(top)
+            for iid in vt.tree.get_children():
+                index = vt.index_of_iid(iid)
+                shown += [(texts[index], vt.tree.set(iid, "title"), "title"),
+                          (texts[index][::-1], vt.tree.set(iid, "artist"), "artist")]
+    finally:
+        del font.measure
+    distinct = set("".join(texts)) | {ELLIPSIS}
+    assert all(len(text) == 1 for text in measured) and len(measured) <= len(distinct)   # (each character once)
+    cut = 0
+    for text, fitted, column in shown:
+        room = int(vt.tree.column(column, "width")) - theme.px(10)
+        assert real_measure(fitted) <= room, (fitted, room)
+        if fitted != text:
+            cut += 1
+            kept = fitted[:-1]
+            assert fitted.endswith(ELLIPSIS) and text.startswith(kept)
+            more = len(kept) + len(text[len(kept):]) - len(text[len(kept):].lstrip()) + 1
+            assert real_measure(text[:more] + ELLIPSIS) > room - theme.px(6)   # (one more letter wouldn't fit)
+    assert cut > 100
+
+
+def test_right_on_an_ordinary_row_goes_on_to_the_window(root):
+    """→ folds open a group heading; on any other row it's the window's key (the keyboard table's
+    seek), as with Tk's own list."""
+    rows = [("g0", ("Pop", ""), ("group",), OPEN_MARK), ("g0a0", ("21", ""), ()), ("g0a1", ("Hits", ""), ())]
+    vt = make(root, ListSource(rows), show="tree headings", on_toggle=lambda index: None)
+    went_on = []
+    root.bind("<Key-Right>", lambda e: went_on.append("right"))
+    root.bind("<Key-Left>", lambda e: went_on.append("left"))
+    vt.select(1)
+    key(vt, "<KeyPress-Right>")
+    assert went_on == ["right"] and vt.selected == 1
+    key(vt, "<KeyPress-Left>")                           # ← inside a group: to its heading (the list's own)
+    assert went_on == ["right"] and vt.selected == 0
+
+
+def test_a_column_dragged_wider_is_fitted_again(root):
+    long = "A very long album name that will never fit in a narrow column at all"
+    vt = make(root, ListSource([("a0", (long, "Artist"), ())]))
+    vt.tree.column("title", width=theme.px(120), stretch=False)
+    vt.refresh()
+    assert vt.tree.set("a0", "title").endswith(ELLIPSIS)
+    vt.tree.column("title", width=theme.px(600))         # (the heading's edge dragged, then let go)
+    vt.tree.event_generate("<ButtonRelease-1>", x=theme.px(120), y=2)
+    root.update()
+    assert vt.tree.set("a0", "title") == long

@@ -15,7 +15,11 @@ or a test can name it); `text` goes in the tree column (#0: a group's fold arrow
 it (`on_toggle`) — the source decides what folding means, as rows are never Tk children.
 
 Text that doesn't fit its column ends with "…" (Tk itself just cuts it off). Only the rows on show
-are measured, so a big list costs no more than a small one.
+are measured, so a big list costs no more than a small one — and a text is measured as the sum of
+its characters' widths, each asked of Tk once (asking Tk for a whole text takes a fifth of a
+millisecond, and a page of long names would need hundreds of asks). The sum is never less than
+the width Tk draws (measured on Windows: kerning — "AV", "LT" — and a fallback font's "♥" only
+draw a pixel or two narrower), so a text the sum says fits really does.
 
 No Tk call is made off Tk's thread: a source whose rows come from the library database fills a
 cache from its own worker and calls `refresh()` (from Tk's thread) when a page has arrived.
@@ -44,7 +48,7 @@ CLASS_TAG = "IronbarkVirtualTree"
 # (the list moves through its source instead, and folds through its owner).
 _LEFT_OUT = {"<MouseWheel>", "<Shift-MouseWheel>", "<<ToggleSelection>>", "<Shift-Button-1>", "<Key-space>",
              "<Key-Return>", "<Key-Next>", "<Key-Prior>", "<Key-Left>", "<Key-Right>", "<Key-Down>", "<Key-Up>"}
-_MEASURED_KEEP = 20_000   # text widths remembered before the memory of them starts afresh
+_MEASURED_KEEP = 5_000    # characters' widths remembered per font before the memory of them starts afresh
 
 
 class RowSource(Protocol):
@@ -115,7 +119,7 @@ class VirtualTree:
         self._shown: dict[str, int] = {}     # key on show -> its source index
         self._render_job = None
         self._metrics: tuple[int, int] | None = None   # (the first row's top, a row's height), measured
-        self._widths: dict[tuple[str, str], int] = {}  # (font, text) -> its width
+        self._widths: dict[str, dict[str, int]] = {}   # font -> {character: its width}
         self._typed, self._typed_at = "", 0.0
 
         self.frame = ttk.Frame(parent)
@@ -289,26 +293,38 @@ class VirtualTree:
         return [str(c) for c in self.tree.cget("columns")] if shown == ["#all"] else shown
 
     def fit(self, text: str, room: int, font=None) -> str:
-        """`text` as it fits in `room` pixels: whole, or cut with "…" on the end."""
+        """`text` as it fits in `room` pixels: whole, or cut with "…" on the end (the longest start
+        of it that fits with "…" after it)."""
         font = font or self._font
-        if not text or self._width(font, text) <= room:
+        if not text:
             return text
-        low, high = 0, len(text)
-        while low < high:   # the longest start of the text that fits with "…" after it
-            middle = (low + high + 1) // 2
-            if self._width(font, text[:middle].rstrip() + ELLIPSIS) <= room:
-                low = middle
-            else:
-                high = middle - 1
-        return text[:low].rstrip() + ELLIPSIS if low else ELLIPSIS
+        width = self._char_width(font)
+        whole = 0
+        for ch in text:
+            whole += width(ch)
+        if whole <= room:
+            return text
+        room -= width(ELLIPSIS)
+        used = cut = 0
+        for ch in text:
+            used += width(ch)
+            if used > room:
+                break
+            cut += 1
+        return text[:cut].rstrip() + ELLIPSIS
 
-    def _width(self, font, text: str) -> int:
-        key = (str(font), text)
-        width = self._widths.get(key)
-        if width is None:
-            if len(self._widths) >= _MEASURED_KEEP:
-                self._widths.clear()
-            width = self._widths[key] = font.measure(text)
+    def _char_width(self, font) -> Callable[[str], int]:
+        """A character's width in `font` (asked of Tk once, then remembered)."""
+        widths = self._widths.get(str(font))
+        if widths is None or len(widths) >= _MEASURED_KEEP:
+            widths = self._widths[str(font)] = {}
+
+        def width(ch: str) -> int:
+            found = widths.get(ch)
+            if found is None:
+                found = widths[ch] = font.measure(ch)
+            return found
+
         return width
 
     def _paint_scrollbar(self):
@@ -445,7 +461,11 @@ class VirtualTree:
         return index is not None and 0 <= index < len(self.source) and "group" in self.source.row(index)[2]
 
     def _released(self, event):
-        """A click on a group heading's arrow folds or opens it."""
+        """A click on a group heading's arrow folds or opens it. A column's edge dragged along the
+        headings: the rows on show are fitted ("…") to its new width."""
+        if event.y < self._measure()[0]:
+            self._schedule()
+            return
         index = self.index_at(event.y)
         if (self.is_group(index) and self.tree.identify_column(event.x) == "#0"
                 and self.on_toggle is not None):
@@ -473,10 +493,12 @@ class VirtualTree:
             if folded == right and self.on_toggle is not None:
                 self.on_toggle(index)
             return "break"
-        if not right:
-            heading = next((i for i in range(index - 1, -1, -1) if self.is_group(i)), None)
-            if heading is not None:
-                self.select(heading)
+        if right:
+            return None
+        heading = next((i for i in range(index - 1, -1, -1) if self.is_group(i)), None)
+        if heading is None:
+            return None
+        self.select(heading)
         return "break"
 
     # -- type to jump ------------------------------------------------------------------------------

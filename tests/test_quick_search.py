@@ -68,6 +68,26 @@ def test_search_library_finds_songs_albums_and_artists(library):
     db.release()
 
 
+def test_the_album_list_is_not_read_for_every_search_while_the_library_keeps_changing():
+    """A library's first look changes it with every folder: reading and folding every album (25,000 at
+    the most) for each search typed meanwhile would slow every keystroke. Read again once it's had
+    REREAD_S to settle."""
+    read = []
+    db = SimpleNamespace(generation=1, albums=lambda: read.append(1) or [
+        Album(Path("C:/M/21"), "21", 2, 44100, 16, ("FLAC",), artist="Adele", year=2011, title="21")])
+    catalogue = Catalogue()
+    catalogue.update(db)
+    for generation in range(2, 30):        # (a folder at a time)
+        db.generation = generation
+        catalogue.update(db)
+    assert len(read) == 1 and catalogue.find(["adele"])[1] == 1
+    catalogue.read_at -= Catalogue.REREAD_S
+    catalogue.update(db)
+    assert len(read) == 2 and catalogue.generation == 29
+    catalogue.update(db)                   # (nothing changed since: not read)
+    assert len(read) == 2
+
+
 def test_songs_by_keys_and_sorted_ids(library):
     db = library.db
     found = db.search_songs("rumour").rows[0]
@@ -78,6 +98,47 @@ def test_songs_by_keys_and_sorted_ids(library):
     assert titles == ["Aria", "Miasto", "Rolling in the Deep", "Rumour Has It"]
     years = [h.track.year for h in db.songs(db.song_ids("year", reverse=True))]
     assert years == [2011, 2011, 1999, 1981]
+    db.release()
+
+
+def other_spelling(key: str) -> str:
+    """The same file's key written another way Windows accepts: the drive letter's case swapped."""
+    return key[0].swapcase() + key[1:]
+
+
+def test_a_song_found_by_two_spellings_of_its_path_comes_once(library):
+    """Plays, favourites and checks are kept by the path they were made with — a playlist may write
+    "c:\\Music" where the library has "C:\\Music". Both find the song, and the key that found it is
+    said; the plain list has it once."""
+    db = library.db
+    hit = db.search_songs("rumour").rows[0]
+    key = audiofile.key(hit.track.path)
+    assert [h.id for h in db.songs_by_keys([key, other_spelling(key)])] == [hit.id]
+    pairs = db.songs_for_keys([other_spelling(key), key, "C:/not/in/the/library.flac"])
+    assert [(k, h.id) for k, h in pairs] == [(other_spelling(key), hit.id), (key, hit.id)]
+    db.release()
+
+
+def test_a_favourite_given_just_before_closing_is_stored(library, monkeypatch):
+    """The ♥ is stored on a background thread; closing waits for it (the database can be busy a
+    moment — another write under way — and the thread would otherwise end with the player)."""
+    from ironbark.ui import PlayerWindow
+
+    db = library.db
+    track = db.search_songs("aria").rows[0].track
+    real = type(db).set_favourite
+
+    def slow(self, key, on):
+        time.sleep(0.5)
+        return real(self, key, on)
+
+    monkeypatch.setattr(type(db), "set_favourite", slow)
+    favourites = Favourites(lambda: library.db)
+    favourites.load().join(5)
+    favourites.take_loaded()
+    favourites.set([track], True)
+    PlayerWindow._store_favourites(SimpleNamespace(favourites=favourites))   # (a closing step)
+    assert db.favourites() == [audiofile.key(track.path)]
     db.release()
 
 

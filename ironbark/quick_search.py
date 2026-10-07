@@ -107,15 +107,20 @@ class Actions:
 @dataclass
 class Catalogue:
     """The library's albums, for the Albums and Artists sections: read on the query thread, and read
-    again there when the library has changed (LibraryDB.generation). Only that thread uses it."""
+    again there when the library has changed (LibraryDB.generation) — at most every REREAD_S while
+    it keeps changing (its first look changes it with every folder, and reading and folding every
+    album would slow each search typed meanwhile). Only that thread uses it."""
+    REREAD_S = 10.0
     generation: int | None = None
+    read_at: float = 0.0
     albums: list[Album] = field(default_factory=list)
     texts: list[str] = field(default_factory=list)                     # each album's folded search text
     artists: list[tuple[str, str, int]] = field(default_factory=list)  # (name, folded, albums)
 
     def update(self, db) -> None:
         generation = db.generation
-        if generation == self.generation:
+        if generation == self.generation or (
+                self.generation is not None and time.monotonic() - self.read_at < self.REREAD_S):
             return
         albums = db.albums()
         self.albums = albums
@@ -127,7 +132,7 @@ class Catalogue:
                 counts.setdefault(searchfold.fold(album.artist), [album.artist, 0])[1] += 1
         self.artists = sorted(((name, folded, n) for folded, (name, n) in counts.items()),
                               key=lambda item: sort_name(item[0]))
-        self.generation = generation
+        self.generation, self.read_at = generation, time.monotonic()
 
     def find(self, words: list[str]) -> tuple[list[Album], int, list[tuple[str, int]], int]:
         """(albums matching, how many, artists matching (name, albums), how many)."""
@@ -171,11 +176,16 @@ def matched_text(hit: SongHit) -> str:
     return f"{hit.where}: {value}" if value else hit.where
 
 
+def song_name(track: Track) -> str:
+    """A song's title, or its file's name when it has none."""
+    return track.title or Path(os.fspath(track.path)).stem
+
+
 def song_values(hit: SongHit, inline_artist: bool = False, favourite: bool = False) -> tuple:
     """A song's cells (title, artist, album, year, quality, time). `inline_artist`: the artist rides
     in the title (no Artist column on show)."""
     track = hit.track
-    title = track.title or Path(os.fspath(track.path)).stem
+    title = song_name(track)
     if inline_artist and track.artist:
         title += f"  ·  {track.artist}"
     where = matched_text(hit)
@@ -623,7 +633,7 @@ class QuickSearch:
                 actions.open_album(thing.album, False)
             else:
                 actions.queue_tracks([thing.track], how == "next")
-                self._note_queued(f"“{thing.track.title}”", how == "next")
+                self._note_queued(f"“{song_name(thing.track)}”", how == "next")
         elif kind == "album":
             if how in ("play", "album"):
                 self.close()

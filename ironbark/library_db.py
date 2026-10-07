@@ -56,7 +56,7 @@ import re
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -253,6 +253,11 @@ _TRACK_SELECT = ("SELECT r.path, d.rel, f.name, t.id, " + ", ".join(f"t.{n}" for
 _ALBUM_TRACKS = "SELECT t.album_id, " + _TRACK_SELECT[len("SELECT "):]   # (the album's id, then as _TRACK_SELECT)
 # As _TRACK_SELECT, then the file's size, modified time and missing_since (the quality check's list)
 _CHECK_SELECT = _TRACK_SELECT.replace(" FROM tracks t", ", f.size, f.mtime_ns, f.missing_since FROM tracks t", 1)
+# Just what the quality check reads of each song (LibraryDB.check_list), folder by folder.
+_CHECK_LIST = ("SELECT r.path, d.rel, f.name, t.cue_sheet, t.cue_number, t.cue_start, t.cue_end, t.bits, t.md5,"
+               " t.duration, t.sample_rate, t.misnamed, t.unsupported, f.size, f.mtime_ns, f.missing_since"
+               " FROM tracks t JOIN files f ON f.id = t.file_id JOIN folders d ON d.id = f.folder_id"
+               " JOIN roots r ON r.id = d.root_id ORDER BY r.id, d.rel, f.name, t.cue_number")
 
 
 # -- what a look at one folder found ---------------------------------------------------------------------
@@ -391,14 +396,19 @@ def _join(root, rel, name="") -> str:
     return os.path.join(folder, name) if name else folder
 
 
+def _track_path(root, rel, name, cue_sheet, cue_number, cue_start, cue_end) -> Path:
+    """A song's path from its stored parts: a CuePath (its stretch of the file) for a CUE track."""
+    text = _join(root, rel, name)
+    return (Path(text) if cue_number is None
+            else CuePath(text, cue=CueRange(_from_db(cue_sheet), cue_number, cue_start, cue_end)))
+
+
 def _track(row) -> Track:
     """A Track from a _TRACK_SELECT row."""
     (root, rel, name, _id, cue_sheet, cue_number, cue_start, cue_end, title, artist, album, album_artist, composer,
      genre, date, _year, track_no, disc_no, duration, sample_rate, bits, channels, bitrate, size, codec, md5,
      encoder, float_samples, bitrate_mode, channel_mode, misnamed, unsupported, compilation, details) = row
-    text = _join(root, rel, name)
-    path = (Path(text) if cue_number is None
-            else CuePath(text, cue=CueRange(_from_db(cue_sheet), cue_number, cue_start, cue_end)))
+    path = _track_path(root, rel, name, cue_sheet, cue_number, cue_start, cue_end)
     return Track(path=path, title=title, artist=artist, album=album, track_no=track_no, disc_no=disc_no,
                  duration=duration, sample_rate=sample_rate, bits=bits, channels=channels, bitrate=bitrate,
                  encoder=encoder, md5=int(md5, 16) if md5 else 0, size=size, codec=codec,
@@ -1283,29 +1293,37 @@ class LibraryDB:
 
     def songs_by_keys(self, keys: Iterable) -> list[SongHit]:
         """The songs with these play / favourite keys (audiofile.key: a CUE track is "file#3"), in
-        the order asked; one that isn't in the library (or is missing) is left out."""
+        the order asked, each song once; one that isn't in the library (or is missing) is left out."""
+        seen: set[int] = set()
+        return [hit for _asked, hit in self.songs_for_keys(keys) if not (hit.id in seen or seen.add(hit.id))]
+
+    def songs_for_keys(self, keys: Iterable) -> list[tuple[str, SongHit]]:
+        """(key, song) for each of these keys that finds a song in the library, in the order asked.
+        Two keys can find one song — its file written another way ("c:\\music" and "C:\\Music":
+        Windows doesn't mind the case) — so a song can come more than once, and the key that found
+        it needn't be the song's own (audiofile.key of its path)."""
         keys = list(dict.fromkeys(_key(k) for k in keys))
+        by_folder: dict[str, list[tuple[str, str, int | None]]] = {}   # folder -> (key, file name, CUE track)
+        for key in keys:
+            path, mark, number = key.rpartition("#")
+            cue = int(number) if mark and number.isdecimal() else None
+            folder, name = os.path.split(path if cue is not None else key)
+            by_folder.setdefault(folder, []).append((key, name, cue))
         ids: dict[str, int] = {}
-        places: dict[str, tuple[int, str] | None] = {}
         with self._reading() as con:
-            for key in keys:
-                path, mark, number = key.rpartition("#")
-                cue = int(number) if mark and number.isdecimal() else None
-                folder, name = os.path.split(path if cue is not None else key)
-                if folder not in places:
-                    found = _locate(con, folder)
-                    places[folder] = (found[0], found[2]) if found else None
-                place = places[folder]
+            for folder, asked in by_folder.items():   # (a folder's songs in one read: thousands of keys stay quick)
+                place = _locate(con, folder)
                 if place is None:
                     continue
-                row = con.execute(
-                    "SELECT t.id FROM tracks t JOIN files f ON f.id = t.file_id JOIN folders d ON d.id = f.folder_id"
-                    " WHERE d.root_id = ? AND d.rel = ? AND f.name = ? AND f.missing_since IS NULL"
-                    " AND t.cue_number IS ?", (place[0], _to_db(place[1]), _to_db(name), cue)).fetchone()
-                if row is not None:
-                    ids[key] = row[0]
-        hits = {hit.id: hit for hit in self.songs(ids.values())}
-        return [hits[ids[key]] for key in keys if key in ids and ids[key] in hits]
+                found = {(_from_db(name), cue): track_id for name, cue, track_id in con.execute(
+                    "SELECT f.name, t.cue_number, t.id FROM tracks t JOIN files f ON f.id = t.file_id"
+                    " JOIN folders d ON d.id = f.folder_id"
+                    " WHERE d.root_id = ? AND d.rel = ? AND f.missing_since IS NULL", (place[0], _to_db(place[2])))}
+                for key, name, cue in asked:
+                    if (name, cue) in found:
+                        ids[key] = found[(name, cue)]
+        hits = {hit.id: hit for hit in self.songs(dict.fromkeys(ids.values()))}
+        return [(key, hits[ids[key]]) for key in keys if key in ids and ids[key] in hits]
 
     # -- plays and favourites --
     def record_play(self, key, seconds_heard: float, duration: float, when: float | None = None) -> bool:
@@ -1370,6 +1388,21 @@ class LibraryDB:
         with self._reading() as con:
             return [(_track(row[:-3]), row[-3], row[-2], row[-1] is not None) for row in con.execute(
                 _CHECK_SELECT + " ORDER BY r.id, d.rel, f.name, t.cue_number")]
+
+    def check_list(self) -> Iterator[tuple]:
+        """What the quality check needs of every song, one at a time, folder by folder (a big
+        library's whole Tracks would cost hundreds of megabytes, and seconds, at every run's start):
+        (path, bits, MD5, duration, sample rate, misnamed, unsupported, size, modified ns, missing)
+        — the path as text (a CuePath for a CUE track: its stretch of the file), the file's size and
+        time as last seen, and whether it's missing just now. Read to the end (it holds a read open
+        meanwhile)."""
+        with self._reading() as con:
+            for (root, rel, name, cue_sheet, cue_number, cue_start, cue_end, bits, md5, duration, rate, misnamed,
+                 unsupported, size, mtime, missing) in con.execute(_CHECK_LIST):
+                path = (_join(root, rel, name) if cue_number is None
+                        else _track_path(root, rel, name, cue_sheet, cue_number, cue_start, cue_end))
+                yield (path, bits, int(md5, 16) if md5 else 0, duration, rate, misnamed, unsupported, size, mtime,
+                       missing is not None)
 
     def check_states(self) -> dict[str, tuple[int, int, int]]:
         """{song key: (size, modified ns, format)} for every stored check."""

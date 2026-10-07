@@ -211,11 +211,19 @@ def stored(db: LibraryDB, path) -> tuple[Analysis, float] | None:
 
 def stored_peak(db: LibraryDB, path) -> float | None:
     """A song's true peak from its stored check (linear), when its file hasn't changed since; None
-    when there's none. For the clipping guard, on its worker thread."""
+    when there's none — or when the check stopped at damage, as its peak is then only of the part
+    before it (the player plays on past the damage). For the clipping guard, on its worker thread."""
     row = db.check_of(path)
-    if row is None or row[5] is None or row[2] != CHECK_FORMAT or _file_now(path) != (row[0], row[1]):
+    if (row is None or row[5] is None or row[2] != CHECK_FORMAT or "damaged" in row[4].split()
+            or _file_now(path) != (row[0], row[1])):
         return None
     return float(row[5])
+
+
+def _whole_peak(result: Analysis) -> float | None:
+    """The true peak kept for the clipping guard: only one of the whole song, not of a read that
+    stopped at damage."""
+    return result.true_peak if result.damaged_at is None else None
 
 
 def remember(db: LibraryDB, track: Track, result: Analysis, file: tuple[int, int] | None) -> None:
@@ -224,15 +232,16 @@ def remember(db: LibraryDB, track: Track, result: Analysis, file: tuple[int, int
     if file is None:
         return
     db.save_check(track.path, file[0], file[1], CHECK_FORMAT, " ".join(findings(result, track.misnamed)),
-                  result.true_peak, to_json(result))
+                  _whole_peak(result), to_json(result))
 
 
 # -- the songs to check ------------------------------------------------------------------------------------
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Song:
-    """One song to check (plain values: it goes to a worker process)."""
+    """One song to check (plain values: it goes to a worker process). Slotted: a first run holds
+    one for every song in the library."""
     key: str
-    path: Path                 # a CuePath for a CUE track: its stretch of the file
+    path: str | Path           # its text (the key itself), or a CuePath for a CUE track: its stretch of the file
     bits: int
     md5: int
     duration: float
@@ -247,42 +256,57 @@ class Song:
 
 @dataclass
 class Plan:
-    songs: list[Song]          # still to check, folder by folder
+    songs: list[Song]          # still to check, folder by folder (none kept when only counted)
     done: int                  # songs checked already (their files unchanged since)
     gone: list[str]            # stored checks of songs no longer in the library
     music_s: float = 0.0       # how long the songs still to check play for, all together
+    count: int = 0             # how many there are still to check
+    work: float = 0.0          # the reading they take (Song.work, all together)
 
     @property
     def total(self) -> int:
-        return self.done + len(self.songs)
+        return self.done + self.count
 
 
-def plan(db: LibraryDB) -> Plan:
+def plan(db: LibraryDB, keep: bool = True) -> Plan:
     """What a run has to check: every song whose stored check is missing, for a file that has
     changed since, or from another version of the check. Songs whose files are missing just now
-    are left for later (their checks kept); songs this player can't decode are left out."""
+    are left for later (their checks kept); songs this player can't decode are left out.
+    `keep` False: only counted (the question's estimate holds no songs).
+
+    `gone`: stored checks of songs no longer in the library — but none under a library folder
+    whose first look hasn't finished (a new folder, or the library being read again after its
+    database was remade): its songs aren't all listed yet, and their checks took hours to make."""
     states = db.check_states()
+    unread = [os.path.join(os.path.normcase(root), "") for root in db.roots() if not db.built(root)]
     known: set[str] = set()
     songs: list[Song] = []
-    done = 0
-    music = 0.0
-    for track, size, mtime, missing in db.check_songs():
-        key = audiofile.key(track.path)
+    done = count = 0
+    music = work = 0.0
+    for path, bits, md5, duration, rate, misnamed, unsupported, size, mtime, missing in db.check_list():
+        key = audiofile.key(path)
         known.add(key)
-        if missing or track.unsupported:
+        if missing or unsupported:
             continue
         if states.get(key) == (size, mtime, CHECK_FORMAT):
             done += 1
             continue
-        songs.append(Song(key, track.path, track.bits, track.md5, float(track.duration or 0.0), track.sample_rate,
-                          track.misnamed))
-        music += float(track.duration or 0.0)
-    return Plan(songs, done, [key for key in states if key not in known], music)
+        song = Song(key, path, bits, md5, float(duration or 0.0), rate or 0, misnamed or "")
+        count += 1
+        music += song.duration
+        work += song.work
+        if keep:
+            songs.append(song)
+    gone = [key for key in states
+            if key not in known and not (unread and os.path.normcase(key).startswith(tuple(unread)))]
+    return Plan(songs, done, gone, music, count, work)
 
 
-def estimate(songs: Iterable[Song], workers: int = WORKERS, speed: float = SPEED) -> float:
-    """Seconds a run takes to check these songs, before it has measured anything."""
-    return sum(song.work for song in songs) / (speed * max(1, workers))
+def estimate(songs: Iterable[Song] | float, workers: int = WORKERS, speed: float = SPEED) -> float:
+    """Seconds a run takes to check these songs (or this much reading: Plan.work), before it has
+    measured anything."""
+    work = songs if isinstance(songs, (int, float)) else sum(song.work for song in songs)
+    return work / (speed * max(1, workers))
 
 
 def duration_text(seconds: float) -> str:
@@ -530,7 +554,7 @@ class Checker:
         found = plan(db)
         if found.gone:
             db.forget_checks(found.gone)
-        self._set(done=found.done, total=found.total, seconds_left=estimate(found.songs, self.workers))
+        self._set(done=found.done, total=found.total, seconds_left=estimate(found.work, self.workers))
         if found.songs and not stop.is_set():
             self._work(db, found, stop)
 
@@ -610,7 +634,7 @@ class Checker:
             db.save_check(song.key, size, mtime, CHECK_FORMAT, "", None, "")
         else:
             db.save_check(song.key, size, mtime, CHECK_FORMAT, " ".join(findings(result, song.misnamed)),
-                          result.true_peak, to_json(result))
+                          _whole_peak(result), to_json(result))
         self.changes += 1
 
 
@@ -629,18 +653,29 @@ class Look:
 
 
 def needs_look(db: LibraryDB) -> list[tuple[SongHit, Look]]:
-    """Every song in the library whose stored check found something (missing files left out). Reads
-    the database: for the library's query thread."""
+    """Every song in the library whose stored check found something (missing files left out), worst
+    first (`worst_first`). A song checked under two keys — its file written two ways, by Now
+    Playing say — is listed once, by its own key's check (else the newer). Reads the database:
+    for the library's query thread."""
     found = {}
     for key, words, checked, text in db.flagged_checks():
         words = tuple(word for word in words.split() if word in FINDINGS)
         if words:
             found[key] = (words, checked, text)
+    chosen: dict[int, tuple[SongHit, str, bool]] = {}
+    for key, hit in db.songs_for_keys(found):
+        own = key == audiofile.key(hit.track.path)
+        had = chosen.get(hit.id)
+        if had is None or (not had[2] and (own or found[key][1] > found[had[1]][1])):
+            chosen[hit.id] = (hit, key, own)
     listed = []
-    for hit in db.songs_by_keys(found):
-        words, checked, text = found[audiofile.key(hit.track.path)]
+    for hit, key, own in chosen.values():
+        if not own and db.check_of(hit.track.path) is not None:
+            continue   # (its own key's check found nothing: that one has the say)
+        words, checked, text = found[key]
         result = from_json(text)
         listed.append((hit, Look(words, describe(words, result, hit.track), FINDINGS.index(words[0]), checked)))
+    listed.sort(key=worst_first)
     return listed
 
 
