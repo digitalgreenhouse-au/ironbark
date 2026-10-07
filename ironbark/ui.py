@@ -45,7 +45,13 @@ The keyboard: every shortcut is in one table (keys.py) — `_bind_keys` says wha
 every window the player opens is attached to it (`_with_keys`), so the keys work wherever the
 keyboard is. F1 (or ?) lists them all (help_window.py); Settings → Help has that list and About.
 A playlist change (Delete, a move, Up next cleared) can be undone once: Ctrl+Z, or Undo in the
-status line."""
+status line.
+
+Volume levelling (Settings → Sound, off by default; levelling.py): each song's gain is worked out
+ahead of play beside the clipping guard's (`_apply_levelling`) and handed to the player per file.
+Stop after the current song and the sleep timer (sleep.py): in the track menu and the Up next list,
+and Ctrl+. / Ctrl+Shift+S, for this session only (`stop_after_current`, `set_sleep_timer`).
+Lyrics: key L (lyrics_window.py)."""
 
 from __future__ import annotations
 
@@ -67,8 +73,8 @@ from typing import Callable
 from PIL import ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
-               dragdrop, experiments, keys, library_db, library_index, logs, mediakeys, placement, playlists, popups,
-               settings, tag_editor, theme, tkgc, updates, watcher)
+               dragdrop, experiments, keys, levelling, library_db, library_index, logs, loudness, mediakeys,
+               placement, playlists, popups, settings, sleep, tag_editor, theme, tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
@@ -79,7 +85,9 @@ from .engine import Player, State
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
 from .library_window import LibraryWindow, adding_folder
+from .lyrics_window import LyricsWindow
 from .meter_window import MeterWindow
+from .meters import album_files
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
 from .pcm_window import PcmWindow
 from .clip_window import ClipWindow
@@ -379,7 +387,23 @@ class PlayerWindow:
         self._peak_jobs: queue.Queue = queue.Queue()
         self._peak_wanted: set[Path] = set()
         self._guard_for: Path | None = None
+        # Volume levelling (off by default): ReplayGain tags, else the measured loudness, worked out
+        # on the same worker (tags read, loudness and true peak measured in one pass); an album's own
+        # loudness on a worker of its own. Kept in memory for the session.
+        self._gain_tags: dict[Path, levelling.GainTags | None] = {}
+        self._lufs: dict[Path, float | None] = {}
+        self._level_wanted: set[Path] = set()
+        # (the choices each file's gain was worked out with, and whether its true peak was known then)
+        self._level_set_with: dict[Path, tuple] = {}
+        self._album_lufs: dict[Path, float | None] = {}
+        self._album_jobs: queue.Queue = queue.Queue()
+        self._album_wanted: Path | None = None
+        self._album_cancel = threading.Event()
         threading.Thread(target=self._measure_peaks, name="true-peak", daemon=True).start()
+        threading.Thread(target=self._measure_albums, name="album-loudness", daemon=True).start()
+        # Stop after this song and the sleep timer: for this session only.
+        self.sleep_timer: sleep.SleepTimer | None = None
+        self._lyrics: LyricsWindow | None = None
         self._closed_tabs: list[tuple[int, Tab]] = []  # for Ctrl+Shift+T
         self._writing_playlists: set[Path] = set()    # playlists being added to on a thread
         self._wheel_delta = 0                          # mouse-wheel movement not yet a whole notch
@@ -666,6 +690,31 @@ class PlayerWindow:
         Tooltip(self.headroom_box, "Only if your converter is known to take overs: the clipping guard then lets "
                                    "the wave go this far past full scale before it turns a track down. "
                                    "Measured converters range from none to about 3.5 dB. Off = none.")
+        # Volume levelling: off by default (any change of level means the device no longer gets the
+        # file's own samples); the pre-amp goes with it.
+        row = ttk.Frame(b, style="Pop.TFrame")
+        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+        ttk.Label(row, text="Volume levelling", style="Pop.TLabel").pack(side="left")
+        self.levelling_box = ttk.Combobox(row, state="readonly", takefocus=False, width=8,
+                                          values=[label for _, label in levelling.MODES])
+        self.levelling_box.pack(side="right")
+        self.levelling_box.current([key for key, _ in levelling.MODES].index(self._levelling_setting()))
+        self.levelling_box.bind("<<ComboboxSelected>>", self._levelling_chosen)
+        Tooltip(self.levelling_box, "Plays songs at about the same loudness, from their ReplayGain tags (or "
+                                    "Ironbark measures them). Track: each song on its own. Album: an album's "
+                                    "songs keep their own balance. Smart: Album while an album plays in order, "
+                                    "else Track. Not bit-perfect while it's on.")
+        row = ttk.Frame(b, style="Pop.TFrame")
+        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+        ttk.Label(row, text="Levelling pre-amp", style="Pop.TLabel").pack(side="left")
+        self.preamp_box = ttk.Combobox(row, takefocus=False, width=8,
+                                       values=[levelling.preamp_label(v) for v in levelling.PREAMP_CHOICES],
+                                       state="disabled" if self._levelling_setting() == "off" else "readonly")
+        self.preamp_box.pack(side="right")
+        self.preamp_box.current(levelling.PREAMP_CHOICES.index(self._preamp_db()))
+        self.preamp_box.bind("<<ComboboxSelected>>", self._preamp_chosen)
+        Tooltip(self.preamp_box, "Added to every levelling gain. A song is only turned up as far as its "
+                                 "peak allows (it stays under −0.1 dB true peak).")
         row = ttk.Frame(b, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
         ttk.Label(row, text="Volume", style="Pop.TLabel").pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM))
@@ -838,6 +887,9 @@ class PlayerWindow:
         def call(name):
             return lambda *key: getattr(self, name)(*key)
 
+        def void(_result) -> None:   # a handler that always acted (returning False would pass the key on)
+            return None
+
         def side(key: str) -> int:   # -1 for the backwards key of a pair (←, ↓, PgUp), 1 for the other
             return -1 if key.endswith(("Left", "Down", "PgUp")) else 1
 
@@ -890,6 +942,9 @@ class PlayerWindow:
             "undo": call("undo"),
             "rename": call("rename_playlist_on_show"),
             "edit_tags": call("edit_selected_tags"),
+            "lyrics": call("show_lyrics"),
+            "stop_after": lambda: void(self.stop_after_current()),   # (False only means "carry on" now)
+            "sleep_timer": call("open_sleep_menu"),
         }, held=lambda: bool(popups.Prompt.stack))   # (no key acts while a question box waits)
         self.keys.attach(self.root, "main")
         self.keys.mark(self.playlist.tree, "list")
@@ -1444,6 +1499,80 @@ class PlayerWindow:
         self._set_notice({"off": "Repeat off", "all": "Repeat the album / playlist",
                           "one": "Repeat this song"}[following], 2000)
 
+    # -- stop after this song, and the sleep timer (for this session only) ------------------
+    def stop_after_current(self) -> bool:
+        """Stop at the end of the song playing, or — asked again — carry on after all. Returns
+        whether it's now set. (Taking it away leaves a sleep timer's "end of this album" in place.)"""
+        if self.player.stop_after == "song":
+            album = self.sleep_timer is not None and self.sleep_timer.state == sleep.AT_ALBUM_END
+            self.player.set_stop_after("album" if album else None)
+            if self.sleep_timer is not None and self.sleep_timer.state == sleep.AT_BOUNDARY:
+                self.sleep_timer.cancel()
+                self.sleep_timer = None
+            self._set_notice("Carries on after this song", 2500)
+            return False
+        self.player.set_stop_after("song")
+        self._set_notice("Stops after this song", 2500)
+        return True
+
+    def set_sleep_timer(self, minutes):
+        """Sleep timer: a number of minutes (sleep.CHOICES are offered), "album" (the end of the
+        album playing), or None / 0 = off."""
+        if self.sleep_timer is not None:
+            self.sleep_timer.cancel()
+            self.sleep_timer = None
+        if not minutes:
+            self._set_notice("Sleep timer off", 2500)
+            return
+        self.sleep_timer = sleep.SleepTimer(self.player, minutes)
+        exclusive = self.exclusive.get()
+        detail = (" (bit-perfect: it stops at the end of the song playing then, no fade)" if exclusive
+                  and minutes != sleep.ALBUM else "")
+        self._set_notice(f"Sleep timer: {sleep.choice_label(minutes).lower()}{detail}", 4000)
+
+    def _tick_sleep(self, status):
+        timer = self.sleep_timer
+        if timer is not None:
+            timer.tick(status)
+            if not timer.active:
+                self.sleep_timer = None
+
+    def _sleep_line(self, status) -> str:
+        """The status line while a sleep timer or "stop after this song" is set (with time left)."""
+        timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
+        after_song = getattr(status, "stop_after", "") == "song" and status.state is not State.STOPPED
+        if after_song and (timer is None or timer.state == sleep.AT_ALBUM_END):
+            return "Stops after this song"   # (sooner than the end of the album, so it's what happens)
+        return timer.describe() if timer is not None else ""
+
+    def open_sleep_menu(self):
+        """Ctrl+Shift+S, in any window: the Stop after / Sleep timer menu, over the window the
+        keyboard is in (the main window: at the status line)."""
+        try:
+            focus = self.root.focus_get()
+        except (KeyError, tk.TclError):   # (a widget Tk can't name, e.g. a menu's own)
+            focus = None
+        window = focus.winfo_toplevel() if focus is not None else self.root
+        if window is self.root and not self.mini_mode:
+            x, y = self.status_label.winfo_rootx(), self.status_label.winfo_rooty()
+        else:
+            x, y = window.winfo_rootx() + theme.px(theme.GAP_LARGE), window.winfo_rooty() + theme.px(theme.GAP_LARGE)
+        self._sleep_menu(self._menu()).popup(x, y)
+
+    def _sleep_menu(self, menu):
+        """Fill `menu` (a PopupMenu or a submenu of one) with "Stop after the current song" and the
+        sleep timer's choices, ticked as they are now."""
+        menu.add_check("Stop after the current song", self.player.stop_after == "song", self.stop_after_current,
+                       keys.hint("stop_after"))
+        timer = self.sleep_timer.target if self.sleep_timer is not None and self.sleep_timer.active else None
+        sub = menu.add_submenu("Sleep timer")
+        for choice in (*sleep.CHOICES, sleep.ALBUM):
+            sub.add_check(sleep.choice_label(choice), timer == choice,
+                          lambda c=choice: self.set_sleep_timer(c))
+        sub.add_separator()
+        sub.add("Off", lambda: self.set_sleep_timer(None), enabled=timer is not None)
+        return menu
+
     def _paint_order_buttons(self):
         self.shuffle_button.set_colour("ACCENT" if self.player.shuffle else "MUTED")
         mode = self.player.repeat
@@ -1466,6 +1595,9 @@ class PlayerWindow:
 
         while True:
             path = self._peak_jobs.get()
+            if isinstance(path, tuple):   # ("level", path): volume levelling's tags, loudness and peak
+                self._measure_for_levelling(path[1])
+                continue
             if path in self._peaks or path not in self._peak_wanted:
                 continue
             try:
@@ -1476,6 +1608,142 @@ class PlayerWindow:
             except Exception:
                 log.exception("couldn't measure the true peak of %s", path)
                 self._peaks[path] = 0.0
+
+    def _measure_for_levelling(self, path: Path):
+        """(On the worker.) A file's ReplayGain tags, and — in one read of the file — its loudness
+        (only when the tags have no track gain) and true peak (unless already measured)."""
+        if path not in self._level_wanted:
+            return   # skipped past meanwhile
+        try:
+            if path not in self._gain_tags:
+                self._gain_tags[path] = levelling.read_tags(path)
+            tags = self._gain_tags[path]
+            need_lufs = path not in self._lufs and (tags is None or tags.track_gain is None)
+            need_peak = path not in self._peaks
+            if need_lufs or need_peak:
+                peak, lufs = levelling.measure(path, peak=need_peak, loudness=need_lufs)
+                if need_peak:
+                    self._peaks[path] = peak or 0.0
+                if need_lufs:
+                    self._lufs[path] = lufs
+            return
+        except (OSError, RuntimeError, ValueError):
+            pass
+        except Exception:
+            log.exception("couldn't work out the volume levelling of %s", path)
+        self._gain_tags.setdefault(path, None)   # (not again: it can't be read)
+        self._lufs.setdefault(path, None)
+        self._peaks.setdefault(path, 0.0)
+
+    def _measure_albums(self):
+        """Background worker: an album's loudness, all its tracks as one programme (for Album
+        levelling when its tags have no album gain). Given up when another album is wanted."""
+        while True:
+            folder, track_path = self._album_jobs.get()
+            if folder in self._album_lufs or folder != self._album_wanted:
+                continue
+            cancel = self._album_cancel
+            try:
+                files = album_files(track_path)[1]
+                # (a folder of more songs than an album holds, singles say, isn't measured as one)
+                result = ((None, None) if len(files) > levelling.ALBUM_MOST_FILES
+                          else loudness.album_loudness(files, cancel))
+            except (OSError, RuntimeError, ValueError):
+                result = (None, None)
+            except Exception:
+                log.exception("couldn't measure the album %s", folder)
+                result = (None, None)
+            if result is not None:   # (None: cancelled — asked again if it's wanted again)
+                self._album_lufs[folder] = result[0]
+
+    def _want_album(self, folder: Path, track_path: Path):
+        if folder == self._album_wanted:
+            return
+        self._album_cancel.set()   # (the album being measured isn't wanted any more)
+        self._album_cancel = threading.Event()
+        self._album_wanted = folder
+        self._album_jobs.put((folder, track_path))
+
+    def _levelling_setting(self) -> str:
+        setting = self.prefs.get("levelling")
+        return setting if setting in dict(levelling.MODES) else "off"
+
+    def _preamp_db(self) -> float:
+        try:
+            value = float(self.prefs.get("levelling_preamp") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return value if value in levelling.PREAMP_CHOICES else 0.0
+
+    def _apply_levelling(self, track: Track | None, status):
+        """Keep volume levelling in step with what's playing, as the clipping guard does: this
+        song's gain and the next one's, worked out ahead so it's in place when that song joins on.
+        A song's gain isn't changed once it's playing (unless the choice in Settings changes), so a
+        late measurement never jumps the level part-way through; it counts from the next song. The
+        one exception is downwards only: a gain worked out before the song's true peak was measured
+        (from its tags' peak, which is often just the highest sample) is held down if the measured
+        peak shows it would go past the ceiling (levelling.held), as the clipping guard would.
+        Off: every gain is taken away and playback is exactly as without levelling."""
+        setting = self._levelling_setting()
+        if setting == "off" or track is None:
+            if self._level_wanted or self._level_set_with:
+                self.player.set_levelling(None)
+                self._level_wanted, self._level_set_with = set(), {}
+            return
+        playing = self.playing_tab
+        tab = self.tabs[playing] if playing is not None and playing < len(self.tabs) else None
+        following = self.player.following_path()   # (Up next first, as the engine plays it)
+        up_next = self.player.up_next()
+        entries = [(track.path, status.index < 0)]
+        if following is not None and following != track.path:
+            entries.append((following, bool(up_next) and up_next[0].path == following))
+        wanted = {path for path, _ in entries}
+        if wanted != self._level_wanted:
+            self._level_wanted = wanted   # (anything else still queued is skipped)
+            for path, _ in entries:
+                self._peak_jobs.put(("level", path))   # (does nothing for what's already known)
+        preamp = self._preamp_db()
+        for path, queued in entries:
+            mode = levelling.mode_for(setting, tab.kind if tab else None, self.player.shuffle, queued)
+            choices = (setting, preamp, mode)
+            current, set_with = self.player.levelling_for(path), self._level_set_with.get(path)
+            peak_known = path in self._peaks
+            if path == track.path and current is not None and set_with is not None and set_with[0] == choices:
+                if peak_known and not set_with[1]:   # its true peak has come in since: only ever down
+                    level = levelling.held(current, self._gain_tags.get(path), self._peaks.get(path) or None)
+                    if level != current:
+                        self.player.set_levelling(path, level)
+                    self._level_set_with[path] = (choices, True)
+                continue   # playing: keep its level
+            tags = self._gain_tags.get(path)
+            album = None
+            if mode == "album" and path in self._gain_tags and (tags is None or tags.album_gain is None):
+                folder = album_folder(Path(audiofile.real_path(path)))
+                if folder in self._album_lufs:
+                    album = self._album_lufs[folder]
+                elif path == track.path:
+                    self._want_album(folder, path)
+            level = levelling.level_for(mode, tags, self._lufs.get(path), album, self._peaks.get(path) or None,
+                                        preamp)
+            if level != current:
+                self.player.set_levelling(path, level)
+            if level is not None:
+                self._level_set_with.pop(path, None)   # (newest last: the oldest are let go below)
+                self._level_set_with[path] = (choices, peak_known)
+        while len(self._level_set_with) > 16:
+            self._level_set_with.pop(next(iter(self._level_set_with)))
+
+    def _levelling_chosen(self, _event=None):
+        """Settings → Volume levelling: Off / Track / Album / Smart."""
+        self.prefs["levelling"] = levelling.MODES[self.levelling_box.current()][0]
+        self.levelling_box.selection_clear()
+        self._level_set_with = {}   # every song worked out again, the one playing too
+        self.preamp_box.configure(state="disabled" if self.prefs["levelling"] == "off" else "readonly")
+
+    def _preamp_chosen(self, _event=None):
+        self.prefs["levelling_preamp"] = levelling.PREAMP_CHOICES[self.preamp_box.current()]
+        self.preamp_box.selection_clear()
+        self._level_set_with = {}
 
     def _guard_changed(self):
         self._guard_for = None  # re-evaluate on the next refresh
@@ -1512,7 +1780,7 @@ class PlayerWindow:
             # (0.24.0) Measured at 8x; just under full scale (plus any headroom the DAC has), with
             # 0.17 dB spare — the most 8x can under-read (analysis.guard_trim).
             trim = guard_trim(peak, self._headroom_db())
-            if abs(self.player.trim_for(path) - trim) > 1e-6:
+            if abs(self.player.guard_for(path) - trim) > 1e-6:   # (the guard's own part: not levelling's)
                 self.player.set_trim(path, trim)
 
     # -- playlists -------------------------------------------------------------
@@ -1708,6 +1976,8 @@ class PlayerWindow:
             menu.add("Move down", lambda: self._move_in_playlist(index, 1), keys.hint("move_song", 1),
                      enabled=index < len(tab.tracks) - 1)
             menu.add("Remove from playlist", lambda: self._remove_from_playlist(index), keys.hint("remove"))
+        menu.add_separator()
+        self._sleep_menu(menu)
         menu.add_separator()
         self._columns_menu(menu.add_submenu("Columns"))
         menu.popup(event.x_root, event.y_root)
@@ -2164,6 +2434,17 @@ class PlayerWindow:
         if len(queue) > UP_NEXT_SHOWN:
             ttk.Label(body, text=f"and {len(queue) - UP_NEXT_SHOWN} more", style="PopMuted.TLabel").pack(
                 anchor="w", padx=theme.px(theme.GAP_MEDIUM), pady=theme.pad(theme.GAP_HAIR, 0))
+        # When to stop: after the song playing, or a sleep timer (its choices in a menu of their own).
+        stopping = tk.Frame(body, bg=theme.SURFACE)
+        stopping.pack(fill="x")
+        tk.Frame(stopping, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_SMALL, theme.GAP_SMALL))
+        MenuRow(stopping, "Stop after the current song", self.stop_after_current, keys.hint("stop_after"),
+                check=self.player.stop_after == "song").pack(fill="x")
+        timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
+        row = MenuRow(stopping, f"Sleep timer: {sleep.choice_label(timer.target).lower()}" if timer
+                      else "Sleep timer…", lambda: None, "›", closes=False)
+        row.command = lambda r=row: self._sleep_menu(self._menu()).popup(r.winfo_rootx(), r.winfo_rooty())
+        row.pack(fill="x")
         if self.up_next_pop.is_open:  # re-seat it: the list's height changed
             self.up_next_pop.place_configure(y=self._up_next_top())
             self.up_next_pop.wire_rows()
@@ -2517,12 +2798,15 @@ class PlayerWindow:
             self.lock_button.set_colour("GOOD" if on else "MUTED")
 
     def _lock_tip(self) -> str:
+        setting = self._levelling_setting()
+        levelled = (f" Volume levelling is on ({levelling.mode_label(setting)}): it changes every song's level, "
+                    "so nothing is bit-perfect until it's off (Settings → Sound)." if setting != "off" else "")
         if self.exclusive.get():
             guard = (" The clipping guard comes first: a track that would clip the converter is turned down "
                      "just enough, so that one track isn't bit-perfect." if self.clip_guard.get() else "")
             return ("Bit-perfect is locked on: the device gets the file's exact samples, and other apps "
-                    f"go quiet while this plays.{guard} Click to turn it off.")
-        return "Bit-perfect is off: Windows mixes the sound and may resample it. Click to lock it on."
+                    f"go quiet while this plays.{guard}{levelled} Click to turn it off.")
+        return f"Bit-perfect is off: Windows mixes the sound and may resample it.{levelled} Click to lock it on."
 
     def _refresh_outputs(self):
         """Re-read the connected devices (runs each time the dropdown opens)."""
@@ -2578,7 +2862,7 @@ class PlayerWindow:
                 on_meters=self.show_meters, on_pcm=self.show_pcm, on_clipping=self.show_clipping,
                 on_spectrogram=self.show_spectrogram,
                 on_scope=self.show_scope, on_compare=self.show_compare, on_abx=self.show_abx,
-                on_testsignals=self.show_testsignals,
+                on_testsignals=self.show_testsignals, on_lyrics=self.show_lyrics,
                 prefs=self.prefs))
 
     def show_meters(self):
@@ -2610,6 +2894,13 @@ class PlayerWindow:
         else:
             self._spectrogram = self._with_keys(SpectrogramWindow(self.root, self.player, self.prefs,
                                                                   analysis_for=NowPlayingWindow.cached_analysis))
+
+    def show_lyrics(self):
+        """The playing song's lyrics, from its file or the .lrc / .txt beside it (one window at a time)."""
+        if self._lyrics is not None and self._lyrics.win.winfo_exists():
+            self._lyrics.lift()
+        else:
+            self._lyrics = self._with_keys(LyricsWindow(self.root, self.player, self.prefs))
 
     def show_scope(self):
         """The stereo scope: vectorscope, correlation, balance, DC offset (one window at a time)."""
@@ -3452,7 +3743,11 @@ class PlayerWindow:
             if playing.last_index != status.index:
                 playing.last_index = status.index
                 self._refresh_tabs()  # a tab of many albums takes the name of the one it's on
+        # (Levelling first: its look-ahead measures loudness and true peak in one read of a file,
+        # and the guard's own measurement then finds the peak already known.)
+        self._apply_levelling(track, status)
         self._apply_guard(track, status.index)
+        self._tick_sleep(status)
         shown = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         # A song from Up next with no tab behind it is shown as a playing tab's song would be.
         viewing_playing = (shown is not None and self.current == self.playing_tab) or from_queue
@@ -3465,7 +3760,7 @@ class PlayerWindow:
             self.sub_label.configure(text=track.display_artist_album or track.path.parent.name)
             self.format_label.configure(text=track.format_line)
             text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
-                                     track.bits, track.codec)
+                                     track.bits, track.codec, status.levelling, status.fading)
             # The proof (see proof.py) backs up — or contradicts — what the line above claims.
             proof = status.proof
             if proof is not None and proof.mismatch_at is not None:
@@ -3541,7 +3836,7 @@ class PlayerWindow:
         self.seek.set(position, duration)
         if not self.seek.dragging:
             self._show_times(position, duration)
-        self.status_label.configure(text=self._notice or status.message or elsewhere)
+        self.status_label.configure(text=self._notice or status.message or self._sleep_line(status) or elsewhere)
         self._paint_undo_link()
         # The mini strip shows the same as the top of the full window.
         self._mini_state = dict(title=self.title_label.cget("text"), artist=self.sub_label.cget("text"),

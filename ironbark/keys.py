@@ -83,6 +83,8 @@ ACTIONS: tuple[Action, ...] = (
     Action("volume", _keys("Ctrl+Up", "Ctrl+Down"), "app", "Volume up / down 5%", "Playback", arg=True),
     Action("mute", _keys("Ctrl+Shift+Down",), "app", "Mute / unmute", "Playback"),
     Action("full_volume", _keys("Ctrl+Shift+Up",), "app", "Volume 100% (untouched)", "Playback"),
+    Action("stop_after", _keys("Ctrl+.",), "app", "Stop after this song (again: carry on)", "Playback"),
+    Action("sleep_timer", _keys("Ctrl+Shift+S",), "app", "Sleep timer and Stop after (a menu)", "Playback"),
     # -- Tabs & lists --------------------------------------------------------------------------
     Action("new_tab", _keys("Ctrl+T",), "main", "New tab menu (the + button)", "Tabs & lists"),
     Action("close_tab", _keys("Ctrl+W",), "main", "Close the tab", "Tabs & lists"),
@@ -112,6 +114,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("compare", _keys("D",), "app", "Compare two files", "Windows & tools", shift=True),   # d: difference
     Action("abx", _keys("X",), "app", "ABX blind test", "Windows & tools", shift=True),   # x: the mystery version
     Action("test_signals", _keys("T",), "app", "Test signals", "Windows & tools", shift=True),
+    Action("lyrics", _keys("L",), "app", "Lyrics", "Windows & tools", shift=True),
     # z: zoom the window down to the mini strip, and back
     Action("mini", _keys("Z", "Ctrl+Shift+M"), "app", "Mini player and back", "Windows & tools", shift=True),
     Action("settings", _keys("Ctrl+,", "Ctrl+P"), "app", "Settings", "Windows & tools"),
@@ -156,7 +159,7 @@ OTHER_KEYS: tuple[tuple[str, str, str], ...] = (
 # How keys are written in the table → Tk's lower-cased keysym.
 _NAMES = {"space": "space", "enter": "return", "esc": "escape", "delete": "delete", "tab": "tab", "left": "left",
           "right": "right", "up": "up", "down": "down", "pgup": "prior", "pgdn": "next", "home": "home",
-          "end": "end", ",": "comma", "?": "question", "/": "slash"}
+          "end": "end", ",": "comma", ".": "period", "?": "question", "/": "slash"}
 # …and back again, for people (arrows as arrows).
 _SHOWN = {"Left": "←", "Right": "→", "Up": "↑", "Down": "↓"}
 # Keysyms that name the same key another way.
@@ -201,7 +204,7 @@ def normalise(keysym: str, state: int) -> Key:
 
 
 def _single_character(base: str) -> bool:
-    return len(base) == 1 or base in ("question", "slash", "comma")
+    return len(base) == 1 or base in ("question", "slash", "comma", "period")
 
 
 def works_while_typing(key: Key) -> bool:

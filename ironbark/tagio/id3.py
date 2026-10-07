@@ -25,7 +25,8 @@ with a byte-order mark, 2 UTF-16BE (v2.4 only), 3 UTF-8 (v2.4 only). v2.4 text f
 several values separated by a null; v2.3 separates some lists with "/". Frames understood here:
 text frames (T***), TXXX (description + value), COMM / USLT (encoding, 3-letter language,
 description, text), APIC (encoding, MIME type, picture type, description, data; v2.2 PIC has a
-3-letter image format instead of a MIME type). Every other frame is kept as it was read; one that
+3-letter image format instead of a MIME type), and SYLT (synchronised lyrics: read only, written
+back as it was read). Every other frame is kept as it was read; one that
 can't be read at all (encrypted, or compressed data that won't inflate within MAX_INFLATED or to
 the size it states) is kept exactly as stored, flags included. When the frames can't be followed
 to the padding (an unreadable frame ID, a frame running past the end, a v2.2 frame with no v2.3
@@ -286,6 +287,42 @@ class CommentFrame(Frame):
                 + term.join(_encode(encoding, t) for t in self.text))
 
 
+class SyncedLyricsFrame(Frame):
+    """SYLT, synchronised lyrics ("Native Frames" §4.9; read 07/10/2026): text encoding, a
+    3-letter language, the time stamp format ($01 = MPEG frames, $02 = milliseconds — absolute,
+    32 bits, big-endian), the content type ($01 = lyrics), a terminated content descriptor, then
+    the sync list: each entry a terminated piece of text (often a syllable; one beginning with a
+    newline starts a new line) and its time stamp. Read only: it's written back exactly as read."""
+
+    def __init__(self, entries: list[tuple[str, int]], lang: str = "eng", stamp_format: int = 2,
+                 content_type: int = 1, desc: str = "", encoding: int | None = None, **kw):
+        super().__init__("SYLT", **kw)
+        self.entries, self.lang, self.stamp_format = list(entries), lang, stamp_format
+        self.content_type, self.desc, self.encoding = content_type, desc, encoding
+
+    @classmethod
+    def parse(cls, id: str, body: bytes, source: int) -> "SyncedLyricsFrame":
+        if len(body) < 6:
+            raise TagError("a synchronised lyrics frame is too short")
+        encoding = body[0] if body[0] <= 3 else LATIN1
+        lang = body[1:4].decode("latin-1")
+        stamp_format, content_type = body[4], body[5]
+        desc, rest = _split_term(encoding, body[6:])
+        entries = []
+        while len(rest) >= 4:
+            text, after = _split_term(encoding, rest)
+            if len(after) < 4:
+                break   # a text with no time stamp after it: the list is cut short
+            entries.append((_decode(encoding, text), struct.unpack(">I", after[:4])[0]))
+            rest = after[4:]
+        return cls(entries, lang, stamp_format, content_type, _decode(encoding, desc), encoding,
+                   raw=body, source=source)
+
+    @property
+    def key(self) -> str:
+        return f"SYLT:{self.desc}:{self.lang}"
+
+
 class PictureFrame(Frame):
     """APIC: an embedded picture (type 3 = front cover)."""
 
@@ -327,7 +364,8 @@ def _is_text_id(id: str) -> bool:
     return id.startswith("T") and id != "TXXX"
 
 
-_PARSERS = {"TXXX": UserTextFrame, "COMM": CommentFrame, "USLT": CommentFrame, "APIC": PictureFrame}
+_PARSERS = {"TXXX": UserTextFrame, "COMM": CommentFrame, "USLT": CommentFrame, "APIC": PictureFrame,
+            "SYLT": SyncedLyricsFrame}
 
 
 def parse_frame(id: str, body: bytes, source: int) -> Frame:

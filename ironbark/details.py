@@ -16,7 +16,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from . import audiofile, controls, loopback, placement, ripcheck, theme, toolwin
+from . import audiofile, controls, levelling, loopback, placement, ripcheck, theme, toolwin
 from .analysis import (CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse,
                        lossy_below)
 from .engine import Health, OutputInfo, PlaybackEvent, Player, State
@@ -47,17 +47,43 @@ NETWORK_HINT = ("Turn on Settings → Network → Allow network access first. On
                 "see which disc is looked up).")
 
 
+def levelling_text(level, trim: float = 1.0) -> str:
+    """"Volume levelling −4.3 dB (album)" for a track that volume levelling changes (the gain the
+    track really gets: when the clipping guard holds it lower, the guard's figure, and that's said).
+    "" when the track's gain comes to exactly 0 dB: its samples go out untouched (proof.apply_gain)."""
+    if level is None or trim == 1.0:
+        return ""
+    if 0 < trim < level.gain * (1 - 1e-6):
+        return (f"Volume levelling {20 * math.log10(trim):+.1f} dB ({level.mode}, held down by the clipping "
+                "guard)").replace("-", "−")
+    return levelling.describe(level)
+
+
 def output_line(output: OutputInfo | None, gain: float, float_source: bool = False,
-                lossy: bool = False, trim: float = 1.0, bits: int = 0, codec: str = "") -> tuple[str, str]:
+                lossy: bool = False, trim: float = 1.0, bits: int = 0, codec: str = "",
+                level=None, fading: bool = False) -> tuple[str, str]:
     """(text, tone) for the line under the format. tone is "good", "warn" or "plain".
     float_source: the file holds floating-point samples (some WAVs), which the device
     can only take after conversion to whole numbers — so never bit-perfect.
     lossy: an MP3, Ogg Vorbis or Opus file (`codec` names it) — delivery can be exact, but only
     of what the decoder rebuilt.
     bits: the track's bits per sample; a device that takes fewer (OutputInfo.device_bits) drops
-    the rest, so that isn't bit-perfect either."""
+    the rest, so that isn't bit-perfect either.
+    level: volume levelling on this track (levelling.Levelling) — amber, never bit-perfect (unless
+    its gain comes to exactly 0 dB, which leaves the samples as they are).
+    fading: the sleep timer is fading the music out."""
     if output is None:
         return "", "plain"
+    changes = [text for text in (levelling_text(level, trim), "fading out (sleep timer)" if fading else "") if text]
+    if changes:   # volume levelling (it takes in the clipping guard) or a fade: the level is changed on purpose
+        device = output.device
+        if output.exclusive:
+            base = f"→ {device} · {format_rate(output.rate)} exclusive"
+            volume = " · volume below 100%" if gain < 1.0 else ""
+            return f"{base}{volume} · {' · '.join(changes)}, so not bit-perfect", "warn"
+        mixed = (f"resampled to {format_rate(output.mixer_rate)} by the {MIXER} mixer ⚠" if output.resampled
+                 else f"{format_rate(output.rate)} · shared ({MIXER} mixer)")
+        return f"→ {device} · {mixed} · {' · '.join(changes)}", "warn"
     guard = (f" · clipping guard {20 * math.log10(trim):.1f} dB on this loud recording (it would clip "
              f"the converter)") if trim < 1.0 else ""
     device = output.device
@@ -122,7 +148,7 @@ def tone_of(text: str) -> str:
 
 def describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, trim: float,
                    lossy: bool = False, float_source: bool = False, bits: int = 0,
-                   codec: str = "") -> tuple[str, str]:
+                   codec: str = "", level=None, fading: bool = False) -> tuple[str, str]:
     """(text, tone) for what the player has sent, as checked against the file."""
     if proof is None or proof.sent <= 0:
         return "Waiting for music…", "plain"
@@ -133,9 +159,14 @@ def describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, 
     checked = (f"{fmt_clock(proof.checked)} checked" if behind < 2
                else f"checking… {fmt_clock(proof.checked)} of {fmt_clock(proof.sent)}")
     if not proof.untouched:
-        why = ("the volume (below 100%)" if gain < 1.0
+        reasons = ["the volume (below 100%)"] if gain < 1.0 else []
+        if levelling_text(level, trim):
+            reasons.append(levelling_text(level, trim).replace("Volume levelling", "volume levelling", 1))
+        if fading:
+            reasons.append("the sleep timer's fade-out")
+        why = (" and ".join(reasons) if reasons
                else "the clipping guard (it comes before Bit-perfect: this track would clip the converter)"
-               if trim < 1.0 else "the volume or clipping guard")
+               if trim < 1.0 else "the volume, clipping guard or volume levelling")
         where = f" from {fmt_clock(proof.changed_from)}" if proof.changed_from else ""
         return (f"Sent exactly as intended ({checked}), but changed by {why}{where}, so not bit-perfect",
                 "warn")
@@ -398,12 +429,13 @@ class NowPlayingWindow:
     _album_cache: dict[Path, AlbumResult] = {}  # album folder -> its DR and loudness
     # audio file -> the rip check of its disc (one folder can hold several discs, checked one at a time)
     _rip_cache: dict[Path, ripcheck.Verification] = {}
+    _log_cache: dict[Path, ripcheck.LogCheck] = {}   # …and its check against the rip log (offline)
     INDEX_CACHE_SIZE = 20
 
     def __init__(self, parent: tk.Misc, player: Player, geometry: str = "",
                  on_moved=lambda geometry: None, on_meters=None, on_pcm=None, on_spectrogram=None,
                  on_scope=None, on_compare=None, on_abx=None, on_testsignals=None, prefs: dict | None = None,
-                 on_clipping=None):
+                 on_clipping=None, on_lyrics=None):
         self.player = player
         self.prefs = prefs if prefs is not None else {}  # read live: Settings → Allow network access
         self.on_moved = on_moved
@@ -423,6 +455,7 @@ class NowPlayingWindow:
         self._album_state: dict | None = None
         self._rip_cancel = threading.Event()   # only the window closing stops a rip check
         self._rip_state: dict | None = None
+        self._log_state: dict | None = None    # the check against the rip log under way
         self._job = None
         self._keep_going = toolwin.KeepGoing(self.win)
 
@@ -444,7 +477,7 @@ class NowPlayingWindow:
                                      ("Clipping (C)", on_clipping), ("Spectrogram (F)", on_spectrogram)]),
                              (False, [("Stereo (O)", on_scope), ("Compare two files (D)", on_compare),
                                       ("ABX blind test (X)", on_abx)]),
-                             (False, [("Test signals (T)", on_testsignals)])):
+                             (False, [("Test signals (T)", on_testsignals), ("Lyrics (L)", on_lyrics)])):
             tools = [(text, command) for text, command in tools if command]
             if not tools:
                 continue
@@ -759,29 +792,83 @@ class NowPlayingWindow:
             self._show_check()
 
     def _show_rip(self, row: int):
+        """The Rip rows: the checks done so far (against the rip log, then online), and a button for
+        each one not done yet. The rip-log check needs no network."""
         track = self.player.status().track
         if track is None or not is_cd_audio(track):
             return  # nothing to check: rip verification is for CD audio
         folder = track.path.parent
-        found = self._rip_cache.get(audiofile.real_path(track.path))
-        if found is not None:
-            for label, text, tone in ripcheck.describe(found):
-                self._row(self.check_frame, row, label, text, TONE_STYLE[tone])
-                row += 1
+        real = audiofile.real_path(track.path)
+        found_log, found = self._log_cache.get(real), self._rip_cache.get(real)
+        for result, describe in ((found_log, ripcheck.describe_log), (found, ripcheck.describe)):
+            if result is not None:
+                for label, text, tone in describe(result):
+                    self._row(self.check_frame, row, label, text, TONE_STYLE[tone])
+                    row += 1
+        if found_log is not None and found is not None:
             return
         self._label(self.check_frame, row, "Rip", theme.pad(theme.GAP, 1))
         holder = ttk.Frame(self.check_frame)
         holder.grid(row=row, column=1, sticky="w", pady=theme.pad(theme.GAP, 1))
+        line = 0
+        if found_log is None:
+            running = self._log_state is not None and self._log_state["folder"] == folder
+            self.log_button = controls.FlatButton(holder, "Check against rip log (works offline)",
+                                                  lambda: self._start_log(track.path, folder),
+                                                  state="disabled" if running else "normal")
+            self.log_button.grid(row=line, column=0, sticky="w")
+            self.log_progress = ttk.Label(holder, text="", style="Muted.TLabel",
+                                          wraplength=theme.px(VALUE_WRAP - 20), justify="left")
+            self.log_progress.grid(row=line + 1, column=0, sticky="w", pady=theme.pad(theme.GAP_SMALL, 0))
+            self.log_progress.grid_remove()   # (a running check's watch fills it: _say)
+            line += 2
+        if found is not None:
+            return
         allowed = ripcheck.network_allowed(self.prefs)
         running = self._rip_state is not None and self._rip_state["folder"] == folder
         self.rip_button = controls.FlatButton(holder, "Verify rip online (AccurateRip, CUETools DB)",
                                               lambda: self._start_rip(track.path, folder),
                                               state="normal" if allowed and not running else "disabled")
-        self.rip_button.grid(row=0, column=0, sticky="w")
+        self.rip_button.grid(row=line, column=0, sticky="w", pady=theme.pad(theme.GAP_SMALL if line else 0, 0))
         self.rip_progress = ttk.Label(holder, text="", style="Muted.TLabel",
                                       wraplength=theme.px(VALUE_WRAP - 20), justify="left")
-        self.rip_progress.grid(row=1, column=0, sticky="w", pady=theme.pad(theme.GAP_SMALL, 0))
+        self.rip_progress.grid(row=line + 1, column=0, sticky="w", pady=theme.pad(theme.GAP_SMALL, 0))
         self._say(self.rip_progress, "" if allowed else NETWORK_HINT)   # (a running check's watch updates it)
+
+    def _start_log(self, path: Path, folder: Path):
+        """Check the disc against its rip log's CRCs, on a worker (no network: nothing is sent)."""
+        state = {"folder": folder, "progress": 0.0, "done": False}
+        self._log_state = state
+        self.log_button.configure(state="disabled")
+        cancel = self._rip_cancel
+
+        def work():
+            try:
+                result = ripcheck.check_log(path, cancel, progress=lambda p: state.__setitem__("progress", p))
+            except Exception as error:  # noqa: BLE001 — a failed check is reported, never a crash
+                result = ripcheck.LogCheck(problem=f"something went wrong ({error})")
+            if result is not None:
+                for file in (result.rip.files if result.rip is not None else [audiofile.real_path(path)]):
+                    self._log_cache[file] = result
+            state["done"] = True
+
+        threading.Thread(target=work, name="rip-log-check", daemon=True).start()
+        self._watch_log(state)
+
+    def _watch_log(self, state: dict):
+        if not self.win.winfo_exists() or state is not self._log_state:
+            return
+        if state["done"]:
+            self._log_state = None
+            self._show_check()
+            return
+        track = self.player.status().track
+        if track is not None and track.path.parent == state["folder"]:
+            try:
+                self._say(self.log_progress, f"Reading every track… {state['progress']:.0%}")
+            except tk.TclError:
+                pass  # the row is being rebuilt
+        self.win.after(200, self._watch_log, state)
 
     def _start_rip(self, path: Path, folder: Path):
         if not ripcheck.network_allowed(self.prefs):
@@ -936,8 +1023,9 @@ class NowPlayingWindow:
             volume = f"{self.player.volume:.0%} · {to_db(gain):+.1f} dB"
         self.values["volume"].configure(text=theme.figures(volume))
 
+        level, fading = getattr(status, "levelling", None), getattr(status, "fading", False)
         text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
-                                 track.bits, track.codec)
+                                 track.bits, track.codec, level, fading)
         self.values["output"].configure(text=text.removeprefix("→ "), style=self._style("output", tone))
 
         drops = status.dropouts
@@ -950,7 +1038,7 @@ class NowPlayingWindow:
         self.values["start"].configure(text=text, style=self._style("start", tone))
         for key, (text, tone) in (
                 ("sent", describe_proof(status.proof, status.output, status.gain, status.trim, track.lossy,
-                                        track.float_samples, track.bits, track.codec)),
+                                        track.float_samples, track.bits, track.codec, level, fading)),
                 ("safety", describe_health(status.health, status.dropouts)),
                 ("events", describe_events(status.events))):
             self.values[key].configure(text=text, style=self._style(key, tone))

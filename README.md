@@ -156,6 +156,8 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+↑ / Ctrl+↓ | Volume up / down 5% |
 | Ctrl+Shift+↓ | Mute / unmute |
 | Ctrl+Shift+↑ | Volume 100% (untouched) |
+| Ctrl+. | Stop after this song (again: carry on) |
+| Ctrl+Shift+S | Sleep timer and Stop after (a menu) |
 
 ### Tabs & lists
 
@@ -191,6 +193,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | D | Compare two files |
 | X | ABX blind test |
 | T | Test signals |
+| L | Lyrics |
 | Z · Ctrl+Shift+M | Mini player and back |
 | Ctrl+, · Ctrl+P | Settings |
 | Ctrl+Shift+H | Snap the window to its home spot |

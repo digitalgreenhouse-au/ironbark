@@ -749,3 +749,21 @@ def test_ctrl_l_shows_the_new_folder_after_the_library_folder_changed(make_windo
     assert window._library is not second and not second.win.winfo_exists()
     assert window._library.root_folder == third
     assert not errors
+
+
+def test_stop_after_and_the_sleep_timer_menu_from_the_keys(make_window, monkeypatch):
+    from ironbark import popups
+
+    window, root, player, errors = make_window()
+    assert _resolved(window, root, "Ctrl+.") == "stop_after"
+    assert _run(window, root, "Ctrl+.") and player.stop_after == "song"
+    assert _run(window, root, "Ctrl+.") and player.stop_after is None   # again: carry on (still handled)
+    shown = []
+    monkeypatch.setattr(popups.PopupMenu, "popup", lambda menu, x, y: shown.append((menu.labels(), x, y)))
+    assert _resolved(window, root, "Ctrl+Shift+S") == "sleep_timer"
+    assert _run(window, root, "Ctrl+Shift+S", caps=True)                # (Caps Lock makes no difference)
+    labels, x, y = shown[-1]
+    assert labels == ["Stop after the current song", "Sleep timer"]
+    assert (x, y) == (window.status_label.winfo_rootx(), window.status_label.winfo_rooty())
+    assert keys.hint("stop_after") == "Ctrl+." and keys.hint("sleep_timer") == "Ctrl+Shift+S"
+    assert not errors
