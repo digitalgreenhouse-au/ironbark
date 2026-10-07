@@ -323,6 +323,8 @@ SIZE_LARGE = 10       # a slightly bigger mark (the × in Up next); the line und
 SIZE_HEADING = 11     # a pop-over's title
 SIZE_TITLE = 12       # a window's title line
 SIZE_DISPLAY = 13     # the now-playing title (semibold)
+SIZE_DISPLAY_WIDE = 16    # …in a wide window (the split layouts from 1280 logical px)
+SIZE_DISPLAY_LARGE = 20   # …and from 1920 logical px
 SIZE_MONO = 10        # sample numbers (PCM stream)
 
 # Icon glyphs (Segoe Fluent Icons / MDL2 Assets), in points — each size has one job.
@@ -421,6 +423,11 @@ GAP = 6
 GAP_MEDIUM = 8
 GAP_LARGE = 10
 GAP_WIDE = 12
+GAP_PANE = 24         # (wide window) round the now-playing stack, and between it and the track list
+
+# List rows: the text's line height times this.
+ROW_SPACING = 1.5
+ROW_SPACING_ROOMY = 1.75   # a wide window's list (layout.SPLIT_M and wider)
 
 # Corners (px at 100%): one rule for the whole app — icon-only buttons are round, buttons with
 # words are pills, and what you type into or what holds content has corners of 4, 8 or 12.
@@ -481,6 +488,8 @@ SEARCH_ENTRY = "Search.TEntry"
 CARD_ENTRY = "Card.TEntry"
 CARD_COMBOBOX = "Pop.TCombobox"
 CARD_SCROLLBAR = "Pop.Slim.Vertical.TScrollbar"
+ROOMY_TREE = "Roomy.Treeview"              # the main window's list in a wide window…
+ROOMY_LARGE_TREE = "RoomyLarge.Treeview"   # …and from 1920 logical px
 
 _scale: float | None = None
 
@@ -661,10 +670,17 @@ def apply(root: tk.Tk) -> None:
     # Lists are frameless, on the window's own colour: a heading line under small muted headings,
     # the row under the pointer HOVER (a tag, full width: Tk 8.6 rows have no hover state), and the
     # selected row a rounded SELECT plate (Round.selection, drawn over the row's own background).
-    row_height = int(tkfont.nametofont("TkDefaultFont").metrics("linespace") * 1.5)
+    body_line = tkfont.nametofont("TkDefaultFont", root=root).metrics("linespace")
     style.configure("Treeview", background=BG, fieldbackground=BG, foreground=TEXT, bordercolor=BG,
-                    lightcolor=BG, darkcolor=BG, rowheight=row_height)
-    style.map("Treeview", background=[("selected", BG)], foreground=[("selected", ON_ACCENT)])
+                    lightcolor=BG, darkcolor=BG, rowheight=int(body_line * ROW_SPACING))
+    # The main window's list in a wide window: roomier rows, and from 1920 logical px larger text.
+    # ("Treeview" itself is shared with the Library window and never changes with the main window.)
+    large_line = tkfont.Font(root=root, font=font(SIZE_LARGE)).metrics("linespace")
+    style.configure(ROOMY_TREE, rowheight=int(body_line * ROW_SPACING_ROOMY))
+    style.configure(ROOMY_LARGE_TREE, font=font(SIZE_LARGE), rowheight=int(large_line * ROW_SPACING_ROOMY))
+    style.configure(f"{ROOMY_LARGE_TREE}.Heading", font=font(SIZE_BODY))
+    for name in ("Treeview", ROOMY_TREE, ROOMY_LARGE_TREE):
+        style.map(name, background=[("selected", BG)], foreground=[("selected", ON_ACCENT)])
     style.layout("Treeview.Row", [("Treeitem.row", {"sticky": "nswe"}), ("Round.selection", {"sticky": "nswe"})])
     style.layout("Treeview.Heading", [("Round.heading", {"sticky": "nswe"}), ("Treeheading.padding", {
         "sticky": "nswe", "children": [("Treeheading.image", {"side": "right", "sticky": ""}),
@@ -695,6 +711,12 @@ def apply(root: tk.Tk) -> None:
     # The main window's now-playing title, and the line under it (artist — album).
     style.configure("Display.TLabel", font=font(SIZE_DISPLAY, "semibold"))
     style.configure("Subtitle.TLabel", foreground=MUTED, font=font(SIZE_LARGE))
+    # …in a wide window: a bigger title (from 1280 logical px, larger again from 1920), artist line
+    # and format line.
+    style.configure("DisplayWide.TLabel", font=font(SIZE_DISPLAY_WIDE, "semibold"))
+    style.configure("DisplayLarge.TLabel", font=font(SIZE_DISPLAY_LARGE, "semibold"))
+    style.configure("SubtitleLarge.TLabel", foreground=MUTED, font=font(SIZE_HEADING))
+    style.configure("InfoLarge.TLabel", foreground=MUTED, font=font(SIZE_BODY))
     # (0.22.0) Section headings in every window as in Settings (PopCaption): small bold capitals in
     # the secondary text colour, with a faint line above each one but the first (controls.section).
     # (They were DG green until 0.21.0; muted, the green and amber *values* stand out.)

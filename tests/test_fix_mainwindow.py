@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import analysis, artwork, audiofile, library, placement, playlists, settings, ui
+from ironbark import analysis, artwork, audiofile, layout, library, placement, playlists, settings, ui
 from ironbark.engine import State, Status
 from ironbark.library import Track
 from ironbark.ui import SAFE_VOLUME, PlayerWindow, Tab
@@ -80,7 +80,7 @@ class Root:
 def test_the_album_summary_is_worked_out_once_per_change(monkeypatch):
     tracks = [song(f"C:/Music/Album {i // 10}/{i:02d}.flac", codec="FLAC", bits=16, sample_rate=44100)
               for i in range(200)]
-    tab = Tab("library", "C:/Music", tracks=tracks)
+    tab = Tab("folder", "C:/Music", tracks=tracks)
     looked_up = []
     real = ui.album_folder
     monkeypatch.setattr(ui, "album_folder", lambda path: (looked_up.append(path), real(path))[1])
@@ -91,6 +91,12 @@ def test_the_album_summary_is_worked_out_once_per_change(monkeypatch):
     assert looked_up == []                       # the second poll does no work
     tab.tracks = tracks[:5]                      # a new list (an edit, an album added): worked out again
     assert PlayerWindow._album_summary(SimpleNamespace(), tab).endswith("5 tracks · 5:00")
+    # A Library tab says what the whole tab holds, not its first album (also worked out once).
+    library = Tab("library", "C:/Music", tracks=tracks)
+    assert PlayerWindow._album_summary(SimpleNamespace(), library) == "Library · 200 songs · 20 albums · 3:20:00"
+    looked_up.clear()
+    assert PlayerWindow._album_summary(SimpleNamespace(), library).startswith("Library · 200 songs")
+    assert looked_up == []
 
 
 # -- bit-perfect at start-up: the same ear check as switching it on ------------------------------
@@ -450,17 +456,17 @@ def test_a_tag_save_that_never_stops_doesnt_keep_the_player_open(make_window, mo
 
 # -- cover art: a slow, older request never replaces a newer one ----------------------------------
 def test_a_slow_cover_never_replaces_a_newer_one(monkeypatch):
-    def cover_for(path, size):
+    def cover_for(path, size, upscale=True):
         time.sleep(0.3 if path.name == "a.flac" else 0.0)
         return path.name
     monkeypatch.setattr(artwork, "cover_for", cover_for)
     w = SimpleNamespace(show_art=SimpleNamespace(get=lambda: True), art_size=100, _art_key=None, _art_result=None,
-                        _art_track=None, _show_art=lambda image: None)
+                        _art_track=None, _show_art=lambda image: None, _tier=layout.COLUMN, _art_job=None)
     PlayerWindow._request_art(w, Path("a.flac"))
     PlayerWindow._request_art(w, Path("b.flac"))
     for thread in [t for t in threading.enumerate() if t.name == "cover-art"]:
         thread.join(2)
-    assert w._art_result == ((Path("b.flac"), 100), "b.flac")
+    assert w._art_result == ((Path("b.flac"), 100, True), "b.flac")
 
 
 # -- the clipping guard measures what's playing and next, and never stops ------------------------------

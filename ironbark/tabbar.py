@@ -375,7 +375,10 @@ class TabBar(tk.Frame):
     middle and top rim; the hover plate; the drop ring; the × and its disc; the strip's bottom line)
     are shared. A change only re-sends the options and positions that changed, so a tab switch costs
     a few item changes, not a strip. Nothing is drawn per width: plates and rings are two cached end
-    pictures with plain rectangles between them (shapes.ends)."""
+    pictures with plain rectangles between them (shapes.ends).
+
+    In a wide window (`set_wide`) the strip gains a maximise / restore button between minimise and
+    close, and tabs may grow wider; the narrow window's strip is unchanged."""
 
     DRAG_GAP = theme.DRAG_GAP   # (the strip's tokens live in theme; kept here for older callers)
     MIN_TAB = theme.MIN_TAB
@@ -387,7 +390,8 @@ class TabBar(tk.Frame):
     LAYERS = ("line", "plate", "divider", "selected", "ring", "mark", "name", "xdisc", "xglyph")
 
     def __init__(self, parent, root: tk.Tk, *, on_select, on_close, on_new, on_settings, on_double,
-                 on_quit, on_tab_menu=lambda index, event: None, on_move=lambda source, target: None):
+                 on_quit, on_tab_menu=lambda index, event: None, on_move=lambda source, target: None,
+                 on_maximise=None):
         self.row_height = theme.px(theme.STRIP_H)
         self.height = self.row_height
         super().__init__(parent, bg=theme.STRIP)
@@ -401,6 +405,10 @@ class TabBar(tk.Frame):
         self._drag: dict | None = None
         self._slot = 1        # one tab's width plus its gap, set by _layout
         self._per = 1         # one tab's width
+        self.tab_max = theme.TAB_MAX   # a tab's widest (px at 100%): wider in a wide window (set_wide)
+        self.on_maximise = on_maximise or (lambda: chrome.toggle_maximise(root))
+        self.max_btn: CaptionButton | None = None   # made the first time the window is wide
+        self._zoomed = False
         self.top_row = tk.Frame(self, bg=theme.STRIP, height=self.row_height)
         self.top_row.pack(fill="x")
         self.top_row.pack_propagate(False)
@@ -484,7 +492,39 @@ class TabBar(tk.Frame):
         return max(1, theme.px(1))
 
     def _caption_room(self) -> int:
-        return 2 * theme.px(theme.CAPTION_W) if chrome.CUSTOM else 0
+        if not chrome.CUSTOM:
+            return 0
+        shown = 3 if self.max_btn is not None and self.max_btn.winfo_manager() else 2
+        return shown * theme.px(theme.CAPTION_W)
+
+    def set_wide(self, wide: bool, tab_max: int = theme.TAB_MAX):
+        """A wide window: the maximise / restore button shows between minimise and close, and tabs may
+        be up to `tab_max` px (at 100%) wide. Narrow: the strip as it always was."""
+        self.tab_max = tab_max
+        if chrome.CUSTOM:
+            if wide and self.max_btn is None:
+                self.max_btn = CaptionButton(self, self.root, "restore" if self._zoomed else "max",
+                                             lambda: self.on_maximise(), label="Maximise")
+            caption = theme.px(theme.CAPTION_W)
+            if self.max_btn is not None:
+                if wide:
+                    self.max_btn.place(in_=self.top_row, relx=1.0, x=-caption, y=0, anchor="ne")
+                    self.max_btn.lift()
+                else:
+                    self.max_btn.place_forget()
+            self.min_btn.place_configure(x=-caption * (2 if wide else 1))
+            right = self._caption_room() + theme.px(theme.DISC_MARGIN)
+            self.settings_btn.place_configure(x=-right)
+        self._layout()
+
+    def paint_max(self, zoomed: bool):
+        """The maximise button shows restore while the window is maximised (or full screen)."""
+        if zoomed == self._zoomed:
+            return
+        self._zoomed = zoomed
+        if self.max_btn is not None:
+            self.max_btn.configure(text=glyph(self.root, "restore" if zoomed else "max"))
+            self.max_btn.tip.text = "Restore" if zoomed else "Maximise"
 
     def _disc_top(self) -> int:
         return theme.px(theme.ROW_Y) - theme.px(theme.DISC) // 2
@@ -570,7 +610,7 @@ class TabBar(tk.Frame):
             room = width - right - (px(theme.DISC) + px(theme.ADD_GAP)) - px(self.DRAG_GAP + 10)
             # Equal widths, so the albums sit side by side and you can flick between them; with
             # many open they slim down (names shortened with …) rather than leave the row.
-            self._per = max(px(self.MIN_TAB), min(px(theme.TAB_MAX), room // n - px(theme.TAB_GAP)))
+            self._per = max(px(self.MIN_TAB), min(px(self.tab_max), room // n - px(theme.TAB_GAP)))
             self._slot = self._per + px(theme.TAB_GAP)
         add_x = self._add_x(n)
         if add_x != self._add_at:
@@ -1251,7 +1291,7 @@ class Popover(tk.Frame):
         if not getattr(root, "_dg_popover_bound", False):
             root._dg_popover_bound = True
             root.bind("<ButtonPress-1>", Popover._click_anywhere, add="+")
-            root.bind("<Escape>", lambda e: Popover.close_open(), add="+")
+            root.bind("<Escape>", lambda e: Popover._escape(root, e), add="+")
             root.bind("<Configure>", lambda e: Popover._window_resized(e, root), add="+")
         if controls:
             self.configure(takefocus=1)
@@ -1435,12 +1475,25 @@ class Popover(tk.Frame):
         Popover.close_open()
 
     @staticmethod
-    def close_open():
-        if Popover.open_one is not None:
-            try:
-                Popover.open_one.hide()
-            except tk.TclError:   # its window has gone (closed with the panel open)
-                Popover.open_one = None
+    def close_open() -> bool:
+        """Close the open pop-over. Returns whether there was one."""
+        if Popover.open_one is None:
+            return False
+        try:
+            Popover.open_one.hide()
+        except tk.TclError:   # its window has gone (closed with the panel open)
+            Popover.open_one = None
+        return True
+
+    @staticmethod
+    def _escape(root, event):
+        """Esc in a window: it closes the open pop-over; with none open, the window's own Esc
+        (`root._dg_escape(event)`, e.g. leaving full screen) has it."""
+        if Popover.close_open():
+            return
+        fallback = getattr(root, "_dg_escape", None)
+        if fallback is not None:
+            fallback(event)
 
     @staticmethod
     def _click_anywhere(event):

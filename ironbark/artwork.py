@@ -77,23 +77,30 @@ _thumbnail_cache: OrderedDict[tuple, Image.Image | None] = OrderedDict()
 _thumbnail_lock = threading.Lock()
 
 
-def _make_thumbnail(source, size: int) -> Image.Image | None:
+def _make_thumbnail(source, size: int, upscale: bool = True) -> Image.Image | None:
+    """A square cover `size` px across, centred and cropped. upscale=False: a picture smaller than
+    that is cropped to a square at its own shorter side instead, never enlarged. The picture's own
+    size is kept in its info["source_size"]."""
     try:
         image = Image.open(io.BytesIO(source) if isinstance(source, bytes) else source)
         image = ImageOps.exif_transpose(image).convert("RGB")
-        return ImageOps.fit(image, (size, size), Image.Resampling.LANCZOS)  # square, centred
+        source_size = image.size
+        side = size if upscale else min(size, *source_size)
+        thumb = ImageOps.fit(image, (side, side), Image.Resampling.LANCZOS)  # square, centred
+        thumb.info["source_size"] = source_size
+        return thumb
     except (OSError, ValueError, Image.DecompressionBombError):
         return None
 
 
-def _thumbnail(key: tuple, source, size: int) -> Image.Image | None:
+def _thumbnail(key: tuple, source, size: int, upscale: bool = True) -> Image.Image | None:
     """A size×size thumbnail of `source` (image bytes, or a picture file's path), cached by `key`."""
-    key = (*key, size)
+    key = (*key, size, upscale)
     with _thumbnail_lock:
         if key in _thumbnail_cache:
             _thumbnail_cache.move_to_end(key)
             return _thumbnail_cache[key]
-    image = _make_thumbnail(source, size)
+    image = _make_thumbnail(source, size, upscale)
     with _thumbnail_lock:
         _thumbnail_cache[key] = image
         _thumbnail_cache.move_to_end(key)
@@ -120,13 +127,15 @@ def first_audio_file(folder: Path) -> Path | None:
     return None
 
 
-def cover_for(track_path: Path, size: int) -> Image.Image | None:
-    """A size×size cover for the track's album, or None. Safe to call off the UI thread."""
+def cover_for(track_path: Path, size: int, upscale: bool = True) -> Image.Image | None:
+    """A size×size cover for the track's album, or None. Safe to call off the UI thread.
+    upscale=False: never enlarged — a smaller picture comes back at its own size (a square of its
+    shorter side). Either way info["source_size"] is the picture's own (width, height)."""
     data = embedded_art(track_path)
     if data:
         digest = hashlib.sha1(data, usedforsecurity=False).hexdigest()
-        return _thumbnail((str(album_folder(track_path)), digest), data, size)
+        return _thumbnail((str(album_folder(track_path)), digest), data, size, upscale)
     image = folder_art(album_folder(track_path))
     if image is None and album_folder(track_path) != track_path.parent:
         image = folder_art(track_path.parent)  # a "CD1" folder with its own picture
-    return _thumbnail(("file", str(image)), image, size) if image else None
+    return _thumbnail(("file", str(image)), image, size, upscale) if image else None

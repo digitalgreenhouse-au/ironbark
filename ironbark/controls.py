@@ -145,6 +145,20 @@ def placeholder(size: int) -> Image.Image:
     return image
 
 
+def matted(image: Image.Image, side: int) -> Image.Image:
+    """A cover smaller than its slot, shown at its own size (never enlarged) in the middle of a mat
+    `side` px square: SURFACE with a 1 px BORDER edge and rounded corners (on BG), so the slot keeps
+    its size and the mat still shows on the Light theme. The cover's own corners are rounded too."""
+    radius = corner_radius(side)
+    edge = max(1, theme.px(1))
+    b = radius + edge
+    plain = shapes.rounded(2 * b + 4, 2 * b + 4, radius, "SURFACE", "BORDER", edge, bg="BG")
+    mat = shapes.widened(plain.convert("RGB"), (b, b, b, b), side, side)
+    cover = round_corners(image, corner_radius(min(image.size)), "SURFACE")
+    mat.paste(cover, ((side - cover.width) // 2, (side - cover.height) // 2))
+    return mat
+
+
 def small_icon(widget: tk.Misc, kind: str, size: int, colour: str, bg: str) -> ImageTk.PhotoImage:
     """A small drawn icon (cached): "search" (a magnifier) or "clear" (a ×), `size` real px,
     `colour` / `bg` theme roles."""

@@ -5,6 +5,8 @@ the window still resizes from its edges, snaps to screen edges, minimises and
 maximises like any other. Pressing on our tab bar hands the drag to Windows
 itself (as if the caption were clicked), so Aero Snap and Snap Layouts behave
 natively. Elsewhere the system title bar stays and our bar sits under it.
+
+Full screen (F11) is borderless, on the same window (`enter_fullscreen` / `exit_fullscreen`).
 """
 
 from __future__ import annotations
@@ -123,3 +125,105 @@ def keep_maximise_in_work_area(window: tk.Misc) -> None:
             user32.SetWindowPos(hwnd, 0, *want, 0x0004 | 0x0010)  # NOZORDER | NOACTIVATE
 
     window.bind("<Configure>", fit, add="+")
+
+
+# -- full screen (F11) ------------------------------------------------------------------------------
+# Tk's own full screen (`wm attributes -fullscreen`) destroys the window's Windows handle and makes a
+# new one with the standard title bar: the taskbar buttons, Windows' media panel, drag and drop and
+# the dark frame are all tied to the first handle. So full screen here is borderless on the same
+# handle: the resizable frame is taken off and the window sized to its monitor; leaving puts the
+# frame back and the window where it was (maximised again, if it was).
+SWP_NOZORDER = 0x0004
+SWP_FRAMECHANGED = 0x0020
+
+
+def _user32():
+    """A private user32 handle, its types set (setting them on ctypes.windll.user32 would change every
+    other caller's)."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    user32 = ctypes.WinDLL("user32")
+    user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    user32.GetWindowLongPtrW.argtypes = (wt.HWND, ctypes.c_int)
+    user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+    user32.SetWindowLongPtrW.argtypes = (wt.HWND, ctypes.c_int, ctypes.c_ssize_t)
+    user32.SetWindowPos.argtypes = (wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                    wt.UINT)
+    user32.GetWindowRect.argtypes = (wt.HWND, ctypes.POINTER(wt.RECT))
+    user32.MonitorFromWindow.restype = wt.HMONITOR
+    user32.MonitorFromWindow.argtypes = (wt.HWND, wt.DWORD)
+    return user32
+
+
+def monitor_rect(window: tk.Misc) -> tuple[int, int, int, int]:
+    """The whole monitor the window is on (taskbar included): left, top, width, height in px."""
+    if CUSTOM:
+        try:
+            import ctypes
+            import ctypes.wintypes as wt
+
+            class MonitorInfo(ctypes.Structure):
+                _fields_ = [("cb", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
+            user32 = _user32()
+            user32.GetMonitorInfoW.argtypes = (wt.HMONITOR, ctypes.POINTER(MonitorInfo))
+            info = MonitorInfo()
+            info.cb = ctypes.sizeof(MonitorInfo)
+            if user32.GetMonitorInfoW(user32.MonitorFromWindow(_hwnd(window), 2), ctypes.byref(info)):
+                r = info.rcMonitor
+                return r.left, r.top, r.right - r.left, r.bottom - r.top
+        except (AttributeError, OSError, tk.TclError):
+            pass
+    return 0, 0, window.winfo_screenwidth(), window.winfo_screenheight()
+
+
+def is_fullscreen(window: tk.Misc) -> bool:
+    return getattr(window, "_dg_fullscreen", None) is not None
+
+
+def enter_fullscreen(window: tk.Misc) -> bool:
+    """Borderless full screen on the window's own monitor. Returns whether it's full screen now."""
+    if is_fullscreen(window):
+        return True
+    zoomed = window.state() == "zoomed"
+    if not CUSTOM:
+        window._dg_fullscreen = {"zoomed": zoomed}
+        window.attributes("-fullscreen", True)
+        return True
+    import ctypes
+    import ctypes.wintypes as wt
+
+    if zoomed:   # from maximised: back to its normal place first, which is where leaving returns to
+        window.state("normal")
+        window.update_idletasks()
+    user32 = _user32()
+    hwnd = _hwnd(window)
+    rect = wt.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    style = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
+    left, top, width, height = monitor_rect(window)
+    window._dg_fullscreen = {"style": style, "zoomed": zoomed,
+                             "rect": (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)}
+    user32.SetWindowLongPtrW(hwnd, GWL_STYLE, style & ~WS_THICKFRAME)
+    user32.SetWindowPos(hwnd, 0, left, top, width, height, SWP_NOZORDER | SWP_FRAMECHANGED)
+    return True
+
+
+def exit_fullscreen(window: tk.Misc) -> bool:
+    """Back from full screen: the frame, the place and size it had (and maximised, if it was).
+    Returns whether it was full screen."""
+    saved = getattr(window, "_dg_fullscreen", None)
+    if saved is None:
+        return False
+    window._dg_fullscreen = None
+    if not CUSTOM:
+        window.attributes("-fullscreen", False)
+    else:
+        user32 = _user32()
+        hwnd = _hwnd(window)
+        user32.SetWindowLongPtrW(hwnd, GWL_STYLE, saved["style"])
+        user32.SetWindowPos(hwnd, 0, *saved["rect"], SWP_NOZORDER | SWP_FRAMECHANGED)
+    if saved["zoomed"]:
+        window.state("zoomed")
+    return True

@@ -5,11 +5,16 @@ golden_narrow.json was recorded from the main window as it was then, at three na
 to a wide size and back, a theme switch, songs queued, the cover switched off and on, a mini-strip
 round trip, closing the last tab and opening one again). For each: how the parts are packed (order
 and options), where every part sits and how big it is, the cover's size, and the track list's
-columns. Positions depend on the fonts, so they are only compared on the setup they were recorded
-on (Windows, Segoe UI, the same Tk); the packing is compared everywhere.
+columns. Positions depend on the fonts, so they are kept per setup (Windows, Tk's default font and
+its size, the Tk, and whether the process is DPI-aware — once a test has made it so, Tk's default
+fonts follow the screen's real scaling) and compared only on a setup they were recorded on; the
+packing is compared everywhere. (In a whole test run an earlier test can leave Tk's default font at
+another size for later windows: then only the packing is compared. Run this file on its own for the
+full check.)
 
-Recording it again (only when the narrow layout is meant to change):
+Recording it again (only when the narrow layout is meant to change), for both setups:
     set IRONBARK_RECORD_GOLDEN=1 && uv run pytest -q -p no:cacheprovider tests/test_narrow_golden.py
+    set IRONBARK_GOLDEN_DPI_AWARE=1 && (the same again)
 """
 
 from __future__ import annotations
@@ -28,6 +33,10 @@ from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a 
 
 GOLDEN = Path(__file__).with_name("golden_narrow.json")
 RECORD = os.environ.get("IRONBARK_RECORD_GOLDEN") == "1"
+if os.environ.get("IRONBARK_GOLDEN_DPI_AWARE") == "1" and sys.platform == "win32":   # (to record that setup)
+    import ctypes
+
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
 SIZES = ((420, 1000), (520, 900), (300, 260))   # logical px (real px = these × the scaling)
 SCALINGS = (1.0, 1.5)
 
@@ -55,11 +64,16 @@ def _part(window, name: str):
     return target
 
 
-def environment(root) -> dict:
-    """What the recorded positions depend on."""
+def environment(root) -> str:
+    """What the recorded positions depend on, as one key."""
     default = tkfont.nametofont("TkDefaultFont", root=root).actual()
-    return {"platform": sys.platform, "tk": root.tk.call("info", "patchlevel"), "font": default["family"],
-            "semibold": theme.SEMIBOLD}
+    aware = False
+    if sys.platform == "win32":
+        import ctypes
+
+        aware = bool(ctypes.windll.user32.IsProcessDPIAware())
+    return (f"{sys.platform} · Tk {root.tk.call('info', 'patchlevel')} · {default['family']} {default['size']}"
+            f" · {theme.SEMIBOLD} · {'DPI-aware' if aware else 'not DPI-aware'}")
 
 
 def snapshot(window, root) -> dict:
@@ -188,6 +202,24 @@ def walk_states(window, root, player, logical: tuple[int, int], scaling: float):
     yield "a tab again", snapshot(window, root)
 
 
+def write_golden(golden: dict):
+    """One line per state (setup → case → state), so the file stays small and a change shows as the
+    states it touched."""
+    lines = ["{"]
+    for i, (setup, cases) in enumerate(sorted(golden.items())):
+        lines.append(f" {json.dumps(setup)}: {{")
+        for j, (case, states) in enumerate(sorted(cases.items())):
+            lines.append(f"  {json.dumps(case)}: {{")
+            items = sorted(states.items())
+            for k, (state, snap) in enumerate(items):
+                comma = "," if k < len(items) - 1 else ""
+                lines.append(f"   {json.dumps(state)}: {json.dumps(snap, sort_keys=True, separators=(',', ':'))}{comma}")
+            lines.append("  }" + ("," if j < len(cases) - 1 else ""))
+        lines.append(" }" + ("," if i < len(golden) - 1 else ""))
+    lines.append("}")
+    GOLDEN.write_text("\n".join(lines) + "\n", "utf-8", newline="\n")
+
+
 def _key(logical, scaling) -> str:
     return f"{logical[0]}x{logical[1]}@{round(scaling * 100)}"
 
@@ -210,18 +242,24 @@ def test_the_narrow_window_is_as_it_was(make_window, logical, scaling):
     got = dict(walk_states(window, root, player, logical, scaling))
     assert not errors
     key = _key(logical, scaling)
+    setup = environment(root)
     if RECORD:
         golden = json.loads(GOLDEN.read_text("utf-8")) if GOLDEN.exists() else {}
-        golden.setdefault("environment", environment(root))
-        golden.setdefault("cases", {})[key] = got
-        GOLDEN.write_text(json.dumps(golden, indent=1, sort_keys=True) + "\n", "utf-8", newline="\n")
+        golden.setdefault(setup, {})[key] = got
+        write_golden(golden)
         return
     golden = json.loads(GOLDEN.read_text("utf-8"))
-    same_setup = golden["environment"] == environment(root)
-    problems = []
-    for state, want in golden["cases"][key].items():
-        want, have = _seen(want), _seen(got[state])
-        if not same_setup:   # fonts differ: only how the parts are packed can be compared
-            want, have = want["packing"], have["packing"]
-        problems += [f"{state}{line}" for line in _differences(want, have)]
+    # On a recorded setup everything is compared; elsewhere (fonts differ) only how the parts are
+    # packed, against whichever setup it matches (the gaps are rounded from the exact scaling).
+    setups = [golden[setup]] if setup in golden else list(golden.values())
+    tries = []
+    for cases in setups:
+        problems = []
+        for state, want in cases[key].items():
+            want, have = _seen(want), _seen(got[state])
+            if setup not in golden:
+                want, have = want["packing"], have["packing"]
+            problems += [f"{state}{line}" for line in _differences(want, have)]
+        tries.append(problems)
+    problems = min(tries, key=len)
     assert not problems, "the narrow window changed:\n" + "\n".join(problems[:40])

@@ -93,6 +93,8 @@ DEFAULTS = {
     "detailed_logging": False,   # Settings → Window: the player's own notes in app.log too, not just problems
     "library_view": "albums",    # the Library's browse view: albums/artists/genres/years/composers/recent
     "track_columns": [],         # optional track-list columns on show: "artist", "album"
+    "wide_track_columns": ["artist", "album", "quality"],   # …in a wide window (each shown only when
+                                                            # its value varies between the tab's songs)
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window
     "help_geometry": "",         # the Keyboard shortcuts sheet (F1)
@@ -103,6 +105,7 @@ DEFAULTS = {
     "mini_mode": False,          # the window was last left as the mini strip (it opens that way again)
     "mini_geometry": "",         # where (and how big) the mini strip was last left
     "geometry": "",
+    "maximised": False,          # the full window was maximised when last left: it opens maximised
 }
 
 
@@ -418,6 +421,8 @@ _CHECKS = {
     "vu_auto": _dict_or_none,
     "vu_auto_loudness": _dict_or_none,
     "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
+    "wide_track_columns": lambda value: ([v for v in value if isinstance(v, str)] if isinstance(value, list)
+                                         else _BAD),
     "library_folders": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
                                       else _BAD),
 }
