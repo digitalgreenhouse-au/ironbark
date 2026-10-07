@@ -115,6 +115,7 @@ class Item:
         self.durable = self.prefix      # fsynced bytes
         self.leases: dict[int, int] = {}
         self.old: dict[int, int] = {}   # abandoned versions still being read: gen -> bytes they have
+        self.old_sizes: dict[int, int] = {}   # ... and their full size
         self.old_files: dict[int, Path] = {}   # … and, for an old complete copy, its file
         self.failed_gens: set[int] = set()     # versions whose check failed (a play from one is warned of)
         self.open_ready = False         # the probe opened it and every byte that read is here
@@ -129,9 +130,14 @@ class Item:
 
     # -- what readers use (audiofile.LocalTrack, GrowingFile) -------------------------------
     def ready_path(self, gen: int, source):
-        if self.state != READY or gen != self.gen or not self.final_name:
+        if gen != self.gen:
+            copy = self.old_files.get(gen)   # an old complete copy, still being played
+            if copy is None:
+                return None
+        elif self.state != READY or not self.final_name:
             return None
-        copy = self.store.tracks / self.final_name
+        else:
+            copy = self.store.tracks / self.final_name
         cue = audiofile.cue_of(source)
         return audiofile.CuePath(copy, cue=cue) if cue is not None else copy
 
@@ -173,6 +179,12 @@ class Item:
         return end <= self.old.get(gen, 0)
 
     has_now = has   # (plain integer reads: safe without the lock for a quick look)
+
+    def size_of(self, gen: int) -> int:
+        """The full size of version `gen` (an old one keeps its own)."""
+        if gen != self.gen and gen in self.old_sizes:
+            return self.old_sizes[gen]
+        return int(self.size or 0)
 
     def gen_failed(self, gen: int) -> bool:
         return gen != self.gen or self.state == FAILED

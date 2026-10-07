@@ -5,13 +5,17 @@
 - `FakePlayer`: just `upcoming(n)`, lock-free, like the real one.
 - `FakeClassifier`: classifies by spelling only — never asks Windows about this computer's drives.
 - `make_manager`: a Manager on a temp folder with all of the above.
+- `FakeCopy` / `FakePreparer`: the player's side: a cached copy whose download the test moves
+  on by hand (read through the real waiting reader), and the preparer interface over it.
 """
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 from collections import namedtuple
 from pathlib import Path
+from types import SimpleNamespace
 
 import importlib
 
@@ -183,3 +187,161 @@ def wait_until(condition, timeout: float = 10.0, step: float = 0.01) -> bool:
             return True
         time.sleep(step)
     return condition()
+
+
+# -- the player's side: a copy whose download the test moves on by hand ------------------------------
+class FakeCopy:
+    """One song's cached copy with every byte on disk, of which readers (the real GrowingFile) may
+    see only the first `visible`: the test moves that on (`arrive`), finishes it (`ready`) or fails
+    it. `source` is the song's network path (never opened: the bytes are here already)."""
+
+    def __init__(self, folder: Path, name: str, data: bytes, *, rate: int = 44100, frame_bytes: int = 4,
+                 header: int | None = None):
+        from ironbark.netcache.store import DOWNLOADING, Item
+        folder.mkdir(parents=True, exist_ok=True)
+        self.folder, self.name, self.data = folder, name, bytes(data)
+        self.part = folder / f"{name}.part"
+        self.part.write_bytes(self.data)
+        self.source = unc(name)
+        self.rate, self.frame_bytes = rate, frame_bytes
+        self.header = header if header is not None else self.data.index(b"data") + 8
+        store = SimpleNamespace(part_path=lambda item, gen=None: self.part, tracks=folder,
+                                final_path=lambda item: folder / item.final_name if item.final_name else None)
+        self.item = Item(store, key=f"smb:{name}", kind="share", source=str(self.source), host=HOST,
+                         ext=name.rsplit(".", 1)[-1], size=len(self.data))
+        self.item.state = DOWNLOADING
+        self.item.visible = 0
+
+    @property
+    def size(self) -> int:
+        return len(self.data)
+
+    def local(self):
+        from ironbark import audiofile
+        return audiofile.LocalTrack(self.source, self.item, self.item.gen)
+
+    def byte_at(self, seconds: float) -> int:
+        return min(self.size, self.header + int(round(max(0.0, seconds) * self.rate)) * self.frame_bytes)
+
+    def arrive(self, upto: int | None = None, seconds: float | None = None) -> None:
+        if upto is None:
+            upto = self.size if seconds is None else self.byte_at(seconds)
+        with self.item.cond:
+            self.item.visible = max(self.item.visible, min(self.size, upto))
+            self.item.cond.notify_all()
+
+    def ready(self) -> None:
+        """Downloaded and checked: renamed to its final name (opened by name from now on)."""
+        from ironbark.netcache.store import READY
+        stem, ext = self.name.rsplit(".", 1)
+        final = f"{stem} [ready].{ext}"
+        (self.folder / final).write_bytes(self.data)
+        with self.item.cond:
+            self.item.visible = self.size
+            self.item.final_name, self.item.state = final, READY
+            self.item.cond.notify_all()
+
+    def fail(self, reason: str = "it's no longer on the share") -> None:
+        from ironbark.netcache.store import FAILED
+        with self.item.cond:
+            self.item.state, self.item.permanent, self.item.error = FAILED, True, reason
+            self.item.cond.notify_all()
+
+    @property
+    def complete(self) -> bool:
+        return self.item.visible >= self.size
+
+
+class FakePreparer:
+    """The preparer interface the player uses (as netcache.Manager offers it) over FakeCopy songs:
+    a song may start (or carry on) once `need` seconds from that spot are visible, or all of it.
+    Songs it hasn't been given are local files. `tick()` tells the player about songs that may
+    start now (the real one's scheduler does that by itself)."""
+
+    def __init__(self, need: float = 1.0):
+        self.copies: dict = {}
+        self.gone: dict = {}
+        self.need = need
+        self.waiters: dict = {}
+        self.calls: list = []
+        self._tokens = itertools.count(1)
+        self.lock = threading.Lock()
+
+    def add(self, copy: FakeCopy) -> FakeCopy:
+        self.copies[copy.source] = copy
+        return copy
+
+    def _ok(self, copy: FakeCopy, at: float, need: float) -> bool:
+        return copy.complete or copy.item.visible >= copy.byte_at(at + need)
+
+    def _not_ready(self, copy: FakeCopy, at: float):
+        needed = copy.byte_at(at + self.need)
+        pct = min(99, int(100 * copy.item.visible / needed)) if needed else None
+        return manager_mod.NotReady("preparing", pct, "preparing", f"Preparing track… {pct}%")
+
+    def prepare(self, path, *, role: str = "play", at: float = 0.0, force: bool = False):
+        from ironbark import audiofile
+        from ironbark.netcache import policy
+        self.calls.append(("prepare", path, role, at, force))
+        copy = self.copies.get(path)
+        if copy is None:
+            return audiofile.LocalTrack.plain(path)
+        if path in self.gone:
+            return manager_mod.Unavailable(self.gone[path], True)
+        if self._ok(copy, at, policy.MIN_START_S if force else self.need):
+            return copy.local()
+        return self._not_ready(copy, at)
+
+    def notify_when_startable(self, path, at: float, post) -> int:
+        token = next(self._tokens)
+        with self.lock:
+            self.waiters[token] = (path, at, post)
+        return token
+
+    def forget(self, token) -> None:
+        with self.lock:
+            self.waiters.pop(token, None)
+
+    def tick(self) -> int:
+        due = []
+        with self.lock:
+            for token, (path, at, post) in list(self.waiters.items()):
+                copy = self.copies.get(path)
+                if copy is not None and path not in self.gone and self._ok(copy, at, self.need):
+                    del self.waiters[token]
+                    due.append(post)
+        for post in due:
+            post()
+        return len(due)
+
+    def resumable(self, local, frame: int, stalls: int, quick: bool = False) -> bool:
+        from ironbark.netcache import policy
+        copy = self.copies.get(local.source)
+        if copy is None:
+            return True
+        need = policy.QUICK_RESUME_S if quick else self.need * 2 ** stalls
+        return self._ok(copy, frame / copy.rate, need)
+
+    def outlook(self, x, at: float = 0.0):
+        path = getattr(x, "source", x)
+        copy = self.copies.get(path)
+        if copy is None:
+            return None
+        if path in self.gone:
+            return manager_mod.Unavailable(self.gone[path], True)
+        if self._ok(copy, at, self.need):
+            return None
+        return self._not_ready(copy, at)
+
+    def plan_changed(self) -> None:
+        self.calls.append(("plan",))
+
+    def position_hint(self, path, seconds: float) -> None:
+        self.calls.append(("hint", path, seconds))
+
+    def progress(self, path):
+        copy = self.copies.get(path)
+        if copy is None:
+            return None
+        item = copy.item
+        return manager_mod.Progress(item.state, item.fraction(), None, item.copy_state(item.gen))

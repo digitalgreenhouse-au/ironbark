@@ -28,6 +28,17 @@ When things go wrong the player says so and leaves "playing": a stretch of a fil
 won't decode is skipped and reported; a device that stops asking for audio (unplugged,
 switched off) leaves the player paused at the same spot.
 
+Songs on network drives (only with the network playback cache installed, see netcache) play
+from a copy on this computer. The player asks the cache's preparer first: a song not ready
+yet shows "Preparing…" — paused at its spot, no device opened — and starts by itself when
+enough of it is here. A copy still downloading is read through readers that wait for their
+bytes (audiofile.Waiting when they don't come in time). Mid-song, a short hiccup is ridden out
+from the buffer unheard; if the buffer runs nearly dry, playback pauses at the quietest sample
+of the last block (a stall marker in the queue) and the stream plays exact zeros — so a lost
+device is still noticed — until the music is back, from exactly where it stopped. After 30 s of
+that silence the device is let go; it carries on by itself within 5 minutes, on the same device
+at the same volume, else waits for play. Nothing is ever faded, scaled or skipped for it.
+
 All public Player methods are safe to call from any thread.
 """
 
@@ -67,9 +78,20 @@ WATCH_SECONDS = 1.0   # how often the player's own thread checks for that
 CLOSE_WAIT = 0.25     # how long closing waits for the decoder to let go of its files
 FADE_FLOOR_DB = -60.0  # a fade-out falls evenly (in dB) to this, then to silence
 STOP_AFTER_MODES = ("song", "album")   # stop at the end of this song / of this album
+# Waiting for a copy still downloading (the network playback cache):
+PATIENCE_MIN = 0.05       # how long one read may wait for its bytes: this fraction of the music
+PATIENCE_MAX = 0.5        # queued, within these bounds (0.5 s with the usual 2.2 s buffer, so it
+PATIENCE_FRACTION = 0.4   # gives up while most of the buffer is still there to ride it out)
+STALL_COMMIT_S = 0.5      # this little music left queued: commit to an audible pause
+STALL_STEP_WINDOW_S = 300.0  # pauses on a track within this long make each resume wait longer
+JOIN_GIVE_UP_S = 0.3      # the next song still downloading: joined gaplessly only while this much is queued
+HOLD_RELEASE_S = 30.0     # silent this long, waiting for the network: the sound device is let go
+AUTO_RESUME_S = 300.0     # a song starts (or carries on) by itself only within this long
 
 _READING, _ENDED, _IDLE = "reading", "ended", "idle"   # the decoder's state (see _Session._decode)
+_WAITING, _AWAIT_NEXT = "waiting", "await-next"        # ... for the network: this song's bytes, the next song's
 _NOT_YET = object()   # _Source.lined_up before the decoder has read to the file's end
+_AWAIT = object()     # _next_source: the next song is still downloading (the decoder waits for it)
 
 
 class State(Enum):
@@ -115,6 +137,61 @@ class Status:
     health: "Health | None" = None    # how close playback came to running dry, this track
     events: list = field(default_factory=list)  # recent dropouts / near misses / damage (PlaybackEvent), newest last
     transition: str = ""              # how this track began: "gapless", "started", or why there was a gap
+    network: "NetworkView | None" = None  # a song from the network playback cache (None for a local one)
+
+
+@dataclass
+class NetworkView:
+    """Status.network: how a song on a network drive is getting on (the network playback cache).
+    While it's "preparing", "downloading", "checking", "waiting", "fetching" or "released" the
+    player reports PAUSED (nothing is sounding); `auto` says it starts or carries on by itself, so
+    the transport shows the user's intent (pause) all the same."""
+    phase: str                 # "preparing" | "downloading" | "checking" | "waiting" | "fetching" | "released" | "playing"
+    auto: bool                 # starts / carries on by itself
+    percent: int | None = None
+    detail: str = ""           # the cache's own words for where it has got to
+    copy: str = ""             # the copy playing: "downloading", "checking", "verified", "failed", "stale"
+    checks: str = ""           # the checks its complete copy passed (e.g. "size+identity+decode+flac-md5")
+    cached: float = 0.0        # fraction of this song's file on this computer
+    next_cached: float | None = None
+    quality: str = ""
+    speed: float | None = None  # bytes per second, from its server
+    at: float = 0.0            # where it is paused or starts (seconds into the track)
+
+
+@dataclass
+class Preparing:
+    """A song waiting to start until enough of it has downloaded (no session, no device open)."""
+    at: object                 # the list position or queued song (as _start takes it)
+    start_at: float
+    transition: str
+    token: int                 # this wait's own number (the "ready" event names it)
+    since: float               # Player._clock() when it began
+    deadline: float            # it starts by itself only until then
+    auto: bool = True          # starts by itself (paused / suspended / lapsed: waits for play)
+    resume: bool = False       # carrying on after the device was let go during a network pause
+    wait_token: object = None  # the preparer's notify_when_startable token
+
+
+@dataclass
+class WaitInfo:
+    """A session waiting for the network: the decoder reached bytes not downloaded yet."""
+    since: float               # time.perf_counter() when the read gave up
+    frame: int                 # where playback carries on from (once committed: the cut)
+    reason: str                # audiofile.Waiting's reason
+    serial: int = 0            # the stall marker's number, once committed
+    committed: bool = False    # the pause will be heard: the stall marker is queued
+    silent_since: float | None = None   # the first request answered with silence (perf_counter)
+    seek: bool = False         # it began at a seek (the bytes there haven't come yet)
+
+
+class _Stall:
+    """Queued after the last music before a pause for the network (see _Session._commit). The
+    callback plays exact zeros on it until the decoder has carried on from the cut."""
+    __slots__ = ("serial",)
+
+    def __init__(self, serial: int):
+        self.serial = serial
 
 
 @dataclass
@@ -133,7 +210,7 @@ class PlaybackEvent:
     when: float      # time.time()
     track: str
     position: float  # seconds into the track
-    kind: str        # "dropout", "near miss", "damaged" or "cut short"
+    kind: str        # "dropout", "near miss", "damaged", "cut short" or "network pause" (never a dropout)
     cause: str
     count: int = 1   # a stutter (gaps less than 2 s apart) is one event with a count
     silent: float = 0.0  # seconds of silence, all its gaps together
@@ -159,15 +236,30 @@ class _Source:
     fingerprints of what's been sent from it (its bit-perfect proof). A CUE sheet track is its
     stretch of the file (audiofile.CuePath): frame 0 is the track's first sample, `offset` is
     where that sits in the whole file, and reading ends on its last sample, so the next track of
-    the same file joins on gaplessly like any other."""
+    the same file joins on gaplessly like any other.
 
-    def __init__(self, path, index: int = -1):
-        self.path, self.index = path, index
-        self.file = audiofile.open(path)  # the one decode path (a CUE track: just its stretch)
+    `local` is what to read (audiofile.LocalTrack: the file itself, or one version of a cached
+    copy, held — leased — while it plays); `path` is the song's identity, as the play list has it,
+    for everything keyed by song (trims, levelling, what's lined up, the meters). Every reopen and
+    the proof read the same `local`. A handle on a copy still downloading that gave up waiting is
+    `dead`: it's opened afresh before it's used again."""
+
+    def __init__(self, local, index: int = -1):
+        self.local = audiofile.LocalTrack.plain(local)
+        self.path, self.index = self.local.source, index
+        self.local.acquire()
+        try:
+            self.file = audiofile.open(self.local)  # the one decode path (a CUE track: just its stretch)
+        except BaseException:
+            self.local.release()
+            raise
+        self._closed = False
+        self.dead = False
+        self.stalls: list[float] = []   # when each pause for the network began (perf_counter)
         self.samplerate, self.channels, self.total_frames = self.file.samplerate, self.file.channels, self.file.frames
         self.bits = BITS.get(self.file.subtype)  # None for floating-point files and MP3s
-        self.name = audiofile.display_name(path)
-        cue = audiofile.cue_of(path)
+        self.name = audiofile.display_name(self.path)
+        cue = audiofile.cue_of(self.path)
         self.offset = cue.start if cue else 0  # where frame 0 sits in the file (CUE tracks)
         self.sent: SentRecord | None = None
         self.heard = False    # the callback has started sending it
@@ -180,9 +272,18 @@ class _Source:
         self.got = 0
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         if self.sent is not None:
             self.sent.stop()
-        self.file.close()
+        try:
+            self.file.close()
+        finally:
+            self.local.release()
+
+    def recent_stalls(self, now: float) -> int:
+        return sum(1 for when in self.stalls if now - when <= STALL_STEP_WINDOW_S)
 
 
 class _Blocks(queue.Queue):
@@ -207,10 +308,14 @@ class _Session:
     if that file has the same sample rate and channel count it carries straight on into it.
     The audio callback fills each request from whatever is queued, so the last samples of one
     track and the first of the next can share a request: nothing in between. When the next
-    file can't join on, the chain ends there and the player opens a new stream for it."""
+    file can't join on, the chain ends there and the player opens a new stream for it.
+
+    `path` is the first song (a path, or the audiofile.LocalTrack the preparer gave for it).
+    `preparer` (the network playback cache; None = every song read directly) is asked about the
+    next song before it's opened, and whether a song waiting for the network may carry on."""
 
     def __init__(self, path, gain_ref, on_end, device=None, want_exclusive=False, start_at=0.0, events=None,
-                 monitors=None, index: int = -1, follow=None, on_advance=None, on_lost=None):
+                 monitors=None, index: int = -1, follow=None, on_advance=None, on_lost=None, preparer=None):
         first = _Source(path, index)
         first.heard = True
         self._src = first          # the file being heard
@@ -224,7 +329,12 @@ class _Session:
         self._on_lost = on_lost or (lambda session: None)
         self._follow = follow      # callable(index) -> (index, path) of what plays after it, or None
         self._on_advance = on_advance or (lambda session, previous, source: None)
+        self._preparer = preparer
         self.handoff = ""          # why the next track couldn't join on, when it couldn't
+        self.waiting: WaitInfo | None = None   # waiting for the network (decoder sets it; callback clears it)
+        self._serial = 0           # stall markers queued so far
+        self._resumed_serial = 0   # the decoder has carried on after every stall up to this one
+        self._awaiting: tuple | None = None    # (index, path) of a next song still downloading
 
         # The buffer holds about BUFFER_SECONDS of music whatever the rate (0.26 s at 384 kHz in a fixed
         # number of blocks would be far too little to ride out a slow read).
@@ -236,6 +346,7 @@ class _Session:
         self._seek_request: int | None = None
         self._relineup_wanted = False
         self._stop = threading.Event()
+        self._nudge = threading.Event()   # wakes the decoder from a wait (a seek, a change, closing)
         self._decoder_started = False
         self.paused = False
         self.frames_played = 0     # in the file being heard
@@ -285,8 +396,9 @@ class _Session:
         except (TypeError, ValueError, sd.PortAudioError):
             log.debug("the output's latency couldn't be read; taking 0.1 s", exc_info=True)
             self._latency = 0.1
-        # Every block sent is fingerprinted, and checked against a second, independent decode.
-        first.sent = SentRecord(path, self.samplerate, self.dtype, BLOCK_FRAMES)
+        # Every block sent is fingerprinted, and checked against a second, independent decode (of
+        # the very same bytes: a cached copy's same version).
+        first.sent = SentRecord(first.local, self.samplerate, self.dtype, BLOCK_FRAMES)
         audiofile.set_cancel(first.file, self._superseded)
         if start_at > 0:
             self.seek(start_at)
@@ -368,6 +480,7 @@ class _Session:
         """The play list, Up next or repeat changed: the decoder checks what it has lined up to
         follow the track being heard, and lines it up again if it's no longer what plays next."""
         self._relineup_wanted = True
+        self._nudge.set()
 
     @property
     def message(self) -> str:
@@ -410,6 +523,7 @@ class _Session:
                     seek_to = min(seek_to, max(0, reading.total_frames - 1))
                     self.frames_played = seek_to
                     self._draining = False
+                    self.waiting, self._awaiting = None, None   # (a pause for the network starts again from here)
                 generation = self._generation
             try:
                 self._close_retired()
@@ -424,8 +538,23 @@ class _Session:
                     moved = self._relineup_now()
                     if moved is not None:
                         (reading, position, got), state = moved, _ENDED
+                        self._awaiting = None
                 if state == _IDLE:
                     self._stop.wait(0.05)  # the end of the chain is queued: until a seek, a change or close
+                    continue
+                if state == _WAITING:
+                    state, frame = self._wait_step(reading, generation)
+                    if frame is not None:
+                        position = frame   # (reopened where it stopped: the cut, once committed)
+                    if state == _WAITING:
+                        self._nap()
+                    continue
+                if state == _AWAIT_NEXT:
+                    moved = self._await_step(reading, position, got, generation)
+                    if moved is None:
+                        self._nap()
+                    else:
+                        reading, position, got, state = moved
                     continue
                 if state == _ENDED:
                     reading, position, got, state = self._move_on(reading, position, got, generation)
@@ -437,6 +566,12 @@ class _Session:
                 self._put((generation, reading, position, block))
                 position += len(block)
                 got += len(block)
+            except audiofile.Waiting as wait:   # (before Exception: waiting for the network is never damage)
+                if reading is not self._reading:   # (the next song, just lined up)
+                    reading, got = self._reading, 0
+                reading.dead = True
+                self._begin_wait(reading, wait, seek=seek_to is not None)
+                state = _WAITING
             except Exception as exc:  # noqa: BLE001 — never leave the player waiting on a dead decoder
                 log.exception("decoding %s", reading.name)
                 self._damaged(reading, position, f"couldn't be decoded ({exc}), so it ended there")
@@ -447,8 +582,12 @@ class _Session:
     def _read(self, source: _Source, position: int):
         """The next block of `source` from `position`: (block, where it starts), or (None, position)
         at its end. A stretch that won't decode is skipped — each try skipping twice as far — and
-        reported; if it can't get past, the file ends there."""
+        reported; if it can't get past, the file ends there. A copy still downloading that hasn't
+        the bytes in time raises audiofile.Waiting (never taken for damage)."""
         skip, damaged_at = BLOCK_FRAMES, None
+        if source.dead and not self._reopen(source, position):
+            self._damaged(source, position, "couldn't be read from here, so it ended there")
+            return None, position
         for attempt in range(DAMAGE_SKIPS + 1):
             if attempt:  # the last try failed: skip on past the damage
                 position += skip
@@ -458,6 +597,10 @@ class _Session:
                 if not self._reopen(source, position):
                     continue
             started = time.perf_counter()
+            # (A copy still downloading: each read may wait this long for its bytes, so it gives up
+            # while most of the buffer is still there to cover it. Nothing for other files.)
+            audiofile.set_patience(source.file, min(PATIENCE_MAX, max(PATIENCE_MIN,
+                                                                       PATIENCE_FRACTION * self._queued_seconds())))
             try:
                 block = audiofile.read(source.file, BLOCK_FRAMES, self.dtype)
             except (RuntimeError, ValueError, OSError) as exc:  # damaged (soundfile's errors are RuntimeErrors)
@@ -475,20 +618,28 @@ class _Session:
         return None, position
 
     def _reopen(self, source: _Source, frame: int) -> bool:
-        """Open `source`'s file afresh at `frame`: after a decode error libsndfile's handle won't
-        seek any more, though a new one can seek past the damage. False if that fails too."""
+        """Open `source`'s file afresh at `frame` (the same bytes: the same version of a cached
+        copy): after a decode error libsndfile's handle won't seek any more, though a new one can
+        seek past the damage; a copy's handle that gave up waiting is dead. False if that fails
+        too; audiofile.Waiting (at `frame`) if the bytes there haven't come yet."""
         try:
-            fresh = audiofile.open(source.path)
+            fresh = audiofile.open(source.local, cancel=self._superseded)
+        except audiofile.Waiting as wait:
+            raise audiofile.Waiting(frame, wait.reason) from wait
         except Exception:  # noqa: BLE001 — (gone, or damaged at the start too)
             log.info("couldn't reopen %s after a decode error", source.name, exc_info=True)
             return False
         try:
             fresh.seek(frame)
+        except audiofile.Waiting:
+            fresh.close()
+            raise
         except Exception:  # noqa: BLE001 — still damaged there
             log.info("couldn't seek past the damage in %s", source.name, exc_info=True)
             fresh.close()
             return False
         old, source.file = source.file, fresh
+        source.dead = False
         audiofile.set_cancel(fresh, self._superseded)
         old.close()
         return True
@@ -496,6 +647,10 @@ class _Session:
     def _seek_in(self, source: _Source, frame: int) -> bool:
         """Move `source` to `frame`. False if it can't be read from there (damaged)."""
         try:
+            if source.dead:
+                if self._reopen(source, frame):
+                    return True
+                raise RuntimeError("it couldn't be opened again")
             source.file.seek(frame)
             return True
         except (RuntimeError, ValueError, OSError) as exc:  # (soundfile's errors are RuntimeErrors)
@@ -508,6 +663,12 @@ class _Session:
         queue the end of the chain. Returns the decoder's new (reading, position, got, state)."""
         reading.read_to, reading.got = position, got
         following = self._next_source(reading)
+        if following is _AWAIT:
+            return reading, position, got, _AWAIT_NEXT   # the next song is still downloading
+        return self._carry_into(reading, following, position, got, generation)
+
+    def _carry_into(self, reading: _Source, following: _Source | None, position: int, got: int, generation: int):
+        """Carry on from `reading` into `following` (None: the chain ends after `reading`)."""
         if following is None:
             self._draining = True
             self._put((generation, reading, position, None))  # the end of the chain
@@ -521,11 +682,13 @@ class _Session:
             return following, 0, 0, _ENDED
         return following, 0, 0, _READING
 
-    def _next_source(self, after: _Source) -> _Source | None:
+    def _next_source(self, after: _Source):
         """Open the file that plays after `after`, if it can join on gaplessly. Notes on `after`
-        what was lined up (see _relineup_now)."""
+        what was lined up (see _relineup_now). _AWAIT when the next song is on a network drive and
+        not enough of it has downloaded yet (the decoder then waits for it: _await_step)."""
         cached, after.next_source = after.next_source, None
         after.lined_up = None
+        self._awaiting = None
         if not after.got:
             # Nothing came out of it (an empty file, or one that can't be read from there): never chain
             # on from it, or repeat would open the same file again and again. The player moves on itself.
@@ -549,8 +712,34 @@ class _Session:
             after.next_source = cached
             return cached  # opened already (then a seek took the decoder back)
         self._drop(cached)  # lined up before, but something else plays next now
+        local = self._prepare_next(path, "next")
+        if local is _AWAIT:
+            self._awaiting = (index, path)
+            return _AWAIT
+        if local is None:
+            return None
+        return self._open_next(after, index, path, local)
+
+    def _prepare_next(self, path, role: str):
+        """The preparer's answer for the next song: a LocalTrack to open, _AWAIT (still downloading)
+        or None (it can't be played: the chain ends, and the player says why when it gets there)."""
+        if self._preparer is None:
+            return audiofile.LocalTrack.plain(path)
         try:
-            source = _Source(path, index)
+            local = self._preparer.prepare(path, role=role, at=0.0)
+        except Exception:  # noqa: BLE001 — at worst this track ends with a gap
+            log.exception("preparing %s", path)
+            return None
+        if isinstance(local, audiofile.LocalTrack):
+            return local
+        if hasattr(local, "permanent"):   # Unavailable
+            self.handoff = f"the next song can't be played ({local.reason})"
+            return None
+        return _AWAIT
+
+    def _open_next(self, after: _Source, index, path, local) -> _Source | None:
+        try:
+            source = _Source(local, index)
         except Exception as exc:  # noqa: BLE001 — at worst this track ends with a gap
             log.warning("reading ahead %s: %s", path, exc)
             self.handoff = "the next file couldn't be read ahead of time"
@@ -563,7 +752,7 @@ class _Session:
                             "sound device was reopened")
         else:
             try:
-                source.sent = SentRecord(path, self.samplerate, self.dtype, BLOCK_FRAMES)
+                source.sent = SentRecord(source.local, self.samplerate, self.dtype, BLOCK_FRAMES)
                 source.sent.start_checking()
             except Exception:  # noqa: BLE001 — (no thread to spare): it just starts with a gap instead
                 log.exception("checking %s", path)
@@ -642,10 +831,137 @@ class _Session:
         for source in retired:
             source.close()
 
+    # -- waiting for the network (a copy still downloading) ---------------------
+    def _nap(self):
+        """The decoder waits for the network: a look every 50 ms, sooner after a seek, change or close."""
+        self._nudge.wait(0.05)
+        self._nudge.clear()
+
+    def _wake(self):
+        """A seek, a change or closing: wake the decoder, even from a read waiting for its bytes
+        (that read then gives up at once: something newer wants the file)."""
+        self._nudge.set()
+        gate = getattr(self._reading.file, "gate", None)
+        if isinstance(gate, audiofile.Gate):
+            gate.wake()
+
+    def _queued_seconds(self) -> float:
+        """Music decoded and waiting for the sound card (blocks are BLOCK_FRAMES long but at ends)."""
+        return self._queue.qsize() * BLOCK_FRAMES / self.samplerate
+
+    def _begin_wait(self, source: _Source, wait: audiofile.Waiting, seek: bool = False):
+        """A read of `source` gave up waiting for its bytes at `wait.frame`."""
+        current = self.waiting
+        if current is not None and not seek:
+            current.reason = wait.reason   # (still the same pause: it carries on from the same spot)
+            return
+        self.waiting = WaitInfo(time.perf_counter(), wait.frame, wait.reason, seek=seek)
+
+    def _wait_step(self, source: _Source, generation: int):
+        """One look, every 50 ms, while `source` waits for the network. Before the pause is
+        committed the music already queued keeps playing: once the bytes are here (enough for a
+        few seconds) the decoder carries on unheard. When the queue is nearly empty the pause is
+        committed (_commit); after that it carries on once the start rule holds at the cut (asking
+        for more after each recent pause). A song whose bytes will never come (the file changed
+        or went away) is cut short there. Returns the decoder's (state, frame to read from)."""
+        wait = self.waiting
+        if wait is None:   # (cleared by a seek meanwhile: read on from there)
+            return _READING, None
+        preparer = self._preparer
+        frame = wait.frame
+        if not wait.committed:
+            if preparer is not None and preparer.resumable(source.local, frame, 0, quick=True):
+                return self._carry_on_from(source, frame, wait)
+            if self._queued_seconds() <= STALL_COMMIT_S:
+                self._commit(source, generation)
+            return _WAITING, None
+        stalls = source.recent_stalls(time.perf_counter())
+        if preparer is None or preparer.resumable(source.local, frame, stalls):
+            return self._carry_on_from(source, frame, wait)
+        outlook = preparer.outlook(source.local, frame / self.samplerate)
+        if getattr(outlook, "permanent", False):
+            return self._cut_short(source, frame, generation, outlook.reason)
+        return _WAITING, None
+
+    def _carry_on_from(self, source: _Source, frame: int, wait: WaitInfo):
+        """The bytes are here: a fresh handle at `frame` (same version of the copy), and read on."""
+        if not self._reopen(source, frame):
+            self._damaged(source, frame, "couldn't be read from here, so it ended there")
+            self._resumed_serial = max(self._resumed_serial, wait.serial)
+            if not wait.committed:
+                self.waiting = None
+            source.read_to = frame
+            return _ENDED, frame
+        if wait.committed:
+            self._resumed_serial = wait.serial   # (the callback plays on past the marker now)
+        else:
+            self.waiting = None   # a hiccup the buffer covered: nothing was heard
+        return _READING, frame
+
+    def _commit(self, source: _Source, generation: int):
+        """Commit to an audible pause: shorten the last block queued so the music stops at its
+        quietest sample (within QUIET_WINDOW_S), and queue a stall marker after it. The frames
+        after the cut are decoded again when it carries on, so nothing is skipped or repeated.
+        If the sound card already has that block, the cut is simply the end of what was queued."""
+        from .netcache.policy import quiet_point   # (only ever reached with the cache installed)
+
+        wait = self.waiting
+        cut = wait.frame
+        with self._queue.mutex:
+            items = self._queue.queue
+            if items:
+                last = items[-1]
+                if last[0] == generation and last[1] is source and isinstance(last[3], np.ndarray) and len(last[3]):
+                    _, _, start, block = last
+                    k = quiet_point(block, self.samplerate)
+                    items[-1] = (generation, source, start, block[: k + 1])
+                    cut = start + k + 1
+            self._serial += 1
+            wait.serial, wait.frame, wait.committed = self._serial, cut, True
+            items.append((generation, source, cut, _Stall(self._serial)))
+            self._queue.not_empty.notify()
+        source.stalls.append(time.perf_counter())
+
+    def _cut_short(self, source: _Source, frame: int, generation: int, why: str):
+        """The rest of this song will never arrive (its file changed or went away mid-song): the
+        chain ends at `frame`, said plainly; the player moves on. Never taken as a complete song."""
+        at = frame / self.samplerate
+        now = time.time()
+        cause = why if why.startswith("the ") else f"the file {why}"
+        self._events.append(PlaybackEvent(now, source.name, at, "cut short", cause, last=now))
+        self.note = f"Cut short at {_clock(at)}: {cause}"
+        wait = self.waiting
+        if wait is not None and wait.committed:
+            self._resumed_serial = max(self._resumed_serial, wait.serial)   # (the marker steps aside)
+        source.read_to = frame
+        self._draining = True
+        self._put((generation, source, frame, None))   # the end of the chain
+        return _IDLE, frame
+
+    def _await_step(self, after: _Source, position: int, got: int, generation: int):
+        """One look, every 50 ms, at a next song still downloading: joined gaplessly once it may
+        start while at least JOIN_GIVE_UP_S of this song is still queued; otherwise this song
+        simply ends there (no cut: it has played to its end) and the player starts the next one
+        when it's ready ("Preparing…"). None while still waiting, else the decoder's new state."""
+        awaiting = self._awaiting
+        if awaiting is None:
+            return after, position, got, _ENDED   # (lined up again meanwhile: ask what's next)
+        if self._queued_seconds() >= JOIN_GIVE_UP_S:
+            local = self._prepare_next(awaiting[1], "join")
+            if local is _AWAIT:
+                return None
+            self._awaiting = None
+            following = None if local is None else self._open_next(after, awaiting[0], awaiting[1], local)
+            return self._carry_into(after, following, position, got, generation)
+        self._awaiting = None
+        after.lined_up, after.next_source = None, None
+        self.handoff = "the next song was still downloading, so it started after a short wait"
+        return self._carry_into(after, None, position, got, generation)
+
     def _check_length(self, source: _Source):
         """An MP3 with no length header can stop early (see audiofile.mp3_shortfall): say so."""
         try:
-            short = audiofile.mp3_shortfall(source.file, source.path)
+            short = audiofile.mp3_shortfall(source.file, source.local)
         except Exception:  # noqa: BLE001 — only a warning: never worth stopping playback for
             log.exception("checking the length of %s", source.name)
             return
@@ -712,11 +1028,22 @@ class _Session:
                     item = self._queue.get_nowait()
                 except queue.Empty:
                     outdata[filled:] = 0  # decoder fell behind; play silence
-                    self._starving(now)
+                    if self.waiting is not None:
+                        self._silent(now)   # (waiting for the network: a pause, not a dropout)
+                    else:
+                        self._starving(now)
                     break
                 if item[0] != generation:
                     continue  # from before a seek
             _, source, start, block = item
+            if isinstance(block, _Stall):   # paused for the network here
+                if self._past_stall(block):
+                    continue
+                self._pending = item   # stays on the marker: exact zeros until the music is back
+                outdata[filled:] = 0
+                if not filled:
+                    self._silent(now)
+                break
             if block is None:  # the end of the chain
                 if filled:
                     self._pending = item  # this request's music plays out first; stop on the next one
@@ -770,6 +1097,35 @@ class _Session:
                 cause = "the player's decoding fell behind: the computer was busy"
             self._event("dropout", cause)
 
+    def _past_stall(self, stall: _Stall) -> bool:
+        """At a stall marker: may the music carry on past it? Once the decoder has carried on from
+        the cut — straight away if nothing has been silent yet (seamless: the same samples as with
+        no stall), else once the buffer has filled again (or the rest of the chain is queued)."""
+        if self._resumed_serial < stall.serial:
+            return False
+        wait = self.waiting
+        mine = wait is not None and wait.serial == stall.serial
+        silent = mine and wait.silent_since is not None
+        if silent and not (self._draining or self._queue.qsize() >= self._queue_blocks - 1):
+            return False
+        if mine:
+            if silent and self._events and self._events[-1].kind == "network pause":
+                self._events[-1].silent += time.perf_counter() - wait.silent_since
+                self._events[-1].last = time.time()
+            self.waiting = None
+        return True
+
+    def _silent(self, now: float):
+        """A request answered with silence while waiting for the network: no dropout, no level, and
+        (the first time) a "network pause" in the playback report."""
+        self.levels = (0.0,) * self.channels
+        wait = self.waiting
+        if wait is not None and wait.silent_since is None:
+            wait.silent_since = now
+            why = "the download stopped" if wait.reason == "failed" else "the network didn't keep up"
+            self._event("network pause", f"{why}, so playback paused at a quiet sample until the music had "
+                                         "downloaded (it plays from the copy on this computer)")
+
     def _arrived(self, now: float):
         self._flowing = True
         self.delivered = True
@@ -811,8 +1167,8 @@ class _Session:
             self._primed = waiting >= self._queue_blocks // 2
             return
         seconds = waiting * BLOCK_FRAMES / self.samplerate
-        if self._draining:
-            return  # at the very end the buffer empties naturally: nothing more to decode
+        if self._draining or self.waiting is not None:
+            return  # at the very end (or waiting for the network) the buffer empties as it should
         if self.health.buffer_low is None or seconds < self.health.buffer_low:
             self.health.buffer_low = seconds
         if waiting < self._near_miss and not self._in_danger:
@@ -865,6 +1221,23 @@ class _Session:
         last = self._last_callback if self._last_callback is not None else self._running_since
         return now - max(last, self._running_since) > STALL_SECONDS
 
+    def waiting_for(self, now: float) -> float:
+        """Seconds of silence so far, waiting for the network (0 when not, or paused by hand)."""
+        wait = self.waiting
+        if wait is None or wait.silent_since is None or self.paused:
+            return 0.0
+        return max(0.0, now - wait.silent_since)
+
+    @property
+    def network_wait(self) -> WaitInfo | None:
+        """The pause for the network the listener hears (committed), if there is one."""
+        wait = self.waiting
+        return wait if wait is not None and wait.committed else None
+
+    @property
+    def local(self):
+        return self._src.local
+
     # -- control -------------------------------------------------------------
     def set_paused(self, paused: bool):
         """Pausing stops the stream so the sound device is free for other apps."""
@@ -873,6 +1246,9 @@ class _Session:
         self.paused = paused
         self._last_callback = None  # the pause itself isn't a late request
         self._primed = False
+        wait = self.waiting
+        if wait is not None and not paused:
+            wait.silent_since = None   # (any silence from here counts afresh)
         try:
             if paused:
                 self._stream.stop()
@@ -895,6 +1271,7 @@ class _Session:
             self._flowing = False
             self._primed = False
             self._starved_since = None
+        self._wake()
 
     def retire(self, source: _Source):
         """A file that's finished playing: the decoder closes it (called from the player's thread)."""
@@ -920,6 +1297,7 @@ class _Session:
         """Stop the stream at once. The decoder winds down on its own thread and closes the files
         (usually within milliseconds; waited for briefly, so they're normally closed on return)."""
         self._stop.set()
+        self._wake()
         try:
             self._stream.abort()
             self._stream.close()
@@ -950,7 +1328,12 @@ class Queued:
 
 
 class Player:
-    def __init__(self):
+    def __init__(self, preparer=None):
+        # The network playback cache's preparer (netcache.Manager), asked about every song before
+        # it's opened; None = every song is read directly. See set_preparer.
+        self._preparer = preparer
+        self._preparing: Preparing | None = None   # a song waiting to start until it has downloaded enough
+        self._prepare_serial = 0
         self.tracks: list[Track] = []
         self.index = -1
         # Up next ("Play next" / "Add to queue"): songs that play before the list carries on.
@@ -996,10 +1379,11 @@ class Player:
         it carries on uninterrupted and the album continues from there."""
         with self._lock:
             current = None
-            if keep_playing and self._session and 0 <= self.index < len(self.tracks):
+            active = self._session is not None or self._preparing is not None   # (preparing counts as playing)
+            if keep_playing and active and 0 <= self.index < len(self.tracks):
                 path = self.tracks[self.index].path
                 current = next((i for i, t in enumerate(tracks) if t.path == path), None)
-            if keep_playing and self._session and self.queued_now is not None:
+            if keep_playing and active and self.queued_now is not None:
                 # A queued song is playing: it carries on; the list carries on after it from the
                 # same song as before (if it's still there).
                 path = self.tracks[self.index].path if 0 <= self.index < len(self.tracks) else None
@@ -1010,8 +1394,10 @@ class Player:
                 return
             if current is None:
                 self._close_session()
-            else:
+            elif self._session is not None:
                 self._session.renumber(current)
+            else:
+                self._preparing.at = current
             self.tracks = list(tracks)
             self.index = current if current is not None else (0 if self.tracks else -1)
             self._rebuild_order(first=current)
@@ -1019,9 +1405,58 @@ class Player:
             self._relineup()
 
     def _relineup(self):
-        """What plays next may have changed: the session re-checks the track it has lined up."""
+        """What plays next may have changed: the session re-checks the track it has lined up (and
+        the network playback cache, what to download next)."""
         if self._session is not None:
             self._session.relineup()
+        self._plan_changed()
+
+    # -- the network playback cache ------------------------------------------------
+    def set_preparer(self, preparer):
+        """Install the network playback cache's preparer (None, or netcache.DIRECT: every song read
+        directly, as before). Takes effect from the next song started."""
+        with self._lock:
+            self._preparer = preparer
+            if hasattr(preparer, "should_yield"):   # the cache's checking backs off while playback needs the time
+                preparer.should_yield = self._buffer_low
+
+    def _buffer_low(self) -> bool:
+        """Lock-free: playing, with less than half the buffer decoded."""
+        session = self._session
+        return session is not None and not session.paused and session.buffer_fill < 0.5
+
+    def _plan_changed(self):
+        preparer = self._preparer
+        if preparer is not None:
+            preparer.plan_changed()   # (only sets an Event)
+
+    def _position_hint(self, path, seconds: float):
+        preparer = self._preparer
+        if preparer is not None:
+            preparer.position_hint(path, seconds)
+
+    def upcoming(self, n: int) -> list:
+        """The song playing (or about to: preparing), then up to `n` that follow it, as the engine
+        will play them (Up next first): [(list position or queued song, path), …]. Stops where
+        playback is set to stop, at repeat one and at a song already listed. No lock: it reads
+        lists that are replaced whole, as the decoder does (the network playback cache calls it)."""
+        at = self._current()
+        track = self._track_at(at)
+        if track is None:
+            return []
+        result = [(at, track.path)]
+        seen_at, seen_paths = {id(at) if isinstance(at, Queued) else at}, {track.path}
+        while len(result) <= n and not self._stops_after(at):
+            following = self._next_after(at)
+            track = self._track_at(following)
+            key = id(following) if isinstance(following, Queued) else following
+            if track is None or key in seen_at or track.path in seen_paths:
+                break
+            result.append((following, track.path))
+            seen_at.add(key)
+            seen_paths.add(track.path)
+            at = following
+        return result
 
     # -- Up next -----------------------------------------------------------------
     # Each change takes the lock (the player's thread rewrites the list too, as a queued song
@@ -1240,7 +1675,11 @@ class Player:
         gain is recorded in the proof as a change of level. False when nothing is playing."""
         with self._lock:
             session = self._session
-            if session is None or session.paused or seconds <= 0:
+            prep = self._preparing
+            # (A song about to start by itself, waiting for the network, counts as playing: its
+            # fade keeps its clock, so the timer still ends the music.)
+            waiting = session is None and prep is not None and prep.auto
+            if (session is None or session.paused or seconds <= 0) and not (waiting and seconds > 0):
                 return False
             self._fade = (self._clock(), float(seconds))
             return True
@@ -1258,10 +1697,15 @@ class Player:
         return 0.0 if done >= 1 else 10 ** (FADE_FLOOR_DB * done / 20)
 
     def _faded(self):
-        """The fade has run its course: pause at this spot with the device let go, as suspend()."""
+        """The fade has run its course: pause at this spot with the device let go, as suspend().
+        (Waiting for the network meanwhile: it no longer starts by itself.)"""
         session = self._session
         self._fade = None
         if session is None:
+            prep = self._preparing
+            if prep is not None:
+                prep.auto = False
+                self._message = "Sleep timer: faded out and paused · press play to carry on"
             return
         position, queued = session.position, self.queued_now
         self._close_session()
@@ -1273,6 +1717,12 @@ class Player:
         """Start `index` (or resume / start the current track), optionally part-way in."""
         with self._lock:
             if not self.tracks and not (index is None and (self.queue or self.queued_now)):
+                return
+            if index is None and self._preparing is not None:
+                # Waiting for the network: play starts it now if a few seconds are here (else it
+                # goes on waiting, starting by itself again — for another 5 minutes).
+                prep = self._preparing
+                self._start(prep.at, prep.start_at, prep.transition, force=True, resume=prep.resume)
                 return
             if index is None:
                 if self._session and self._session.paused:
@@ -1304,6 +1754,8 @@ class Player:
             self._fade = None   # (pausing by hand ends a sleep timer's fade: play resumes at full level)
             if self._session:
                 self._session.set_paused(True)
+            elif self._preparing is not None:
+                self._preparing.auto = False   # it won't start by itself (it keeps downloading)
 
     def suspend(self) -> bool:
         """Pause and let go of the sound device, for something else to play on it (the ABX test).
@@ -1313,6 +1765,10 @@ class Player:
         with self._lock:
             session = self._session
             if session is None:
+                if self._preparing is not None:   # (waiting for the network: it mustn't start by itself now)
+                    self._preparing.auto = False
+                    self._fade = None
+                    return True
                 return False
             position, queued = session.position, self.queued_now
             self._close_session()
@@ -1325,6 +1781,8 @@ class Player:
             if self._session and not self._session.paused:
                 self._fade = None
                 self._session.set_paused(True)
+            elif self._preparing is not None and self._preparing.auto:   # (starting by itself counts as playing)
+                self.pause()
             else:
                 self.play()
 
@@ -1357,6 +1815,10 @@ class Player:
         with self._lock:
             if self._session:
                 self._session.seek(seconds)
+                if self._session.local.remote:
+                    self._position_hint(self._session._path, seconds)
+            elif self._preparing is not None:
+                self._move_preparing(max(0.0, seconds))
             elif self._suspended_at is not None:
                 self._suspended_at = max(0.0, seconds)
 
@@ -1416,16 +1878,24 @@ class Player:
         with self._lock:
             track = self._track_at(self._current())
             session = self._session
+            prep = self._preparing
             output = None
-            if session is None and self._suspended_at is not None and track is not None:
+            if session is None and prep is not None and track is not None:
+                state = State.PAUSED  # waiting for the network to start (Status.network says more)
+                position, duration = prep.start_at, track.duration
+            elif session is None and self._suspended_at is not None and track is not None:
                 state = State.PAUSED  # suspended (see suspend): paused, with the device let go
                 position, duration = self._suspended_at, track.duration
             elif session is None:
                 state = State.STOPPED
                 position, duration = 0.0, (track.duration if track else 0.0)
             else:
-                state = State.PAUSED if session.paused else State.PLAYING
+                # Silent, waiting for the network: paused, held at the spot it carries on from.
+                wait = session.network_wait
+                state = State.PAUSED if session.paused or wait is not None else State.PLAYING
                 position, duration = session.position, session.duration
+                if wait is not None:
+                    position = wait.frame / session.samplerate
                 output = OutputInfo(session.device_name, session.samplerate, session.mixer_rate, session.exclusive,
                                     self.hardware_volume if session.exclusive else None, session.device_bits)
             message = self._message or (session.message if session else "")
@@ -1436,10 +1906,13 @@ class Player:
             if track is not None:
                 status.guard = self.guard_for(track.path)
                 status.levelling = self.levelling_for(track.path)
-            status.fading = self._fade is not None and session is not None
+            status.fading = self._fade is not None and (session is not None or prep is not None)
             status.stop_after = self.stop_after or ""
+            status.network = self._network_view(track, session, prep)
+            if prep is not None:
+                status.transition = prep.transition
             if session is not None:
-                status.levels = session.levels if not session.paused else (0.0,) * session.channels
+                status.levels = session.levels if state is State.PLAYING else (0.0,) * session.channels
                 status.track_peak = session.track_peak
                 status.buffer = session.buffer_fill
                 status.dropouts = session.dropouts
@@ -1480,13 +1953,17 @@ class Player:
         gain = self._volume ** 2 * trim
         return gain * self._fade_factor() if self._fade is not None else gain
 
-    def _start(self, index, start_at: float = 0.0, transition: str = "started"):
+    def _start(self, index, start_at: float = 0.0, transition: str = "started", force: bool = False,
+               resume: bool = False):
         """Start playing tracks[index] (or a queued song, which then leaves Up next); skips
-        forward past files that won't open."""
+        forward past files that won't open. A song on a network drive not ready yet waits
+        ("Preparing…", see _wait_to_start) instead: no device is opened for it until it starts.
+        `force`: play was pressed while it waited (it starts if a few seconds are here)."""
         self._close_session()
         self._message = ""
         self._fade = self._resume_with = None
         self.transition = transition
+        self._plan_changed()
         tried: set = set()
         while index is not None and self._track_at(index) is not None:
             key = ("queued", id(index)) if isinstance(index, Queued) else index
@@ -1499,14 +1976,32 @@ class Player:
                 self.queued_now = index
             else:
                 self.index, self.queued_now = index, None
+            local = self._prepare_play(track.path, start_at, force)
+            if not isinstance(local, audiofile.LocalTrack):
+                if not hasattr(local, "permanent"):   # NotReady: wait for it (shown paused at its spot)
+                    self._wait_to_start(index, start_at, transition, resume=resume)
+                    return
+                if local.permanent:   # gone, refused: skipped, like a file that won't open
+                    log.warning("cannot play %s: %s", track.path, local.reason)
+                    self._message = f"Skipped {audiofile.display_name(track.path)}: {local.reason}"
+                    index = self._next_after(index, repeat_one=False)
+                    start_at = 0.0
+                    continue
+                self._message = local.reason   # (the disk is full, say): stopped here, paused at the spot
+                self._suspended_at = start_at
+                return
             try:
-                session = _Session(track.path, self._gain, lambda s: self._ended_events.put(("end", s)),
+                session = _Session(local, self._gain, lambda s: self._ended_events.put(("end", s)),
                                    device=self._device, want_exclusive=self._exclusive, start_at=start_at,
                                    events=self.events, monitors=self._monitors, index=index, follow=self._follow,
                                    on_advance=lambda s, previous, new: self._ended_events.put(
                                        ("advance", s, previous, new)),
-                                   on_lost=lambda s: self._ended_events.put(("lost", s)))
+                                   on_lost=lambda s: self._ended_events.put(("lost", s)),
+                                   preparer=self._preparer)
                 session.start()
+            except audiofile.Waiting:   # (its opening bytes weren't all here after all: wait for them)
+                self._wait_to_start(index, start_at, transition, resume=resume)
+                return
             except sd.PortAudioError as exc:
                 # The sound device, not the file, is the problem: skipping tracks won't help. Shown
                 # paused at the same spot, so play tries again from there.
@@ -1533,9 +2028,153 @@ class Player:
     def _close_session(self):
         self._suspended_at = None
         self.queued_now = None
+        prep, self._preparing = self._preparing, None
+        if prep is not None and prep.wait_token is not None and self._preparer is not None:
+            self._preparer.forget(prep.wait_token)
         if self._session:
             self._session.close()
             self._session = None
+
+    # -- songs waiting for the network (the network playback cache) ------------------------
+    def _prepare_play(self, path, start_at: float, force: bool):
+        """The preparer's answer for a song about to play: a LocalTrack, NotReady or Unavailable
+        (no I/O: a look-up in the cache's memory). With no cache, the file itself."""
+        preparer = self._preparer
+        if preparer is None:
+            return audiofile.LocalTrack.plain(path)
+        try:
+            return preparer.prepare(path, role="play", at=start_at, force=force)
+        except Exception:  # noqa: BLE001 — a fault in the cache mustn't stop the song: read it directly
+            log.exception("preparing %s", path)
+            return audiofile.LocalTrack.plain(path)
+
+    def _wait_to_start(self, at, start_at: float, transition: str, resume: bool = False,
+                       deadline: float | None = None):
+        """`at` (already the current song) isn't ready to play: show it paused at its spot, and start
+        it by itself when the cache says it may (a "ready" event) — within AUTO_RESUME_S."""
+        track = self._track_at(at)
+        now = self._clock()
+        self._prepare_serial += 1
+        prep = Preparing(at, start_at, transition, self._prepare_serial, now,
+                         now + AUTO_RESUME_S if deadline is None else deadline, resume=resume)
+        self._preparing = prep
+        token = prep.token
+        try:
+            prep.wait_token = self._preparer.notify_when_startable(
+                track.path, start_at, post=lambda: self._ended_events.put(("ready", None, token)))
+        except Exception:  # noqa: BLE001 — the watch tick looks again every second anyway
+            log.exception("waiting for %s", track.path)
+
+    def _move_preparing(self, seconds: float):
+        """A seek while a song waits for the network: it will start from there."""
+        prep = self._preparing
+        track = self._track_at(prep.at)
+        prep.start_at = seconds
+        if track is None:
+            return
+        self._position_hint(track.path, seconds)
+        preparer, token = self._preparer, prep.token
+        if prep.wait_token is not None:
+            preparer.forget(prep.wait_token)
+        prep.wait_token = preparer.notify_when_startable(
+            track.path, seconds, post=lambda: self._ended_events.put(("ready", None, token)))
+
+    def _ready(self, token):
+        """The cache says the song waiting may start now (on the player's own thread)."""
+        prep = self._preparing
+        if prep is None or prep.token != token or self._session is not None:
+            return
+        if not prep.auto or self._clock() > prep.deadline:
+            prep.auto = False
+            track = self._track_at(prep.at)
+            name = f"“{track.title}”" if track is not None and track.title else "The song"
+            self._message = ("The network is back · press play to carry on" if prep.resume
+                             else f"{name} is ready: press play")
+            return
+        fade = self._fade   # (a sleep timer's fade carries on: the song doesn't start louder)
+        self._start(prep.at, prep.start_at, prep.transition, resume=prep.resume)
+        if fade is not None and (self._session is not None or self._preparing is not None):
+            self._fade = fade
+
+    def _watch_preparing(self):
+        """Every watch tick while a song waits for the network: its automatic start lapses after
+        AUTO_RESUME_S; and if the cache's word that it may start went astray, it starts anyway."""
+        prep = self._preparing
+        if prep is None or not prep.auto or self._session is not None:
+            return
+        if self._clock() > prep.deadline:
+            prep.auto = False
+            self._message = ("The network didn't come back within 5 minutes · press play to carry on"
+                             if prep.resume else "Still downloading after 5 minutes · press play to start it")
+            return
+        track = self._track_at(prep.at)
+        if track is None:
+            return
+        try:
+            startable = self._preparer.outlook(track.path, prep.start_at) is None
+        except Exception:  # noqa: BLE001
+            log.exception("looking at %s", track.path)
+            return
+        if startable:
+            self._ready(prep.token)
+
+    def _release_for_network(self, session: _Session):
+        """Silent for HOLD_RELEASE_S waiting for the network: let go of the sound device (in
+        bit-perfect mode other apps are silent while it's held), keep the spot, and carry on by
+        itself — the same device, the same volume — if the network is back within AUTO_RESUME_S
+        of the silence starting."""
+        wait = session.network_wait
+        position = wait.frame / session.samplerate if wait is not None else session.position
+        silent_for = session.waiting_for(time.perf_counter())
+        at, queued = self._current(), self.queued_now
+        self._close_session()
+        self.queued_now = queued
+        log.info("%s: no music from the network for %.0f s; the sound device is let go", session._track_name,
+                 silent_for)
+        self._wait_to_start(at, position, "carried on after a pause for the network", resume=True,
+                            deadline=self._clock() - silent_for + AUTO_RESUME_S)
+
+    def _network_view(self, track, session, prep) -> NetworkView | None:
+        """Status.network: how a song on a network drive is getting on (None for a local song)."""
+        preparer = self._preparer
+        if preparer is None or track is None:
+            return None
+        if session is not None and not session.local.remote:
+            return None
+        if session is None and prep is None:
+            return None
+        try:
+            if prep is not None:
+                outlook = preparer.outlook(track.path, prep.start_at)
+                view = NetworkView("released" if prep.resume else "preparing", prep.auto, at=prep.start_at)
+                if outlook is not None and hasattr(outlook, "phase"):
+                    if not prep.resume and outlook.phase in ("downloading", "checking"):
+                        view.phase = outlook.phase
+                    view.percent, view.detail = outlook.percent, outlook.detail
+                elif outlook is not None:   # Unavailable
+                    view.detail = outlook.reason
+            else:
+                wait = session.network_wait
+                view = NetworkView("playing", not session.paused, at=session.position)
+                if wait is not None:
+                    view.phase = "fetching" if wait.seek else "waiting"
+                    view.at = wait.frame / session.samplerate
+                    outlook = preparer.outlook(session.local, view.at)
+                    if outlook is not None and hasattr(outlook, "phase"):
+                        view.percent, view.detail = outlook.percent, outlook.detail
+                view.copy = session.local.copy_state()
+            progress = preparer.progress(track.path)
+            if progress is not None:
+                view.cached, view.speed = progress.fraction, progress.speed
+                view.checks = getattr(progress, "checks", "")
+            following = self.following_path()
+            if following is not None:
+                ahead = preparer.progress(following)
+                view.next_cached = ahead.fraction if ahead is not None else None
+            return view
+        except Exception:  # noqa: BLE001 — only what the window shows
+            log.exception("network playback status")
+            return None
 
     def _joined(self, session: _Session, previous: _Source, source: _Source):
         """A track joined on gaplessly: it's now the one playing."""
@@ -1555,6 +2194,7 @@ class Player:
         self.transition = "gapless"
         self._message = ""
         session.retire(previous)
+        self._plan_changed()
 
     def _lost(self, session: _Session):
         """The device stopped taking audio (unplugged, switched off, asleep): let go of it and show
@@ -1587,7 +2227,7 @@ class Player:
         if following is not None:
             fade = self._fade   # a sleep timer's fade carries on into the next song (it isn't a fresh start)
             self._start(following, transition=session.handoff or "started")
-            if self._session is not None:
+            if self._session is not None or self._preparing is not None:
                 self._fade = fade
         else:
             self._close_session()
@@ -1622,13 +2262,20 @@ class Player:
                 kind, session, details = "watch", None, []
             try:
                 with self._lock:
+                    if kind == "ready":   # a song waiting for the network may start (no session yet)
+                        self._ready(details[0])
+                        continue
                     if kind == "watch":
                         session = self._session
-                        if session is not None and session.stalled(time.perf_counter()):
+                        now = time.perf_counter()
+                        if session is not None and session.stalled(now):
                             log.warning("%s: no requests for audio in %.0f s", session.device_name, STALL_SECONDS)
                             self._lost(session)
                         elif self._fade is not None and self._fade_factor() == 0.0:
                             self._faded()
+                        elif session is not None and session.waiting_for(now) > HOLD_RELEASE_S:
+                            self._release_for_network(session)
+                        self._watch_preparing()
                         continue
                     if session is not self._session:
                         continue  # user already moved on

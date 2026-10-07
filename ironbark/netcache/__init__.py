@@ -45,8 +45,11 @@ class _Direct:
     def forget(self, token) -> None:
         pass
 
-    def resumable(self, local, frame: int, stalls: int) -> bool:
+    def resumable(self, local, frame: int, stalls: int, quick: bool = False) -> bool:
         return True
+
+    def outlook(self, path, at: float = 0.0):
+        return None
 
     def plan_changed(self) -> None:
         pass

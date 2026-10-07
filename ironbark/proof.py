@@ -7,6 +7,10 @@ Two checks:
    file again, independently, applies the same volume the player used, and compares
    fingerprints. So "bit-perfect" is proven block by block, not assumed — and any
    slip (a wrong, repeated or damaged block) is caught, with where it happened.
+   A song played from the network playback cache is checked against the very copy it
+   played from (the same version of it, even while it's still downloading); a wait for
+   bytes not downloaded yet is never counted as unchecked or damaged — it's simply checked
+   when they're here. `Proof.copy` says how that copy itself stands against the original.
 
 2. What Windows does with it (shared mode). The player records a few seconds of what
    it sent, while Windows' own recording of the device's output is captured
@@ -29,6 +33,7 @@ from . import audiofile
 log = logging.getLogger(__name__)
 
 INT32_MAX = 2**31 - 1
+PROOF_PATIENCE_S = 2.0  # how long the second decode waits for a downloading copy's bytes (playback already read them)
 QUIET = 1e-5  # RMS below this (about -100 dBFS) is too quiet to compare
 AUDIBLE_CHECK_HZ = 18000  # when Windows resamples, compare below this (see compare_paths)
 
@@ -79,6 +84,8 @@ class Proof:
     min_gain: float = 1.0         # lowest gain applied to any block (1.0 = untouched throughout)
     changed_from: float | None = None  # where the first changed (gain other than 1) block started
     max_gain: float = 1.0         # highest gain applied to any block (above 1.0: turned up)
+    copy: str = ""                # played from a cached copy: "downloading", "checking", "verified", "failed",
+                                  # "stale" (see audiofile.LocalTrack.copy_state); "" for a file on this computer
 
     @property
     def untouched(self) -> bool:
@@ -96,8 +103,9 @@ class SentRecord:
     CPython) and keeps running totals; the checker thread only reads the lists. `summary`
     reads the totals, so it costs the same however long the track has played."""
 
-    def __init__(self, path, samplerate: int, dtype: str, block_frames: int):
-        self.path, self.samplerate, self.dtype, self.block_frames = path, samplerate, dtype, block_frames
+    def __init__(self, local, samplerate: int, dtype: str, block_frames: int):
+        self.local = audiofile.LocalTrack.plain(local)   # what playback reads (a path is the file itself)
+        self.path, self.samplerate, self.dtype, self.block_frames = self.local.source, samplerate, dtype, block_frames
         self.segments: list[_Segment] = []
         self._generation = None
         self.mismatch_frame: int | None = None
@@ -139,13 +147,22 @@ class SentRecord:
 
     def _check_loop(self, interval: float):
         reference = None
+        self.local.acquire()   # (a cached copy's version stays while it's being checked)
         try:
             while True:
                 stopping = self._stop.wait(interval)
                 if reference is None:
-                    reference = audiofile.open(self.path)  # the same decode path as playback
+                    if stopping and self.local.remote and self.local.ready_path() is None:
+                        return   # (a copy still downloading: nothing more to wait for now)
+                    try:   # the same decode path as playback, on the same bytes
+                        reference = audiofile.open(self.local, patience=PROOF_PATIENCE_S, role="proof")
+                    except audiofile.Waiting:
+                        if stopping:
+                            return
+                        continue   # (a downloading copy's opening bytes didn't come in time: next time)
+                    audiofile.set_patience(reference, PROOF_PATIENCE_S)
                 if not self.check(reference):
-                    reference.close()  # it can't seek after a decode error: a fresh one next time
+                    reference.close()  # it can't seek after a decode error (or a wait): a fresh one next time
                     reference = None
                 if stopping:
                     return  # (whatever arrived last has been checked)
@@ -154,12 +171,15 @@ class SentRecord:
         finally:
             if reference is not None:
                 reference.close()
+            self.local.release()
 
     def check(self, reference) -> bool:
         """Verify every block sent since last time against an independent decode (read the same
         way as playback: audiofile.read). A block the second decode can't read — a damaged
         stretch — stays unproven (it doesn't count as checked); then this returns False, as
-        `reference` can't be trusted to seek again, and the rest waits for a fresh one."""
+        `reference` can't be trusted to seek again, and the rest waits for a fresh one. A wait for
+        bytes of a downloading copy (audiofile.Waiting) isn't damage: nothing is counted, and the
+        same block is checked again with a fresh `reference`."""
         for segment in list(self.segments):
             ready = len(segment.crcs)
             while segment.checked < ready:
@@ -168,6 +188,8 @@ class SentRecord:
                 try:
                     reference.seek(frame)
                     block = audiofile.read(reference, frames, self.dtype)
+                except audiofile.Waiting:
+                    return False
                 except (RuntimeError, ValueError) as exc:   # (soundfile's errors are RuntimeErrors)
                     log.info("proof: couldn't read %s at frame %d again: %s", self.path, frame, exc)
                     self.unchecked_frames += frames
@@ -181,7 +203,7 @@ class SentRecord:
 
     def summary(self) -> Proof:
         proof = Proof(sent=self._sent_frames / self.samplerate, checked=self._checked_frames / self.samplerate,
-                      min_gain=self._min_gain, max_gain=self._max_gain)
+                      min_gain=self._min_gain, max_gain=self._max_gain, copy=self.local.copy_state())
         if self._changed_from is not None:
             proof.changed_from = self._changed_from / self.samplerate
         if self.mismatch_frame is not None:

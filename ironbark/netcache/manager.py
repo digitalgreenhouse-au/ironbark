@@ -25,7 +25,8 @@ I/O thread stuck over 120 s is abandoned (its result thrown away when it returns
 per host, after which the host stays DOWN until they come back.
 
 Every method the player calls (`prepare`, `notify_when_startable`, `forget`, `resumable`,
-`plan_changed`, `position_hint`, `progress`) is a dictionary look-up under a short lock: no I/O.
+`outlook`, `plan_changed`, `position_hint`, `progress`) is a dictionary look-up under a short
+lock: no I/O.
 Lock order: the player's lock, then this manager's lock, then an item's `cond`. The manager never
 takes the player's lock; it reaches the player only through the `post` callables it was given.
 """
@@ -116,6 +117,7 @@ class Progress:
     fraction: float          # of the file on disk
     speed: float | None      # bytes per second, this host
     copy: str                # LocalTrack.copy_state of the current version
+    checks: str = ""         # the checks its complete copy passed (Item.verified_by), e.g. "size+identity+decode"
 
 
 @dataclass(frozen=True)
@@ -310,7 +312,9 @@ class Manager:
     # -- the preparer interface (no I/O) -------------------------------------------------------
     def prepare(self, path, *, role: str = "play", at: float = 0.0, force: bool = False):
         """A LocalTrack to play now, NotReady (and the download is wanted at this role's
-        priority), or Unavailable."""
+        priority), or Unavailable. `role`: "play" (the song about to play), "next" (the one after
+        it, as the decoder lines it up) or "join" (that one, while the song before it is about to
+        end: wanted as urgently as a reader waiting for bytes)."""
         kind, key, host = self._describe(path)
         if kind is Kind.LOCAL:
             return audiofile.LocalTrack.plain(path)
@@ -320,9 +324,11 @@ class Manager:
             return NotReady("starting", None, "starting", "Getting the music cache ready…")
         with self._lock:
             item = self._get(key, path, kind, host)
-            self._explicit[role] = (key, CURRENT if role == "play" else NEXT)
+            self._explicit["play" if role == "play" else "next"] = (key, CURRENT if role == "play" else NEXT)
             if role == "play":
                 self._positions[key] = at
+            elif role == "join":
+                self._demands[key] = self._clock()
             item.last_used = self._wall()
             result = self._evaluate(item, path, at, force)
         self._wake.set()
@@ -340,16 +346,54 @@ class Manager:
         with self._lock:
             self._waiters.pop(token, None)
 
-    def resumable(self, local, frame: int, stalls: int) -> bool:
-        """After a pause for the network: may playback carry on from `frame` (of the track)?"""
+    def resumable(self, local, frame: int, stalls: int, quick: bool = False) -> bool:
+        """After a pause for the network: may playback carry on from `frame` (of the track)? The
+        start rule there, asking for twice as much after each recent pause (`stalls`). `quick`:
+        before the pause is heard: carry on once policy.QUICK_RESUME_S is here (or all of it)."""
         item = getattr(local, "item", None)
         if item is None:
             return True
         with self._lock:
             if local.gen != item.gen:
-                return item.has(local.gen, item.size or 0)
+                return local.ready_path() is not None or item.has(local.gen, item.size_of(local.gen))
             rate = item.info.get("rate") or 0
-            return self._startable_at(item, local.source, frame / rate if rate else 0.0, stalls=stalls)
+            at = frame / rate if rate else 0.0
+            if quick:
+                return self._available(item, local.source, at) >= policy.QUICK_RESUME_S
+            return self._startable_at(item, local.source, at, stalls=stalls)
+
+    def outlook(self, x, at: float = 0.0):
+        """What prepare() would say now about starting (or carrying on) at `at` seconds, with
+        nothing asked for: None (it may), NotReady (with its progress) or Unavailable. `x` is a
+        path, or the LocalTrack playing (then about that very version of the copy)."""
+        local = x if isinstance(x, audiofile.LocalTrack) else None
+        if local is not None and not local.remote:
+            return None
+        path = local.source if local is not None else x
+        kind, key, host = self._describe(path)
+        if kind is Kind.LOCAL:
+            return None
+        if kind is Kind.URL:
+            return Unavailable("it's a web address: playing music from the internet isn't supported yet", True)
+        if not self._loaded.is_set():
+            return NotReady("starting", None, "starting", "Getting the music cache ready…")
+        with self._lock:
+            item = local.item if local is not None else self.items.get(key)
+            if item is None:
+                return NotReady("preparing", None, "preparing", "Preparing track…")
+            if local is not None and local.gen != item.gen:
+                if local.ready_path() is not None or item.has(local.gen, item.size_of(local.gen)):
+                    return None
+                return Unavailable("the file on the drive changed while it was playing (it will play in full "
+                                   "next time)", True)
+            if item.state == FAILED and item.permanent:
+                return Unavailable(item.error or "it couldn't be downloaded", True)
+            if item.error == "disk":
+                return Unavailable(self._disk_message(item), False)
+            ok, need, measured = self._rule(item, path, at)
+            if ok:
+                return None
+            return self._not_ready(item, path, at, need, measured)
 
     def plan_changed(self) -> None:
         self._wake.set()
@@ -370,7 +414,8 @@ class Manager:
             if item is None:
                 return None
             h = self.hosts.get(item.host)
-            return Progress(item.state, item.fraction(), h.speed.value() if h else None, item.copy_state(item.gen))
+            return Progress(item.state, item.fraction(), h.speed.value() if h else None, item.copy_state(item.gen),
+                            item.verified_by or "")
 
     # -- whole-file readers (audiofile's resolver) ---------------------------------------------
     def resolve(self, path, *, cancel=None, wait=None):
@@ -530,6 +575,19 @@ class Manager:
 
     def _startable_at(self, item: Item, path, at: float, stalls: int = 0, force: bool = False) -> bool:
         return self._rule(item, path, at, stalls, force)[0]
+
+    def _available(self, item: Item, path, at: float) -> float:
+        """Seconds of music from `at` on disk in one run (all the rest of it: infinity)."""
+        if self._playable_complete(item) or item.complete:
+            return float("inf")
+        measured = self._measure(item, path, at)
+        if measured is None or item.size is None or not item.open_ready:
+            return 0.0
+        p, L, D, H, fmt, rate, frame_bytes = measured
+        flac_end = item.scanner.end_sample() if item.scanner is not None else None
+        A = policy.available_seconds(item.visible, p, S=item.size, H=H, D=D, fmt=fmt, rate=rate,
+                                     frame_bytes=frame_bytes, flac_end_sample=flac_end)
+        return float("inf") if A >= L else A
 
     def _evaluate(self, item: Item, path, at: float, force: bool):
         """prepare()'s answer for `item` (lock held)."""
@@ -1035,6 +1093,7 @@ class Manager:
             final = self.store.final_path(item) if item.state == READY else None
             if item.leased(old):
                 item.old[old] = (item.size or item.visible) if item.state == READY else item.visible
+                item.old_sizes[old] = int(item.size or item.visible)
                 if final is not None:
                     item.old_files[old] = final
             self._stale.append((item, old, final))

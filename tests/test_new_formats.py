@@ -261,7 +261,9 @@ def test_engine_plays_every_new_format_through_the_same_decode(tmp_path, monkeyp
 
     opened = []
     real_open = audiofile.open
-    monkeypatch.setattr(audiofile, "open", lambda p: opened.append(Path(str(p))) or real_open(p))
+    # (the engine opens a LocalTrack: the file itself, unless it's a network song's cached copy)
+    monkeypatch.setattr(audiofile, "open",
+                        lambda p, **kw: opened.append(Path(str(getattr(p, "source", p)))) or real_open(p, **kw))
     path = write_m4a(tmp_path / "a.m4a", ints(9000), bits=16)
     source = engine._Source(path)
     assert source.bits == 16 and source.total_frames == 9000

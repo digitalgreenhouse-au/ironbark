@@ -60,7 +60,7 @@ class GrowingFile(io.RawIOBase):
     def __init__(self, item, gen: int, gate: Gate, role: str = "play"):
         super().__init__()
         self.item, self.gen, self.gate, self.role = item, gen, gate, role
-        self.size = int(item.size)
+        self.size = item.size_of(gen)
         self.furthest = 0
         self._pos = 0
         self._file = None
