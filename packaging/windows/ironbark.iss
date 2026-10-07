@@ -3,7 +3,8 @@
 ;
 ; Installs for the current user only, with no admin prompt, into %LOCALAPPDATA%\Programs\Ironbark.
 ; Installing a newer version over an older one upgrades it in place. Uninstalling leaves the user's
-; settings and playlists (%APPDATA%\Ironbark) unless they choose to remove them.
+; settings and playlists (%APPDATA%\Ironbark) and the library database and network playback cache
+; (%LOCALAPPDATA%\Ironbark) unless they choose to remove them.
 ;
 ; Optional (unticked): Ironbark in Explorer's "Open with" list for music files, playlists and CUE
 ; sheets. It never makes itself the default program for anything.
@@ -46,9 +47,12 @@ OutputDir={#OutputDir}
 OutputBaseFilename=Ironbark-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
-; If Ironbark is open, setup offers to close it (and reopen it afterwards).
+; If Ironbark is open, setup offers to close it: Windows asks it to close as its window's close
+; button would, so it saves everything first. Setup can only reopen programs that register with
+; Windows for that (RegisterApplicationRestart), which Ironbark doesn't; the last page's "Launch
+; Ironbark" box starts it again.
 CloseApplications=yes
-RestartApplications=yes
+RestartApplications=no
 ; Explorer re-reads its "Open with" lists after installing and uninstalling.
 ChangesAssociations=yes
 
@@ -118,7 +122,7 @@ Filename: "{app}\Ironbark.exe"; Description: "{cm:LaunchProgram,Ironbark}"; Flag
 [Code]
 { The running player holds this mutex (ironbark/instance.py, INSTALLER_MUTEX). Uninstalling while it
   runs would leave its files behind, so ask for it to be closed first. Setup itself doesn't need
-  this: CloseApplications offers to close it and reopen it afterwards. }
+  this: CloseApplications offers to close it. }
 function InitializeUninstall(): Boolean;
 begin
   Result := True;
@@ -135,20 +139,37 @@ begin
   end;
 end;
 
+{ The player keeps its data in two folders: settings, playlists and logs in the roaming one
+  (settings.settings_path), the library database (every song's name and place, play counts,
+  favourites) and the network playback cache (copies of songs from network drives) in the local
+  one (settings.cache_folder). }
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  Settings: String;
+  Settings, LocalData, What, Where: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
   Settings := ExpandConstant('{userappdata}\Ironbark');
-  if not DirExists(Settings) then
+  LocalData := ExpandConstant('{localappdata}\Ironbark');
+  Where := '';
+  if DirExists(Settings) then
+    Where := Where + #13#10 + Settings;
+  if DirExists(LocalData) then
+    Where := Where + #13#10 + LocalData;
+  if Where = '' then
     Exit;
   { Silent uninstalls (upgrades, scripts) always keep them. The default answer is No. }
   if UninstallSilent then
     Exit;
-  if SuppressibleMsgBox('Also remove your Ironbark settings, playlists and library index?' + #13#10#13#10 +
-       'They are in ' + Settings + #13#10 + 'Choose No to keep them for next time.',
+  What := 'settings, playlists and library database (play counts and favourites)';
+  if DirExists(LocalData + '\NetCache') then
+    What := What + ', and the copies of network music in the playback cache';
+  if SuppressibleMsgBox('Also remove your Ironbark ' + What + '?' + #13#10#13#10 +
+       'Your music files are never touched. These are in:' + Where + #13#10#13#10 +
+       'Choose No to keep them for next time.',
        mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+  begin
     DelTree(Settings, True, True, True);
+    DelTree(LocalData, True, True, True);
+  end;
 end;

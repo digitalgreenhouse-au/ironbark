@@ -74,9 +74,10 @@ PRIVACY = ("Ironbark doesn't collect anything about you or your music. Nothing u
            "playback cache (Experimental) only talks to the network drives your music is already on; it never "
            "uses the internet.\n"
            "\n"
-           "Settings, playlists and the logs are kept on your computer (on Windows, in %APPDATA%\\Ironbark), "
-           "and the library database, with your play counts and favourites, beside them (on Windows, in "
-           "%LOCALAPPDATA%\\Ironbark). If something goes wrong, Settings → Help → Save diagnostics… saves a "
+           "Settings, playlists and the logs are kept on your computer (on Windows, in %APPDATA%\\Ironbark); "
+           "the library database (with your play counts and favourites) and the network playback cache's "
+           "copies are beside them (on Windows, in %LOCALAPPDATA%\\Ironbark). If something goes wrong, "
+           "Settings → Help → Save diagnostics… saves a "
            "zip on your computer that you can choose to attach to a problem report (versions, sound outputs,"
            " logs and settings, with the names of folders, tabs, playlists and sound outputs left out); it is "
            "never sent anywhere.")

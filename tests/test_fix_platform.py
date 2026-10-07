@@ -78,7 +78,7 @@ def test_a_folder_too_deep_is_named_before_the_player_starts(monkeypatch):
     launch = load("ironbark_launch", WINDOWS / "launch.py")
     told = []
     monkeypatch.setattr(launch, "tell", told.append)
-    deep = "C:\\" + "d" * (launch.MAX_PATH - len(launch.DEEPEST))
+    deep = "C:\\" + "d" * (launch.LONGEST_LOAD - len(launch.DEEPEST))
     monkeypatch.setattr(launch.sys, "executable", deep + "\\Ironbark.exe")
     with pytest.raises(SystemExit) as stop:
         launch.run()
@@ -111,8 +111,10 @@ def test_what_counts_as_a_path_too_long():
     error.winerror = 206
     assert launch.path_too_long(error, short)
     assert not launch.path_too_long(OSError("error 0x7e"), short)
-    deep = "C:\\" + "d" * (launch.MAX_PATH - len(launch.DEEPEST) - 3)
-    assert launch.path_too_long(OSError("error 0x7e"), deep)
+    # Windows refuses a library path of 251 characters (measured): a folder of 182 here, not 192.
+    deep = "C:\\" + "d" * (launch.LONGEST_LOAD - len(launch.DEEPEST) - 3)
+    assert len(deep) == 182 and launch.path_too_long(OSError("error 0x7e"), deep)
+    assert not launch.path_too_long(OSError("error 0x7e"), deep[:-1])
 
 
 # -- the build's licence check ------------------------------------------------------------------
