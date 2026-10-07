@@ -88,10 +88,10 @@ def test_command_line_option_exits_with_the_checks_result(monkeypatch):
     monkeypatch.setattr(selfcheck, "run", lambda report=None, hidden=False: seen.append((report, hidden)) or 3)
     with pytest.raises(SystemExit) as stop:
         main_module.main(["--self-check", "out.txt"])
-    assert stop.value.code == 3 and seen == [("out.txt", False)]   # (its window on the normal desktop)
+    assert stop.value.code == 3 and seen == [("out.txt", True)]   # (its windows on a hidden desktop)
     with pytest.raises(SystemExit):
         main_module.main(["--self-check"])
-    assert seen[-1] == (None, False)
+    assert seen[-1] == (None, True)
 
 
 def test_licence_check_finds_the_summary_first():
