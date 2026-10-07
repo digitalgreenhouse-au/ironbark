@@ -185,6 +185,36 @@ def test_the_settings_section_comes_with_its_switch_and_saves_its_choices(make_w
     assert errors == []
 
 
+def test_copies_left_on_this_computer_while_the_cache_isnt_running_are_shown_and_can_be_emptied(
+        make_window, monkeypatch):
+    from ironbark.netcache.store import OwnerLock
+    monkeypatch.setattr(netcache, "install", lambda prefs, player: None)   # (it didn't start this time)
+    window, root, player, errors = make_window(experiments={"network_cache": True})
+    _pump(root, 0.2)
+    folder = netcache.folder()
+    (folder / "Tracks").mkdir(parents=True)
+    (folder / "Tracks" / "Song [0123456789abcdef].flac").write_bytes(b"\0" * 3_000_000)
+    (folder / "netcache.db").write_bytes(b"\0" * 4096)
+    window._netcache = None
+    window._paint_cache()
+    assert window.cache_text.cget("text") == "Cache: starts when Ironbark next starts · 3 MB still on this computer"
+    monkeypatch.setattr("ironbark.popups.confirm", lambda *a, **k: True)
+    other = OwnerLock(folder / "owner.lock")                     # another copy of Ironbark is using it
+    assert other.acquire()
+    window._empty_cache()
+    assert wait_until(lambda: (root.update(), window._notice.startswith("Another copy of Ironbark"))[1], 5)
+    assert (folder / "Tracks").exists()
+    other.release()
+    window._empty_cache()
+    assert wait_until(lambda: (root.update(), not (folder / "Tracks").exists())[1], 5)
+    assert wait_until(lambda: (root.update(), window.cache_text.cget("text") ==
+                               "Cache: starts when Ironbark next starts")[1], 5)
+    window._notice = ""
+    window._empty_cache()
+    assert window._notice == "The network playback cache is empty"
+    assert errors == []
+
+
 # -- switched off, nothing of the cache; switched on, it starts after the window and stops with it -----
 def test_switched_off_nothing_of_the_cache_runs(make_window):
     window, root, player, errors = make_window()

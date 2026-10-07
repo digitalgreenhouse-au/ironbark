@@ -16,15 +16,18 @@ and figures the window reads.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import threading
+from pathlib import Path
 
 from .. import audiofile, settings
 from . import sources
 from .manager import CacheView, Manager, NetworkNow, NotReady, Progress, Unavailable
 from .store import OwnerLock
 
-__all__ = ["DIRECT", "Manager", "NetworkNow", "NotReady", "Progress", "Unavailable", "CacheView", "folder",
-           "install", "manager", "uninstall"]
+__all__ = ["DIRECT", "Manager", "NetworkNow", "NotReady", "Progress", "Unavailable", "CacheView", "clear_folder",
+           "folder", "install", "left_on_disk", "manager", "uninstall"]
 
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
@@ -112,3 +115,42 @@ def uninstall() -> None:
 
 def manager() -> Manager | None:
     return _manager
+
+
+def left_on_disk(where=None) -> int:
+    """Bytes the cache's files take on this computer (its folder, read: for while it isn't running)."""
+    total = 0
+    for root, _folders, files in os.walk(Path(where) if where is not None else folder()):
+        for name in files:
+            try:
+                total += os.stat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def clear_folder(where=None) -> bool:
+    """Delete what the cache keeps on this computer while it isn't running (its copies and its list:
+    everything can be downloaded again). False if a copy of the player is using it."""
+    place = Path(where) if where is not None else folder()
+    if _manager is not None:
+        return False
+    if not place.is_dir():
+        return True
+    owner = OwnerLock(place / "owner.lock")
+    if not owner.acquire():
+        return False
+    try:
+        for entry in place.iterdir():
+            if entry.name == owner.path.name:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+    finally:
+        owner.release()
+    return True

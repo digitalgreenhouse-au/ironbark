@@ -414,7 +414,7 @@ def test_an_mp3_cut_short_note_comes_when_its_copy_completes_mid_song(tmp_path, 
 
 # -- "one more" stays within the budget -------------------------------------------------------------------
 def test_one_more_song_is_fetched_only_within_the_budget(tmp_path, managers, monkeypatch):
-    monkeypatch.setattr(manager_mod, "GIB", 1_000_000)          # "1 GB" is 1 MB here: half of it for songs ahead
+    monkeypatch.setattr(manager_mod, "GB", 1_000_000)          # "1 GB" is 1 MB here: half of it for songs ahead
     monkeypatch.setattr(manager_mod, "SCHEDULER_TICK_S", 0.05)
     share = FakeShare(rate=8_000_000)
     paths = [share.add(f"{k}.bin", bytes(300_000)) for k in range(4)]

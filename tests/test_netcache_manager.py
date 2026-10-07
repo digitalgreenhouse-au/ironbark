@@ -326,7 +326,7 @@ def test_evict_order_and_what_is_never_evicted():
 
 
 def test_the_limit_evicts_least_recently_used_and_skips_files_in_use(tmp_path, monkeypatch):
-    monkeypatch.setattr(manager_mod, "GIB", 1000)       # a 1 GB setting means 1000 bytes here
+    monkeypatch.setattr(manager_mod, "GB", 1000)       # a 1 GB setting means 1000 bytes here
     m = make_manager(tmp_path / "NetCache", FakeShare(), prefs={"net_cache_gb": 1.3}, start=False)
     m.store.open()
     a, b, c, d = (_ready(m, f"{n}.bin", 400, t) for n, t in (("a", 1.0), ("b", 2.0), ("c", 3.0), ("d", 4.0)))
@@ -431,7 +431,7 @@ def test_a_byte_damaged_in_transit_fails_the_check_and_downloads_again(tmp_path,
     assert wait_until(lambda: item.state == READY and item.gen == first + 1, 20)
     assert played.copy_state() == "failed"                  # (the proof can warn about what was played)
     assert item.ready_path(item.gen, path).read_bytes() == data
-    assert any("didn't match the original" in n for n in m.notices)
+    assert any("failed its check" in n for n in m.notices)
     played.release()
 
 
@@ -544,10 +544,10 @@ def test_a_complete_download_not_confirmed_when_the_player_closed_is_finished_of
 def test_a_copy_that_fails_its_check_twice_is_never_played_and_is_skipped_until_asked_again(
         tmp_path, managers, monkeypatch):
     monkeypatch.setattr(manager_mod, "FAILED_FORGET_S", 0.5)
-    data = bytearray(flac_bytes(tmp_path, seconds=3))
-    data[data.find(b"fLaC") + 30] ^= 0xFF                 # the FLAC's own MD5 fingerprint is wrong on the drive
+    data = flac_bytes(tmp_path, seconds=3)
     share = FakeShare(rate=2_000_000)
-    path = share.add("bad.flac", bytes(data))
+    path = share.add("bad.flac", data)
+    share.flip_each["bad.flac"] = [len(data) * k // 4 for k in (3, 2, 1)]   # a different byte wrong in each transfer
     m = make_manager(tmp_path / "NetCache", share, FakePlayer([path]), prefs={"net_verify": True})
     managers.append(m)
     key = key_of(m, "bad.flac")
@@ -671,3 +671,217 @@ def test_nothing_being_fetched_or_checked_is_ever_cleared_away():
     for keep in ("none", "day", "limit", "session"):
         order = {i.key for i in policy.evict_order(items, set(), 10 * 24 * 3600.0, keep, session=set())}
         assert order == {"partial", "ready"}
+
+
+# -- a file damaged on the drive itself, files left open, copies gone, servers that answer oddly ----------
+@pytest.mark.parametrize("damage", ["md5", "frame"])
+def test_a_flac_damaged_on_the_drive_itself_plays_from_the_cache_as_it_would_directly(tmp_path, managers, damage):
+    data = bytearray(flac_bytes(tmp_path, seconds=3))
+    if damage == "md5":
+        data[data.find(b"fLaC") + 30] ^= 0xFF             # its own MD5 fingerprint is wrong on the drive
+    else:
+        data[len(data) // 2] ^= 0xFF                       # one of its frames is damaged on the drive
+    share = FakeShare(rate=2_000_000)
+    path = share.add("bad.flac", bytes(data))
+    m = make_manager(tmp_path / "NetCache", share, FakePlayer([path]), prefs={"net_verify": True})
+    managers.append(m)
+    key = key_of(m, "bad.flac")
+    assert wait_until(lambda: key in m.items and m.items[key].state == READY, 20)
+    item = m.items[key]
+    assert item.ready_path(item.gen, path).read_bytes() == bytes(data)   # exactly what's on the drive
+    assert share.reads("bad.flac").count(0) == 2           # downloaded twice, the same both times: then kept
+    assert "flac-md5" not in item.verified_by and item.info.get("source_problem")
+    local = m.prepare(path)
+    assert isinstance(local, audiofile.LocalTrack) and local.copy_state() == "verified"
+    assert "the file on the drive itself" in m.notices[-1]
+    assert not any("didn't match the original" in n for n in m.notices)
+
+
+class _Holding(FakeShare):
+    """A share that remembers which of its files a fetcher holds open (from its first read until closed)."""
+
+    def __init__(self, rate=None):
+        super().__init__(rate)
+        self.held: set = set()
+
+    def fetcher(self, source):
+        inner, share = super().fetcher(source), self
+
+        class Fetcher:
+            def identity(self):
+                return inner.identity()
+
+            def read(self, offset, n):
+                share.held.add(inner.name)
+                return inner.read(offset, n)
+
+            def close(self):
+                share.held.discard(inner.name)
+
+        return Fetcher()
+
+
+def test_a_download_that_stops_part_way_lets_go_of_the_file_on_the_share(tmp_path, managers):
+    share = _Holding(rate=300_000)
+    a = share.add("a.bin", os.urandom(600_000))
+    b = share.add("b.bin", os.urandom(60_000))
+    player = FakePlayer([a])
+    m = make_manager(tmp_path / "NetCache", share, player)
+    managers.append(m)
+    key = key_of(m, "a.bin")
+    assert wait_until(lambda: key in m.items and m.items[key].visible > 50_000)
+    player.order = [b]                                     # skipped part-way: it leaves the plan
+    m.plan_changed()
+    assert wait_until(lambda: has(m, "b.bin", lambda item: item.state == READY))
+    assert wait_until(lambda: "a.bin" not in share.held, 3)   # (renaming or deleting it on the share works again)
+    assert m.items[key].state == PARTIAL
+
+
+def test_the_share_fetcher_never_stops_the_file_being_renamed_or_deleted(tmp_path):
+    from ironbark.netcache.fetch import ShareFetcher
+    source = tmp_path / "song.flac"
+    source.write_bytes(os.urandom(100_000))
+    fetcher = ShareFetcher(source)
+    assert fetcher.read(0, 1000) == source.read_bytes()[:1000]   # (held open between chunks)
+    os.replace(source, tmp_path / "renamed.flac")          # renamed or moved in Explorer, say
+    (tmp_path / "renamed.flac").unlink()                   # … or deleted
+    fetcher.close()
+
+
+def test_a_complete_copy_deleted_behind_the_caches_back_is_fetched_again_not_skipped(tmp_path, managers):
+    data = flac_bytes(tmp_path, seconds=2)
+    share = FakeShare(rate=2_000_000)
+    path = share.add("song.flac", data)
+    m = make_manager(tmp_path / "NetCache", share, FakePlayer([path]))
+    managers.append(m)
+    key = key_of(m, "song.flac")
+    assert wait_until(lambda: key in m.items and m.items[key].state == READY)
+    item = m.items[key]
+    local = m.prepare(path)
+    local.ready_path().unlink()                            # cleared away by hand from "Open folder", say
+    with pytest.raises(audiofile.Waiting):                 # the player waits ("Preparing…"), never skips it
+        audiofile.open(local)
+    again = m.prepare(path)
+    assert not isinstance(again, audiofile.LocalTrack) or again.gen > local.gen
+    assert wait_until(lambda: item.state == READY and item.gen > local.gen, 10)
+    fresh = m.prepare(path)
+    assert isinstance(fresh, audiofile.LocalTrack)
+    with audiofile.open(fresh) as f:
+        assert f.frames == 2 * 44100
+
+
+def test_a_whole_file_reader_waits_for_a_fresh_copy_when_the_complete_one_was_deleted(tmp_path):
+    data = flac_bytes(tmp_path, seconds=2)
+    share = FakeShare(rate=2_000_000)
+    path = share.add("song.flac", data)
+    from netfakes import FakeClassifier
+    m = netcache.install({"net_verify": False}, None, where=tmp_path / "NetCache", classifier=FakeClassifier(),
+                         fetcher=share.fetcher, probe_host=lambda name: True, watch_network=None)
+    try:
+        assert m.wait_loaded(10)
+        result = {}
+
+        def read():
+            try:
+                with audiofile.open(path) as f:
+                    result["frames"] = f.frames
+            except Exception as error:   # noqa: BLE001
+                result["error"] = error
+
+        reader = threading.Thread(target=read)
+        reader.start()
+        reader.join(15)
+        item = m.items[key_of(m, "song.flac")]
+        assert item.state == READY and result.pop("frames") == 2 * 44100
+        gen = item.gen
+        item.ready_path(gen, path).unlink()                # gone from this computer behind the cache's back
+        reader = threading.Thread(target=read)
+        reader.start()
+        reader.join(15)
+        assert "error" not in result, result.get("error")
+        assert result["frames"] == 2 * 44100 and item.gen > gen
+    finally:
+        netcache.uninstall()
+
+
+def test_a_server_the_file_sharing_probe_cant_reach_still_comes_back(tmp_path, managers, monkeypatch):
+    monkeypatch.setattr(manager_mod, "PROBE_BACKOFF_MIN_S", 0.05)
+    share = FakeShare(rate=1_000_000)
+    data = os.urandom(200_000)
+    share.add("a.bin", data)
+    path = Path("\\\\nas.local@SSL\\DavWWWRoot\\a.bin")    # a WebDAV drive: no file-sharing port to try
+    probes = []
+    m = make_manager(tmp_path / "NetCache", share, FakePlayer([path]),
+                     probe_host=lambda name: probes.append(name) or False)
+    managers.append(m)
+    key = m.classifier.source_key(path)
+    assert wait_until(lambda: key in m.items and m.items[key].visible > 40_000)
+    share.transient["a.bin"] = 1                           # one dropped read
+    item = m.items[key]
+    assert wait_until(lambda: item.state == READY, 10)
+    assert item.ready_path(item.gen, path).read_bytes() == data
+    assert m.hosts["nas.local@ssl"].state == manager_mod.UP and not probes
+
+
+def test_a_server_that_never_answers_on_the_file_sharing_port_still_comes_back(tmp_path, managers, monkeypatch):
+    monkeypatch.setattr(manager_mod, "PROBE_BACKOFF_MIN_S", 0.05)
+    monkeypatch.setattr(manager_mod, "PROBE_BACKOFF_MAX_S", 0.1)
+    monkeypatch.setattr(manager_mod, "ASK_FILES_AFTER_S", 0.5)
+    share = FakeShare(rate=1_000_000)
+    data = os.urandom(200_000)
+    path = share.add("a.bin", data)
+    probes = []
+    m = make_manager(tmp_path / "NetCache", share, FakePlayer([path]),
+                     probe_host=lambda name: probes.append(name) or False)   # (an NFS-only server, say)
+    managers.append(m)
+    key = key_of(m, "a.bin")
+    assert wait_until(lambda: key in m.items and m.items[key].visible > 40_000)
+    share.transient["a.bin"] = 1
+    item = m.items[key]
+    assert wait_until(lambda: item.state == READY, 10)
+    assert m.hosts["fakehost"].state == manager_mod.UP and probes
+
+
+def test_a_file_that_fails_every_read_is_skipped_and_its_server_stays_up(tmp_path, managers, monkeypatch):
+    monkeypatch.setattr(manager_mod, "PROBE_BACKOFF_MIN_S", 0.05)
+    share = FakeShare()
+    bad = share.add("bad.flac", os.urandom(100_000))
+    good = share.add("good.flac", os.urandom(100_000))
+    share.transient["bad.flac"] = 10 ** 6                  # an unreadable spot on the server's disk
+    m = make_manager(tmp_path / "NetCache", share, FakePlayer([bad, good]))
+    managers.append(m)
+    key = key_of(m, "bad.flac")
+    assert wait_until(lambda: key in m.items and m.items[key].state == FAILED, 10)
+    result = m.prepare(bad)
+    assert isinstance(result, Unavailable) and result.permanent
+    assert result.reason == "it couldn't be read from the server"
+    assert wait_until(lambda: has(m, "good.flac", lambda i: i.state == READY), 10)
+    host = m.hosts["fakehost"]
+    reads = len(share.reads("bad.flac"))
+    time.sleep(0.5)
+    assert host.state == manager_mod.UP and len(share.reads("bad.flac")) == reads   # no endless retries
+
+
+def test_why_a_song_couldnt_be_read_is_said_in_plain_words(tmp_path):
+    from ironbark.netcache import fetch
+    song = "\\\\nas\\Shared\\Music\\Album\\song.flac"
+    gone = fetch._classify(FileNotFoundError(2, "The system cannot find the file specified", song))
+    assert isinstance(gone, fetch.Permanent) and str(gone) == "it's no longer on \\\\nas\\Shared"
+    assert "cannot find" in gone.detail
+    refused = fetch._classify(PermissionError(13, "Permission denied", song))
+    assert isinstance(refused, fetch.Permanent)
+    assert str(refused) == "the server won't let Ironbark read it (it may be open in another program)"
+    assert str(fetch._classify(FileNotFoundError(2, "No such file", "Z:\\Music\\song.flac"))) == (
+        "it's no longer on Z:")
+    if os.name == "nt":
+        busy = fetch._classify(OSError(0, "used by another process", song, 32))
+        assert isinstance(busy, fetch.Permanent) and str(busy).startswith("the server won't let")
+        assert isinstance(fetch._classify(OSError(0, "The network name is no longer available", song, 64)),
+                          fetch.Transient)
+    with pytest.raises(fetch.Permanent, match="^it's no longer on "):
+        fetch.ShareFetcher(tmp_path / "gone.flac").identity()
+
+
+def test_the_cache_limit_is_counted_in_the_gigabytes_settings_shows(tmp_path):
+    m = make_manager(tmp_path / "NetCache", FakeShare(), prefs={"net_cache_gb": 10}, start=False)
+    assert m._limit() == 10e9                              # Settings shows "10 GB" as used / 1e9

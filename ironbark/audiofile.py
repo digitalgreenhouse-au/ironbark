@@ -179,6 +179,15 @@ class LocalTrack:
         if self.item is not None:
             self.item.release(self.gen)
 
+    def went_missing(self) -> bool:
+        """The complete copy this names has gone from this computer (deleted or cut short behind the
+        cache's back): the cache fetches it again once told (`lose`)."""
+        return self.item is not None and self.item.copy_gone(self.gen)
+
+    def lose(self) -> None:
+        if self.item is not None:
+            self.item.lose(self.gen)
+
     def copy_state(self) -> str:
         """"" (a local file), "downloading", "checking", "verified", "stale", "failed" (it failed its
         check: a fresh copy downloads) or "rejected" (failed again: the song is skipped for now)."""
@@ -639,7 +648,8 @@ def _is_partial(path) -> bool:
     return here.startswith(_partial_folder.rstrip("\\/") + os.sep)
 
 
-def open(path, *, cancel=None, wait=None, patience=None, role="play"):  # noqa: A001 — mirrors soundfile.SoundFile
+def open(path, *, cancel=None, wait=None, patience=None, role="play",  # noqa: A001 — mirrors soundfile.SoundFile
+         direct=False):
     """Open a music file (or one CUE track of it) for decoding. Use as a context manager, or
     close() it. Raises soundfile's errors, OSError, or Unsupported (a RuntimeError).
 
@@ -648,22 +658,37 @@ def open(path, *, cancel=None, wait=None, patience=None, role="play"):  # noqa: 
     sets how long the open itself may wait; `role` says who reads it — "play", "proof", "probe" or
     "verify"). A network path opens its complete, checked copy only
     — waiting for it (up to a limit, or until `cancel()`) unless `wait` is False or this is the
-    window's own thread, else NotCached; DownloadFailed when the source is gone."""
+    window's own thread, else NotCached; DownloadFailed when the source is gone. A complete copy
+    found gone from this computer is fetched again: Waiting for a LocalTrack (the player waits for
+    it, as for any download), and for a network path the wait for the fresh copy.
+    `direct`: read the file itself, where it is, even on a network drive (never through the cache)."""
     if isinstance(path, UrlPath):
         raise Unsupported("it's a web address: playing music from the internet isn't supported yet")
     if isinstance(path, LocalTrack):
         ready = path.ready_path()
         if ready is None:
             return _open_growing(path, cancel=cancel, patience=patience, role=role)
-        return _open_path(ready, exact_opus=path.remote)
-    if _resolver is not None:
+        try:
+            return _open_path(ready, exact_opus=path.remote)
+        except Exception:
+            if not path.went_missing():
+                raise
+            path.lose()
+            raise Waiting(0, "failed") from None
+    if _resolver is not None and not direct:
         if _is_partial(path):
             raise Unsupported("this is a part-downloaded file in the music cache")
-        local = _resolver(path, cancel=cancel, wait=wait)
-        if local is not None:
+        for attempt in range(2):
+            local = _resolver(path, cancel=cancel, wait=wait)
+            if local is None:
+                break
             local.acquire()   # (so the copy can't be cleared away between here and the open)
             try:
                 return _open_path(local.ready_path(), exact_opus=True)
+            except Exception:
+                if attempt or not local.went_missing():
+                    raise
+                local.lose()   # (asked again: the cache fetches a fresh copy)
             finally:
                 local.release()
     return _open_path(path)

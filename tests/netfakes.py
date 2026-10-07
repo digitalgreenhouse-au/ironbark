@@ -42,6 +42,7 @@ class FakeShare:
         self.open.set()
         self.waiting = 0                  # calls waiting on `open` now
         self.flip_once: dict[str, int] = {}
+        self.flip_each: dict[str, list[int]] = {}   # one byte wrong per transfer, at these offsets in turn
         self.stall_at: dict[str, tuple[int, float]] = {}
         self.transient: dict[str, int] = {}   # name -> errors still to raise
         self.active = 0                   # reads in progress now, and the most at once
@@ -128,6 +129,10 @@ class _FakeFetcher:
             if flip is not None and offset <= flip < offset + len(data):
                 data[flip - offset] ^= 0xFF
                 share.flip_once.pop(self.name)
+            each = share.flip_each.get(self.name)
+            if each and offset <= each[0] < offset + len(data):
+                data[each[0] - offset] ^= 0xFF
+                each.pop(0)
         if share.rate:
             time.sleep(len(data) / share.rate)
         return bytes(data)

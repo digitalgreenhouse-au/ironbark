@@ -15,6 +15,9 @@ When "Check finished downloads" is on (the default):
    decoded samples must match the one the file carries (when it carries one) — proof the audio is
    exactly what was encoded. For an MP3, the frames are counted, so a header-less one that the
    decoder would stop short in is known about (its "shortfall").
+
+A copy whose sound fails (3 or 4) after the transfer checks passed carries its SHA-256 (`digest`):
+the same bytes failing the same way again mean the file on the drive is like that itself.
 """
 
 from __future__ import annotations
@@ -37,10 +40,28 @@ PCM_BITS = {"PCM_S8": 8, "PCM_U8": 8, "PCM_16": 16, "PCM_24": 24, "PCM_32": 32}
 @dataclass
 class Result:
     ok: bool
-    verified_by: str
+    verified_by: str         # the checks it passed (on a failure: those before the one it failed)
     problem: str = ""
     info: dict = field(default_factory=dict)
     cancelled: bool = False
+    digest: str = ""         # a copy whose sound failed its check: the SHA-256 of its bytes
+
+
+def _digest(part: Path) -> str:
+    sha = hashlib.sha256()
+    with open(part, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
+def _sound_failed(part: Path, steps: list, problem: str) -> Result:
+    """The transfer checks passed but the sound didn't: what failed, and the bytes' fingerprint."""
+    try:
+        digest = _digest(part)
+    except OSError:
+        digest = ""
+    return Result(False, "+".join(steps), problem, digest=digest)
 
 
 def flac_md5(head: bytes) -> int | None:
@@ -82,8 +103,8 @@ def check(item, gen: int, part: Path, *, decode: bool = True, should_yield=lambd
                          frames=f.frames)
             for name in ("format", "subtype", "rate", "channels", "frames"):
                 if name in probe and probe[name] != found[name]:
-                    return Result(False, "", f"it doesn't open the same as while downloading ({name}: "
-                                             f"{probe[name]} then, {found[name]} now)")
+                    return _sound_failed(part, steps, f"it doesn't open the same as while downloading ({name}: "
+                                                      f"{probe[name]} then, {found[name]} now)")
             steps.append("readable")
             stored = flac_md5(head) if f.format == "FLAC" else None
             bits = PCM_BITS.get(f.subtype)
@@ -100,7 +121,7 @@ def check(item, gen: int, part: Path, *, decode: bool = True, should_yield=lambd
             steps.append("decode")
             if md5 is not None:
                 if int(md5.hexdigest(), 16) != stored:
-                    return Result(False, "", "the FLAC's own MD5 fingerprint doesn't match the downloaded copy")
+                    return _sound_failed(part, steps, "its sound doesn't match the FLAC's own MD5 fingerprint")
                 steps.append("flac-md5")
             if audiofile.is_mp3(f):
                 shortfall = audiofile.mp3_shortfall(f, part)
@@ -109,5 +130,5 @@ def check(item, gen: int, part: Path, *, decode: bool = True, should_yield=lambd
     except audiofile.Waiting as error:
         return Result(False, "", f"part of the copy couldn't be read ({error.reason})")
     except (RuntimeError, ValueError, OSError) as error:
-        return Result(False, "", f"the downloaded copy doesn't decode ({error})")
+        return _sound_failed(part, steps, f"it doesn't decode ({error})")
     return Result(True, "+".join(steps), info=found)
