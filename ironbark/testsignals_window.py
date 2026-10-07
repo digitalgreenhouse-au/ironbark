@@ -55,9 +55,14 @@ def record(input_name: str, output: str | None, rate: int, seconds: float) -> tu
         raise RuntimeError(f"{input_name} isn't connected")
     channels = max(1, min(2, int(sd.query_devices(index)["max_input_channels"])))
     extra = sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS else None
-    with sd.InputStream(device=index, channels=channels, samplerate=rate, dtype="float32",
-                        extra_settings=extra) as stream:
-        audio, overflowed = stream.read(int(seconds * rate))
+    stream = sd.InputStream(device=index, channels=channels, samplerate=rate, dtype="float32",
+                            extra_settings=extra)
+    devices.holding(stream)   # (a PortAudio re-scan would cut it off: none while it's open)
+    try:
+        with stream:
+            audio, overflowed = stream.read(int(seconds * rate))
+    finally:
+        devices.released(stream)
     return np.asarray(audio, dtype=np.float64), rate, (["The recording overflowed (samples lost)"] if overflowed else [])
 
 

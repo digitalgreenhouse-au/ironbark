@@ -422,6 +422,8 @@ class LibraryWindow:
             if job is not None:
                 done, of = self.index.progress
                 text += f" · checking for changes… {done} of {of}" if of else " · checking for changes…"
+            elif self.index.last_diff is not None and self.index.last_diff.error:
+                text += f" · {self.index.last_diff.error} just now, so these may be out of date"
             elif self.index.last_diff is not None and not self.index.last_diff.nothing:
                 text += f" · updated: {self.index.last_diff.note()}"
             new = len(self._new)

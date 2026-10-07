@@ -112,7 +112,8 @@ class Watcher:
             self.settling.begin()
             diff = index.refresh(hold=self.settling)
             self.settling.end()
-            return Report(diff, first_build=first_build)
+            # A drive that went mid-look, or an empty mount point: said so, the index left as it was.
+            return Report(diff, error=diff.error, first_build=first_build)
         except Exception as error:  # noqa: BLE001 — the index is only a speed-up; never fatal
             return Report(error=str(error))
 

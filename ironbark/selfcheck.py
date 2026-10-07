@@ -101,7 +101,7 @@ def _check_windows_audio() -> str:
             import comtypes
 
             comtypes.CoInitialize()
-            outcome["outputs"] = len(devices._windows_render_devices())
+            outcome["outputs"] = len(devices._active_outputs())   # the player's own Core Audio query
         except Exception as error:  # reported by the caller
             outcome["error"] = error
 

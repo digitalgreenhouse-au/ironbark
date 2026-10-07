@@ -68,7 +68,9 @@ class FileInfo:
 
 def info(path) -> FileInfo:
     with audiofile.open(path) as f:
-        return FileInfo(Path(path), f.samplerate, f.channels, f.frames, f.format, f.subtype)
+        # (a CUE track's path is kept as it is, so it's named as the track, not its whole file)
+        return FileInfo(path if isinstance(path, Path) else Path(path), f.samplerate, f.channels, f.frames,
+                        f.format, f.subtype)
 
 
 @dataclass
@@ -314,7 +316,8 @@ def _timing(frames: int, rate: int) -> str:
 def describe(result: Comparison) -> list[tuple[str, str, str]]:
     """(label, text, tone) rows. tone: "good", "warn" or "plain"."""
     a, b = result.a, result.b
-    rows = [("A", f"{a.path.name} · {a.describe}", "plain"), ("B", f"{b.path.name} · {b.describe}", "plain")]
+    rows = [("A", f"{audiofile.display_name(a.path)} · {a.describe}", "plain"),
+            ("B", f"{audiofile.display_name(b.path)} · {b.describe}", "plain")]
     if result.verdict == "cancelled":
         return rows + [("Result", "Stopped", "plain")]
     stored = (a.format, a.subtype) != (b.format, b.subtype)

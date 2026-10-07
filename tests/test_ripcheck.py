@@ -612,7 +612,7 @@ def test_now_playing_button_follows_the_setting(root, tmp_path, monkeypatch):
     win.rip_button.invoke()
     import time
     deadline = time.time() + 20
-    while tmp_path not in NowPlayingWindow._rip_cache and time.time() < deadline:
+    while files[0] not in NowPlayingWindow._rip_cache and time.time() < deadline:
         win.win.update()
         time.sleep(0.05)
     win.win.update()
@@ -621,5 +621,7 @@ def test_now_playing_button_follows_the_setting(root, tmp_path, monkeypatch):
     texts = [w.cget("text") for w in win.check_frame.grid_slaves(column=1) if isinstance(w, tk.Widget)
              and "text" in w.keys()]
     assert any("whole disc matches (confidence 7 of 7)" in t for t in texts)
-    NowPlayingWindow._rip_cache.pop(tmp_path, None)
+    assert all(NowPlayingWindow._rip_cache.get(f) is NowPlayingWindow._rip_cache[files[0]] for f in files)
+    for f in files:
+        NowPlayingWindow._rip_cache.pop(f, None)
     win.close()

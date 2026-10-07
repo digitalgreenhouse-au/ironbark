@@ -104,16 +104,16 @@ def _thumbnail(key: tuple, source, size: int) -> Image.Image | None:
 
 def first_audio_file(folder: Path) -> Path | None:
     """The first audio file in a folder (or its CD1/Disc 1 subfolder), without a full scan."""
-    from .library import AUDIO_EXTENSIONS, natural_key
+    from .library import is_music_name, natural_key, skip_folder
 
     try:
         entries = sorted(folder.iterdir(), key=lambda p: natural_key(p.name))
     except OSError:
         return None
-    files = [p for p in entries if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
+    files = [p for p in entries if is_music_name(p.name) and p.is_file()]
     if files:
         return files[0]
-    for sub in (p for p in entries if p.is_dir()):
+    for sub in (p for p in entries if not skip_folder(p.name) and p.is_dir()):
         found = first_audio_file(sub)
         if found:
             return found

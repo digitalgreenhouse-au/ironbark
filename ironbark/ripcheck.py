@@ -433,10 +433,10 @@ def _discs(tracks: list) -> list[list]:
 def _disc_and_others(track: Path) -> tuple[list[Path], list[Path]]:
     """(the audio files of the track's disc, the folder's other audio files), real files in
     play order (a CUE image once)."""
-    from .library import AUDIO_EXTENSIONS, _in_play_order
+    from .library import _in_play_order, is_music_name
     real_track = audiofile.real_path(track)
     folder = real_track.parent
-    paths = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
+    paths = [p for p in folder.iterdir() if is_music_name(p.name) and p.is_file()]
     ours: list[Path] = []
     others: list[Path] = []
     for group in _discs(_in_play_order(folder, paths)):

@@ -721,7 +721,7 @@ def render_v1(tag: ID3Tag, old: bytes) -> bytes:
     year = (tag.text("TDRC") or [""])[0][:4]
     body = (b"TAG" + field("TIT2", 30) + field("TPE1", 30) + field("TALB", 30)
             + year.encode("latin-1", "replace")[:4].ljust(4, b"\x00"))
-    if track.isdigit() and 0 < int(track) < 256:
+    if track.isascii() and track.isdigit() and 0 < int(track) < 256:
         body += comment.encode("latin-1", "replace")[:28].ljust(28, b"\x00") + b"\x00" + bytes([int(track)])
     else:
         body += comment.encode("latin-1", "replace")[:30].ljust(30, b"\x00")

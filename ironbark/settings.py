@@ -29,7 +29,7 @@ DEFAULTS = {
     "mini_on_top": True,         # (0.25.0) the mini strip's own Keep on top (on by default)
     "exclusive": False,
     "output_device": "",  # "" = system default
-    "library_folder": "",  # "" = the Music folder in your home folder
+    "library_folder": "",  # "" = Windows' own Music folder (ui.default_music_folder)
     "now_playing_geometry": "",  # where the Now Playing window was last left
     "library_geometry": "",      # where (and how big) the Library window was last left
     "tabs": None,                # open tabs: [{"kind": "album"|"folder"|"library", "path", "query", "title"}]
@@ -180,11 +180,14 @@ def load() -> dict:
     return data
 
 
-def save(data: dict) -> None:
+def save(data: dict) -> bool:
+    """Write the settings. Returns False when the write failed (the file briefly locked, a full
+    disk), so the caller can try again later; losing preferences is not worth crashing over."""
     try:
         write_file(settings_path(), json.dumps(data, indent=2))
     except (OSError, ValueError):
-        pass  # losing preferences is not worth crashing over
+        return False
+    return True
 
 
 def _read(path: Path) -> tuple[dict, str]:

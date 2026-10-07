@@ -16,9 +16,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from . import controls, loopback, placement, ripcheck, theme, toolwin
-from .analysis import (CLIP_RUN, LOSSY_BELOW_HZ, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure,
-                       analyse)
+from . import audiofile, controls, loopback, placement, ripcheck, theme, toolwin
+from .analysis import (CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse,
+                       lossy_below)
 from .engine import Health, OutputInfo, PlaybackEvent, Player, State
 from .proof import Proof, compare_paths, describe_path
 from .flacframes import FrameIndex, build_index
@@ -43,15 +43,19 @@ VALUE_WRAP = 360        # px at 100%: where a value's text wraps
 LABEL_MIN = 96          # px at 100%: the label column is never narrower (it grows to its longest label)
 FIT_MARGIN = 48         # px at 100%: kept free below the window when it's as tall as the screen allows
 NETWORK_HINT = ("Turn on Settings → Network → Allow network access first. Only the disc's IDs and "
-                "track layout are sent.")
+                "track layout are sent (to the CUETools DB unencrypted, so others on the network can "
+                "see which disc is looked up).")
 
 
 def output_line(output: OutputInfo | None, gain: float, float_source: bool = False,
-                lossy: bool = False, trim: float = 1.0) -> tuple[str, str]:
+                lossy: bool = False, trim: float = 1.0, bits: int = 0, codec: str = "") -> tuple[str, str]:
     """(text, tone) for the line under the format. tone is "good", "warn" or "plain".
     float_source: the file holds floating-point samples (some WAVs), which the device
     can only take after conversion to whole numbers — so never bit-perfect.
-    lossy: an MP3 — delivery can be exact, but only of what the decoder rebuilt."""
+    lossy: an MP3, Ogg Vorbis or Opus file (`codec` names it) — delivery can be exact, but only
+    of what the decoder rebuilt.
+    bits: the track's bits per sample; a device that takes fewer (OutputInfo.device_bits) drops
+    the rest, so that isn't bit-perfect either."""
     if output is None:
         return "", "plain"
     guard = (f" · clipping guard {20 * math.log10(trim):.1f} dB on this loud recording (it would clip "
@@ -64,7 +68,10 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
         if float_source:
             return f"{base} · floating-point file converted for the device, so not bit-perfect", "warn"
         if lossy:
-            return f"{base} · decoded MP3 sent untouched, but the source is lossy{guard}", "plain"
+            return f"{base} · decoded {codec or 'MP3'} sent untouched, but the source is lossy{guard}", "plain"
+        if fewer_bits(output, bits):
+            return (f"{base} · the device takes {output.device_bits}-bit samples, so this {bits}-bit track "
+                    f"isn't bit-perfect{guard}", "warn")
         if guard:
             # (0.24.0) The clipping guard wins over Bit-perfect (crackle-free first), and says so.
             return f"{base}{guard}, so this track isn't bit-perfect (the guard comes first)", "good"
@@ -77,6 +84,12 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
         return (f"→ {device} · resampled to {format_rate(output.mixer_rate)} by the {MIXER} mixer ⚠{guard}",
                 "warn")
     return f"→ {device} · {format_rate(output.rate)} · shared ({MIXER} mixer){guard}", "plain"
+
+
+def fewer_bits(output: OutputInfo | None, bits: int) -> bool:
+    """Whether the device (exclusive mode) takes fewer bits per sample than the track holds."""
+    return bool(output is not None and output.exclusive and output.device_bits and bits
+                and bits > output.device_bits)
 
 
 def fmt_size(size: int) -> str:
@@ -108,7 +121,8 @@ def tone_of(text: str) -> str:
 
 
 def describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, trim: float,
-                   lossy: bool = False, float_source: bool = False) -> tuple[str, str]:
+                   lossy: bool = False, float_source: bool = False, bits: int = 0,
+                   codec: str = "") -> tuple[str, str]:
     """(text, tone) for what the player has sent, as checked against the file."""
     if proof is None or proof.sent <= 0:
         return "Waiting for music…", "plain"
@@ -127,9 +141,12 @@ def describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float, 
                 "warn")
     if output is not None and output.exclusive:
         if lossy:
-            return f"✓ Sent exactly as decoded ({checked}), but an MP3 is lossy to begin with", "plain"
+            return f"✓ Sent exactly as decoded ({checked}), but {codec or 'an MP3'} is lossy to begin with", "plain"
         if float_source:
             return f"Sent exactly as decoded ({checked}); a floating-point file can't be bit-perfect", "plain"
+        if fewer_bits(output, bits):
+            return (f"Sent exactly as in the file ({checked}), but the device takes {output.device_bits}-bit "
+                    f"samples, so it isn't bit-perfect", "warn")
         return f"✓ Bit-perfect, proven: every sample sent is identical to the file ({checked})", "good"
     return (f"✓ The player sent every sample unchanged ({checked}). In shared mode {MIXER} mixes it next: "
             f"use “Check {MIXER}” below to see what that does", "plain")
@@ -256,10 +273,12 @@ def describe_range(a: Analysis) -> str:
     if a.verdict == "upsampled":
         return (f"⚠ Sound stops sharply at {khz}: suggests it was upsampled from CD quality "
                 f"(44.1/48 kHz), so the {format_rate(a.rate)} adds no real detail")
-    if a.cutoff_hz < LOSSY_BELOW_HZ:
+    if a.cutoff_hz < lossy_below(a.rate):
         return f"Little above {khz}, fading out gradually: the recording itself, not a sign of a lossy copy"
     if a.rate >= 88200 and a.cutoff_hz >= UPSAMPLED_BELOW_HZ:
         return f"✓ Sound reaches {khz}: real high-resolution content"
+    if 0 < a.rate < 44100:
+        return f"✓ Sound reaches {khz}, the top of a {format_rate(a.rate)} file's range: no sign of a lossy source"
     return f"✓ Sound reaches {khz}: no sign of a lossy source"
 
 
@@ -359,6 +378,11 @@ def is_cd_audio(track: Track) -> bool:
 
 def describe_album(album: AlbumResult) -> str:
     count = f"{album.tracks} track{'' if album.tracks == 1 else 's'}"
+    if album.skipped:
+        count = f"{album.tracks} of {album.tracks + album.skipped} tracks ({album.skipped} couldn't be read)"
+    if album.partial:
+        count += (f", {album.partial} counted only up to where {'it stops' if album.partial == 1 else 'they stop'} "
+                  "decoding")
     dr = ""
     if album.dr is not None:
         spread = (f" (tracks DR{album.dr_low}–{album.dr_high})" if album.dr_low != album.dr_high else "")
@@ -372,7 +396,8 @@ class NowPlayingWindow:
     _analysis_cache: dict[Path, Analysis] = {}
     _index_cache: dict[Path, FrameIndex | None] = {}
     _album_cache: dict[Path, AlbumResult] = {}  # album folder -> its DR and loudness
-    _rip_cache: dict[Path, ripcheck.Verification] = {}  # disc folder -> its rip check
+    # audio file -> the rip check of its disc (one folder can hold several discs, checked one at a time)
+    _rip_cache: dict[Path, ripcheck.Verification] = {}
     INDEX_CACHE_SIZE = 20
 
     def __init__(self, parent: tk.Misc, player: Player, geometry: str = "",
@@ -738,7 +763,7 @@ class NowPlayingWindow:
         if track is None or not is_cd_audio(track):
             return  # nothing to check: rip verification is for CD audio
         folder = track.path.parent
-        found = self._rip_cache.get(folder)
+        found = self._rip_cache.get(audiofile.real_path(track.path))
         if found is not None:
             for label, text, tone in ripcheck.describe(found):
                 self._row(self.check_frame, row, label, text, TONE_STYLE[tone])
@@ -776,7 +801,9 @@ class NowPlayingWindow:
             except Exception as error:  # noqa: BLE001 — a failed check is reported, never a crash
                 result = ripcheck.Verification(problem=f"something went wrong ({error})")
             if result is not None:
-                self._rip_cache[folder] = result
+                # Kept for every file of the disc checked (the track's own disc, not the whole folder).
+                for file in (result.rip.files if result.rip is not None else [audiofile.real_path(path)]):
+                    self._rip_cache[file] = result
             state["done"] = True
 
         threading.Thread(target=work, name="rip-check", daemon=True).start()
@@ -909,7 +936,8 @@ class NowPlayingWindow:
             volume = f"{self.player.volume:.0%} · {to_db(gain):+.1f} dB"
         self.values["volume"].configure(text=theme.figures(volume))
 
-        text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim)
+        text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
+                                 track.bits, track.codec)
         self.values["output"].configure(text=text.removeprefix("→ "), style=self._style("output", tone))
 
         drops = status.dropouts
@@ -922,7 +950,7 @@ class NowPlayingWindow:
         self.values["start"].configure(text=text, style=self._style("start", tone))
         for key, (text, tone) in (
                 ("sent", describe_proof(status.proof, status.output, status.gain, status.trim, track.lossy,
-                                        track.float_samples)),
+                                        track.float_samples, track.bits, track.codec)),
                 ("safety", describe_health(status.health, status.dropouts)),
                 ("events", describe_events(status.events))):
             self.values[key].configure(text=text, style=self._style(key, tone))

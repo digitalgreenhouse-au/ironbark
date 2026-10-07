@@ -312,6 +312,8 @@ class PlayerWindow:
             # once the window is up, and before anything can start playing.
             root.after_idle(self._protect_ears, hardware_volume)
         self._restore_tabs(folder)
+        if settings.problem:   # a damaged settings file was set aside at start: said once
+            self._set_notice(settings.problem, 12000)
         self._poll_job = self.root.after(POLL_MS, self._poll)
         if self.watch_music.get():
             self._start_watching(INDEX_AFTER_MS / 1000)
@@ -595,7 +597,8 @@ class PlayerWindow:
 
         self._caption(b, "Network")
         self._setting(b, "Allow network access", "Lets rip verification look up checksums online "
-                      "(AccurateRip, CUETools DB). Nothing else uses the internet.",
+                      "(AccurateRip, CUETools DB). The CUETools DB lookup isn't encrypted, so others "
+                      "on the network can see which disc is looked up. Nothing else uses the internet.",
                       self.allow_network, self._network_changed)
 
         if experiments.EXPERIMENTS:
@@ -903,7 +906,7 @@ class PlayerWindow:
         if path.is_file():
             return [read_track(path)]
         file, mark, number = extra.rpartition("#")
-        if mark and number.isdigit() and Path(file).is_file():
+        if mark and number.isdecimal() and Path(file).is_file():
             return [read_track(cue_track_path(Path(file), int(number)))]
         return []
 
@@ -1174,7 +1177,7 @@ class PlayerWindow:
         path = playlists.path_for(name)
         try:
             playlists.write(path, tracks or [])
-        except OSError as exc:
+        except (OSError, ValueError) as exc:   # (ValueError: a name the file's encoding can't hold)
             popups.tell(self.root, "Couldn't make the playlist", str(exc), tone="warn")
             return
         self.open_tab("playlist", path)
@@ -1234,7 +1237,7 @@ class PlayerWindow:
         """Write the playlist, and update its tab (and the music, if it's playing from it)."""
         try:
             playlists.write(path, tracks)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:   # (ValueError: a name the file's encoding can't hold)
             self._for_prompt()
             popups.tell(self.root, "Couldn't save the playlist", str(exc), tone="warn")
             return
@@ -2732,7 +2735,8 @@ class PlayerWindow:
             self.title_label.configure(text=track.title)
             self.sub_label.configure(text=track.display_artist_album or track.path.parent.name)
             self.format_label.configure(text=track.format_line)
-            text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim)
+            text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
+                                     track.bits, track.codec)
             # The proof (see proof.py) backs up — or contradicts — what the line above claims.
             proof = status.proof
             if proof is not None and proof.mismatch_at is not None:
@@ -2803,8 +2807,10 @@ class PlayerWindow:
             view = shown.view_track() if shown is not None else None
             position = shown.resume_at if view is not None and shown.last_index >= 0 else 0.0
             duration = view.duration if view is not None else 0.0
-        if not self.seek.dragging:   # while dragged, the knob and the times follow the pointer
-            self.seek.set(position, duration)
+        # Always told: while dragged, the bar holds the value (it notices a song change mid-drag),
+        # and the knob and the times follow the pointer.
+        self.seek.set(position, duration)
+        if not self.seek.dragging:
             self._show_times(position, duration)
         self.status_label.configure(text=self._notice or status.message or elsewhere)
         # The mini strip shows the same as the top of the full window.

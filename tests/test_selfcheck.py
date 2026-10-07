@@ -90,6 +90,6 @@ def test_a_broken_windows_audio_list_fails_the_check(monkeypatch):
     def broken():
         raise OSError("pycaw's COM interfaces didn't load")
 
-    monkeypatch.setattr(devices, "_windows_render_devices", broken)
+    monkeypatch.setattr(devices, "_active_outputs", broken)
     with pytest.raises(OSError, match="didn't load"):
         selfcheck._check_windows_audio()

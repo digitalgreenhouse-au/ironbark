@@ -425,15 +425,15 @@ def alignment_from_levels(levels: np.ndarray) -> float | None:
 def album_files(track: Path) -> tuple[Path, list[Path]]:
     """(album folder, its audio files) for a track — the folder plus "Disc 1"-style subfolders,
     with `track` itself first."""
-    from .library import AUDIO_EXTENSIONS, _DISC_FOLDER, album_folder
+    from .library import _DISC_FOLDER, album_folder, is_music_name
 
     folder = album_folder(track)
     files = []
     for entry in sorted(folder.iterdir()):
-        if entry.is_file() and entry.suffix.lower() in AUDIO_EXTENSIONS:
+        if is_music_name(entry.name) and entry.is_file():
             files.append(entry)
         elif entry.is_dir() and _DISC_FOLDER.match(entry.name):
-            files += sorted(p for p in entry.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS)
+            files += sorted(p for p in entry.iterdir() if is_music_name(p.name) and p.is_file())
     if audiofile.cue_of(track) is not None:  # one track of a CUE image: the album is its tracks
         from .library import expand_cue_paths
 
