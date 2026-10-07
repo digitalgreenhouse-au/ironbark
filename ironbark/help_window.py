@@ -218,15 +218,12 @@ class HelpWindow:
         self.tree.column("keys", width=widest + theme.px(theme.GAP_LARGE * 2), stretch=False, anchor="w")
         self.tree.column("what", width=theme.px(300), anchor="w")
         self._fit = fit_columns(self.tree, {"what": 1}, minimum=theme.px(120))
-        bold = tkfont.nametofont("TkDefaultFont").copy()
-        bold.configure(weight="bold")
-        self._bold = bold
         self._colour_tags()
         theme.on_change(self._palette_changed)
-        scrollbar = controls.AutoScrollbar(table, command=self.tree.yview)
+        scrollbar = controls.AutoScrollbar(outer, command=self.tree.yview)   # (in the window's margin)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
-        scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.tree)
+        scrollbar.in_margin(table)
         self.tree.bind("<Home>", lambda e: self._go(0) or "break")
         self.tree.bind("<End>", lambda e: self._go(-1) or "break")
         self.tree.bind("<Up>", self._up, add="+")
@@ -237,7 +234,7 @@ class HelpWindow:
 
     def _colour_tags(self):
         # (Treeview row colours aren't widget options: a palette change can't swap them by itself.)
-        self.tree.tag_configure("group", foreground=theme.ACCENT_TEXT, font=self._bold)
+        self.tree.tag_configure("group", foreground=theme.ACCENT_TEXT, font=theme.font(theme.SIZE_BODY, "semibold"))
 
     def _palette_changed(self, _palette):
         self._colour_tags()
@@ -250,7 +247,6 @@ class HelpWindow:
         except tk.TclError:
             pass
         self.query = None
-        self._bold = None
 
     def fill(self):
         """List the rows the filter finds (every word typed, in the key, the words or the group),

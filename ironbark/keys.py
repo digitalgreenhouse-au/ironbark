@@ -121,7 +121,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("snap_home", _keys("Ctrl+Shift+H",), "main", "Snap the window to its home spot", "Windows & tools"),
     Action("help", _keys("F1", "?"), "app", "Keyboard shortcuts (this list)", "Windows & tools", shift=True),
     Action("quit", _keys("Ctrl+Q",), "app", "Quit Ironbark", "Windows & tools"),
-    Action("full_screen", _keys("F11",), "app", "Full screen", "Windows & tools", reserved=True),
+    Action("full_screen", _keys("F11",), "main", "Full screen and back (Esc leaves it too)", "Windows & tools"),
     # -- Library & search -------------------------------------------------------------------------
     Action("library", _keys("Ctrl+L",), "app", "Library (brings it to the front when it's open)",
            "Library & search"),

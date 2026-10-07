@@ -406,8 +406,8 @@ class LibraryWindow:
         search.bind("<Down>", lambda e: self._focus_list())
         search.bind("<Return>", lambda e: self._choose_first())
 
-        # The browse views: a row of words, the one on show in green with a green bar under it; the
-        # song views on a second row (the two rows share one choice).
+        # The browse views: a row of words, the one on show in green with a short green pill under it;
+        # the song views on a second row (the two rows share one choice).
         self.view_var = tk.StringVar(value=self.view)
         self.views = controls.ChoiceRow(frame, [(key, VIEW_TITLES[key]) for key in browse.VIEWS],
                                         self.view_var, command=lambda: self.set_view(self.view_var.get()))
@@ -418,15 +418,18 @@ class LibraryWindow:
         self._view_labels: dict[str, tk.Label] = {**self.views.labels, **self.song_views.labels}
         self._paint_views()
 
-        bold = tkfont.nametofont("TkDefaultFont").copy()
-        bold.configure(weight="bold")
+        # Album, group and playing rows are semibold (a named font: the list measures its words with it).
+        bold = tkfont.Font(root=frame._root(), font=theme.font(theme.SIZE_BODY, "semibold"))
         self._bold = bold
+        # The slim scrollbar sits in the window's right margin, so the list's words line up with the
+        # search box.
         self.list = VirtualTree(frame, COLUMNS, show="headings", on_select=lambda index: self._paint_buttons(),
-                                on_activate=self._activated, on_toggle=self._toggle, fonts={"group": bold})
+                                on_activate=self._activated, on_toggle=self._toggle, fonts={"group": bold},
+                                margin=True)
         self.list.frame.pack(fill="both", expand=True, pady=theme.pad(theme.GAP, 0))
         self.tree = self.list.tree
         self.scrollbar = self.list.scrollbar
-        widths = {"album": 220, "artist": 140, "year": 48, "quality": 64, "tracks": 52, "added": 82, "title": 220,
+        widths = {"album": 220, "artist": 140, "year": 48, "quality": 64, "tracks": 60, "added": 96, "title": 220,
                   "time": 52, "plays": 52, "found": 260}
         for column in COLUMNS:
             anchor = "e" if column in _NUMERIC else "w"

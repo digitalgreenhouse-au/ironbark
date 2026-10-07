@@ -16,6 +16,7 @@ from ironbark import controls, theme
 from ironbark.library import Track
 from ironbark.playlist_view import PLAYING_MARK, album_heading
 
+from ironbark.ui import INFO_INK_INSET, STATUS_DOT
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 
@@ -153,7 +154,8 @@ def test_play_button_shows_play_or_pause_and_clicks(root):
     button = controls.PlayButton(root, lambda: pressed.append(1), label="Play")
     button.pack()
     _pump(root, 0.2)
-    assert button.winfo_reqwidth() == max(16, theme.px(controls.PLAY_DIAMETER))
+    # The circle, and room round it for the keyboard's focus ring.
+    assert button.winfo_reqwidth() == max(16, theme.px(controls.PLAY_DIAMETER)) + 2 * button.margin
     play_image = str(button.cget("image"))
     button.set_playing(True)
     assert str(button.cget("image")) != play_image
@@ -169,20 +171,55 @@ def test_play_button_shows_play_or_pause_and_clicks(root):
     assert root.errors == []
 
 
+def _pixel(widget, x, y) -> str:
+    """The colour at (x, y) of the picture a label shows."""
+    r, g, b = (int(v) for v in widget.tk.splitlist(widget.tk.call(str(widget.cget("image")), "get", x, y)))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _near(colour: str, role: str, tolerance: int = 24) -> bool:
+    """`colour` is `role`'s colour, give or take what scaling a 4x drawing down leaves near an edge
+    (LANCZOS rings a little: a few levels lighter or darker within a pixel or two of a shape's edge)."""
+    return all(abs(a - b) <= tolerance for a, b in zip(theme.rgb(colour), theme.rgb(role)))
+
+
 def test_round_icon_button_lights_a_disc_on_hover(root):
     button = controls.RoundIconButton(root, root, "shuffle", lambda: None, size=theme.ICON_MEDIUM, diameter=32,
                                       width=36, bg="BG")
     button.pack()
     _pump(root, 0.1)
     resting = str(button.cget("image"))
+    middle = theme.px(32) // 2
+    assert _pixel(button, middle, middle) == theme.BG
     button._paint(True)
     assert str(button.cget("image")) != resting and button.cget("bg") == theme.BG   # the disc, not a square
+    assert _pixel(button, middle, middle) == theme.HOVER and _pixel(button, 0, 0) == theme.BG
     assert button.cget("fg") == theme.TEXT
     button._paint(False)
-    button.set_colour("ACCENT")                    # shuffle on
-    assert button.cget("fg") == theme.ACCENT
+    button.set_on(True)                            # shuffle on: green glyph and a dot under it
+    assert button.cget("fg") == theme.ACCENT_TEXT
+    dot_y = middle + theme.px(controls.RoundIconButton.ON_DOT_BELOW)
+    assert _near(_pixel(button, middle, dot_y), "ACCENT_TEXT")
     theme.use(theme.LIGHT, root)
-    assert button.cget("bg") == theme.LIGHT.BG and button.cget("fg") == theme.LIGHT.ACCENT
+    assert button.cget("bg") == theme.LIGHT.BG and button.cget("fg") == theme.LIGHT.ACCENT_TEXT
+    assert _near(_pixel(button, middle, dot_y), "ACCENT_TEXT")
+    button.set_on(False)
+    assert button.cget("fg") == theme.LIGHT.MUTED and _pixel(button, middle, dot_y) == theme.LIGHT.BG   # no dot
+    assert root.errors == []
+
+
+def test_previous_and_next_are_drawn_filled(root):
+    previous = controls.RoundIconButton(root, root, "prev", lambda: None, diameter=36, width=40, bg="BG", drawn="prev")
+    after = controls.RoundIconButton(root, root, "next", lambda: None, diameter=36, width=40, bg="BG", drawn="next")
+    for button in (previous, after):
+        button.pack()
+    _pump(root, 0.1)
+    middle = theme.px(36) // 2
+    for button in (previous, after):
+        assert button.cget("text") == ""                                    # no icon font needed
+        assert _near(_pixel(button, middle, middle), "TEXT")                # filled, in the middle
+    bar = theme.px(controls.RoundIconButton.SKIP_SIZE) // 2 - 1
+    assert _near(_pixel(previous, middle - bar, middle), "TEXT") and _near(_pixel(after, middle + bar, middle), "TEXT")
     assert root.errors == []
 
 
@@ -294,6 +331,69 @@ def test_seek_bar_times_play_button_and_volume_pill(make_window):
     window._seek_released(100.0)                                            # let go on the playing tab
     assert player.calls == ["seek"]
     assert errors == []
+
+
+def test_header_seek_bar_and_transport_line_up(make_window):
+    """The seek track runs exactly from content edge to content edge (the search box's edges); the
+    times start and end there too; the ⓘ's slot reaches into the margin; the volume badge is a
+    24 px pill; previous / next are drawn pictures."""
+    window, root, player, errors = make_window(volume=0.5)
+    _pump(root, 0.3)
+    seek = window.seek
+    inset = round(seek.track_inset())
+    search = window.playlist.search.entry
+    left = seek.winfo_rootx() + inset
+    right = seek.winfo_rootx() + seek.winfo_width() - inset
+    assert abs(left - search.winfo_rootx()) <= 1
+    assert abs(right - (search.winfo_rootx() + search.winfo_width())) <= 1
+    assert abs(window.pos_label.winfo_rootx() - left) <= 1
+    assert abs(window.remain_label.winfo_rootx() + window.remain_label.winfo_width() - right) <= 1
+    info = window.info_button
+    assert info.winfo_rootx() + info.winfo_width() == right + theme.px(INFO_INK_INSET)
+    assert window.volume_badge.winfo_reqheight() == theme.px(theme.CONTROL_H_SMALL)
+    assert window.title_label.cget("style") == "Display.TLabel"
+    assert window.sub_label.cget("style") == "Subtitle.TLabel"
+    for button in (window.previous_button, window.next_button):
+        assert button.cget("text") == "" and str(button.cget("image"))
+    assert errors == []
+
+
+def test_the_status_dot_is_drawn_and_keeps_its_tooltip_and_click(make_window):
+    window, root, player, errors = make_window()
+    shown = []
+    window.show_details = lambda: shown.append(1)   # (the dot's click looks show_details up when clicked)
+    window._paint_status_dot("WARN")
+    middle = theme.px(STATUS_DOT) // 2
+    assert _near(_pixel(window.status_dot, middle, middle), "WARN")
+    assert _near(_pixel(window.status_dot, 0, 0), "BG")                    # round, on the window
+    window._status_detail = "Heads up: resampled"
+    tips = [t for t in _tooltips(window.status_dot)]
+    assert tips and tips[0]() == "Heads up: resampled"
+    window._paint_status_dot("BG")                                          # nothing to say: no dot
+    assert _pixel(window.status_dot, middle, middle) == theme.BG
+    window.status_dot.event_generate("<Button-1>")
+    assert shown == [1] and errors == []
+
+
+def _tooltips(widget):
+    """The texts of the Tooltips on `widget` (found among Python's live objects)."""
+    import gc as collector
+
+    from ironbark.tabbar import Tooltip
+
+    return [t.text for t in collector.get_objects() if isinstance(t, Tooltip) and t.widget is widget]
+
+
+def test_the_status_line_keeps_one_height(make_window):
+    window, root, player, errors = make_window()
+    _pump(root, 0.2)
+    before = window.status_row.winfo_height()
+    window.status_label.configure(text="新しい音楽 · 새 음악 · ♪ New music")   # fallback fonts are taller
+    _pump(root, 0.2)
+    assert window.status_row.winfo_height() == before > 0
+    window.status_label.configure(text="")
+    _pump(root, 0.2)
+    assert window.status_row.winfo_height() == before and errors == []
 
 
 def test_seek_bar_on_another_tab_sets_its_resume_point(make_window):

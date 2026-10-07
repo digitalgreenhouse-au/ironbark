@@ -460,11 +460,11 @@ class TagHistoryWindow:
                                               ("files", "Files", 52, False), ("state", "", 90, False)):
             self.tree.heading(column, text=title, anchor="w")
             self.tree.column(column, width=theme.px(width), stretch=stretch, anchor="w")
-        # (0.22.0) The slim scrollbar, only there when the list is longer than its window.
-        scrollbar = controls.AutoScrollbar(table, command=self.tree.yview)
+        # (0.22.0) The slim scrollbar, only there when the list is longer than its window (in the margin).
+        scrollbar = controls.AutoScrollbar(outer, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
-        scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.tree)
+        scrollbar.in_margin(table)
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._paint_button())
         self.reload()
 

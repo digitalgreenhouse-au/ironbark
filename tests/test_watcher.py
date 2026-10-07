@@ -169,8 +169,9 @@ def test_new_albums_until_opened_and_again_when_more_arrives(music):
     age(b, 60)
     look.check()
     assert watcher.new_albums(index, since, {}) == [music / "B", music / "A"]     # newest first
-    time.sleep(0.02)   # (opened a moment later: Windows' clock may tick only every 15.6 ms, and the
-    #                   index dates each find a microsecond apart within one tick)
+    # Opened a moment later, as in use: the index's clock never repeats, so within one tick of
+    # Windows' coarse clock what it saw can stand a few microseconds past time.time().
+    time.sleep(0.02)
     opened = {str(music / "B"): time.time()}
     assert watcher.new_albums(index, since, opened) == [music / "A"]
     time.sleep(0.01)

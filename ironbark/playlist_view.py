@@ -14,14 +14,23 @@ it means (see TreeDrag and ui.PlayerWindow._song_drag).
 Artist and Album columns can be added (off by default: the window is narrow); right-click the
 headings, or a song, to switch them (`set_columns`, saved by the window).
 
+In a wide window (layout.py's split tiers, `set_tier`) the list has the window's full height and
+its own column setting (`set_wide_columns`): Artist, Album and Format show by themselves wherever
+the tier has room — except a column whose value is the same on every row of the tab (`varies`,
+worked out once per list), so one album shows # · Title · Time and a playlist everything. A header
+row above the list holds the search box and the tab's song count (`set_count`); the rows are
+roomier, and from 1920 logical px the text is larger.
+
 The list's keys (Enter plays, Ctrl+Enter / Ctrl+Shift+Enter queue, Delete removes, Alt+↑ / ↓
 move a song) are in the keyboard table (keys.py); the window binds them, using `activate`,
 `selected_rows` and `selected_track`.
 
 The look (0.20.0): the row under the pointer lights up, the playing song is marked (♪ in place of
-its number, green bold text) even when another row is selected, album header rows read
-"Album · Artist" with the quality on the right, the scrollbar is slim and only there when the list
-is longer than the window, and the search box has a magnifier and a × to clear it.
+its number, green semibold text) even when another row is selected, album header rows read
+"Album · Artist" in green semibold with the quality on the right, the scrollbar is slim and only
+there when the list is longer than the window, and the search box has a magnifier and a × to clear
+it. The list is frameless on the window's colour, the selected row a rounded green plate, and the
+scrollbar sits in the window's right margin, so the list's words line up with the search box.
 
 A search that finds nothing in the tab offers the whole library instead: a "Search the whole
 library (Ctrl+Shift+F)" row under "No matches" (click it, or Enter on it) hands the words to the
@@ -32,15 +41,26 @@ song search panel (`on_search_library`). A favourite song shows a ♥ before its
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import audiofile, controls, popups, searchfold, theme
-from .library import Track, group_by_album
+from tkinter import font as tkfont
+
+from . import audiofile, controls, layout, popups, searchfold, theme
+from .library import Track, album_folder, group_by_album
 
 SEARCH_DELAY_MS = 150
-OPTIONAL_COLUMNS = ("artist", "album")  # columns that can be switched on
+OPTIONAL_COLUMNS = ("artist", "album")  # columns that can be switched on in the narrow window
+WIDE_COLUMNS = layout.OPTIONAL           # …and in a wide one (where Format is one too)
+QUALITY_W = 72      # px at 100%: the Format column ("24/96", "FLAC", "Opus")
+SEARCH_MAX = 520    # px at 100%: the search box's widest, in a wide window's header row
+# How a wide window shares the list's width: by weight, Artist and Album never past their caps (px at
+# 100%), whatever is left to the title. The narrow window shares 2 / 1 / 1 with no caps.
+NARROW_WEIGHTS = {"title": 2, "artist": 1, "album": 1}
+WIDE_WEIGHTS = {"title": 3, "artist": 2, "album": 2}
+WIDE_CAPS = {"artist": 320, "album": 360}
+TREE_STYLES = {layout.COLUMN: "", layout.SPLIT: "", layout.SPLIT_M: theme.ROOMY_TREE,   # ("": Treeview's own)
+               layout.SPLIT_L: theme.ROOMY_LARGE_TREE}
 DRAG_START = 6  # px at 100%: move this far with the button down and a press becomes a drag
 PLAYING_MARK = "♪"   # (0.20.0) in the # column of the playing song
 FAVOURITE_MARK = "♥"
@@ -78,12 +98,15 @@ def _quality(track: Track) -> str:
     return f"{track.bits}/{track.sample_rate / 1000:g}" if track.sample_rate else ""
 
 
-def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40) -> Callable[[], None]:
+def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40,
+                caps: dict[str, int] | None = None) -> Callable[[], None]:
     """Share a list's width between its stretchy columns (by `weights`) once the fixed ones have
     their room, whenever it's resized or columns are switched on / off. (Tk itself never shrinks
-    columns to fit, so extra columns would push the last ones out of sight.) A stretchy column gets
-    at least `minimum` — unless the list is too narrow for that, when they share what's left, so
-    the fixed columns (a year, a time) always keep their room. Returns the fitter."""
+    columns to fit, so extra columns would push the last ones out of sight.) `caps`: real px a column
+    named in it never grows past; what it leaves goes to the others. A stretchy column gets at least
+    `minimum` — unless the list is too narrow for that, when they share what's left, so the fixed
+    columns (a year, a time) always keep their room. Both dicts are read on every fit, so changing
+    them in place (then calling the fitter) changes the sharing. Returns the fitter."""
     for column in weights:
         tree.column(column, stretch=False)  # sized here, not by Tk
 
@@ -98,17 +121,25 @@ def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40
         if "tree" in [str(part) for part in tree.cget("show")]:
             fixed += int(tree.column("#0", "width"))
         stretchy = [c for c in shown if c in weights]
-        total = sum(weights[c] for c in stretchy) or 1
         room = max(0, width - fixed - 4)
-        least = minimum if room >= minimum * len(stretchy) else 1   # (too narrow: they give way, not the fixed ones)
-        widths = {c: max(least, int(room * weights[c] / total)) for c in stretchy}
-        over = sum(widths.values()) - room
-        for column in sorted(stretchy, key=lambda c: -widths[c]):   # (each at its minimum: the widest give way)
-            if over <= 0:
+        capped: dict[str, int] = {}
+        while True:   # a column that would pass its cap gets the cap; the others share what's left
+            free = [c for c in stretchy if c not in capped]
+            total = sum(weights[c] for c in free) or 1
+            left = room - sum(capped.values())
+            over = [c for c in free if caps and c in caps and int(left * weights[c] / total) > caps[c]]
+            if not over or len(over) == len(free):
                 break
-            cut = min(over, widths[column] - least)
+            capped.update((c, caps[c]) for c in over)
+        least = minimum if room >= minimum * len(stretchy) else 1   # (too narrow: they give way, not the fixed ones)
+        widths = {c: capped[c] if c in capped else max(least, int(left * weights[c] / total)) for c in stretchy}
+        excess = sum(widths.values()) - room
+        for column in sorted(stretchy, key=lambda c: -widths[c]):   # (each at its minimum: the widest give way)
+            if excess <= 0:
+                break
+            cut = min(excess, widths[column] - least)
             widths[column] -= cut
-            over -= cut
+            excess -= cut
         for column in stretchy:
             tree.column(column, width=widths[column])
 
@@ -160,10 +191,13 @@ class TreeDrag:
             self.on_drag(state["carried"], event.x_root, event.y_root, "drop")
 
     def _cancel(self, _event=None):
+        """Esc: a drag under way is called off — and that's all the key does."""
         state, self._state = self._state, None
         if state is not None and state["moving"]:
             self.tree.configure(cursor="")
             self.on_drag(state["carried"], 0, 0, "cancel")
+            return "break"
+        return None
 
 
 class PlaylistView:
@@ -177,7 +211,11 @@ class PlaylistView:
         self.on_heading_menu = on_heading_menu
         self.on_search_library = on_search_library
         self.is_favourite = is_favourite
-        self.columns: tuple[str, ...] = ()  # optional columns on show (see set_columns)
+        self.columns: tuple[str, ...] = ()  # the narrow window's optional columns (see set_columns)
+        self.wide_columns: tuple[str, ...] = WIDE_COLUMNS   # a wide window's (see set_wide_columns)
+        self.tier = layout.COLUMN           # the window's layout (set_tier)
+        self.varies: frozenset[str] = frozenset()   # optional columns whose value isn't the same on every row
+        self.shown: tuple[str, ...] = ()    # the optional columns on show now
         self.on_menu = on_menu
         self.flat = False
         self._album_start: dict[str, int] = {}  # header row id -> first track index
@@ -198,10 +236,19 @@ class PlaylistView:
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
         self.frame = frame
+        # A wide window's header row: the search box (moved in) and the tab's count on the right.
+        # Made before the search box: a widget packed into a frame other than its parent must be
+        # above that frame in Tk's stacking order. Not packed in the narrow window.
+        self.header = ttk.Frame(frame)
+        self.count_label = ttk.Label(self.header, text="", style="Sub.TLabel", anchor="e")
+        self.count_label.pack(side="right")
+        self.header.bind("<Configure>", lambda e: self._fit_search(), add="+")
+        self._search_pad = 0
 
         # (0.20.0) A magnifier inside the box on the left, and a × on the right while there's
         # something typed; (0.22.0) the box itself is controls.SearchBox, shared with the Library.
-        self.search = controls.SearchBox(frame, "Search songs, artists, albums   Ctrl+F", on_clear=self.clear_search)
+        self.search = controls.SearchBox(frame, "Search songs, artists, albums", on_clear=self.clear_search,
+                                         keys="Ctrl+F")
         self.search.pack(fill="x", pady=theme.pad(0, theme.GAP))
         self.query, self.entry = self.search.query, self.search.entry
         self.magnifier, self.clear_button, self.hint = self.search.magnifier, self.search.clear_button, self.search.hint
@@ -211,30 +258,36 @@ class PlaylistView:
 
         table = ttk.Frame(frame)
         table.pack(fill="both", expand=True)
+        self.table = table
         # height=4: ask for little, then grow into whatever room the window has.
-        self.tree = ttk.Treeview(table, columns=("no", "title", "artist", "album", "time"), show="headings",
-                                 selectmode="browse", height=4, displaycolumns=("no", "title", "time"))
+        self.tree = ttk.Treeview(table, columns=("no", "title", "artist", "album", "quality", "time"),
+                                 show="headings", selectmode="browse", height=4,
+                                 displaycolumns=("no", "title", "time"))
         self.tree.heading("no", text="#", anchor="e")
         self.tree.heading("title", text="Title", anchor="w")
         self.tree.heading("artist", text="Artist", anchor="w")
         self.tree.heading("album", text="Album", anchor="w")
+        self.tree.heading("quality", text="Format", anchor="w")
         self.tree.heading("time", text="Time", anchor="e")
         self.tree.column("no", width=theme.px(38), stretch=False, anchor="e")
         self.tree.column("title", width=theme.px(240), stretch=True, anchor="w")
         self.tree.column("artist", width=theme.px(120), stretch=True, anchor="w")
         self.tree.column("album", width=theme.px(120), stretch=True, anchor="w")
+        self.tree.column("quality", width=theme.px(QUALITY_W), stretch=False, anchor="w")
         self.tree.column("time", width=theme.px(52), stretch=False, anchor="e")
-        self._fit = fit_columns(self.tree, {"title": 2, "artist": 1, "album": 1}, minimum=theme.px(50))
-        bold = tkfont.nametofont("TkDefaultFont").copy()
-        bold.configure(weight="bold")
-        self._bold = bold
+        self._weights = dict(NARROW_WEIGHTS)   # changed in place by set_tier (the fitter reads them)
+        self._caps: dict[str, int] = {}
+        self._fit = fit_columns(self.tree, self._weights, minimum=theme.px(50), caps=self._caps)
+        # The album and playing rows' semibold: one font, made larger in place from 1920 logical px.
+        self._bold = tkfont.Font(root=self.tree._root(), font=theme.font(theme.SIZE_BODY, "semibold"))
         self._colour_tags()
         theme.on_change(self._palette_changed)
-        # (0.20.0) The slim scrollbar, only there when the list is longer than its window.
-        self.scrollbar = controls.AutoScrollbar(table, command=self.tree.yview)
+        # (0.20.0) The slim scrollbar, only there when the list is longer than its window — in the
+        # window's right margin (`parent` is the padded frame round the list).
+        self.scrollbar = controls.AutoScrollbar(parent, command=self.tree.yview)
         self.tree.configure(yscrollcommand=self.scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
-        self.scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.tree)
+        self.scrollbar.in_margin(table)
         # The row under the pointer lights up.
         self.tree.bind("<Motion>", self._hover_row, add="+")
         self.tree.bind("<Leave>", lambda e: self._set_hover(None), add="+")
@@ -251,7 +304,7 @@ class PlaylistView:
         # A Treeview gives the tag configured *first* the say when two set the same option (checked
         # on Tk 8.6.12): "hover" comes first so a hovered album / playing row lights up too. Its
         # text turns TEXT: green text on the hover grey would be under WCAG AA's 4.5:1 in Dark.
-        self.tree.tag_configure("hover", background=theme.SURFACE_HI, foreground=theme.TEXT)
+        self.tree.tag_configure("hover", background=theme.HOVER, foreground=theme.TEXT)
         self.tree.tag_configure("album", background=theme.BG, foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("playing", foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("note", foreground=theme.MUTED)
@@ -277,13 +330,115 @@ class PlaylistView:
                 self.tree.item(row, tags=(["hover"] + tags) if on else tags)
         self.hovered = iid
 
-    # -- contents --------------------------------------------------------------
+    # -- columns and layout ------------------------------------------------------
     def set_columns(self, columns):
-        """Which optional columns (OPTIONAL_COLUMNS) to show, e.g. ("artist",)."""
+        """The narrow window's optional columns (OPTIONAL_COLUMNS), e.g. ("artist",)."""
         self.columns = tuple(c for c in OPTIONAL_COLUMNS if c in columns)
-        self.tree.configure(displaycolumns=("no", "title", *self.columns, "time"))
+        if self.tier == layout.COLUMN:
+            self._show_columns()
+            self._render()
+
+    def set_wide_columns(self, columns):
+        """A wide window's optional columns (WIDE_COLUMNS): each shows where the tier has room and
+        its value varies between rows."""
+        self.wide_columns = tuple(c for c in WIDE_COLUMNS if c in columns)
+        if self.tier != layout.COLUMN:
+            self._update_shown()
+
+    def wanted(self) -> tuple[str, ...]:
+        """The column setting in use: the narrow window's, or a wide one's."""
+        return self.columns if self.tier == layout.COLUMN else self.wide_columns
+
+    def set_tier(self, tier: str):
+        """The window's layout changed (layout.py): the list's style, columns, column sharing and
+        header row follow. The rows are only written again when the title cells depend on it (they
+        carry the artist while the Artist column is hidden, in a playlist or a search)."""
+        if tier == self.tier:
+            return
+        wide, was_wide = tier != layout.COLUMN, self.tier != layout.COLUMN
+        self.tier = tier
+        self.tree.configure(style=TREE_STYLES[tier])
+        self._weights.clear()
+        self._weights.update(WIDE_WEIGHTS if wide else NARROW_WEIGHTS)
+        self._caps.clear()
+        if wide:
+            self._caps.update({c: theme.px(v) for c, v in WIDE_CAPS.items()})
+        self._bold.configure(size=theme.SIZE_LARGE if tier == layout.SPLIT_L else theme.SIZE_BODY)
+        if wide != was_wide:
+            self._pack_header(wide)
+        self._update_shown()
+
+    def _update_shown(self):
+        """Show the optional columns the setting, the tier and the rows call for."""
+        before = self.shown
+        self._show_columns()
+        if ("artist" in before) != ("artist" in self.shown) and (self.flat or self.searching):
+            self._render()
+
+    def _show_columns(self):
+        if self.tier == layout.COLUMN:
+            shown = self.columns
+        else:
+            shown = layout.columns_for(self.tier, self.wide_columns, self.varies)
+        quality_moved = ("quality" in shown) != ("quality" in self.shown)
+        self.shown = tuple(shown)
+        self.tree.configure(displaycolumns=("no", "title", *self.shown, "time"))
+        if quality_moved:   # an album row's quality: in the Format column while it shows, else under Time
+            for header in (iid for iid in self._made if iid.startswith("a")):
+                self.tree.set(header, "time", "" if "quality" in self.shown else self.tree.set(header, "quality"))
         self._fit()
-        self._render()
+
+    def _pack_header(self, wide: bool):
+        """The search box in the header row (a wide window), or on its own above the list."""
+        self.search.pack_forget()
+        if wide:
+            self.header.pack(fill="x", pady=theme.pad(0, theme.GAP), before=self.table)
+            self.search.pack(in_=self.header, side="left", fill="x", expand=True)
+            # Just above the header row it's packed in, not above everything: Tab follows the
+            # stacking order, so raising it past the list would put the list first.
+            self.search.lift(self.header)
+            self._search_pad = -1
+            self._fit_search()
+        else:
+            self.header.pack_forget()
+            self.search.pack(in_=self.frame, fill="x", pady=theme.pad(0, theme.GAP), before=self.table)
+
+    def _fit_search(self):
+        """In the header row the search box grows with the list up to SEARCH_MAX, the count keeping
+        its room on the right."""
+        if self.tier == layout.COLUMN:
+            return
+        room = self.header.winfo_width() - self.count_label.winfo_reqwidth()
+        pad = max(theme.px(theme.GAP_WIDE), room - theme.px(SEARCH_MAX))
+        if abs(pad - self._search_pad) > 2:
+            self._search_pad = pad
+            self.search.pack_configure(padx=(0, pad))
+
+    def set_count(self, text: str):
+        """The tab's count in a wide window's header row, e.g. "Album · 13 songs · 51:57"."""
+        if self.count_label.cget("text") != text:
+            self.count_label.configure(text=text)
+            self._fit_search()
+
+    # -- contents --------------------------------------------------------------
+    @staticmethod
+    def _varies(tracks: list[Track]) -> frozenset[str]:
+        """The optional columns whose value isn't the same on every song (one pass over the list)."""
+        if not tracks:
+            return frozenset()
+        first = tracks[0]
+        artist, album, quality = first.artist, first.album or album_folder(first.path).name, _quality(first)
+        varies = set()
+        for track in tracks[1:]:
+            if "artist" not in varies and track.artist != artist:
+                varies.add("artist")
+            if "album" not in varies and (track.album or album_folder(track.path).name) != album:
+                varies.add("album")
+            if "quality" not in varies and _quality(track) != quality:
+                varies.add("quality")
+            if len(varies) == len(WIDE_COLUMNS):
+                break
+        return frozenset(varies)
 
     def set_tracks(self, tracks: list[Track], flat: bool = False):
         """flat: a playlist, shown in its own order without album headers. (The playing mark is
@@ -292,6 +447,7 @@ class PlaylistView:
         self.playing = None
         self.flat = flat
         self._groups = [(None, 0, len(self._tracks))] if flat else group_by_album(self._tracks)
+        self.varies = self._varies(self._tracks)
         self._haystacks = None
         self._last_search = None
         self.hovered = None
@@ -300,13 +456,15 @@ class PlaylistView:
         self._made.clear()
         self._titles.clear()
         self._numbers.clear()
+        if self.tier != layout.COLUMN:
+            self._show_columns()
         self._render()
 
     def _title(self, i: int, searching: bool) -> str:
         """Song i's title cell: with its artist while searching and in a playlist (unless the
         Artist column shows it), and a note when its file has gone."""
         track = self._tracks[i]
-        show_artist = (searching or self.flat) and track.artist and "artist" not in self.columns
+        show_artist = (searching or self.flat) and track.artist and "artist" not in self.shown
         title = f"{track.title}  ·  {track.artist}" if show_artist else track.title
         if self.is_favourite(track):
             title = f"{FAVOURITE_MARK} {title}"
@@ -363,8 +521,10 @@ class PlaylistView:
             if grouped:
                 header = f"a{g}"
                 if header not in self._made:
+                    quality = _quality(tracks[start])
                     tree.insert("", "end", iid=header, tags=("album",),
-                                values=("", album_heading(tracks[start:end], folder), "", "", _quality(tracks[start])))
+                                values=("", album_heading(tracks[start:end], folder), "", "", quality,
+                                        "" if "quality" in self.shown else quality))
                     self._made.add(header)
                 listed.append(header)
                 self._album_start[header] = picked[0] if words else start
@@ -376,7 +536,7 @@ class PlaylistView:
                     playing = i == self.playing
                     tree.insert("", "end", iid=iid, tags=("playing",) if playing else (),
                                 values=(PLAYING_MARK if playing else number, title, track.artist, track.album,
-                                        _clock(track.duration)))
+                                        _quality(track), _clock(track.duration)))
                     self._made.add(iid)
                 elif self._titles[i] != title:
                     tree.set(iid, "title", title)
@@ -385,12 +545,12 @@ class PlaylistView:
                 self._songs.append(iid)
         if words and not self._songs:
             if "none" not in self._made:
-                tree.insert("", "end", iid="none", tags=("note",), values=("", "No matches", "", "", ""))
+                tree.insert("", "end", iid="none", tags=("note",), values=("", "No matches", "", "", "", ""))
                 self._made.add("none")
             listed.append("none")
             if self.on_search_library is not None:   # nothing here: offer the whole library
                 if "library" not in self._made:
-                    tree.insert("", "end", iid="library", tags=("link",), values=("", SEARCH_LIBRARY, "", "", ""))
+                    tree.insert("", "end", iid="library", tags=("link",), values=("", SEARCH_LIBRARY, "", "", "", ""))
                     self._made.add("library")
                 listed.append("library")
         # A row the search hides can't stay selected or focused: Enter would play a song out of sight.

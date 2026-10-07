@@ -92,7 +92,10 @@ def _use_class_bindings(tree: ttk.Treeview) -> None:
 class VirtualTree:
     """See the module notes. `frame` holds the list and its slim scrollbar (pack or grid it);
     `tree` is the ttk.Treeview (headings, columns and tag colours are the owner's to set — "hover"
-    is configured here first, so it wins over the owner's tags).
+    is configured here first, so it wins over the owner's tags). `margin=True`: the scrollbar sits
+    in the margin right of the list instead (controls.AutoScrollbar.in_margin), so the list keeps its
+    full width and its words line up with what's above it; `parent` must then be the frame whose
+    padding is that margin.
 
     Callbacks: on_select(index | None) when the selection moves; on_activate(index) on a
     double-click of an ordinary row; on_toggle(index) to fold or open a group heading; on_jump(text)
@@ -106,7 +109,7 @@ class VirtualTree:
                  on_jump: Callable[[str], int | None] | None = None,
                  on_top_edge: Callable[[], None] | None = None,
                  fonts: dict[str, object] | None = None, playing_column: str | None = None,
-                 playing_mark: str = "♪"):
+                 playing_mark: str = "♪", margin: bool = False):
         self.on_select, self.on_activate, self.on_toggle = on_select, on_activate, on_toggle
         self.on_jump, self.on_top_edge = on_jump, on_top_edge
         self.fonts = dict(fonts or {})       # tag -> the font its rows are drawn in (measured for "…")
@@ -125,10 +128,13 @@ class VirtualTree:
         self.frame = ttk.Frame(parent)
         # height=4: ask for little, then grow into whatever room the window gives the list.
         self.tree = ttk.Treeview(self.frame, columns=tuple(columns), show=show, selectmode="browse", height=4)
-        self.scrollbar = controls.AutoScrollbar(self.frame, command=self._scrolled)
+        self.scrollbar = controls.AutoScrollbar(parent if margin else self.frame, command=self._scrolled)
         self.tree.configure(yscrollcommand=self._tk_scrolled)
         self.tree.pack(side="left", fill="both", expand=True)
-        self.scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.tree)
+        if margin:
+            self.scrollbar.in_margin(self.frame)
+        else:
+            self.scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.tree)
         _use_class_bindings(self.tree)
         self._font = tkfont.nametofont("TkDefaultFont")
         self._paint_tags()
@@ -336,7 +342,7 @@ class VirtualTree:
 
     def _paint_tags(self):
         # Configured first, so it wins over the owner's tags (the first-configured tag has the say).
-        self.tree.tag_configure("hover", background=theme.SURFACE_HI, foreground=theme.TEXT)
+        self.tree.tag_configure("hover", background=theme.HOVER, foreground=theme.TEXT)
 
     def _palette_changed(self, _palette):
         if self.tree.winfo_exists():

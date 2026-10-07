@@ -95,6 +95,8 @@ DEFAULTS = {
                                  # view: songs/most_played/recently_played/favourites/needs_look
     "library_check": "off",      # the whole-library quality check: "off", "on" (keeps new music checked) or "paused"
     "track_columns": [],         # optional track-list columns on show: "artist", "album"
+    "wide_track_columns": ["artist", "album", "quality"],   # …in a wide window (each shown only when
+                                                            # its value varies between the tab's songs)
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window
     "help_geometry": "",         # the Keyboard shortcuts sheet (F1)
@@ -112,6 +114,7 @@ DEFAULTS = {
     "net_cache_gb": 10,          # the most the cache holds, in GB (0 = no limit)
     "net_verify": True,          # check each finished download (a FLAC's own MD5 fingerprint too)
     "geometry": "",
+    "maximised": False,          # the full window was maximised when last left: it opens maximised
 }
 
 
@@ -436,6 +439,8 @@ _CHECKS = {
     "vu_auto": _dict_or_none,
     "vu_auto_loudness": _dict_or_none,
     "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
+    "wide_track_columns": lambda value: ([v for v in value if isinstance(v, str)] if isinstance(value, list)
+                                         else _BAD),
     "library_folders": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
                                       else _BAD),
     "net_mode": _one_of("intelligent", "fast", "complete"),

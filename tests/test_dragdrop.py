@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import dragdrop, playlists
+from ironbark import dragdrop, playlists, theme
 from ironbark.engine import State
 from ironbark.library import Track
 from ironbark.ui import PlayerWindow, Tab
@@ -261,13 +261,17 @@ def test_tab_bar_finds_and_lights_up_the_tab_under_the_pointer(root):
     root.update()
     bar.set_tabs(["One", "Two"], 0, None)
     root.update()
-    second = bar._tab_widgets[1]
-    x, y = second.winfo_rootx() + 5, second.winfo_rooty() + 5
+    x = bar.canvas.winfo_rootx() + bar.slot_x(1) + 5
+    y = bar.canvas.winfo_rooty() + theme.px(theme.ROW_Y)
     assert bar.tab_at(x, y) == 1
     assert bar.tab_at(x, y + 500) is None
+    assert bar.tab_at(bar.canvas.winfo_rootx() + 2, y) is None          # the drag gap left of the tabs
     bar.highlight(1)
     root.update()
-    assert int(bar._tab_widgets[1].cget("highlightthickness")) >= 2
+    ring = [bar.canvas.itemcget(item, "state") for item in bar._ring]
+    assert ring == ["normal"] * 4                                       # the green ring round tab 1
+    assert bar.canvas.coords(bar._ring[0])[0] == bar.slot_x(1) + theme.px(theme.PLATE_INSET)
+    assert bar.canvas.itemcget(bar._ring[2], "fill") == theme.ACCENT
     bar.highlight(None)
     root.update()
-    assert int(bar._tab_widgets[1].cget("highlightthickness")) == 0
+    assert all(bar.canvas.itemcget(item, "state") == "hidden" for item in bar._ring)

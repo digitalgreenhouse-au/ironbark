@@ -13,8 +13,10 @@ alone over a plain background, with an amber edge and a warning sign.
 **Menus** (`PopupMenu`): a right-click menu built from tabbar.Popover + MenuRow, opened at the
 pointer and kept inside its window. Shortcuts show on the right, greyed-out items stay visible,
 arrows / Home / End move, Enter runs, Esc closes. Where the old Windows menus had a cascade (Add
-to playlist, Columns) the same menu shows the submenu in its place — `›` to go in, a `‹` row (or
-←) to come back — which also works in the player's narrow window.
+to playlist, Columns) the same menu shows the submenu in its place — a row with a chevron (or →)
+to go in, a back row with its title (or ←) to come back — which also works in the player's narrow
+window. The highlighted row is a rounded plate; a menu with ticks keeps a tick column on every row,
+so the words line up; separators run MENU_INSET in from the sides, like the words.
 
 Windows' own file and folder pickers are left as they are (expected, and not reliably restylable).
 """
@@ -68,7 +70,7 @@ class Prompt(tk.Frame):
             self.cover.place(x=0, y=0, relwidth=1, relheight=1)
             self.cover.lift()
         edge = theme.px(WARN_EDGE) if tone == "warn" else 1
-        self.edge_role = "WARN" if tone == "warn" else "BORDER"   # a role: the flash follows a palette change
+        self.edge_role = "WARN" if tone == "warn" else "EDGE"   # a role: the flash follows a palette change
         super().__init__(window, bg=theme.SURFACE, highlightthickness=edge, highlightbackground=self.edge_colour,
                          highlightcolor=self.edge_colour)
         self.heading, self.tone = title, tone
@@ -84,12 +86,17 @@ class Prompt(tk.Frame):
 
         head = tk.Frame(body, bg=theme.SURFACE)
         head.pack(fill="x")
+        self.title_wrap = wrap
         if tone == "warn":
             font = icon_font(window, theme.ICON_MEDIUM) or theme.font(theme.SIZE_HEADING, "bold")
             self.sign = tk.Label(head, text=glyph(window, "warning"), font=font, bg=theme.SURFACE, fg=theme.WARN)
             self.sign.pack(side="left", anchor="n", padx=theme.pad(0, theme.GAP_MEDIUM), pady=theme.pad(theme.GAP_HAIR, 0))
+            # The sign shares the title's line: the title wraps in the room left beside it, or its
+            # last word runs past the box's edge and is cut off.
+            self.title_wrap = max(theme.px(theme.GAP_WIDE),
+                                  wrap - self.sign.winfo_reqwidth() - theme.px(theme.GAP_MEDIUM))
         self.title_label = tk.Label(head, text=title, bg=theme.SURFACE, fg=theme.TEXT, anchor="w", justify="left",
-                                    font=theme.font(theme.SIZE_HEADING, "bold"), wraplength=wrap)
+                                    font=theme.font(theme.SIZE_HEADING, "semibold"), wraplength=self.title_wrap)
         self.title_label.pack(side="left", fill="x", expand=True)
         self.message_label = self.detail_label = None
         if message:
@@ -104,7 +111,7 @@ class Prompt(tk.Frame):
         self.text = tk.StringVar(self, value=entry or "")
         self._text_trace = None
         if entry is not None:
-            self.entry = ttk.Entry(body, textvariable=self.text)
+            self.entry = ttk.Entry(body, textvariable=self.text, style=theme.CARD_ENTRY)
             self.entry.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
             self.entry.selection_range(0, "end")
             self.entry.icursor("end")
@@ -125,9 +132,10 @@ class Prompt(tk.Frame):
         for index, (label, value, kind) in reversed(list(enumerate(specs))):
             if kind == "plain" and index == default and not danger:   # (no green go-ahead beside Delete)
                 kind = "primary"
-            button = PillButton(row, label, lambda v=value, i=index: self._chosen(i), bg="SURFACE",
-                                **self._button_style(kind))
-            button.pack(side="right", padx=theme.pad(theme.GAP, 0) if index < len(specs) - 1 else 0)
+            button = PillButton(row, label, lambda v=value, i=index: self._chosen(i), bg="SURFACE", kind=kind)
+            # Packed from the right: every button but the rightmost keeps its gap on its right side,
+            # between it and the button after it.
+            button.pack(side="right", padx=(0, theme.px(theme.GAP_MEDIUM)) if index < len(specs) - 1 else 0)
             self.buttons.insert(0, button)
             self.values.insert(0, value)
 
@@ -202,15 +210,6 @@ class Prompt(tk.Frame):
         room = self.window.winfo_height()
         y = max(theme.px(theme.GAP_MEDIUM), int((room - height) * 0.4))
         self.place_configure(y=y, width=self._width())
-
-    @staticmethod
-    def _button_style(kind: str) -> dict:
-        if kind == "primary":
-            return dict(fill="SELECT", fg="ON_ACCENT")
-        if kind == "danger":
-            # A red ring, ordinary text: red text on the hover grey would be under WCAG AA's 4.5:1 in Dark.
-            return dict(fill=None, fg="TEXT", outline="DANGER", hover_fill="SURFACE_HI")
-        return dict(fill=None, fg="TEXT", outline="BORDER", hover_fill="SURFACE_HI")
 
     def _retag(self, widget: tk.Misc):
         """Swap each widget's window tag for the box's own (see __init__)."""
@@ -411,6 +410,13 @@ class MenuItems:
         return next(item for item in self.items if item.label == label and not item.separator)
 
 
+def separator(parent: tk.Misc) -> tk.Frame:
+    """A menu's separator: a 1 px BORDER line, MENU_INSET in from the sides like the words."""
+    line = tk.Frame(parent, bg=theme.BORDER, height=1)
+    line.pack(fill="x", padx=theme.px(theme.MENU_INSET), pady=theme.pad(theme.GAP_SMALL))
+    return line
+
+
 def _short(text: str) -> str:
     return text if len(text) <= MENU_TEXT else text[:MENU_TEXT - 1] + "…"
 
@@ -435,14 +441,12 @@ class PopupMenu(Popover):
     """A right-click menu (see the module's notes). Build it with add / add_check / add_separator /
     add_submenu, then `popup(x_root, y_root)`. It destroys itself when it closes."""
 
-    BACK = "‹"
-
     def __init__(self, window: tk.Misc):
         super().__init__(window, theme.px(MENU_MIN_WIDTH), scroll=True, transient=True, keys=True,
                          padding=(0, theme.GAP_SMALL))
         self.menu = MenuItems()
         self.view: MenuItems = self.menu     # what's on show: the menu, or a submenu
-        self.trail: list[MenuItems] = []     # the menus "above" the one on show (for ‹ / ←)
+        self.trail: list[MenuItems] = []     # the menus "above" the one on show (for the back row / ←)
         self.bind("<Right>", lambda e: self._enter_active() or "break")
         self.bind("<Left>", lambda e: self.back() or "break")
 
@@ -473,34 +477,34 @@ class PopupMenu(Popover):
             child.destroy()
         self.view = items
         if self.trail:
-            back = MenuRow(self.body, f"{self.BACK}  {items.title}", self.back, "←", closes=False)
-            back.label.configure(font=theme.font(theme.SIZE_BODY, "bold"))
+            back = MenuRow(self.body, items.title, self.back, closes=False, chevron="left")
+            back.back = True
             back.pack(fill="x")
-            tk.Frame(self.body, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_SMALL))
+            separator(self.body)
         shown = list(items.items)
         while shown and shown[-1].separator:   # never a line at the bottom
             shown.pop()
+        ticks = any(item.checked is not None for item in shown)
         for item in shown:
             if item.separator:
-                tk.Frame(self.body, bg=theme.BORDER, height=1).pack(
-                    fill="x", padx=theme.px(theme.GAP_MEDIUM), pady=theme.pad(theme.GAP_SMALL))
+                separator(self.body)
                 continue
             if item.submenu is not None:
                 row = MenuRow(self.body, item.label, lambda s=item.submenu: self.open_submenu(s), item.shortcut,
-                              enabled=item.enabled, closes=False)
+                              enabled=item.enabled, closes=False, ticks=ticks, chevron="right")
             else:
                 row = MenuRow(self.body, item.label, item.command or (lambda: None), item.shortcut,
-                              enabled=item.enabled, check=item.checked)
+                              enabled=item.enabled, check=item.checked, ticks=ticks)
             row.item = item
             row.pack(fill="x")
         self.wire_rows()
 
     def rows(self) -> list[MenuRow]:
-        """The rows on show (the ‹ row included when in a submenu)."""
+        """The rows on show (the back row included when in a submenu)."""
         return self.menu_rows()
 
     def open_submenu(self, items: MenuItems):
-        """Show a submenu in the menu's place (‹ / ← comes back)."""
+        """Show a submenu in the menu's place (its back row, or ←, comes back)."""
         self.trail.append(self.view)
         self._render(items)
         self.reseat()

@@ -21,9 +21,12 @@ album. Esc empties the box, then closes the panel; so does a click outside it. R
 for the rest (Add to playlist…, Show in Library, Show in Explorer, favourites), or drag it onto a
 tab to add it there.
 
-The panel sits under the tab strip, as wide as the window (centred, and no wider than
-PANEL_MAX_WIDTH); its columns follow its width: Title and Time when narrow (the artist then rides
-in the title), then Artist and Album, then Year and Quality.
+The panel sits just under the tab strip, as wide as the window (centred, and no wider than
+PANEL_MAX_WIDTH) and down to the window's foot — once centred, no taller than PANEL_MAX_HEIGHT;
+its columns follow its width: Title and Time when narrow (the artist then rides in the title), then
+Artist and Album, then Year and Quality. It looks like the app's other pop-overs (a 1 px EDGE rim),
+its list like the track list (frameless, the selected row a rounded green plate, section rows
+semibold, the slim scrollbar in the panel's right margin).
 
 `Actions` is what the panel (and the Library's song views) ask the player to do.
 """
@@ -56,6 +59,7 @@ POLL_MS = 30            # how often a search on its way is looked for
 ALBUM_LIMIT = 50        # albums listed (the count says how many match)
 ARTIST_LIMIT = 30
 PANEL_MAX_WIDTH = 960   # px at 100%: a wide window gets the panel centred, no wider than this
+PANEL_MAX_HEIGHT = 760  # px at 100%: …and no taller than this (narrower, it runs to the window's foot)
 NARROW, MEDIUM = 560, 820   # px at 100%: below NARROW, Title + Time; below MEDIUM, + Artist and Album
 COLUMNS = ("title", "artist", "album", "year", "quality", "time")
 HEADINGS = {"title": "Title", "artist": "Artist", "album": "Album", "year": "Year", "quality": "Quality",
@@ -251,7 +255,8 @@ class QuickSearch:
         self._note = ""                              # said in the status line until the next search
         self._pending: tuple[str, str] | None = None   # ↓ / Enter pressed in the box before its search came back
 
-        self.panel = tk.Frame(root, bg=theme.BG, highlightthickness=1, highlightbackground=theme.BORDER)
+        self.panel = tk.Frame(root, bg=theme.BG, highlightthickness=1, highlightbackground=theme.EDGE,
+                              highlightcolor=theme.EDGE)
         inner = ttk.Frame(self.panel, padding=theme.pad(theme.GAP_LARGE, theme.GAP_LARGE, theme.GAP_LARGE,
                                                         theme.GAP_MEDIUM))
         inner.pack(fill="both", expand=True)
@@ -264,11 +269,12 @@ class QuickSearch:
         for key, how in self._enter_keys():
             entry.bind(key, lambda e, h=how: self._act(h, first=True) or "break")
 
-        bold = tkfont.nametofont("TkDefaultFont").copy()
-        bold.configure(weight="bold")
+        # Section rows are semibold (a named font: the list measures its words with it).
+        bold = tkfont.Font(root=root._root(), font=theme.font(theme.SIZE_BODY, "semibold"))
         self._bold = bold
         self.list = VirtualTree(inner, COLUMNS, show="tree headings", on_activate=lambda i: self._act("play"),
-                                on_toggle=self._toggle, on_top_edge=self._back_to_box, fonts={"group": bold})
+                                on_toggle=self._toggle, on_top_edge=self._back_to_box, fonts={"group": bold},
+                                margin=True)
         self.list.frame.pack(fill="both", expand=True, pady=theme.pad(theme.GAP_MEDIUM, 0))
         tree = self.list.tree
         self.tree = tree
@@ -338,6 +344,7 @@ class QuickSearch:
 
     def _palette_changed(self, _palette):
         if self.panel.winfo_exists():
+            self.panel.configure(bg=theme.BG, highlightbackground=theme.EDGE, highlightcolor=theme.EDGE)
             self._colour_tags()
 
     # -- open and close ------------------------------------------------------------------------------
@@ -377,12 +384,15 @@ class QuickSearch:
             pass
 
     def _place(self):
-        """Under the tab strip, across the window (centred and capped when it's wide)."""
+        """Under the tab strip, across the window (centred and capped when it's wide or tall)."""
         margin = theme.px(Popover.MARGIN)
         room_w, room_h = self.root.winfo_width(), self.root.winfo_height()
         width = max(1, min(room_w - 2 * margin, theme.px(PANEL_MAX_WIDTH)))
         top = max(0, int(self.top()))
-        self.panel.place(x=(room_w - width) // 2, y=top, width=width, height=max(1, room_h - top - margin))
+        height = max(1, room_h - top - margin)
+        if room_w - 2 * margin > width:   # a big window: centred, and not a wall of results either
+            height = min(height, theme.px(PANEL_MAX_HEIGHT))
+        self.panel.place(x=(room_w - width) // 2, y=top, width=width, height=height)
         self.panel.lift()
 
     def _click_anywhere(self, event):

@@ -180,7 +180,7 @@ def test_a_closed_library_window_is_freed(root, library):
     assert len(root.tk.splitlist(traces)) == 2        # the box's own and the window's
     w.win.destroy()                            # the title bar's ×, as well as Esc / a choice (close)
     assert len(root.tk.splitlist(root.tk.call("trace", "info", "variable", str(var)))) == 0
-    assert w.search_var is None and w.view_var is None and w._bold is None
+    assert w.search_var is None and w.view_var is None
     del w, var
     gc.collect()
     assert window() is None and menu() is None
@@ -289,14 +289,19 @@ def test_controls_ignore_a_release_away_from_them(root):
     switch.pack()
     bar.set_tabs(["One", "Two"], 0, None)
     _pump(root, 0.2)
-    close = bar._tab_widgets[1].close
-    close.place(relx=1.0, x=-4, rely=0.45, anchor="e")
+    bar._pointer(bar.slot_x(1) + 5, theme.px(theme.ROW_Y))   # rest on tab 2: its close glyph shows
+    bar._reveal_x()
     _pump(root, 0.05)
+    x, y = bar._x_centre(1)
     far = 300
-    for widget in (close, setting, row, choices.labels["b"], switch.label):
+    bar.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+    _release(bar.canvas, x + far, y)
+    for widget in (setting, row, choices.labels["b"], switch.label):
         _release(widget, widget.winfo_width() + far, 2)
     assert (closed, flag.get(), ran, choice.get(), switch_var.get()) == ([], False, [], "a", False)
-    for widget in (close, setting, row, choices.labels["b"], switch.label):
+    bar.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+    _release(bar.canvas, x, y)
+    for widget in (setting, row, choices.labels["b"], switch.label):
         _release(widget, 2, 2)
     assert (closed, flag.get(), ran, choice.get(), switch_var.get()) == ([1], True, [1], "b", True)
 
@@ -398,7 +403,8 @@ def test_enter_in_a_delete_question_answers_no(root):
     later(lambda p: p.press_default())                      # Enter (held, or pressed again)
     assert popups.confirm(root, "Delete the playlist “Mix”?", ok="Delete", danger=True) is False
     box = seen[-1]
-    assert box.default == 1 and box.buttons[1].fill_colour() is None   # Cancel: plain, no green go-ahead
+    assert box.default == 1 and box.buttons[1].kind == "plain"         # Cancel: plain, no green go-ahead
+    assert box.buttons[1].fill_colour() == theme.SURFACE_HI
     later(lambda p: p._chosen(0))                           # a click on Delete
     assert popups.confirm(root, "Delete the playlist “Mix”?", ok="Delete", danger=True) is True
     direct = popups.Prompt(root, "Delete?", buttons=(("Delete", True, "danger"), ("Keep", False)), cancel=False)

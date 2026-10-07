@@ -105,6 +105,9 @@ Windows SmartScreen warns about an unknown publisher.
 - **Opens files from Explorer** (double-click, or *Open with* after the installer's optional task),
   and only one Ironbark runs at a time.
 - **Mini player** (Z): a small strip that stays on top, with its own position.
+- **Wide windows:** maximise it, or make it wider, and it splits in two — the cover and controls on
+  the left, the track list the full height on the right, with larger type. Covers are never
+  enlarged past their own pixels. **F11** is full screen (Esc leaves it).
 - **Light or dark** themes (or follow Windows); both meet the WCAG AA contrast guidelines.
 - **Files are identified by their contents**, so an MP3 renamed `.flac` is flagged.
 
@@ -242,6 +245,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+Shift+H | Snap the window to its home spot |
 | F1 · ? | Keyboard shortcuts (this list) |
 | Ctrl+Q | Quit Ironbark |
+| F11 | Full screen and back (Esc leaves it too) |
 | Esc | Close a menu or window (a search box: clear it first) |
 | A · B · X · Space | ABX window: hear A, B or X · stop or replay |
 | A · B · D · Space | Clipping (Hear it on): hear A, B or D · stop or replay |

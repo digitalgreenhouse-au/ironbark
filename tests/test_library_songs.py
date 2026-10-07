@@ -111,7 +111,7 @@ def test_album_column_shows_the_tag_and_long_names_end_with_an_ellipsis(root, tm
     # The narrow columns keep their room however narrow the window: nothing runs past its right edge.
     displayed = [str(c) for c in w.tree.cget("displaycolumns")]
     widths = sum(int(w.tree.column(c, "width")) for c in displayed)
-    assert widths <= w.tree.winfo_width() and int(w.tree.column("added", "width")) == theme.px(82)
+    assert widths <= w.tree.winfo_width() and int(w.tree.column("added", "width")) == theme.px(96)
     w.close()
 
 
