@@ -543,6 +543,7 @@ def dark_title_bar(window: tk.Misc) -> None:
 
 # -- switching palettes --------------------------------------------------------------------
 _hooks: list = []   # callables returning the on_change callback (or None once it's gone)
+_hooks_kept = 0     # how many hooks were alive at the last sweep (see on_change)
 
 
 def on_change(callback: Callable[[Palette], None]) -> Callable[[Palette], None]:
@@ -550,11 +551,24 @@ def on_change(callback: Callable[[Palette], None]) -> Callable[[Palette], None]:
     in place (Pillow pictures, Treeview tags, colours a window keeps between frames). A bound
     method is held weakly (it lives as long as its window); a callback that raises TclError
     (its window is gone) is dropped. Returns the callback."""
+    global _hooks_kept
+    # Widgets made and dropped all day (a menu per right-click) would otherwise leave their dead
+    # hooks here until the next palette change: sweep them out whenever the list has doubled.
+    if len(_hooks) >= 2 * _hooks_kept + 64:
+        _hooks[:] = [ref for ref in _hooks if ref() is not None]
+        _hooks_kept = len(_hooks)
     if hasattr(callback, "__self__"):
         _hooks.append(weakref.WeakMethod(callback))
     else:
         _hooks.append(lambda: callback)
     return callback
+
+
+def _drop_hook(ref):
+    try:
+        _hooks.remove(ref)
+    except ValueError:   # (already swept out: a hook added during a palette change sweeps too)
+        pass
 
 
 # Tk widget options that hold a colour.
@@ -649,9 +663,9 @@ def use(palette: Palette, root: tk.Misc | None = None) -> None:
     for ref in list(_hooks):
         callback = ref()
         if callback is None:
-            _hooks.remove(ref)
+            _drop_hook(ref)
             continue
         try:
             callback(palette)
         except tk.TclError:
-            _hooks.remove(ref)
+            _drop_hook(ref)

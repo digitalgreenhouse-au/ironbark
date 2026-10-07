@@ -47,8 +47,13 @@ def _fold(text: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
 
 
+def _haystack(track: Track) -> str:
+    """What a search looks through for a song: title, artist, album and file name, folded."""
+    return _fold(" ".join((track.title, track.artist, track.album, track.path.stem)))
+
+
 def matches(track: Track, words: list[str]) -> bool:
-    haystack = _fold(" ".join((track.title, track.artist, track.album, track.path.stem)))
+    haystack = _haystack(track)
     return all(word in haystack for word in words)
 
 
@@ -163,6 +168,14 @@ class PlaylistView:
         self.playing: int | None = None         # (0.20.0) the playing song's index, marked in the list
         self.hovered: str | None = None         # the row under the pointer
         self._numbers: dict[int, int] = {}      # each listed song's number in the # column
+        # Kept per list (set_tracks), so a pause in typing doesn't redo them over a whole library:
+        self._groups: list = []                 # its albums: (folder, first index, end index)
+        self._haystacks: list[str] | None = None   # each song's folded search text (made at the first search)
+        self._last_search: tuple[list[str], list[int]] | None = None   # words, and the songs they found
+        self._made: set[str] = set()            # rows made in the tree, listed or hidden
+        self._titles: dict[int, str] = {}       # the title each made song row shows
+        self._listed: set[str] = set()          # rows listed now
+        self._songs: list[str] = []             # song rows listed now, top to bottom
 
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
@@ -262,43 +275,106 @@ class PlaylistView:
         self._tracks = list(tracks)
         self.playing = None
         self.flat = flat
+        self._groups = [(None, 0, len(self._tracks))] if flat else group_by_album(self._tracks)
+        self._haystacks = None
+        self._last_search = None
+        self.hovered = None
+        if self._made:   # every row of the last list, hidden ones too
+            self.tree.delete(*self._made)
+        self._made.clear()
+        self._titles.clear()
+        self._numbers.clear()
         self._render()
 
+    def _title(self, i: int, searching: bool) -> str:
+        """Song i's title cell: with its artist while searching and in a playlist (unless the
+        Artist column shows it), and a note when its file has gone."""
+        track = self._tracks[i]
+        show_artist = (searching or self.flat) and track.artist and "artist" not in self.columns
+        title = f"{track.title}  ·  {track.artist}" if show_artist else track.title
+        return title + "   (file not found)" if track.missing else title
+
+    def _matching(self, words: list[str]) -> list[int] | None:
+        """The songs matching every word, in list order (None: no words, so every song). Each
+        song's search text is folded once per list, and while the words only grow (more typing)
+        only the songs found last time are looked through again."""
+        if not words:
+            self._last_search = None
+            return None
+        if self._haystacks is None:
+            self._haystacks = [_haystack(track) for track in self._tracks]
+        haystacks, candidates = self._haystacks, range(len(self._tracks))
+        last = self._last_search
+        if last is not None and all(any(old in new for new in words) for old in last[0]):
+            candidates = last[1]   # every song these words find, the last ones found too
+        found = [i for i in candidates if all(word in haystacks[i] for word in words)]
+        self._last_search = (words, found)
+        return found
+
     def _render(self):
-        self.tree.delete(*self.tree.get_children())
-        self._album_start.clear()
-        self._numbers.clear()
-        self.hovered = None
-        tracks = self._tracks
+        """List the songs the search finds (all of them with no search) under their album
+        headers. A row is made once per list and after that only listed or hidden, the whole
+        order set in one Tk call: deleting and re-making every row on each pause in typing froze
+        the window for a second or more on a list of a whole library."""
+        if self._search_job:   # (this shows the search as it stands: a pending one would only repeat it)
+            self.tree.after_cancel(self._search_job)
+            self._search_job = None
+        self._set_hover(None)
+        tree, tracks = self.tree, self._tracks
         words = [_fold(w) for w in self.query.get().split()]
-        groups = [(None, 0, len(tracks))] if self.flat else group_by_album(tracks)
-        grouped = len(groups) > 1
-        shown = 0
-        for g, (folder, start, end) in enumerate(groups):
-            picked = [i for i in range(start, end) if not words or matches(tracks[i], words)]
+        found = self._matching(words)
+        grouped = len(self._groups) > 1
+        listed: list[str] = []
+        self._songs = []
+        self._album_start.clear()
+        at = 0   # where the next album's songs start in `found`
+        for g, (folder, start, end) in enumerate(self._groups):
+            if found is None:
+                picked = range(start, end)
+            else:
+                stop = at
+                while stop < len(found) and found[stop] < end:
+                    stop += 1
+                picked, at = found[at:stop], stop
             if not picked:
                 continue
             if grouped:
                 header = f"a{g}"
-                self.tree.insert("", "end", iid=header, tags=("album",),
-                                 values=("", album_heading(tracks[start:end], folder), "", "",
-                                         _quality(tracks[start])))
+                if header not in self._made:
+                    tree.insert("", "end", iid=header, tags=("album",),
+                                values=("", album_heading(tracks[start:end], folder), "", "", _quality(tracks[start])))
+                    self._made.add(header)
+                listed.append(header)
                 self._album_start[header] = picked[0] if words else start
             for i in picked:
-                track = tracks[i]
-                number = (i - start + 1) if grouped else (i + 1)
-                show_artist = (words or self.flat) and track.artist and "artist" not in self.columns
-                title = f"{track.title}  ·  {track.artist}" if show_artist else track.title
-                if track.missing:
-                    title += "   (file not found)"
-                self._numbers[i] = number
-                playing = i == self.playing
-                self.tree.insert("", "end", iid=str(i), tags=("playing",) if playing else (),
-                                 values=(PLAYING_MARK if playing else number, title, track.artist, track.album,
-                                         _clock(track.duration)))
-                shown += 1
-        if words and not shown:
-            self.tree.insert("", "end", iid="none", tags=("note",), values=("", "No matches", "", "", ""))
+                iid, title = str(i), self._title(i, bool(words))
+                if iid not in self._made:
+                    track = tracks[i]
+                    number = self._numbers[i] = (i - start + 1) if grouped else (i + 1)
+                    playing = i == self.playing
+                    tree.insert("", "end", iid=iid, tags=("playing",) if playing else (),
+                                values=(PLAYING_MARK if playing else number, title, track.artist, track.album,
+                                        _clock(track.duration)))
+                    self._made.add(iid)
+                elif self._titles[i] != title:
+                    tree.set(iid, "title", title)
+                self._titles[i] = title
+                listed.append(iid)
+                self._songs.append(iid)
+        if words and not self._songs:
+            if "none" not in self._made:
+                tree.insert("", "end", iid="none", tags=("note",), values=("", "No matches", "", "", ""))
+                self._made.add("none")
+            listed.append("none")
+        # A row the search hides can't stay selected or focused: Enter would play a song out of sight.
+        listing = set(listed)
+        hidden = [iid for iid in tree.selection() if iid not in listing]
+        if hidden:
+            tree.selection_remove(*hidden)
+        if tree.focus() and tree.focus() not in listing:
+            tree.focus("")
+        tree.set_children("", *listed)
+        self._listed = listing
 
     # -- search ----------------------------------------------------------------
     @property
@@ -316,17 +392,29 @@ class PlaylistView:
     def _query_changed(self):
         if self._search_job:
             self.tree.after_cancel(self._search_job)
-        self._search_job = self.tree.after(SEARCH_DELAY_MS, self._render)  # wait for a pause in typing
+        self._search_job = self.tree.after(SEARCH_DELAY_MS, self._search_now)  # wait for a pause in typing
+
+    def _search_now(self):
+        self._search_job = None
+        self._render()
+
+    def _flush_search(self):
+        """Words typed but not yet searched for (the pause hasn't come): search for them now, so a
+        quick Enter or Down acts on what was typed, not on the list from before."""
+        if self._search_job:
+            self._render()
 
     def _focus_results(self):
-        rows = [r for r in self.tree.get_children() if r.isdigit()]
+        self._flush_search()
+        rows = self._songs
         if rows:
             self.tree.focus_set()
             self.tree.selection_set(rows[0])
             self.tree.focus(rows[0])
 
     def _play_first_result(self):
-        rows = [r for r in self.tree.get_children() if r.isdigit()]
+        self._flush_search()
+        rows = self._songs
         if rows:
             self.on_play(int(rows[0]))
 
@@ -374,7 +462,7 @@ class PlaylistView:
 
     def select(self, index: int):
         iid = str(index)
-        if self.tree.exists(iid):
+        if iid in self._listed:
             self.tree.selection_set(iid)
             self.tree.focus(iid)
             self.tree.see(iid)
@@ -390,7 +478,7 @@ class PlaylistView:
         """Where a dragged song would land: the index of the song the drop line sits above
         (len = after the last). Only meaningful for a flat list (a playlist) with no search."""
         y = y_root - self.tree.winfo_rooty()
-        rows = [r for r in self.tree.get_children() if r.isdigit()]
+        rows = self._songs
         if not rows:
             return 0
         iid = self.tree.identify_row(y)
@@ -406,11 +494,11 @@ class PlaylistView:
         if index is None:
             self._drop_line.place_forget()
             return
-        rows = [r for r in self.tree.get_children() if r.isdigit()]
+        rows = self._songs
         if not rows:
             self._drop_line.place_forget()
             return
-        if str(index) in rows and self.tree.bbox(str(index)):
+        if str(index) in self._listed and self.tree.bbox(str(index)):
             y = self.tree.bbox(str(index))[1]
         else:
             last = self.tree.bbox(rows[-1])
@@ -430,7 +518,7 @@ class PlaylistView:
         """The playing song: marked (♪, green bold), selected and scrolled into view."""
         self._mark_playing(index)
         iid = str(index)
-        if self.tree.exists(iid):
+        if iid in self._listed:   # (a song the search hides keeps its mark, unselected)
             self.tree.selection_set(iid)
             self.tree.see(iid)
 

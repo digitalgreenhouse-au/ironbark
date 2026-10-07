@@ -194,7 +194,7 @@ def test_switch_flips_and_greys_out(root):
     switch.toggle.toggle()
     assert var.get() is False and heard == [False]          # greyed out: clicks do nothing
     switch.state(["!disabled"])
-    switch.label.event_generate("<ButtonRelease-1>")
+    switch.label.event_generate("<ButtonRelease-1>", x=2, y=2)   # let go over the words
     assert var.get() is True
 
 
