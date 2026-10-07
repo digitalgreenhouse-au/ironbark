@@ -19,9 +19,16 @@ are listed (library.split_cue_images).
 - `added`: on the very first build, the file's creation time (when it was copied into the
   library, on Windows); after that, the moment the index first noticed it. A changed file keeps
   its `added` and `seen` — a tag edit is a change, never something new.
+- **Not being able to see something is never taken as it being deleted.** A library folder that
+  isn't there (a drive unplugged, a network share asleep), can't be listed, or is suddenly empty
+  while the index holds music leaves the index exactly as it was: the diff carries an `error`.
+  A subfolder that can't be listed, or a file that can't be looked at, keeps its entries as
+  they were; a file that couldn't be read just now (library.Track.unreadable) is read again on
+  the next look, as a change — so none of them comes back later as "new" with reset dates.
 
-The file is written atomically (a temporary file, then a swap), like playlists.py, so a crash
-can't leave half an index behind; a damaged or out-of-date index is simply rebuilt.
+The file is written atomically (a temporary file, flushed to the disk, then a swap), like
+playlists.py, so a crash can't leave half an index behind; a damaged or out-of-date index is
+simply rebuilt.
 """
 
 from __future__ import annotations
@@ -38,8 +45,8 @@ from typing import Callable
 from . import __version__, audiofile, settings
 from .audiofile import CuePath, CueRange
 from .browse import albums_from
-from .library import (AUDIO_EXTENSIONS, _DISC_FOLDER, Album, Track, album_folder, play_order, read_track,
-                      split_cue_images)
+from .library import (_DISC_FOLDER, Album, Track, album_folder, is_music_name, play_order, read_track,
+                      skip_folder, split_cue_images)
 
 FILE_NAME = "library_index.json"
 FORMAT = 1  # bump when read_track() learns something new, so every file is read again once
@@ -50,7 +57,7 @@ def index_path() -> Path:
 
 
 # -- tracks to and from JSON ---------------------------------------------------------------
-_SKIP = {"path", "embedded_cue", "missing"}
+_SKIP = {"path", "embedded_cue", "missing", "unreadable"}
 _FIELDS = [f for f in dataclasses.fields(Track) if f.name not in _SKIP]
 _DEFAULTS = {f.name: f.default for f in _FIELDS if f.default is not dataclasses.MISSING}
 
@@ -87,6 +94,7 @@ class Diff:
     changed: list[Path] = field(default_factory=list)
     removed: list[Path] = field(default_factory=list)
     waiting: list[Path] = field(default_factory=list)   # still being copied: left for next time
+    error: str = ""     # the library folder couldn't be looked at: nothing was compared or changed
 
     @property
     def nothing(self) -> bool:
@@ -115,6 +123,7 @@ class _Walk:
     files: dict[str, tuple[int, int, float]]   # path -> (size, modified ns, created s)
     cues: dict[str, list[list]]                # folder -> [[name, size, modified ns], …] of its .cue files
     folders: dict[str, list[str]]              # folder -> its music files
+    unlisted: list[str] = field(default_factory=list)   # folders that couldn't be listed
 
 
 def _same_file(entry: Entry | None, stat: tuple) -> bool:
@@ -157,42 +166,52 @@ class LibraryIndex:
 
     def save(self) -> None:
         """Write the index atomically. A failure is ignored: the index is only a speed-up."""
-        with self._lock:
-            data = {"format": FORMAT, "app": __version__, "root": str(self.root), "built": self.built,
-                    "saved": time.time(), "cues": self.cues,
-                    "files": {name: {"size": e.size, "mtime": e.mtime, "added": e.added, "seen": e.seen,
-                                     "tracks": [track_to_dict(t) for t in e.tracks]}
-                              for name, e in self.entries.items()}}
-            text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-            temporary.write_text(text, encoding="utf-8")
-            os.replace(temporary, self.path)  # never a half-written index
-        except OSError:
+            with self._lock:
+                data = {"format": FORMAT, "app": __version__, "root": str(self.root), "built": self.built,
+                        "saved": time.time(), "cues": self.cues,
+                        "files": {name: {"size": e.size, "mtime": e.mtime, "added": e.added, "seen": e.seen,
+                                         "tracks": [track_to_dict(t) for t in e.tracks]}
+                                  for name, e in self.entries.items()}}
+                # ASCII only: a file name that isn't valid Unicode (Windows allows some) is written
+                # as an escape that reads back as the same name, where UTF-8 couldn't hold it.
+                text = json.dumps(data, ensure_ascii=True, separators=(",", ":"))
+            settings.write_file(self.path, text)  # never a half-written index
+        except Exception:  # noqa: BLE001 — the index is only a speed-up; never fatal
             pass
 
     # -- looking at the folder ---------------------------------------------------------------
     def _walk(self) -> _Walk:
+        """The folder as it is now. What couldn't be seen is taken as it was: a music file whose
+        size and time couldn't be read, or anything under a folder that couldn't be listed, keeps
+        its indexed details (and its folder's CUE sheets), so it's neither changed nor gone."""
         files: dict[str, tuple[int, int, float]] = {}
         cues: dict[str, list[list]] = {}
         folders: dict[str, list[str]] = {}
-        for folder, _dirs, names in os.walk(self.root):
+        unlisted: list[str] = []
+        unknown: set[str] = set()
+
+        def cant_list(error: OSError):
+            unlisted.append(error.filename if isinstance(error.filename, str) else str(self.root))
+
+        for folder, dirs, names in os.walk(self.root, onerror=cant_list):
+            dirs[:] = [d for d in dirs if not skip_folder(d)]
             music = []
             for name in names:
-                if Path(name).suffix.lower() not in AUDIO_EXTENSIONS:
+                if not is_music_name(name):
                     continue
                 path = os.path.join(folder, name)
                 try:
                     st = os.stat(path)
                 except OSError:
+                    unknown.add(path)
                     continue
                 files[path] = (st.st_size, st.st_mtime_ns, float(getattr(st, "st_birthtime", st.st_mtime)))
                 music.append(path)
             if music:
                 folders[folder] = music
                 sheet = []
-                for name in sorted(n for n in names if n.lower().endswith(".cue")):
+                for name in sorted(n for n in names if n.lower().endswith(".cue") and not n.startswith("._")):
                     try:
                         st = os.stat(os.path.join(folder, name))
                     except OSError:
@@ -200,7 +219,45 @@ class LibraryIndex:
                     sheet.append([name, st.st_size, st.st_mtime_ns])
                 if sheet:
                     cues[folder] = sheet
-        return _Walk(files, cues, folders)
+        hidden = tuple(os.path.join(folder, "") for folder in unlisted)   # (each ends in a separator)
+        if unknown or hidden:
+            with self._lock:
+                for name, entry in self.entries.items():
+                    if name not in files and (name in unknown or name.startswith(hidden)):
+                        files[name] = (entry.size, entry.mtime, entry.added)
+                for folder, sheet in self.cues.items():
+                    if folder not in cues and os.path.join(folder, "").startswith(hidden):
+                        cues[folder] = sheet
+        return _Walk(files, cues, folders, unlisted)
+
+    def _unreachable(self, walk: _Walk | None = None) -> str:
+        """Why the library folder can't be looked at just now ("" when it can): it isn't there (a
+        drive unplugged, a network share asleep), it couldn't be listed, or — after a walk that
+        found no music at all — it's suddenly empty while the index holds music, as the mount
+        point of an unplugged drive is."""
+        if not self.root.is_dir():
+            return f"Can't see the library folder {self.root}"
+        if walk is None:
+            return ""
+        if str(self.root) in walk.unlisted:
+            return f"Can't read the library folder {self.root}"
+        if not walk.files and self.entries:
+            try:
+                empty = not os.listdir(self.root)
+            except OSError:
+                empty = True
+            if empty:
+                return f"The library folder {self.root} is empty"
+        return ""
+
+    def _look(self) -> tuple[_Walk | None, str]:
+        """A walk of the folder, or why it can't be looked at just now (checked again after the
+        walk: a drive can go while it's being walked)."""
+        problem = self._unreachable()
+        if problem:
+            return None, problem
+        walk = self._walk()
+        return walk, self._unreachable(walk)
 
     def _compare(self, walk: _Walk) -> tuple[Diff, set[str]]:
         """The diff, and the folders whose tracks must be read again."""
@@ -227,17 +284,24 @@ class LibraryIndex:
         return diff, dirty
 
     def changes(self) -> Diff:
-        """What's added / changed / removed since the index last looked; nothing is read or saved."""
-        return self._compare(self._walk())[0]
+        """What's added / changed / removed since the index last looked; nothing is read or saved.
+        (Only the diff's `error` when the folder can't be looked at just now.)"""
+        walk, problem = self._look()
+        return Diff(error=problem) if problem else self._compare(walk)[0]
 
     # -- bringing it up to date ----------------------------------------------------------------
     def refresh(self, hold: Callable[[str, tuple], bool] | None = None) -> Diff:
         """Bring the index up to date with the folder, reading tags only for what changed; saved
         when anything did. Safe to call from any thread (one refresh runs at a time).
         `hold(path, (size, modified ns, created s))`: asked about each new or changed file; True =
-        it's still being written, leave it for next time (it goes in the diff's `waiting`)."""
+        it's still being written, leave it for next time (it goes in the diff's `waiting`).
+        When the folder can't be looked at just now, nothing is changed or saved and the diff
+        says why in its `error` (the next refresh looks again)."""
         with self._refreshing:
-            walk = self._walk() if self.root.is_dir() else _Walk({}, {}, {})
+            walk, problem = self._look()
+            if problem:
+                self.last_diff = Diff(error=problem)
+                return self.last_diff
             waiting = self._hold_back(walk, hold) if hold is not None else []
             diff, dirty = self._compare(walk)
             diff.waiting = waiting
@@ -272,11 +336,17 @@ class LibraryIndex:
                     by_file.setdefault(str(audiofile.real_path(track.path)), []).append(track)
                 with self._lock:
                     for name, found in by_file.items():
-                        if name not in walk.files or not found:
-                            self.entries.pop(name, None)  # unreadable just now: tried again next time
+                        old = self.entries.get(name)
+                        if name not in walk.files:
+                            self.entries.pop(name, None)
+                            continue
+                        if not found:  # couldn't be read just now: what was known stays, read again next time
+                            if old is not None:
+                                old.mtime = -1
                             continue
                         size, mtime, created = walk.files[name]
-                        old = self.entries.get(name)
+                        if any(t.unreadable for t in found):
+                            mtime = -1  # only its name could be read just now: read it again next time
                         added = old.added if old else (min(created, now) if first_build else now)
                         self.entries[name] = Entry(size, mtime, added, old.seen if old else now,
                                                    [dataclasses.replace(t, embedded_cue=None) for t in found])
@@ -358,15 +428,15 @@ class LibraryIndex:
         paths: list[str] = []
         try:
             if whole_tree:
-                for here, _dirs, names in os.walk(folder):
-                    paths += [os.path.join(here, n) for n in names if Path(n).suffix.lower() in AUDIO_EXTENSIONS]
+                for here, dirs, names in os.walk(folder):
+                    dirs[:] = [d for d in dirs if not skip_folder(d)]
+                    paths += [os.path.join(here, n) for n in names if is_music_name(n)]
             else:
                 for entry in folder.iterdir():
-                    if entry.is_file() and entry.suffix.lower() in AUDIO_EXTENSIONS:
+                    if entry.is_file() and is_music_name(entry.name):
                         paths.append(str(entry))
                     elif entry.is_dir() and _DISC_FOLDER.match(entry.name):
-                        paths += [str(p) for p in entry.iterdir()
-                                  if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
+                        paths += [str(p) for p in entry.iterdir() if p.is_file() and is_music_name(p.name)]
         except OSError:
             return None
         tracks: list[Track] = []
@@ -396,8 +466,9 @@ class LibraryIndex:
 
 
 def _read_all(files: list[str]) -> list[Track]:
-    """read_track for each file; one that vanished or can't be opened is left out (the next
-    refresh sees it as removed, or tries again)."""
+    """read_track for each file; one that vanished meanwhile is left out (the next refresh sees
+    it as removed, or tries again). One that couldn't be read just now (locked, a network drive
+    dropping out) comes back marked `unreadable`, and refresh reads it again next time."""
     tracks = []
     for name in files:
         try:
@@ -410,7 +481,7 @@ def _read_all(files: list[str]) -> list[Track]:
 def _cue_sheet(folder: str) -> list[list] | None:
     sheet = []
     try:
-        names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".cue"))
+        names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".cue") and not n.startswith("._"))
     except OSError:
         return None
     for name in names:

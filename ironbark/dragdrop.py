@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .library import AUDIO_EXTENSIONS
+from .library import is_music_name
 from .playlists import EXTENSIONS as PLAYLIST_EXTENSIONS
 
 CUE_EXTENSIONS = {".cue"}
@@ -52,7 +52,7 @@ def _has_music_files(folder: Path) -> bool:
     """Music files directly in `folder` (not searched below it: the folder above a stray .cue
     could be a whole drive)."""
     try:
-        return any(p.suffix.lower() in AUDIO_EXTENSIONS and p.is_file() for p in folder.iterdir())
+        return any(is_music_name(p.name) and p.is_file() for p in folder.iterdir())
     except OSError:
         return False
 
@@ -62,7 +62,8 @@ class DropPlan:
     folders: list[Path] = field(default_factory=list)     # folders with music in them, in drop order
     files: list[Path] = field(default_factory=list)       # loose music files, in drop order
     playlists: list[Path] = field(default_factory=list)   # .m3u / .m3u8 files
-    cues: list[Path] = field(default_factory=list)        # .cue sheets (their album, via cue_folder)
+    cues: list[Path] = field(default_factory=list)        # .cue sheets
+    cue_folders: list[Path] = field(default_factory=list)  # the albums the cues belong to (cue_folder)
     not_music: list[Path] = field(default_factory=list)   # files that aren't music, playlists or cues
     missing: list[Path] = field(default_factory=list)     # gone by the time we looked
     empty: list[Path] = field(default_factory=list)       # folders with no music anywhere inside
@@ -90,7 +91,8 @@ class DropPlan:
 def plan_drop(paths: list[Path | str], has_music: Callable[[Path], bool] | None = None) -> DropPlan:
     """Sort what was dropped into what the player can open. `has_music(folder)` says whether a
     folder holds any music (default: looks for the first audio file, stopping as soon as it finds
-    one). Touches the disk, so call it off the window's thread for big drops."""
+    one). Touches the disk (a dropped .cue is read here to find its album), so call it off the
+    window's thread; `actions_for` then needs nothing more from the disk."""
     if has_music is None:
         from .artwork import first_audio_file
 
@@ -113,12 +115,17 @@ def plan_drop(paths: list[Path | str], has_music: Callable[[Path], bool] | None 
             plan.missing.append(path)
         else:
             suffix = path.suffix.lower()
-            if suffix in AUDIO_EXTENSIONS:
+            if path.name.startswith("._"):  # macOS's companion files: Finder data, whatever the name
+                plan.not_music.append(path)
+            elif is_music_name(path.name):
                 plan.files.append(path)
             elif suffix in PLAYLIST_EXTENSIONS:
                 plan.playlists.append(path)
             elif suffix in CUE_EXTENSIONS:
                 plan.cues.append(path)
+                folder = cue_folder(path)
+                if folder not in plan.cue_folders:
+                    plan.cue_folders.append(folder)
             else:
                 plan.not_music.append(path)
     return plan
@@ -137,13 +144,9 @@ class Action:
 
 
 def actions_for(plan: DropPlan, on_tab: bool) -> list[Action]:
-    """What to do with a drop: on the window (on_tab False) or on a tab (True)."""
-    cue_folders = []
-    for cue in plan.cues:
-        folder = cue_folder(cue)
-        if folder not in plan.folders and folder not in cue_folders:
-            cue_folders.append(folder)
-    folders = plan.folders + cue_folders
+    """What to do with a drop: on the window (on_tab False) or on a tab (True). No disk work:
+    safe on the window's thread."""
+    folders = plan.folders + [folder for folder in plan.cue_folders if folder not in plan.folders]
     if on_tab:
         if not (folders or plan.files or plan.playlists):
             return []
