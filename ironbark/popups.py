@@ -68,6 +68,15 @@ class Prompt(tk.Frame):
                  validate: Callable[[str], str | None] | None = None, tone: str = "plain",
                  cover: bool = False):
         self.window = window
+        # Where the keyboard was (the track list, a Settings button): it goes back there when the box
+        # is answered, or keys would go to the bare window until a click.
+        try:
+            self._keys_before = str(window.tk.call("focus", "-lastfor", window))
+        except tk.TclError:
+            self._keys_before = ""
+        for other in Prompt.stack:   # (in a box under this one: where the keyboard was before that box)
+            if self._keys_before == str(other) or self._keys_before.startswith(f"{other}."):
+                self._keys_before = other._keys_before
         self.cover = None
         if cover:   # nothing else of the window shows while the warning is up
             self.cover = tk.Frame(window, bg=theme.BG)
@@ -337,6 +346,22 @@ class Prompt(tk.Frame):
             self.destroy()
         if Prompt.stack:   # a box under this one gets the grab back
             Prompt.stack[-1]._take_over()
+        else:
+            self._give_keys_back()
+
+    def _give_keys_back(self):
+        """The keyboard back where it was before the box, if that's still there and on show."""
+        before, self._keys_before = self._keys_before, ""
+        if not before:
+            return
+        try:
+            call = self.window.tk.call
+            shown = (self.window.winfo_exists() and int(call("winfo", "exists", before))
+                     and int(call("winfo", "viewable", before)))
+            if shown:
+                call("focus", before)   # (as focus_set: another app that has the keyboard keeps it)
+        except tk.TclError:
+            pass
 
     def _destroyed(self, event):
         if event.widget is not self:

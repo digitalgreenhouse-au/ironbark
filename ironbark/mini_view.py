@@ -136,6 +136,11 @@ class MiniView(tk.Frame):
         self.seek = controls.Slider(text, on_release=on_seek, height=SEEK_HEIGHT)
         self.seek.pack(side="bottom", fill="x")
         Tooltip(self.title_label, lambda: self.title_label.cget("text"))   # a long title is cut off
+        # Tab follows the stacking order, which is the order they were made (right to left, for the
+        # packing): raised left to right, Tab goes seek bar, previous, play, next … and Close last.
+        for widget in (text, self.previous_button, self.play_button, self.next_button, self.status_dot,
+                       self.settings_button, self.full_button, self.close_button):
+            self.tk.call("raise", str(widget))   # (a canvas's own lift() raises its items instead)
 
         # No title bar in mini mode either: the strip's empty parts drag the window.
         for widget in (self, text, self.title_label, self.sub_label):
