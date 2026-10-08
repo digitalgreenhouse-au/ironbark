@@ -112,6 +112,29 @@ def test_starting_in_bit_perfect_mode_checks_the_device_volume(make_window, monk
     assert told == ["Volume turned down to protect your ears"] and not errors
 
 
+def test_a_new_system_default_gets_the_same_ear_check_straight_away(make_window, monkeypatch):
+    """Bit-perfect on the system default, and Windows makes another device the default: the player
+    waits (volume_check_due), and the window checks the new device at once, as when one is chosen."""
+    from test_light_mini import FakePlayer
+
+    told, checked = [], []
+    monkeypatch.setattr(ui.devices, "exclusive_supported", lambda: True)
+    monkeypatch.setattr(FakePlayer, "refresh_hardware_volume", lambda self, *device: True)
+    monkeypatch.setattr(ui.popups, "tell", lambda window, title, *args, **kwargs: told.append(title))
+    window, root, player, errors = make_window(exclusive=True, volume=1.0)
+    assert player.volume == 1.0 and not told                   # the default it opened on turns itself down
+
+    def check(self, *device):
+        checked.append(device)
+        self.volume_check_due = False
+        return False                                           # the new default has no volume control
+    monkeypatch.setattr(FakePlayer, "refresh_hardware_volume", check)
+    player.volume_check_due = True                             # (the player found another device there)
+    _pump(root, 0.6)
+    assert checked == [()] and player.volume == pytest.approx(SAFE_VOLUME)
+    assert told == ["Volume turned down to protect your ears"] and not errors
+
+
 # -- a song from Up next with no tab behind it ---------------------------------------------------
 def test_a_song_from_up_next_with_no_tab_behind_it_can_be_paused():
     queued = song("C:/Music/Other/03.flac", "Queued")

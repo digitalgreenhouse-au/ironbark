@@ -63,8 +63,10 @@ class SleepTimer:
                 playing = True   # (waiting for the network, about to play by itself: it still has to stop)
             if not playing:
                 self.state = DONE   # nothing playing when the time is up: nothing to do
-            elif status.output is not None and status.output.exclusive:
-                self.player.set_stop_after("song")   # bit-perfect: stop at the next song boundary
+            elif status.output.exclusive if status.output is not None else self.player.exclusive:
+                # Bit-perfect (with no stream open yet — a song waiting for the network — the mode
+                # chosen, which it will start in): stop at the next song boundary.
+                self.player.set_stop_after("song")
                 self.state = AT_BOUNDARY
             elif self.player.fade_out(FADE_SECONDS):
                 self.state = FADING

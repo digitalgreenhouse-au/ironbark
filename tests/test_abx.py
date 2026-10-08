@@ -342,6 +342,9 @@ class WindowPlayer:
     def status(self):
         return SimpleNamespace(state=State.PAUSED)
 
+    def check_default(self):
+        return None
+
 
 def test_abx_window_runs_a_whole_test_without_sound(root, tmp_path, monkeypatch, no_device):
     from ironbark.abx_window import AbxWindow

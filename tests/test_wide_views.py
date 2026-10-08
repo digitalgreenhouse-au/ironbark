@@ -54,10 +54,10 @@ def test_up_next_docks_with_the_pop_overs_actions(make_window, monkeypatch):
     assert dock.tree.item("0", "values")[2] == "Song One"
     assert pv.count_label.cget("text").startswith("Up next · 2 songs")
     played = []
-    monkeypatch.setattr(player, "play_queued", lambda position: played.append(position))
+    monkeypatch.setattr(player, "play_queued", lambda entry: played.append(entry))
     dock.tree.selection_set("1")
     dock.play_selected()                                       # double-click / Enter: play it now
-    assert played == [1]
+    assert played == [player.queue[1]]                         # (that entry: the same song is queued twice)
     dock.tree.selection_set("0")
     dock.remove_selected()                                     # Delete: take it out
     _pump(root, 0.3)
@@ -221,6 +221,41 @@ def test_docked_up_next_rows_follow_downloads_without_redrawing_the_list(make_wi
     window._unqueue(2)                                         # a song taken out: written afresh
     _pump(root, 0.4)
     assert rebuilt and tree.get_children() == ("0", "1") and not errors
+
+
+def test_docked_up_next_keeps_the_songs_selected_as_up_next_moves_on(make_window, monkeypatch):
+    """The selection is songs, not rows: when the first song in Up next starts playing (it leaves the
+    list), the songs chosen stay chosen one row up, and Delete or Play acts on them — never on a
+    neighbour that moved into their place."""
+    from ironbark.library import Track
+
+    window, root, player, errors = _open(make_window)
+    songs = [Track(player.track.path, f"Song {letter}", duration=60.0) for letter in "ABCD"]
+    window._queue_tracks(songs, False)
+    window.set_view("up_next")
+    _pump(root, 0.4)
+    dock, tree = window._up_next_view, window._up_next_view.tree
+    c = player.queue[2]
+    tree.selection_set("2")                                    # Song C
+    tree.focus("2")
+    with player._lock:
+        player.queue = player.queue[1:]                        # Song A starts playing: it leaves Up next
+    _pump(root, 0.4)
+    assert tree.selection() == ("1",) and dock.selected() is c
+    played = []
+    monkeypatch.setattr(player, "play_queued", lambda entry: played.append(entry))
+    dock.play_selected()
+    assert played == [c]                                       # Song C, not Song D
+    dock.remove_selected()                                     # Delete: Song C goes, and nothing else
+    _pump(root, 0.4)
+    assert [t.title for t in player.up_next()] == ["Song B", "Song D"]
+    tree.selection_set("1")                                    # Song D …
+    with player._lock:
+        player.queue = player.queue[:1]                        # … taken out elsewhere (the pop-over's ×)
+    _pump(root, 0.4)
+    assert tree.selection() == () and dock.selected_entries() == []   # no neighbour chosen in its place
+    dock.remove_selected()
+    assert [t.title for t in player.up_next()] == ["Song B"] and not errors
 
 
 def test_the_right_pane_keeps_the_keyboard_order(make_window):

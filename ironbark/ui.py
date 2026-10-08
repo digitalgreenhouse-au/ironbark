@@ -3325,7 +3325,8 @@ class PlayerWindow:
         body = self.up_next_pop.body
         for child in body.winfo_children():
             child.destroy()
-        queue = self.player.up_next()
+        entries = self.player.queue   # (replaced whole: one look for the rows and what each one plays)
+        queue = [q.track for q in entries]
         inset = theme.px(theme.MENU_INSET)
         head = tk.Frame(body, bg=theme.SURFACE)
         head.pack(fill="x", padx=inset, pady=theme.pad(0, theme.GAP_SMALL))
@@ -3344,7 +3345,7 @@ class PlayerWindow:
             label = f"{track.title} — {track.artist}" if track.artist else track.title
             mark, tone, meaning = marks[position]
             row = MenuRow(body, label if len(label) <= longest else label[:longest - 1] + "…",
-                          lambda p=position: self.player.play_queued(p), lead=mark if column else None,
+                          lambda q=entries[position]: self.player.play_queued(q), lead=mark if column else None,
                           lead_fg=tones.get(tone, theme.MUTED))
             row.pack(fill="x")
             row.remove_button = controls.RoundIconButton(
@@ -3400,14 +3401,15 @@ class PlayerWindow:
         self._paint_up_next()
         return "break"
 
-    def _unqueue_positions(self, positions: list[int]):
+    def _unqueue_entries(self, entries: list):
         """The docked Up next's Delete (or its menu): these songs out of Up next, Ctrl+Z puts them back."""
-        before, after = self.player.remove_queued(positions)
+        before, after = self.player.remove_queued(entries)
         self._paint_up_next()
-        count = len(before) - len(after)
-        if not count:
+        kept = {id(q) for q in after}
+        taken = [q for q in before if id(q) not in kept]
+        if not taken:
             return
-        what = f"“{before[min(positions)].track.title}”" if count == 1 else f"{count} songs"
+        what = f"“{taken[0].track.title}”" if len(taken) == 1 else f"{len(taken)} songs"
         self._remember_edit(f"Took {what} out of Up next", f"Put {what} back in Up next",
                             lambda: (self.player.restore_queue(before, after), self._paint_up_next()),
                             lambda: self.player.queue is after)
@@ -3835,6 +3837,13 @@ class PlayerWindow:
                     f"The player's volume is now {SAFE_VOLUME:.0%}.",
                     detail="Raise it slowly, or use your headphone or amp volume.",
                     tone="warn", cover=True, ok="I understand")
+
+    def _check_new_default(self):
+        """Bit-perfect on the system default found another device there (Windows changed its default):
+        the same ear check as choosing that device, straight away — the player waits for play meanwhile.
+        (The box is shown once the poll has finished: it waits for OK.)"""
+        if self.player.volume_check_due:
+            self.root.after_idle(self._protect_ears, self.player.refresh_hardware_volume())
 
     def show_details(self):
         """The live Now Playing window (one at a time)."""
@@ -4922,15 +4931,15 @@ class PlayerWindow:
             pass
 
     def _make_up_next_view(self) -> UpNextView:
-        def play(position: int):
-            self.player.play_queued(position)
+        def play(entry):
+            self.player.play_queued(entry)
             self._paint_up_next()
 
         def sleep_menu(widget):
             self._sleep_menu(self._menu()).popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
 
         dock = UpNextView(self.playlist.frame, scroll_parent=self.body, on_play=play,
-                          on_remove=self._unqueue_positions, on_clear=self.clear_up_next,
+                          on_remove=self._unqueue_entries, on_clear=self.clear_up_next,
                           on_stop_after=self.stop_after_current, on_sleep_menu=sleep_menu)
         dock.set_tier(self._tier)
         return dock
@@ -4951,10 +4960,10 @@ class PlayerWindow:
         if self._tier == layout.COLUMN:
             return
         if self.view == "up_next" and self._up_next_view is not None:
-            queue = self.player.up_next()
+            entries = self.player.queue   # (replaced whole: one look for the rows and their marks)
             timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
             sleep_label = f"Sleep timer: {sleep.choice_label(timer.target).lower()}" if timer else "Sleep timer…"
-            self._up_next_view.show(queue, self._up_next_marks(queue, shown=200),
+            self._up_next_view.show(entries, self._up_next_marks([q.track for q in entries], shown=200),
                                     self.player.stop_after == "song", sleep_label)
         elif self.view == "lyrics" and self._lyrics_follower is not None:
             self._lyrics_follower.follow(True)
@@ -5225,6 +5234,7 @@ class PlayerWindow:
             self._guarded(self._count_listening)
             self._guarded(self._follow_plays)
             self._guarded(self._hold_playing)
+            self._guarded(self._check_new_default)
             self._polls += 1
             if self._polls % MARKS_EVERY == 0:
                 self._guarded(self._paint_track_marks)

@@ -268,7 +268,8 @@ class AbxWindow:
         if self.audition is not None:
             self.audition.stop()
         self.audition = audition.Audition(switcher, device=self.player.output_device,
-                                          exclusive=self.player.exclusive, stream_factory=self._stream_factory)
+                                          exclusive=self.player.exclusive, stream_factory=self._stream_factory,
+                                          default_check=self.player.check_default)
         self._refresh()
 
     def _gains(self) -> tuple[float, float]:
