@@ -184,7 +184,7 @@ def test_songs_not_heard_yet_use_at_most_half_the_cache_limit():
 
 
 def test_entire_queue_stops_at_the_budget(tmp_path, managers, monkeypatch):
-    monkeypatch.setattr(manager_mod, "GIB", 1_000_000)        # "1 GB" is 1 MB here: half of it for songs ahead
+    monkeypatch.setattr(manager_mod, "GB", 1_000_000)        # "1 GB" is 1 MB here: half of it for songs ahead
     share = FakeShare(rate=8_000_000)
     paths = [share.add(f"{k}.bin", bytes(200_000)) for k in range(8)]
     m = make_manager(tmp_path / "NetCache", share, FakePlayer(paths),
@@ -329,7 +329,7 @@ def test_until_playback_finishes_deletes_copies_once_off_the_list_or_stopped(tmp
 
 
 def test_a_smaller_cache_limit_evicts_at_once(tmp_path, managers, monkeypatch):
-    monkeypatch.setattr(manager_mod, "GIB", 100_000)
+    monkeypatch.setattr(manager_mod, "GB", 100_000)
     share = FakeShare(rate=8_000_000)
     paths = [share.add(f"{k}.bin", bytes(60_000)) for k in range(3)]
     player = FakePlayer(paths)

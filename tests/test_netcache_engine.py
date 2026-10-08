@@ -462,7 +462,9 @@ def test_after_a_pause_near_its_end_the_rest_of_a_song_plays_while_the_next_stil
 
 
 # -- the source goes away mid-song ---------------------------------------------------------------------
-def test_a_source_gone_mid_song_is_cut_short_and_playback_moves_on(tmp_path, fake_card):
+@pytest.mark.parametrize("why", ["the file on the drive changed while it was playing (it will play in full next time)",
+                                 "it's no longer on \\\\fakehost\\share"])
+def test_a_source_gone_mid_song_is_cut_short_and_playback_moves_on(tmp_path, fake_card, why):
     _, data, ref, _ = music(tmp_path, "a.wav", 4.0)
     local_path, _, local_ref, _ = music(tmp_path, "next.wav", 1.0, seed=5)
     prep = FakePreparer()
@@ -474,11 +476,11 @@ def test_a_source_gone_mid_song_is_cut_short_and_playback_moves_on(tmp_path, fak
     s = p._session
     card = Card(s)
     stall_and_cut(card, copy)
-    prep.gone[copy.source] = "the file on the drive changed while it was playing (it will play in full next time)"
+    prep.gone[copy.source] = why
     copy.fail("changed")
     card.play_to_end()
     assert [e.kind for e in s._events if e.kind == "cut short"] == ["cut short"]
-    assert "changed while it was playing" in s.note
+    assert s.note.startswith("Cut short at ") and s.note.endswith(f": {why}")   # (said as it is, plainly)
     assert wait_until(lambda: p._session is not None and p._session is not s, 3)
     assert p.status().index == 1                                # moved on to the next song
     p.stop()
@@ -667,6 +669,22 @@ def test_the_automatic_start_lapses_after_five_minutes(tmp_path, fake_card, quic
     prep.tick()
     time.sleep(0.2)
     assert p._session is None
+
+
+def test_a_start_that_finds_the_song_not_ready_after_all_keeps_its_five_minutes(tmp_path, fake_card):
+    p, prep, copy = preparing_player(tmp_path)
+    clock = [1000.0]
+    p._clock = lambda: clock[0]
+    p.play(0)
+    first = p._preparing
+    assert first.deadline == 1000.0 + engine.AUTO_RESUME_S
+    clock[0] += 200                                              # 200 s of "Preparing…"
+    copy.arrive(seconds=1.5)                                     # the cache says it may start …
+    prep.prepare = lambda path, **kwargs: prep._not_ready(copy, 0.0)   # … but its outlook drops just then
+    assert prep.tick() == 1
+    assert wait_until(lambda: p._preparing is not first, 3)
+    assert p._preparing is not None and p._preparing.deadline == first.deadline   # never a fresh 5 minutes
+    p.stop()
 
 
 def test_a_seek_while_preparing_moves_where_it_starts(tmp_path, fake_card):

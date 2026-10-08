@@ -220,6 +220,23 @@ def test_same_audio_finds_one_changed_sample(tmp_path):
     assert tag_editor.same_audio(a, b, "wav") == "the sound came out different at 0:01"
 
 
+def test_the_sound_check_reads_the_files_themselves_even_with_the_network_cache_on(tmp_path, monkeypatch):
+    data = noise(30000)
+    original = tmp_path / "a.wav"
+    sf.write(original, data, 44100, subtype="PCM_16")
+    copy = tag_editor.temp_path(original)
+    shutil.copyfile(original, copy)
+    asked = []
+
+    def resolver(path, cancel=None, wait=None):   # (the cache, as it answers for a song on a slow network)
+        asked.append(path)
+        raise audiofile.NotCached("it took too long to download", 0.1, "timeout")
+
+    monkeypatch.setattr(audiofile, "_resolver", resolver)
+    assert tag_editor.same_audio(original, copy, "wav") is None
+    assert asked == []        # never a download of the song, or of the temporary copy, into the cache
+
+
 def test_a_flac_whose_sound_doesnt_match_its_md5_is_left_alone(tmp_path):
     path = make(tmp_path / "a.flac", "flac")
     data = bytearray(path.read_bytes())

@@ -57,7 +57,8 @@ needed on the PC it's installed on), runs the packaged `Ironbark.exe --self-chec
 `Ironbark-Setup-X.Y.Z.exe` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) (if installed),
 a portable zip and `SHA256SUMS.txt`, all in `dist\windows\`. The installer installs for the
 current user only (no administrator prompt), into `%LOCALAPPDATA%\Programs\Ironbark`; uninstalling
-keeps your settings unless you choose to remove them. An optional, unticked task adds Ironbark to
+removes the network playback cache's copies of songs and keeps your settings unless you choose to
+remove them. An optional, unticked task adds Ironbark to
 Explorer's *Open with* list for music files, playlists and CUE sheets (it never becomes the default). The builds are not yet code-signed, so
 Windows SmartScreen warns about an unknown publisher.
 

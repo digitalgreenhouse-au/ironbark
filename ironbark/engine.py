@@ -991,7 +991,7 @@ class _Session:
         chain ends at `frame`, said plainly; the player moves on. Never taken as a complete song."""
         at = frame / self.samplerate
         now = time.time()
-        cause = why if why.startswith("the ") else f"the file {why}"
+        cause = why if why.startswith(("the ", "it")) else f"the file {why}"   # ("it's no longer on \\server\share")
         self._events.append(PlaybackEvent(now, source.name, at, "cut short", cause, last=now))
         self.note = f"Cut short at {_clock(at)}: {cause}"
         wait = self.waiting
@@ -2161,18 +2161,21 @@ class Player:
         return gain * self._fade_factor() if self._fade is not None else gain
 
     def _start(self, index, start_at: float = 0.0, transition: str = "started", force: bool = False,
-               resume: bool = False):
+               resume: bool = False, deadline: float | None = None):
         """Start playing tracks[index] (or a queued song, which then leaves Up next); skips
         forward past files that won't open. A song on a network drive not ready yet waits
         ("Preparing…", see _wait_to_start) instead: no device is opened for it until it starts.
-        `force`: play was pressed while it waited (it starts if a few seconds are here)."""
+        `force`: play was pressed while it waited (it starts if a few seconds are here).
+        `deadline`: a start by itself (the cache said it may) keeps the wait's own limit if it has
+        to wait again, so it never starts by itself more than AUTO_RESUME_S after that wait began."""
         self._starting = True   # (active() meanwhile: the cache keeps the song about to play wanted)
         try:
-            self._start_now(index, start_at, transition, force, resume)
+            self._start_now(index, start_at, transition, force, resume, deadline)
         finally:
             self._starting = False
 
-    def _start_now(self, index, start_at: float, transition: str, force: bool, resume: bool):
+    def _start_now(self, index, start_at: float, transition: str, force: bool, resume: bool,
+                   deadline: float | None = None):
         self._close_session()
         self._message = ""
         self._fade = self._resume_with = None
@@ -2193,7 +2196,7 @@ class Player:
             local = self._prepare_play(track.path, start_at, force)
             if not isinstance(local, audiofile.LocalTrack):
                 if not hasattr(local, "permanent"):   # NotReady: wait for it (shown paused at its spot)
-                    self._wait_to_start(index, start_at, transition, resume=resume)
+                    self._wait_to_start(index, start_at, transition, resume=resume, deadline=deadline)
                     return
                 if local.permanent:   # gone, refused: skipped, like a file that won't open
                     log.warning("cannot play %s: %s", track.path, local.reason)
@@ -2221,7 +2224,7 @@ class Player:
                     session._src.stalls = list(carried[1])   # (the same song, taken back after a network pause)
                 session.start()
             except audiofile.Waiting:   # (its opening bytes weren't all here after all: wait for them)
-                self._wait_to_start(index, start_at, transition, resume=resume)
+                self._wait_to_start(index, start_at, transition, resume=resume, deadline=deadline)
                 return
             except sd.PortAudioError as exc:
                 # The sound device, not the file, is the problem: skipping tracks won't help. Shown
@@ -2317,7 +2320,7 @@ class Player:
                              else f"{name} is ready: press play")
             return
         fade = self._fade   # (a sleep timer's fade carries on: the song doesn't start louder)
-        self._start(prep.at, prep.start_at, prep.transition, resume=prep.resume)
+        self._start(prep.at, prep.start_at, prep.transition, resume=prep.resume, deadline=prep.deadline)
         if fade is not None and (self._session is not None or self._preparing is not None):
             self._fade = fade
 
@@ -2346,7 +2349,7 @@ class Player:
             self._ready(prep.token)
         elif hasattr(outlook, "permanent"):   # Unavailable: _start says why, and skips it or stops there
             fade = self._fade
-            self._start(prep.at, prep.start_at, prep.transition, resume=prep.resume)
+            self._start(prep.at, prep.start_at, prep.transition, resume=prep.resume, deadline=prep.deadline)
             if fade is not None and (self._session is not None or self._preparing is not None):
                 self._fade = fade
 

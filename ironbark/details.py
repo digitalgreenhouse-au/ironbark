@@ -152,7 +152,7 @@ def tone_of(text: str) -> str:
     return "plain"
 
 
-COPY_FAILED = "✗ This played from a copy that didn't match the original. Downloading it again."
+COPY_FAILED = "✗ This played from a copy that failed its check. Downloading it again."
 COPY_SKIPPED = "✗ This played from a copy that didn't match the original. The song is skipped for now."
 
 

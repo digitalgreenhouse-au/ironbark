@@ -1223,8 +1223,16 @@ class PlayerWindow:
         """Settings -> Network playback's lines about the network now and the cache: how full it is."""
         manager = self._netcache
         if manager is None:
+            from . import netcache
+
             on = experiments.enabled(self.prefs, NETWORK_CACHE)
-            self.cache_text.configure(text="Cache: starts when Ironbark next starts" if on else "Cache: off")
+            text = "Cache: starts when Ironbark next starts" if on else "Cache: off"
+            # (Copies from an earlier run, which Empty the cache deletes: looked for only while on show.)
+            left = netcache.left_on_disk() if self.netplay_box.winfo_manager() else 0
+            if left:
+                size = f"{left / 1e9:.1f} GB" if left >= 1e9 else f"{max(1, round(left / 1e6))} MB"
+                text += f" · {size} still on this computer"
+            self.cache_text.configure(text=text)
             self.net_now_text.configure(text="")
             return
         view = manager.snapshot()
@@ -1250,7 +1258,7 @@ class PlayerWindow:
     def _empty_cache(self):
         manager = self._netcache
         if manager is None:
-            self._set_notice("The network playback cache isn't running", 4000)
+            self._empty_idle_cache()
             return
         self._for_prompt()
         if not popups.confirm(self.root, "Empty the cache?",
@@ -1261,6 +1269,33 @@ class PlayerWindow:
         manager.empty()
         self._set_notice("Emptying the cache…", 3000)
         self.root.after(1000, self._paint_cache)
+
+    def _empty_idle_cache(self):
+        """Empty the cache while it isn't running: the copies an earlier run left on this computer
+        (deleted on a worker thread; the line in Settings is painted again when it's done)."""
+        from . import netcache
+
+        if not netcache.left_on_disk():
+            self._set_notice("The network playback cache is empty", 4000)
+            return
+        self._for_prompt()
+        if not popups.confirm(self.root, "Empty the cache?",
+                              "The copies of network songs on this computer are deleted (the songs on the "
+                              "network drive aren't touched).", ok="Empty", danger=True):
+            return
+        done: list = []
+        threading.Thread(target=lambda: done.append(netcache.clear_folder()), name="cache-clear",
+                         daemon=True).start()
+        self._set_notice("Emptying the cache…", 3000)
+        self.root.after(200, lambda: self._idle_cache_emptied(done))
+
+    def _idle_cache_emptied(self, done: list):
+        if not done:
+            self.root.after(200, lambda: self._idle_cache_emptied(done))
+            return
+        if not done[0]:
+            self._set_notice("Another copy of Ironbark is using the cache: close it, then try again", 6000)
+        self._paint_cache()
 
     # -- the network playback cache (Experimental) --------------------------------------------
     def _start_cache(self):

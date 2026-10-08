@@ -10,7 +10,9 @@ Threads (all daemon; none touches Tk):
 - `netcache-probe` (one): opens downloading copies the way the player will (through the waiting
   reader, patience 30 s), to learn the format, length and how far an open reads. Local reads only.
 - `netcache-probe-hosts` (one): asks a host that stopped answering whether it's back (a TCP
-  connection to the file-sharing port of the server named in the song's own path).
+  connection to the file-sharing port of the server named in the song's own path). When that can't
+  tell (a WebDAV drive, a drive letter whose server isn't known) or hasn't reached it for a minute
+  (an NFS-only server), the host's I/O thread looks at one of its songs' files instead.
 - `netcache-verify` (one): checks finished downloads (verify.py).
 
 Priorities (lower first): DEMAND (a reader waiting for bytes right now), CURRENT (the song
@@ -30,7 +32,9 @@ Host health: a call outstanding over 5 s makes its host SLOW, over 15 s DOWN; wh
 stuck no further calls go to that host. DOWN hosts are probed with back-off (2, 4, 8 … 60 s). An
 I/O thread stuck over 120 s is abandoned (its result thrown away when it returns); at most two
 per host, after which the host stays DOWN until they come back. When Windows says the network
-changed (netwatch.py), every server not answering is asked again at once.
+changed (netwatch.py), every server not answering is asked again at once. A song that fails at the
+same place twice more, each time just after its server answered again, is the file's fault, not the
+network's: it's skipped (as a file that can't be read is), and the server stays up.
 
 Each server's speed, longest gap, failures and quality are saved in netcache.db, so the next start
 begins from them (if under an hour old) rather than from nothing.
@@ -84,6 +88,7 @@ WORKER_ABANDON_S = 120.0
 MAX_ABANDONED_PER_HOST = 2
 PROBE_BACKOFF_MIN_S = 2.0
 PROBE_BACKOFF_MAX_S = 60.0
+ASK_FILES_AFTER_S = 60.0     # a server the TCP probe hasn't reached for this long: its files are asked too
 TCP_PROBE_TIMEOUT_S = 1.5
 SMB_PORT = 445
 MAX_IO_WORKERS = 4
@@ -98,7 +103,7 @@ HANDED_OUT_S = 10.0          # a copy handed to a reader this recently isn't cle
 TRANSIENT_RETRY_S = 5.0
 FREE_FLOOR_MIN = 2 * 1024 ** 3
 FREE_FLOOR_FRACTION = 0.05
-GIB = 1024 ** 3
+GB = 1000 ** 3               # the cache's size setting, in the gigabytes Settings shows
 COMPLETE_ONLY_EXTS = {"m4a", "mp4", "m4b"}
 TAIL_READING_EXTS = {"mp3", "ogg", "oga", "opus", "m4a", "mp4", "m4b"}   # their open reads the end
 # Formats whose seek reads near its target (so a seek ahead is worth an island there). MP3 and Ogg
@@ -198,7 +203,11 @@ class Host:
         self.backoff = PROBE_BACKOFF_MIN_S
         self.next_probe = 0.0
         self.down_since: float | None = None
+        self.up_since: float | None = None   # when it last came back
+        self.ups = 0             # times it has come back
         self.probing = False
+        self.look_at: Item | None = None     # a song of its own for the I/O thread to look at: is it back?
+        self.looked_at = -1e18   # when its files were last asked that
         self.told = False        # the "hasn't answered for a minute" notice was given
         self.calls = 0           # calls started (tests count them)
 
@@ -214,6 +223,12 @@ def tcp_probe(host: str, timeout: float = TCP_PROBE_TIMEOUT_S) -> bool:
             return True
     except OSError:
         return False
+
+
+def _tcp_can_tell(name: str) -> bool:
+    """Can a TCP connection to its file-sharing port say whether this server is answering? Not for
+    a WebDAV drive's name (server@SSL, server@8080) or a drive letter whose server isn't known."""
+    return bool(name) and "@" not in name and ":" not in name and name != "share"
 
 
 def _ext_of(text: str) -> str:
@@ -286,7 +301,7 @@ class Manager:
 
     def _limit(self) -> float:
         gb = self._pref("net_cache_gb")
-        return float("inf") if not gb else float(gb) * GIB
+        return float("inf") if not gb else float(gb) * GB
 
     # -- lifetime -----------------------------------------------------------------------------
     def start(self) -> "Manager":
@@ -662,7 +677,7 @@ class Manager:
                     self._asks.pop(key, None)
 
     def _ready_track(self, item: Item, path):
-        if item.state == READY:
+        if item.state == READY and item.gen not in item.lost_gens:   # (gone from here: fetched again first)
             item.last_used = self._wall()
             return self._hand_out(item, path)
         return None
@@ -745,6 +760,8 @@ class Manager:
 
     def _rule(self, item: Item, path, at: float, stalls: int = 0, force: bool = False):
         """(may start, need, measured) — the start rule of policy.py for this item at `at`."""
+        if item.gen in item.lost_gens:   # (its copy went missing from here: a fresh one is on its way)
+            return False, None, None
         complete_only = item.ext in COMPLETE_ONLY_EXTS or item.info.get("complete_only")
         if self._playable_complete(item):
             # (Apple Lossless is only ever opened by name: not until its copy has its final name.)
@@ -853,6 +870,8 @@ class Manager:
             return NotReady("host-down", None, "host-down",
                             f"waiting for {server} (not answering) · starts by itself when it's back")
         complete_mode = need is None
+        if item.gen in item.lost_gens:
+            return NotReady("preparing", None, "preparing", "Preparing track…")
         if item.state in (DOWNLOADED, VERIFYING) and complete_mode:
             return NotReady("checking", None, "checking", "Checking the download…")
         if item.size is None or not item.size:
@@ -931,6 +950,10 @@ class Manager:
                                 "(songs will download again).")
         if self.tidied:
             log.info("music cache ready: %d item(s); tidied %s", len(kept), self.tidied)
+        try:
+            self.classifier.refresh()   # (mapped drives looked up first: a song is never named by its letter alone)
+        except Exception:   # noqa: BLE001 — looked up again every tick
+            log.exception("music cache: looking up the network drives")
         self._loaded.set()
         try:
             self._sweep(force=True)
@@ -1258,10 +1281,24 @@ class Manager:
         if host.state != DOWN:
             log.warning("music cache: %s isn't answering", host.name)
             host.down_since = now
-            host.backoff = PROBE_BACKOFF_MIN_S
+            if host.up_since is None or now - host.up_since > PROBE_BACKOFF_MAX_S:
+                host.backoff = PROBE_BACKOFF_MIN_S
+            else:   # (back only moments ago: asked again a little later each time)
+                host.backoff = min(PROBE_BACKOFF_MAX_S, host.backoff * 2)
         host.state = DOWN
         host.next_probe = now + host.backoff
         host.speed.failed(now)
+
+    def _fails_here_again(self, host: Host, item: Item) -> bool:
+        """A transfer of `item` failed: is it the file rather than the network? Yes once it has failed
+        twice more at the same place, each time just after its server answered again (a spot on the
+        server's disk that can't be read, say). Lock held."""
+        here = item.held()
+        last = item.last_failure
+        again = last is not None and host.ups > last[0] and here == last[1]
+        times = last[2] + 1 if again else 0
+        item.last_failure = (host.ups, here, times)
+        return times >= 2
 
     def _watch_hosts(self, now: float) -> None:
         with self._lock:
@@ -1297,20 +1334,66 @@ class Manager:
                 host = self._probe_hosts.get(timeout=0.5)
             except queue.Empty:
                 continue
-            ok = True if host.kind != "share" else bool(self._probe_host(host.name))
-            now = self._clock()
-            with self._lock:
-                host.probing = False
-                if ok:
-                    log.info("music cache: %s is answering again", host.name)
-                    if host.told:   # (it was said to have stopped answering)
-                        self.notices.append(f"{host.name} is answering again: its songs carry on downloading")
-                    host.state, host.down_since, host.backoff = UP, None, PROBE_BACKOFF_MIN_S
-                    host.told = False
-                else:
-                    host.backoff = min(PROBE_BACKOFF_MAX_S, host.backoff * 2)
-                    host.next_probe = now + host.backoff
-            self._wake.set()
+            ok = host.kind != "share" or (_tcp_can_tell(host.name) and bool(self._probe_host(host.name)))
+            if not ok and self._look_at_files(host, self._clock()):
+                continue   # (its I/O thread says whether it's back)
+            self._answered(host, ok, self._clock())
+
+    def _look_at_files(self, host: Host, now: float) -> bool:
+        """The TCP probe can't tell about this server (a WebDAV drive, a drive letter whose server
+        isn't known), or hasn't reached it for a while (an NFS-only server, say): hand its I/O thread
+        one of its wanted songs to look at, watched like any call. False when there's none to ask."""
+        with self._lock:
+            if _tcp_can_tell(host.name) and (host.down_since is None or now - host.down_since < ASK_FILES_AFTER_S
+                                             or now - host.looked_at < ASK_FILES_AFTER_S):
+                return False
+            wanted = [item for item in self.items.values() if item.host == host.name and item.priority is not None]
+            if not wanted:
+                return False
+            host.looked_at = now
+            with host.cond:
+                host.look_at = min(wanted, key=lambda item: item.priority)
+                host.cond.notify_all()
+            self._ensure_worker(host)
+            w = host.worker
+            if w is None or w.thread is None or not w.thread.is_alive():
+                with host.cond:
+                    host.look_at = None
+                return False
+            return True
+
+    def _answered(self, host: Host, ok: bool, now: float) -> None:
+        """A server not answering was asked again: it's back, or it's asked again later."""
+        with self._lock:
+            host.probing = False
+            if ok:
+                log.info("music cache: %s is answering again", host.name)
+                if host.told:   # (it was said to have stopped answering)
+                    self.notices.append(f"{host.name} is answering again: its songs carry on downloading")
+                host.state, host.down_since, host.up_since = UP, None, now
+                host.ups += 1
+                host.told = False
+            else:
+                host.backoff = min(PROBE_BACKOFF_MAX_S, host.backoff * 2)
+                host.next_probe = now + host.backoff
+        self._wake.set()
+
+    def _look_for_host(self, host: Host, w: _Worker, item: Item) -> None:
+        """On the host's I/O thread: is its server back? Its song's file is looked at (a stat)."""
+        ok = False
+        try:
+            self._call(host, w, self._fetcher(item).identity)
+            ok = True
+        except Permanent:
+            ok = True   # (it answered: that file isn't there or isn't allowed, which its download will say)
+        except _Abandoned:
+            raise
+        except Exception:   # noqa: BLE001 — not answering yet: asked again after the back-off
+            pass
+        finally:
+            with host.cond:
+                host.look_at = None
+            self._answered(host, ok and not w.abandoned, self._clock())
 
     # -- the I/O threads --------------------------------------------------------------------------
     def _call(self, host: Host, w: _Worker, fn, *args):
@@ -1339,23 +1422,37 @@ class Manager:
     def _run_worker(self, host: Host, w: _Worker) -> None:
         while not self._stop.is_set() and not w.abandoned:
             with host.cond:
-                item = host.assigned
-                if item is None or host.state == DOWN:
+                item, look_at = host.assigned, host.look_at
+                if look_at is None and (item is None or host.state == DOWN):
                     host.cond.wait(0.5)
                     continue
+            if look_at is not None:
+                try:
+                    self._look_for_host(host, w, look_at)
+                except _Abandoned:
+                    return
+                continue
             try:
                 self._transfer(host, w, item)
             except _Abandoned:
                 return
             except Permanent as error:
-                self._fail(item, str(error), permanent=True)
+                self._fail(item, str(error), permanent=True, detail=error.detail)
             except Transient as error:
                 now = self._clock()
                 with self._lock:
-                    self._host_down(host, now)
-                    if item.state == DOWNLOADING:
-                        item.state, item.dirty = PARTIAL, True
-                    item.error = str(error)
+                    the_file = self._fails_here_again(host, item)
+                    if the_file and item.state == READY:
+                        item.verified_at, item.dirty = self._wall(), True   # (its copy plays on: looked at later)
+                    elif not the_file:
+                        self._host_down(host, now)
+                        if item.state == DOWNLOADING:
+                            item.state, item.dirty = PARTIAL, True
+                        item.error = str(error)
+                if the_file and item.state != READY:
+                    # The server answers, yet this file fails at the same place every time: skipped as a
+                    # file that can't be read would be, not the whole server taken for gone.
+                    self._fail(item, "it couldn't be read from the server", permanent=True, detail=str(error))
                 item.notify()
             except Changed as error:
                 log.info("music cache: %s changed while downloading (%s)", item.source, error)
@@ -1372,6 +1469,11 @@ class Manager:
                     if host.assigned is item and (item.state in (READY, DOWNLOADED, VERIFYING, FAILED)
                                                   or item.complete or item.room_check or item.plan_check):
                         host.assigned = None
+                    carries_on = host.assigned is item
+                if not carries_on:
+                    # (Its file on the server isn't held open while nothing is fetching it: skipped
+                    # part-way, or something more important first. A resume opens it again.)
+                    self._close_fetcher(item)
                 self._wake.set()
 
     def _fetcher(self, item: Item):
@@ -1396,7 +1498,7 @@ class Manager:
         try:
             identity = self._call(host, w, fetcher.identity)
         except Permanent as error:
-            log.info("music cache: %s: %s (its complete copy is kept)", item.source, error)
+            log.info("music cache: %s: %s (%s; its complete copy is kept)", item.source, error, error.detail)
             self._close_fetcher(item)
             with self._lock:
                 if item.state == READY:
@@ -1549,9 +1651,10 @@ class Manager:
             return all(item.has_range(item.gen, int(a), int(b)) for a, b in spans)
         return item.open_end is not None and item.visible >= item.open_end
 
-    def _fail(self, item: Item, reason: str, permanent: bool) -> None:
+    def _fail(self, item: Item, reason: str, permanent: bool, detail: str = "") -> None:
+        """`reason` is said to the listener (plain words); `detail` (Windows' own) goes to the log only."""
         with self._lock:
-            log.warning("music cache: %s: %s", item.source, reason)
+            log.warning("music cache: %s: %s%s", item.source, reason, f" ({detail})" if detail else "")
             item.state, item.error, item.permanent, item.dirty = FAILED, reason, permanent, True
             item.retry_at = self._wall() + FAILED_FORGET_S
             self._close_fetcher(item)
@@ -1717,13 +1820,26 @@ class Manager:
             if result.cancelled:
                 item.state = DOWNLOADED
                 return
-            if not result.ok:
+            if not result.ok and result.digest and result.digest == item.rejected:
+                # Downloaded again byte for byte the same, failing the same way: the transfer is fine and
+                # the problem is in the file on the drive itself. It plays as it would without the cache
+                # (damaged stretches skipped and said), so it's kept, recorded as checked only as far as
+                # it passed.
+                log.warning("music cache: %s came down the same twice; the file itself: %s", item.source,
+                            result.problem)
+                item.info["source_problem"] = result.problem
+                self.notices.append(f"“{_name(item)}” downloaded the same twice, so the problem is in the file on "
+                                    f"the drive itself ({result.problem}): it plays as it is, as it would "
+                                    f"without the cache.")
+            elif not result.ok:
                 item.fail_count += 1
                 log.warning("music cache: %s failed its check: %s", item.source, result.problem)
                 item.failed_gens.add(gen)
+                item.rejected = result.digest
                 # Its bytes are never played or checked again: a fresh copy is downloaded — at once
-                # the first time; after a second failure only when the song is asked for again a
-                # while later (until then it's skipped, saying why, like a file that won't open).
+                # the first time (the same bytes failing the same way again are the file's own fault);
+                # after a second, different failure only when the song is asked for again a while
+                # later (until then it's skipped, saying why, like a file that won't open).
                 self._new_generation(item, Identity(item.size or 0, item.mtime_ns))
                 if item.fail_count >= 2:
                     self.notices.append(f"The downloaded copy of “{_name(item)}” didn't match the original "
@@ -1733,8 +1849,8 @@ class Manager:
                     item.retry_at = self._wall() + FAILED_FORGET_S
                     item.notify()
                 else:
-                    self.notices.append(f"The downloaded copy of “{_name(item)}” didn't match the original "
-                                        f"({result.problem}). Downloading it again.")
+                    self.notices.append(f"The downloaded copy of “{_name(item)}” failed its check "
+                                        f"({result.problem}). Downloading it again to compare.")
                 return
             item.verified_by, item.verified_at = result.verified_by, self._wall()
             item.info.update({k: v for k, v in result.info.items() if k != "decoded"})
@@ -1917,6 +2033,7 @@ class Manager:
                         if renaming is not None:
                             self._renames.setdefault(item.key, renaming)
                 continue
+            self._close_fetcher(item)   # (nothing fetches it now: its file on the server is let go)
             held = self._bytes_held(item)
             used -= held
             freed += held

@@ -147,7 +147,9 @@ class Item:
         self.old_files: dict[int, Path] = {}   # … and, for an old complete copy, its file
         self.old_islands: dict[int, list[Island]] = {}   # … and the islands it had
         self.failed_gens: set[int] = set()     # versions whose check failed (a play from one is warned of)
+        self.rejected = ""              # the SHA-256 of the last copy whose sound failed its check
         self.lost_gens: set[int] = set()       # versions whose bytes went missing from this computer (see lose)
+        self.last_failure: tuple | None = None   # (its server's comebacks, bytes here, times in a row) at a failed read
         self.open_ready = False         # the probe opened it and every byte that read is here
         self.open_end: int | None = self.info.get("open_end")
         self.scanner = None             # flacframes.Scanner, fed as bytes arrive (FLAC)
@@ -174,6 +176,17 @@ class Item:
             copy = self.store.tracks / self.final_name
         cue = audiofile.cue_of(source)
         return audiofile.CuePath(copy, cue=cue) if cue is not None else copy
+
+    def copy_gone(self, gen: int) -> bool:
+        """Has the complete copy of version `gen` gone from this computer (deleted, or cut short,
+        behind the cache's back)? A local look, for after it failed to open."""
+        copy = self.ready_path(gen, None)
+        if copy is None:
+            return False
+        try:
+            return os.stat(copy).st_size < self.size_of(gen)
+        except OSError:
+            return True
 
     def reader(self, gen: int, gate, role: str = "play"):
         return GrowingFile(self, gen, gate, role)

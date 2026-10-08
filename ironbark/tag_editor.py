@@ -608,7 +608,9 @@ def _clock(seconds: float) -> str:
 
 def same_audio(original, copy, kind: str, cancel: threading.Event | None = None) -> str | None:
     """None when the copy decodes to exactly the original's samples (and, for FLAC, carries the
-    same MD5 fingerprint, which matches the sound); else what differs, in plain words."""
+    same MD5 fingerprint, which matches the sound); else what differs, in plain words. Both files
+    are read where they are, even on a network drive: never a copy the network playback cache keeps
+    (it may be older than the file about to be replaced, and the temporary copy mustn't be cached)."""
     flac_md5 = None
     if kind == "flac":
         stored_old, stored_new = FLACFile(os.fspath(original)).info, FLACFile(os.fspath(copy)).info
@@ -616,7 +618,7 @@ def same_audio(original, copy, kind: str, cancel: threading.Event | None = None)
             return "FLAC's stored fingerprint (MD5) changed"
         if stored_new.md5_signature:
             flac_md5 = (hashlib.md5(), stored_new.bits_per_sample, stored_new.md5_signature)
-    with audiofile.open(original) as a, audiofile.open(copy) as b:
+    with audiofile.open(original, direct=True) as a, audiofile.open(copy, direct=True) as b:
         if (a.samplerate, a.channels, a.frames) != (b.samplerate, b.channels, b.frames):
             return "the sound's length or format came out different"
         dtype = "int32" if a.subtype in _INTEGER_SUBTYPES else "float64"

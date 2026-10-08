@@ -137,18 +137,25 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  Settings: String;
+  Settings, Local: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
-  Settings := ExpandConstant('{userappdata}\Ironbark');
-  if not DirExists(Settings) then
-    Exit;
-  { Silent uninstalls (upgrades, scripts) always keep them. The default answer is No. }
+  { Silent uninstalls (upgrades, scripts) always keep everything. The default answer is No. }
   if UninstallSilent then
     Exit;
+  Settings := ExpandConstant('{userappdata}\Ironbark');
+  Local := ExpandConstant('{localappdata}\Ironbark');
+  { The network playback cache's copies of songs (as much as the size chosen in Settings, 10 GB at
+    first) can always be downloaded again: they go without asking. }
+  DelTree(Local + '\NetCache', True, True, True);
+  if not DirExists(Settings) and not DirExists(Local) then
+    Exit;
   if SuppressibleMsgBox('Also remove your Ironbark settings, playlists and library index?' + #13#10#13#10 +
-       'They are in ' + Settings + #13#10 + 'Choose No to keep them for next time.',
+       'They are in ' + Settings + #13#10 + 'and ' + Local + #13#10 + 'Choose No to keep them for next time.',
        mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+  begin
     DelTree(Settings, True, True, True);
+    DelTree(Local, True, True, True);
+  end;
 end;
