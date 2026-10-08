@@ -57,10 +57,11 @@ needed on the PC it's installed on), runs the packaged `Ironbark.exe --self-chec
 `Ironbark-Setup-X.Y.Z.exe` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) (if installed),
 a portable zip and `SHA256SUMS.txt`, all in `dist\windows\`. The installer installs for the
 current user only (no administrator prompt), into `%LOCALAPPDATA%\Programs\Ironbark`; uninstalling
-removes the network playback cache's copies of songs and keeps your settings unless you choose to
-remove them. An optional, unticked task adds Ironbark to
-Explorer's *Open with* list for music files, playlists and CUE sheets (it never becomes the default). The builds are not yet code-signed, so
-Windows SmartScreen warns about an unknown publisher.
+removes the network playback cache's copies of songs (they can always be downloaded again) and
+keeps your settings, playlists and library database (play counts and favourites) unless you choose
+to remove them. An optional, unticked task adds Ironbark to Explorer's *Open with* list for music
+files, playlists and CUE sheets (it never becomes the default). The builds are not yet code-signed,
+so Windows SmartScreen warns about an unknown publisher.
 
 ## Features
 
@@ -329,12 +330,12 @@ without network access: Windows fetches those files, as it does for any program.
 playback cache (Experimental) only talks to the network drives your music is already on; it never
 uses the internet.
 
-Settings, playlists and the logs are kept on your computer (on Windows, in `%APPDATA%\Ironbark`),
-and the library database, with your play counts and favourites, beside them (on Windows, in
-`%LOCALAPPDATA%\Ironbark`). If something goes wrong, Settings → Help → *Save diagnostics…* saves a
-zip on your computer that you can choose to attach to a problem report (versions, sound outputs,
-logs and settings, with the names of folders, tabs, playlists and sound outputs left out); it is
-never sent anywhere.
+Settings, playlists and the logs are kept on your computer (on Windows, in `%APPDATA%\Ironbark`);
+the library database (with your play counts and favourites) and the network playback cache's copies
+are beside them (on Windows, in `%LOCALAPPDATA%\Ironbark`). If something goes wrong, Settings →
+Help → *Save diagnostics…* saves a zip on your computer that you can choose to attach to a problem
+report (versions, sound outputs, logs and settings, with the names of folders, tabs, playlists and
+sound outputs left out); it is never sent anywhere.
 
 ## Feedback
 

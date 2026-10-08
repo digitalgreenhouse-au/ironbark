@@ -4,9 +4,12 @@ import multiprocessing
 import os
 import sys
 
-# Windows' classic limit on a file path (MAX_PATH): the bundled libraries can't be loaded from a
-# deeper folder. The deepest of them sits this far below the folder holding Ironbark.exe.
-MAX_PATH = 260
+# Windows loads a library only from a path of at most 250 characters (measured on Windows 11, through
+# ctypes and cffi alike, even with long paths switched on: 251 is refused as too long), so the bundled
+# libraries can't be loaded from too deep a folder. The deepest one loaded by its own path sits this
+# far below the folder holding Ironbark.exe. (numpy's maths library sits deeper, but Windows finds it
+# as a part of numpy's own module, and from there it loads even at 260 characters.)
+LONGEST_LOAD = 250
 DEEPEST = r"_internal\_sounddevice_data\portaudio-binaries\libportaudio64bit.dll"
 ERROR_FILENAME_EXCED_RANGE = 206
 
@@ -17,11 +20,39 @@ TOO_DEEP = ("Ironbark can't start from this folder: its path is too long for Win
 
 def path_too_long(error: OSError, folder: str) -> bool:
     """Did loading a bundled library fail because the folder is too deep?"""
-    if getattr(error, "winerror", None) == ERROR_FILENAME_EXCED_RANGE:
-        return True
-    if "error 0x%x" % ERROR_FILENAME_EXCED_RANGE in str(error).lower():   # how cffi reports it
-        return True
-    return len(os.path.join(folder, DEEPEST)) >= MAX_PATH
+    for reason in _reasons(error):
+        if getattr(reason, "winerror", None) == ERROR_FILENAME_EXCED_RANGE:
+            return True
+        if "error 0x%x" % ERROR_FILENAME_EXCED_RANGE in str(reason).lower():   # how cffi reports it
+            return True
+    return len(os.path.join(folder, DEEPEST)) > LONGEST_LOAD
+
+
+def _reasons(error: BaseException):
+    """The error and the ones it was raised from. In the packaged program ctypes raises an error of
+    PyInstaller's own ("Failed to load dynlib/dll"), with no Windows error code: Windows' own error
+    is its cause."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        yield error
+        error = error.__cause__ or error.__context__
+
+
+def use_own_portaudio() -> None:
+    """Play through the copy of the sound library (PortAudio) that comes with the program, the one it
+    was built and tested with. sounddevice would first take any portaudio.dll in a folder on the
+    PATH (another program's copy, built who knows how), and with SD_ENABLE_ASIO set it asks for an
+    ASIO build of its own that the program doesn't carry, so the player couldn't start at all."""
+    os.environ.pop("SD_ENABLE_ASIO", None)
+    import ctypes.util
+
+    find = ctypes.util.find_library
+
+    def find_library(name):
+        return None if "portaudio" in name.lower() else find(name)
+
+    ctypes.util.find_library = find_library
 
 
 def tell(text: str) -> None:
@@ -50,6 +81,8 @@ def check_folder(folder: str) -> None:
 
 
 def run() -> None:
+    if getattr(sys, "frozen", False):   # (before anything loads sounddevice, in workers too)
+        use_own_portaudio()
     # A process started by multiprocessing runs its task here and exits, instead of opening a
     # second player. (Does nothing in the program's own process.)
     multiprocessing.freeze_support()

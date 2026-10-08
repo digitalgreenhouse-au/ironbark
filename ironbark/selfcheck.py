@@ -6,7 +6,8 @@ program runs: the build script (packaging/windows/build.ps1, which the release w
 failure stops the build. Also useful to anyone whose copy won't start.
 
 Checks: libsndfile loads and round-trips a tiny FLAC made in memory (bit for bit); PortAudio loads
-and lists the system's audio (WASAPI on Windows) — no stream is opened, so nothing is heard; on
+(in the packaged program, the copy that comes with it) and lists the system's audio (WASAPI on
+Windows) — no stream is opened, so nothing is heard; on
 Windows, pycaw/comtypes read Windows' own list of outputs, and Windows' media controls and taskbar
 buttons can be reached (nothing is shown); secure connections (ssl, with root certificates) and the
 XML reader the rip check needs; the library database works — SQLite with its write-ahead log
@@ -125,11 +126,18 @@ def _check_sndfile() -> str:
 def _check_portaudio() -> str:
     import sounddevice as sd
 
+    where = ""
+    if getattr(sys, "frozen", False):
+        # The packaged program plays through the PortAudio it was built and tested with, never a
+        # copy another program left on the PATH (packaging/windows/launch.py sees to that).
+        if not Path(sd._libname).resolve().is_relative_to(Path(sys._MEIPASS).resolve()):
+            raise RuntimeError(f"PortAudio was loaded from outside the program: {sd._libname}")
+        where = "; the program's own copy"
     apis = [api["name"] for api in sd.query_hostapis()]
     if sys.platform == "win32" and "Windows WASAPI" not in apis:
         raise RuntimeError(f"no WASAPI among {apis}")
     outputs = sum(1 for device in sd.query_devices() if device["max_output_channels"] > 0)
-    return f"{sd.get_portaudio_version()[1]}; {', '.join(apis)}; {outputs} outputs"
+    return f"{sd.get_portaudio_version()[1]}{where}; {', '.join(apis)}; {outputs} outputs"
 
 
 def _check_windows_audio() -> str:
