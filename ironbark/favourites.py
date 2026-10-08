@@ -5,7 +5,8 @@ No UI.
 The list lives in the library database (LibraryDB.favourites, keyed by audiofile.key, so a song
 keeps its ♥ however its rows are rebuilt). It's read once on a worker thread; after that a change
 shows at once here and is stored on a worker of its own ("library-favourites"), one change at a
-time and in order — a window never waits for the database, and nothing here touches Tk.
+time and in order — waiting, when a long look of the library holds the database, rather than being
+dropped. A window never waits for the database, and nothing here touches Tk.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import queue
 import threading
 from collections.abc import Callable
 
-from . import audiofile
+from . import audiofile, library_db
 
 log = logging.getLogger(__name__)
 
@@ -146,7 +147,8 @@ class Favourites:
                 key, on = item
                 try:
                     db = db or self._db_of()
-                    db.set_favourite(key, on)
+                    # (a long look can hold the database a while: the change waits for it, never dropped)
+                    library_db.when_free(lambda: db.set_favourite(key, on))
                 except Exception as error:
                     if db is not None:
                         db.note_damage(error)

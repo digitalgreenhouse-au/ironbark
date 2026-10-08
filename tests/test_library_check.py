@@ -176,8 +176,11 @@ def test_checks_are_kept_while_the_library_is_read_again(tmp_path, music):
         Indexer(db).check([music])
         again = library_check.plan(db)
         assert again.gone == [] and again.done == 5 and again.count == 0   # nothing to read again
+        # A song in no library folder (Now Playing's check of it, or a folder taken out of the library)
+        # keeps its check, as it keeps its plays and favourites; one gone from a library folder doesn't.
         db.save_check(os.fspath(tmp_path / "Elsewhere" / "x.flac"), 1, 2, 1, "", None, "")
-        assert library_check.plan(db).gone == [os.fspath(tmp_path / "Elsewhere" / "x.flac")]   # (not the library's)
+        db.save_check(os.fspath(music / "Gone" / "x.flac"), 1, 2, 1, "", None, "")
+        assert library_check.plan(db).gone == [os.fspath(music / "Gone" / "x.flac")]
 
 
 def test_the_check_reads_light_rows_and_the_estimate_holds_no_songs(db, tmp_path):

@@ -388,9 +388,10 @@ def _read_off_tk(tracks, rows: list[int]) -> bool:
 
 
 def _store_play(index: library_index.LibraryIndex, key: str, heard: float, duration: float) -> None:
-    """Count a play (LibraryDB.record_play) on a worker thread."""
+    """Count a play (LibraryDB.record_play) on a worker thread — waiting, when a long look of the
+    library holds the database, rather than losing it."""
     try:
-        if index.db.record_play(key, heard, duration):
+        if library_db.when_free(lambda: index.db.record_play(key, heard, duration)):
             _plays_stored[0] += 1   # (the window's poll sees it: the Plays columns read again)
     except Exception as error:
         index.db.note_damage(error)
