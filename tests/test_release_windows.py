@@ -235,7 +235,21 @@ def test_about_opens_no_taller_than_the_screen_and_every_part_can_be_read(root, 
     # A tall one: nothing scrolls, and the licence text takes the room that's left.
     about.win.geometry(f"{theme.px(600)}x{theme.px(1300)}")
     settle(root, 0.4)
-    assert not about.area.needed() and about.text.winfo_height() > help_window.LICENCE_LINES * line
+    # (Tall enough for the page as it's wrapped here, with room to spare: the fonts and scaling an earlier
+    # test in the run left behind can make it taller than 1300 px.)
+    chrome = about.win.winfo_height() - about.area.canvas.winfo_height()
+    page = about.area.inner.winfo_reqheight() - about.text.winfo_reqheight()
+    tall = chrome + page + (help_window.LICENCE_LINES + 4) * line
+    if tall > about.win.winfo_height():
+        if tall > root.winfo_screenheight() - theme.px(help_window.FIT_MARGIN):
+            pytest.skip(f"the screen is too short for the whole About page here ({tall} px)")
+        about.win.geometry(f"{theme.px(600)}x{tall}")
+        settle(root, 0.4)
+    sizes = (f"window {about.win.winfo_height()}, panel {about.area.canvas.winfo_height()}, page "
+             f"{about.area.inner.winfo_reqheight()}, licence text {about.text.winfo_height()}, line {line}, "
+             f"scale {theme.scale():.2f}")
+    assert not about.area.needed(), sizes
+    assert about.text.winfo_height() > help_window.LICENCE_LINES * line, sizes
     left = about.area.canvas.winfo_height() - about.area.inner.winfo_reqheight()
     assert 0 <= left < line + 2
     about.close()
@@ -285,16 +299,18 @@ def shown_root():
 
 
 def test_closing_the_search_panel_drops_an_enter_waiting_for_its_results(shown_root):
-    from test_quick_search import panel, press
+    from test_quick_search import hold_searches, panel, press
 
     root = shown_root
     calls = []
-    qs, _db = panel(root, calls)
+    qs, db = panel(root, calls)
+    held = hold_searches(db)   # (the results can't arrive before the Enter on a busy computer)
     qs.open()
     qs.query.set("rolling")
     press(qs.search.entry, "<KeyPress-Return>")  # pressed before the results…
     assert qs._pending is not None
     qs.close()                                   # …then a click elsewhere puts the panel away
+    held.set()
     assert qs.wait()
     assert calls == [] and not qs.is_open
     qs.open()                                    # opened again: the search that came in is on show

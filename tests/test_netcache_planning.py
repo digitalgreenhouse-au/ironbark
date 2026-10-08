@@ -1,6 +1,6 @@
 """How the network playback cache plans: the quality class and its hysteresis, servers' figures
 saved for the next start, pauses for the network remembered (also across a device let go),
-Pre-download (Off / Next track / Next 2 tracks / Entire queue) within its budget, narrowing when
+Pre-download (Off / Next track / Next 2 tracks / Up to 200 songs ahead) within its budget, narrowing when
 the link can't keep up, Keep cached tracks and the cache size, and hearing network changes.
 Fake shares, a fake clock where time matters; no real network."""
 from __future__ import annotations

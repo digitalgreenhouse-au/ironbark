@@ -15,7 +15,7 @@ whose songs come from the library database a page at a time (library_tracks.Libr
 hasn't been read yet shows "…" until it has.
 
 Several songs can be selected (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A); everything that takes
-songs takes them all (`selected_rows`): Play next, Add to queue, Add to playlist, Remove from the
+songs takes them all (`selected_rows`): Play next, Add to Up next, Add to playlist, Remove from the
 playlist, Edit tags, the favourites, and dragging.
 
 Songs (or an album, by its header) can be dragged: onto a tab to add them there, or up and down

@@ -82,8 +82,10 @@ PRIVACY = ("Ironbark doesn't collect anything about you or your music. Nothing u
            "copies are beside them (on Windows, in %LOCALAPPDATA%\\Ironbark). If something goes wrong, "
            "Settings → Help → Save diagnostics… saves a "
            "zip on your computer that you can choose to attach to a problem report (versions, sound outputs,"
-           " logs and settings, with the names of folders, tabs, playlists and sound outputs left out); it is "
-           "never sent anywhere.")
+           " logs and settings). In it, the folders in your settings, your home folder and the names of tabs, "
+           "playlists and sound outputs are replaced by stand-ins such as <folder 1>. Song, album and artist "
+           "names the logs mention, and folders outside those, can still show: look through it before you "
+           "send it. It is never sent anywhere.")
 
 
 def copyright_line() -> str:
@@ -434,7 +436,7 @@ class AboutWindow:
         self.version_label.pack(anchor="w")
         self.wrapped: list[ttk.Label] = []
         self._para(outer, "A music player that proves what it plays.", pady=(theme.GAP_MEDIUM, 0))
-        self._para(outer, f"{copyright_line()}. Free and open source under the MIT licence.", pady=(theme.GAP_SMALL, 0))
+        self._para(outer, f"{copyright_line()}. Open source under the MIT licence.", pady=(theme.GAP_SMALL, 0))
         self.link = ttk.Label(outer, text=WEBSITE.removeprefix("https://"), style="UpNext.TLabel", cursor="hand2",
                               takefocus=True)
         self.link.pack(anchor="w", pady=theme.pad(theme.GAP_SMALL, 0))

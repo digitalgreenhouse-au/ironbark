@@ -665,13 +665,16 @@ def test_full_volume_and_unmute_never_jump_loud_in_bit_perfect(make_window, monk
     window, root, player, errors = make_window()
     asked = []
     answer = {"yes": False}
-    monkeypatch.setattr(popups, "confirm", lambda *a, **k: asked.append(a[1]) or answer["yes"])
+    dangerous = []
+    monkeypatch.setattr(popups, "confirm", lambda *a, **k: asked.append(a[1]) or dangerous.append(k.get("danger"))
+                        or answer["yes"])
     # Bit-perfect on a device without its own volume: the player's volume is the only one.
     window.exclusive.set(True)
     player.hardware_volume = False
     player.set_volume(ui.SAFE_VOLUME)
     _run(window, root, "Ctrl+Shift+Up")
     assert asked == ["Turn the volume up to 100%?"] and player.volume == ui.SAFE_VOLUME   # asked: not turned up
+    assert dangerous == [True]   # (a reflex Enter keeps the level: only "Turn it up" on purpose goes ahead)
     answer["yes"] = True
     _run(window, root, "Ctrl+Shift+Up")
     assert player.volume == 1.0

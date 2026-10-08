@@ -677,7 +677,7 @@ def open(path, *, cancel=None, wait=None, patience=None, role="play",  # noqa: A
             raise Waiting(0, "failed") from None
     if _resolver is not None and not direct:
         if _is_partial(path):
-            raise Unsupported("this is a part-downloaded file in the music cache")
+            raise Unsupported("this is a part-downloaded file in the network playback cache")
         for attempt in range(2):
             local = _resolver(path, cancel=cancel, wait=wait)
             if local is None:

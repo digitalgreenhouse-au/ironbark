@@ -144,7 +144,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("remove", _keys("Delete",), "list", "Remove the song from the playlist", "Editing"),
     Action("move_song", _keys("Alt+Up", "Alt+Down"), "list", "Move the song up / down the playlist", "Editing",
            arg=True),
-    Action("undo", _keys("Ctrl+Z",), "main", "Undo: a song removed or moved, or Up next cleared", "Editing"),
+    Action("undo", _keys("Ctrl+Z",), "main", "Undo: songs removed or moved, or taken out of Up next", "Editing"),
     Action("rename", _keys("F2",), "main", "Rename the playlist", "Editing"),
     Action("edit_tags", _keys("E",), "main", "Edit tags of the selected song (Experimental)", "Editing", shift=True),
     Action("save_tags", _keys("Ctrl+S",), "tags", "Edit tags: save", "Editing"),

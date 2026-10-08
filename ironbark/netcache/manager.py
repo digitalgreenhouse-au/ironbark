@@ -113,7 +113,7 @@ ISLAND_ALIGN = 64 * 1024     # an island starts on a multiple of this
 ISLAND_LEAD = 64 * 1024      # … this far before the byte wanted
 JUMP_SLACK = 1024 * 1024     # wanted bytes this close past what's here just wait for the run to reach them
 TAIL_BYTES = 256 * 1024      # fetched first for a format whose open reads its end
-QUEUE_DEPTH = 200            # "Entire queue": at most this many songs ahead are looked at
+QUEUE_DEPTH = 200            # "Up to 200 songs ahead": at most this many songs ahead are looked at
 HOST_WARM_S = 3600           # a saved speed under an hour old starts the next run
 HOST_SAVE_S = 30.0
 DEFAULTS = {name: value for name, value in settings.DEFAULTS.items() if name.startswith("net_")}
@@ -428,7 +428,7 @@ class Manager:
         if kind is Kind.URL:
             return Unavailable("it's a web address: playing music from the internet isn't supported yet", True)
         if not self._loaded.is_set():
-            return NotReady("starting", None, "starting", "Getting the music cache ready…")
+            return NotReady("starting", None, "starting", "Getting the network playback cache ready…")
         with self._lock:
             item = self._get(key, path, kind, host)
             self._asked += 1
@@ -490,7 +490,7 @@ class Manager:
         if kind is Kind.URL:
             return Unavailable("it's a web address: playing music from the internet isn't supported yet", True)
         if not self._loaded.is_set():
-            return NotReady("starting", None, "starting", "Getting the music cache ready…")
+            return NotReady("starting", None, "starting", "Getting the network playback cache ready…")
         with self._lock:
             item = local.item if local is not None else self.items.get(key)
             if item is None:
@@ -636,7 +636,7 @@ class Manager:
         deadline = self._clock() + READ_WAIT_S
         if not self._loaded.is_set():
             if not wait or not self._loaded.wait(READ_WAIT_S):
-                raise audiofile.NotCached("the music cache is still starting", None, "starting")
+                raise audiofile.NotCached("the network playback cache is still starting", None, "starting")
         with self._lock:
             item = self.items.get(key) if not wait else self._get(key, path, kind, host)
             if item is None:   # (not waiting, and nothing of it here: nothing to remember either)
@@ -921,7 +921,7 @@ class Manager:
     def _disk_message(self, item: Item) -> str:
         drive = os.path.splitdrive(str(self.folder))[0] or str(self.folder)
         need = max(0, (item.size or 0) - item.visible)
-        return (f"Not enough free space on {drive} for the music cache (needs {need / 1e6:.0f} MB): "
+        return (f"Not enough free space on {drive} for the network playback cache (needs {need / 1e6:.0f} MB): "
                 f"free some space or make the cache smaller")
 
     # -- the scheduler ------------------------------------------------------------------------
@@ -946,7 +946,7 @@ class Manager:
                     item.transfer_ok = True
                     self._verify_queue.put((item, item.gen))
         if self.store.set_aside is not None:
-            self.notices.append("The music cache's list was damaged, so the cache was emptied "
+            self.notices.append("The network playback cache's list was damaged, so the cache was emptied "
                                 "(songs will download again).")
         if self.tidied:
             log.info("music cache ready: %d item(s); tidied %s", len(kept), self.tidied)
@@ -1175,7 +1175,7 @@ class Manager:
                                 self.notices.append(self._disk_message(item))
                         elif not self._told_full:
                             self._told_full = True
-                            self.notices.append("The music cache is full: songs further ahead aren't being downloaded")
+                            self.notices.append("The network playback cache is full: songs further ahead aren't being downloaded")
             with self._lock:
                 if best is not None and self.items.get(best.key) is not best:
                     best = None   # (cleared from the cache meanwhile)

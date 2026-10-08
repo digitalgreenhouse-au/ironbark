@@ -29,7 +29,7 @@ QUALITY_RISE_S at the better level (`QualityScore`), so one good minute after an
 cut the buffering straight back. After k pauses for the network on a song in the last 5 minutes it
 waits for need × 2^k before carrying on (`resume_need`).
 
-Pre-download: "Next track", "Next 2 tracks" or "Entire queue" — songs not heard yet may use at
+Pre-download: "Next track", "Next 2 tracks" or "Up to 200 songs ahead" — songs not heard yet may use at
 most half the cache limit (`within_budget`), and when the link can't fetch the rest of this song
 and the next before this one ends (`feasible`), only those two are fetched.
 """

@@ -35,6 +35,7 @@ from .meters import album_files
 log = logging.getLogger(__name__)
 
 MIXER = "Windows" if sys.platform == "win32" else "system"
+CHECK_MIXER = f"Check what {MIXER} does to the sound"   # the Proof section's button, named in its line
 
 METER_FLOOR_DB = -60.0
 METER_FALL_DB = 2.0  # how far the bars fall back per refresh, so they're readable
@@ -367,7 +368,7 @@ def _describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float,
                     f"samples, so it isn't bit-perfect", "warn")
         return f"✓ Bit-perfect, proven: every sample sent is identical to the file ({checked})", "good"
     return (f"✓ The player sent every sample unchanged ({checked}). In shared mode {MIXER} mixes it next: "
-            f"use “Check {MIXER}” below to see what that does", "plain")
+            f"use “{CHECK_MIXER}” below to see what that does", "plain")
 
 
 def describe_health(health: Health | None, dropouts: int) -> tuple[str, str]:
@@ -633,7 +634,7 @@ class NowPlayingWindow:
         self.prefs = prefs if prefs is not None else {}  # read live: Settings → Allow network access
         self.on_moved = on_moved
         self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Now playing")
+        self.win.title("Now Playing")
         self.win.protocol("WM_DELETE_WINDOW", self.close)
         self.win.bind("<Escape>", lambda e: self.close())
         theme.dark_title_bar(self.win)
@@ -713,7 +714,7 @@ class NowPlayingWindow:
         self._label(proof, 3, MIXER, theme.pad(theme.GAP, 1))
         self.windows_frame = ttk.Frame(proof)
         self.windows_frame.grid(row=3, column=1, sticky="w", pady=theme.pad(theme.GAP, 1))
-        self.windows_button = controls.FlatButton(self.windows_frame, f"Check what {MIXER} does to the sound",
+        self.windows_button = controls.FlatButton(self.windows_frame, CHECK_MIXER,
                                                   self._start_windows_check)
         self.windows_button.grid(row=0, column=0, columnspan=2, sticky="w")
         self.windows_note = ttk.Label(self.windows_frame, text="", style="Muted.TLabel",
@@ -938,7 +939,7 @@ class NowPlayingWindow:
                                      cue=playing is not None and playing.cue is not None)
             when = self._stored_when.get(self._track_path) if self._track_path is not None else None
             if when is not None:
-                rows.append(("Checked", f"{time.strftime('%d/%m/%Y', time.localtime(when))} by the library check "
+                rows.append(("Checked", f"{time.strftime('%d/%m/%Y', time.localtime(when))} by the quality check "
                                         "(the file hasn't changed since)"))
             for row, (label, value) in enumerate(rows):
                 # ✓ green, ✗ / ⚠ amber (tone_of); negative figures with the minus sign, as the live ones

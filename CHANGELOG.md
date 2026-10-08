@@ -4,6 +4,37 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.33.1 — 08/10/2026
+
+Release-review fixes: the whole player was reviewed before its first release, and what the review found
+has been fixed across playback, the library, the windows, the network cache, packaging and wording.
+
+- **Your ears:** bit-perfect on "System default" plays only on the device whose volume was checked; if
+  Windows switches to a new default, playback stops, the check runs again, and play carries on there.
+  On a device with no volume control of its own, End, Page Up and a click far up the volume slider now
+  ask first, as Ctrl+Shift+↑ does, and in that question Enter or Esc keep the volume where it is.
+- **Playing:** adding songs no longer loses your place while paused by the sleep timer, a disconnected
+  device, ABX or Test signals; the sleep timer no longer fades a bit-perfect song still downloading.
+- **Up next:** "Add to queue" is now "Add to Up next" everywhere; a very long Up next no longer slows a
+  wide window at every song change; the docked list keeps your selection on the songs you chose.
+- **The Library:** another drive given your music drive's letter no longer empties it; a music drive
+  back under a new letter, and renamed or moved album folders, keep their plays, favourites and quality
+  checks; favourites or plays made while the Library is being read are no longer lost.
+- **Windows and keyboard:** full screen with Keep on top no longer hides the other windows; mini mode
+  and in-app boxes put the keyboard back where it was; About scrolls when the screen is short; "/"
+  opens search on keyboards where it needs Shift.
+- **Network playback (Experimental):** a file on the network drive is no longer held open after its
+  download, a deleted cached copy is downloaded again, and drives come back after a network hiccup; the
+  cache size is in the same gigabytes Settings shows.
+- **Installing:** uninstalling removes the network playback cache and asks before removing your
+  settings and library database (your music is never touched; upgrades keep everything); the program
+  always uses its own PortAudio; opening a song while Ironbark is closing waits and then plays it.
+- **Privacy:** Save diagnostics also hides mapped network drives' server names, and its wording now
+  says plainly what is replaced by stand-ins and that song and album names in the logs can still show.
+- **Wording:** one name for each thing ("network playback cache", "Format", "Now Playing"), "1 song"
+  not "1 tracks", thousands separators, and messages that name the real controls; the search panel's
+  status line wraps instead of being cut off in a narrow window.
+
 ## 0.33.0 — 08/10/2026
 
 Very big tabs that open in a moment, several songs selected at once, Up next and the lyrics beside

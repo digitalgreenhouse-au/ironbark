@@ -203,7 +203,7 @@ class UpNextView(ttk.Frame):
     def _paint_more(self, more: int):
         """Under the list: how many more songs wait after the ones listed."""
         if more > 0:
-            self.more.configure(text=f"and {more} more")
+            self.more.configure(text=f"and {more:,} more")
             if not self.more.winfo_manager():
                 self.more.pack(side="bottom", fill="x", before=self.tree, pady=theme.pad(theme.GAP_SMALL, 0))
         elif self.more.winfo_manager():
@@ -334,5 +334,5 @@ def count_text(count: int, seconds: float) -> str:
     minutes, rest = divmod(int(round(seconds)), 60)
     hours, minutes = divmod(minutes, 60)
     length = f"{hours}:{minutes:02d}:{rest:02d}" if hours else f"{minutes}:{rest:02d}"
-    return f"Up next · {count} song{'' if count == 1 else 's'} · {length}"
+    return f"Up next · {count:,} song{'' if count == 1 else 's'} · {length}"
 

@@ -129,7 +129,7 @@ def test_a_very_long_up_next_docked_shows_its_head_and_keeps_the_window_quick(ma
     _pump(root, 0.4)
     rows = dock.tree.get_children()
     assert 50 <= len(rows) <= 1000                                  # the head of the queue, not every song
-    assert window.playlist.count_label.cget("text").startswith("Up next · 100001 songs")
+    assert window.playlist.count_label.cget("text").startswith("Up next · 100,001 songs")
     assert dock.more.winfo_ismapped() and "more" in dock.more.cget("text")
     started = time.perf_counter()
     for _ in range(5):
@@ -183,7 +183,7 @@ def test_up_next_queued_with_no_tabs_open_shows_in_a_wide_window_too(make_window
     window.close_tab(0)                                  # every tab closed: the empty view
     _pump(root, 0.3)
     assert not window.tabs and window.empty_view.winfo_ismapped()
-    window._queue_tracks(_songs("One", "Two"), False)   # e.g. Add to queue from the Library
+    window._queue_tracks(_songs("One", "Two"), False)   # e.g. Add to Up next from the Library
     _pump(root, 0.4)
     label = window.up_next_label
     assert label.winfo_ismapped() and label.cget("text") == "Up next (2) · One — Up"

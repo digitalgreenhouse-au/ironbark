@@ -227,6 +227,15 @@ def press(widget, sequence):
     widget.event_generate(sequence)
 
 
+def hold_searches(db: FakeDB) -> threading.Event:
+    """The stand-in database's searches wait (on the query thread) until the event is set, so a
+    test's Enter is in before the results, however busy the computer is."""
+    held = threading.Event()
+    search = db.search_songs
+    db.search_songs = lambda query, limit=200: (held.wait(10), search(query, limit))[1]
+    return held
+
+
 def test_typing_waits_for_a_pause_and_lists_sections(root, tk_thread_rule):
     calls = []
     qs, db = panel(root, calls)
@@ -273,11 +282,13 @@ def test_enter_keys_act_on_the_selected_result(root):
 
 def test_enter_before_the_results_arrive_acts_once_they_do(root):
     calls = []
-    qs, _db = panel(root, calls)
+    qs, db = panel(root, calls)
+    held = hold_searches(db)
     qs.open()
     qs.query.set("rolling")
     press(qs.search.entry, "<KeyPress-Return>")          # pressed before the pause: nothing waits
     assert calls == [] and qs.searching
+    held.set()
     assert qs.wait()
     assert calls == [("play", "Rolling in the Deep", "21")]
 
@@ -316,7 +327,7 @@ def test_right_click_menu_and_drag(root, monkeypatch):
     x, y, _w, h = qs.tree.bbox("t1")
     qs._context(SimpleNamespace(x=x + 5, y=y + h // 2, x_root=0, y_root=0))
     menu = shown[-1]
-    assert menu.labels() == ["Play", "Play next", "Add to queue", "Open album", "Add to playlist",
+    assert menu.labels() == ["Play", "Play next", "Add to Up next", "Open album", "Add to playlist",
                              "Add to favourites", "Show in Library", "Show in Explorer"]
     monkeypatch.setattr(favourites, "_start_writer", lambda: None)   # (nothing to store it in here)
     menu.menu.find("Add to favourites").command()

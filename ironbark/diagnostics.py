@@ -69,8 +69,9 @@ app.log            what {APP_NAME} noted while running (more with Settings > Hel
 In the logs, the same paths are replaced, and your home folder shows as <home>. In every file the
 names of your sound outputs show as <device 1>, <device 2>..., your open tabs' titles as <tab 1>...,
 your playlists' names as <playlist 1>..., searches as <search 1>... and network servers as
-<server 1>... Music file names a log mentions in passing may still show: look through the files
-before sending if that matters.
+<server 1>... Song, album and artist names a log mentions (a song that wouldn't play, say), and
+folders outside the ones in your settings and your home folder, can still show: look through the
+files before sending if that matters.
 """
 
 

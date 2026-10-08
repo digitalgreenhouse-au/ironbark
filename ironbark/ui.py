@@ -11,7 +11,7 @@ Tag editing (0.16.0, Experimental — no menu, key or button for it while its sw
 right-click songs → Edit tags… (key E), or an album in the Library; Tag history… undoes. The
 careful saving is tag_editor.py; a song that's playing waits until the player moves on (`_poll`).
 
-Up next: right-click songs (or an album in the Library) → Play next / Add to queue; they play
+Up next: right-click songs (or an album in the Library) → Play next / Add to Up next; they play
 before the tab carries on (engine.Player keeps the list, so they join on gaplessly). An
 "Up next (n)" line above the status line opens the list. Albums and tabs are read through the
 library database (library_index.py) when it's up to date, so nothing is read twice.
@@ -148,7 +148,7 @@ SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: i
 # Settings -> Network playback (the network playback cache): (saved value, what the choice says)
 NET_MODES = (("intelligent", "Intelligent"), ("fast", "Fast start"), ("complete", "Complete track"))
 NET_BUFFERS = ((10, "10 seconds"), (30, "30 seconds"), (60, "1 minute"), (300, "5 minutes"))
-NET_PREDOWNLOADS = (("off", "Off"), ("next", "Next track"), ("next2", "Next 2 tracks"), ("queue", "Entire queue"))
+NET_PREDOWNLOADS = (("off", "Off"), ("next", "Next track"), ("next2", "Next 2 tracks"), ("queue", "Up to 200 songs ahead"))
 NET_KEEPS = (("none", "Don't keep"), ("session", "Until playback finishes"), ("day", "For 1 day"),
              ("limit", "Until the cache is full"))
 NET_SIZES = ((1, "1 GB"), (5, "5 GB"), (10, "10 GB"), (25, "25 GB"), (50, "50 GB"), (0, "Unlimited"))
@@ -246,8 +246,8 @@ def _cut_word(word: str, width: int, measure: Callable[[str], int]) -> tuple[str
 
 
 def plural(count: int, word: str) -> str:
-    """ "1 song", "13 songs"."""
-    return f"{count} {word}{'' if count == 1 else 's'}"
+    """ "1 song", "13 songs", "200,000 songs"."""
+    return f"{count:,} {word}{'' if count == 1 else 's'}"
 
 
 def fmt_time(seconds: float) -> str:
@@ -1341,8 +1341,9 @@ class PlayerWindow:
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self.diagnostics_button = self._pop_button(row, "Save diagnostics…", self.save_diagnostics,
                                                    "Save a .zip to send with a problem report: versions, sound "
-                                                   "outputs, logs and settings (the names of folders, tabs, "
-                                                   "playlists and outputs left out). Nothing is sent anywhere.")
+                                                   "outputs, logs and settings. Your folders, tabs, playlists and "
+                                                   "outputs are given stand-in names, but song and album names in "
+                                                   "the logs can still show. Nothing is sent anywhere.")
         self.diagnostics_button.pack(side="left")
         self._pop_button(row, "Open log folder", self._open_log_folder,
                          "Where crash.log and app.log are kept").pack(side="right")
@@ -1683,16 +1684,17 @@ class PlayerWindow:
 
     def _louder_ok(self, level: float) -> bool:
         """Ask before turning the volume up to `level` where it's the only one (see _ears_at_risk):
-        True to go ahead."""
+        True to go ahead. A risk to the ears: Enter and Esc keep the level, only choosing "Turn it up"
+        on purpose goes ahead."""
         reason = ("This device has no volume control of its own" if self.player.hardware_volume is False
                   else "The player couldn't confirm this device has a volume control of its own")
         loud = "full level" if level >= 1.0 else volume_words(level)
         self._for_prompt()
         return popups.confirm(self.root, f"Turn the volume up to {level:.0%}?",
                               f"{reason}, and bit-perfect goes round the Windows volume: the music will "
-                              f"play at {loud} (the volume is {volume_words(self.player.volume)} now).",
-                              detail="Turn your headphone or amp volume down first.", ok="Turn it up",
-                              tone="warn")
+                              f"play at {loud} (the volume is {volume_words(self.player.volume)} now). "
+                              "Turn your headphone or amp volume down first.",
+                              ok="Turn it up", danger=True, tone="warn")
 
     def toggle_mute(self):
         """Ctrl+Shift+↓: silence; again, back to the level it was (the default level if it was 0
@@ -2131,7 +2133,7 @@ class PlayerWindow:
         elif not tab.tracks:
             self._set_notice(f"No music files in {tab.title}")
         elif tab.kind == "library":
-            self._set_notice(f"Loaded {len(tab.tracks)} tracks from {progress['total']} albums")
+            self._set_notice(f"Loaded {plural(len(tab.tracks), 'song')} from {plural(progress['total'], 'album')}")
         if index == self.current:
             self._show_current_tab()
         if play and tab.tracks:
@@ -2857,7 +2859,7 @@ class PlayerWindow:
         menu.add("Play this album" if album else "Play", lambda: self._play_tab(self.current, rows[0]),
                  keys.hint("list_play"))
         menu.add("Play next", songs(lambda found: self._queue_tracks(found, front=True)), keys.hint("list_play_next"))
-        menu.add("Add to queue", songs(lambda found: self._queue_tracks(found, front=False)), keys.hint("list_queue"))
+        menu.add("Add to Up next", songs(lambda found: self._queue_tracks(found, front=False)), keys.hint("list_queue"))
         menu.add_separator()
         add = menu.add_submenu("Add to playlist" if single else f"Add these {len(rows):,} songs to playlist")
         targets = [p for p in self._known_playlists() if not (tab.kind == "playlist" and Path(tab.path) == p)]
@@ -3366,7 +3368,7 @@ class PlayerWindow:
         elif queue:
             first = queue[0].track
             artist = f" — {first.artist}" if first.artist else ""
-            self.up_next_label.configure(text=f"Up next ({len(queue)}) · {first.title}{artist}")
+            self.up_next_label.configure(text=f"Up next ({len(queue):,}) · {first.title}{artist}")
             if not self.up_next_label.winfo_ismapped():
                 # (Above the track list; with no tabs open the list is hidden: just above the status line.)
                 place = (dict(before=self.playlist.frame) if self.playlist.frame.winfo_manager()
@@ -3430,7 +3432,7 @@ class PlayerWindow:
             if meaning:
                 Tooltip(row.lead, meaning)
         if len(entries) > UP_NEXT_SHOWN:
-            ttk.Label(body, text=f"and {len(entries) - UP_NEXT_SHOWN} more", style="PopMuted.TLabel").pack(
+            ttk.Label(body, text=f"and {len(entries) - UP_NEXT_SHOWN:,} more", style="PopMuted.TLabel").pack(
                 anchor="w", padx=inset, pady=theme.pad(theme.GAP_HAIR, 0))
         if self._netcache is not None and getattr(self._netcache, "narrowed", False) and any(m[0] for m in marks):
             ttk.Label(body, text="The next song may need a short wait: the network is slower than the music "
@@ -3664,18 +3666,18 @@ class PlayerWindow:
                 first = "Restore the window from maximised"
             else:
                 first = "Show the window"
-            self._set_notice(f"{first} first, then choose Use current: home is a spot and size for the window")
+            self._set_notice(f"{first} first, then choose Use current (Settings → Window)")
             return
         self.prefs["home_geometry"] = geometry
         self._update_home_text()
-        self._set_notice("Home set: the home button (or Ctrl+Shift+H) brings the player back here")
+        self._set_notice(f"Home set: {keys.hint('snap_home')} or Snap to home (Settings) brings the player back here")
 
     def snap_home(self):
         if self.mini_mode:   # home is a place for the full window
             self.toggle_mini()
         home = self.prefs["home_geometry"]
         if not home:
-            self._set_notice("No home yet: choose “Make this spot home” first")
+            self._set_notice("No home yet: choose Use current (Settings → Window) to make this spot home")
             return
         self._leave_full_screen()
         if self.root.state() == "zoomed":
@@ -3874,9 +3876,12 @@ class PlayerWindow:
         if self.exclusive.get():
             guard = (" The clipping guard comes first: a track that would clip the converter is turned down "
                      "just enough, so that one track isn't bit-perfect." if self.clip_guard.get() else "")
-            return ("Bit-perfect is locked on: the device gets the file's exact samples, and other apps "
-                    f"go quiet while this plays.{guard}{levelled} Click to turn it off.")
-        return f"Bit-perfect is off: Windows mixes the sound and may resample it.{levelled} Click to lock it on."
+            exact = ("the device gets the file's exact samples" if setting == "off"
+                     else "Windows' mixer is bypassed")
+            return (f"Bit-perfect is locked on: {exact}, and other apps go quiet while this plays."
+                    f"{guard}{levelled} Click to turn Bit-perfect off.")
+        return (f"Bit-perfect is off: Windows mixes the sound and may resample it.{levelled} "
+                "Click to lock Bit-perfect on.")
 
     def _refresh_outputs(self):
         """Re-read the connected devices (runs each time the dropdown opens)."""
@@ -5316,7 +5321,7 @@ class PlayerWindow:
 
     # -- refresh -------------------------------------------------------------
     def _album_summary(self, tab: Tab) -> str:
-        """e.g. "FLAC · 24-bit / 96 kHz · 10 tracks · 41:07" for an album you've flicked to. Worked
+        """e.g. "FLAC · 24-bit / 96 kHz · 10 songs · 41:07" for an album you've flicked to. Worked
         out once per change of the tab's list or song, not on every poll: a tab can hold a whole
         library."""
         track = tab.view_track()
@@ -5331,8 +5336,7 @@ class PlayerWindow:
             songs, albums, seconds = tab_numbers(tab)
             text = f"Library · {plural(songs, 'song')} · {plural(albums, 'album')} · {fmt_time(seconds)}"
         elif tab.kind == "playlist":
-            count = len(tab.tracks)
-            text = f"Playlist · {count} song{'' if count == 1 else 's'} · {fmt_time(sum(t.duration for t in tab.tracks))}"
+            text = f"Playlist · {plural(len(tab.tracks), 'song')} · {fmt_time(sum(t.duration for t in tab.tracks))}"
         else:
             if track.lossy or not track.sample_rate:
                 quality = track.codec
@@ -5340,7 +5344,7 @@ class PlayerWindow:
                 quality = f"{track.codec} · {track.bits}-bit / {track.sample_rate / 1000:g} kHz"
             folder = album_folder(track.path)
             album = [t for t in tab.tracks if album_folder(t.path) == folder]
-            text = f"{quality} · {len(album)} tracks · {fmt_time(sum(t.duration for t in album))}"
+            text = f"{quality} · {plural(len(album), 'song')} · {fmt_time(sum(t.duration for t in album))}"
         tab.summary = (tab.tracks, key, text)
         return text
 

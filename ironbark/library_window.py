@@ -6,7 +6,7 @@ window's own `after` loop picks it up, with the indexer's progress and news of c
 Browse by Albums · Artists · Genres · Years · Composers · Recently added (the grouping rules are in
 browse.py); click a column heading to sort by it (again to reverse). Search matches album, artist,
 year, genre and composer. Double-click an album to open it in a tab (it starts playing only if
-nothing else is); right-click for Play next / Add to queue. An album can also be dragged onto the
+nothing else is); right-click for Play next / Add to Up next. An album can also be dragged onto the
 player: onto a tab to add it there, anywhere else on the player to open it in a new tab.
 
 Songs (a second row of views): **Songs** — every song in the library, sortable by any column, the
@@ -14,7 +14,7 @@ search box searching every song through the database's index; **Most played** an
 played** (from the plays the database counts); **Favourites** (♥: right-click any song — here, in a
 tab or in the search panel — and choose Add to favourites). A song plays in its album (Enter or a
 double-click: the album opens in a tab and plays from that song); right-click for the rest. Several
-songs can be selected (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A): Play next, Add to queue, Add
+songs can be selected (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A): Play next, Add to Up next, Add
 to playlist, the favourites and Add to the tab take them all — a selection running past the rows
 of the Songs view read so far is read on the query thread first — and a drag carries those read.
 Plays and Last played can be added as columns (right-click the headings); they're read for the
@@ -82,7 +82,7 @@ VIEW_TITLES = {**browse.VIEW_TITLES, "songs": "Songs", "most_played": "Most play
                "recently_played": "Recently played", "favourites": "Favourites", "needs_look": "Needs a look"}
 # Every column the list can show; each view shows some of them (DISPLAYED).
 COLUMNS = ("album", "artist", "year", "quality", "tracks", "added", "title", "time", "plays", "found", "last")
-HEADINGS = {"album": "Album", "artist": "Artist", "year": "Year", "quality": "Quality", "tracks": "Tracks",
+HEADINGS = {"album": "Album", "artist": "Artist", "year": "Year", "quality": "Format", "tracks": "Tracks",
             "added": "Added", "title": "Title", "time": "Time", "plays": "Plays", "found": "Found",
             "last": "Last played"}
 SONG_EXTRAS = (("plays", "Plays"), ("last", "Last played"))   # optional song-view columns (right-click a heading)
@@ -100,7 +100,7 @@ SONG_LIMIT = 1000        # songs the Songs view's search lists (the best ones; t
 PLAYED_LIMIT = 500       # songs Most played / Recently played list
 PAGE = 200               # the Songs view's rows are read this many at a time
 PAGES_KEPT = 25          # …and this many pages kept (others are read again when scrolled back to)
-LOAD_ALL_WARN = 10_000   # songs: opening more than this in one tab asks first
+LOAD_ALL_WARN = 100_000  # songs: opening more than this in one tab asks first (it takes a few seconds)
 ALBUM_THREAD_AT = 5_000  # albums: a library this big is grouped, searched and sorted on the query thread
 COUNTS_KEPT = 20_000     # play counts / last-played times remembered (the rows shown lately)
 _NUMERIC = {"year", "tracks", "time", "plays"}
@@ -442,7 +442,7 @@ class LibraryWindow:
         self.can_edit_tags = can_edit_tags  # its switch is on (read fresh at every right-click)
         self.add_target = add_target  # the title of the player's tab on show, read fresh each time
         self.new_albums = new_albums  # the new albums' folders (0.17.0), read fresh at every fill
-        self.actions = actions or Actions()   # what a song's Play / Add to queue / … do (the player's)
+        self.actions = actions or Actions()   # what a song's Play / Add to Up next / … do (the player's)
         self.on_add_tracks = on_add_tracks    # songs onto the tab on show; returns what to say
         self.checker = checker                # the whole-library quality check (the player's), if any
         # The song views' optional columns (Plays, Last played) and what's known for the rows shown.
@@ -1624,7 +1624,7 @@ class LibraryWindow:
         if self.on_queue is not None:
             menu.add_separator()
             menu.add("Play next", lambda: self._queue(album, True), keys.hint("library_play_next"))
-            menu.add("Add to queue", lambda: self._queue(album, False), keys.hint("library_queue"))
+            menu.add("Add to Up next", lambda: self._queue(album, False), keys.hint("library_queue"))
         if self.on_edit_tags is not None and self.can_edit_tags():
             menu.add_separator()
             menu.add("Edit tags…", lambda: self.on_edit_tags(album.path))
@@ -1664,11 +1664,11 @@ class LibraryWindow:
 
     def _load_all(self):
         """Every album shown (all of them, or just the search results), in this order, in one tab.
-        A very big one asks first: it takes a while, and the search (Ctrl+K) finds any song without it."""
+        A very big one asks first: it takes a few seconds, and the search (Ctrl+K) finds any song without it."""
         songs = sum(album.track_count for album in self._shown)
         if songs > LOAD_ALL_WARN and not popups.confirm(
                 self.win, f"Open {count_text(songs, 'song')} in one tab?",
-                "A tab that big takes a while to open and uses a lot of memory.",
+                "A tab that big can take a few seconds to open.",
                 detail="To find a song, the search (Ctrl+K) looks through the whole library without opening it.",
                 ok="Open them all", tone="warn"):
             return

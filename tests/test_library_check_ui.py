@@ -189,7 +189,7 @@ def test_now_playing_shows_a_stored_check_at_once_and_keeps_its_own(root, music,
     pump(root, lambda: NowPlayingWindow.cached_analysis(loud.path) is not None and win._analysis is not None)
     assert asked == [loud.path] and threads[0] is not threading.main_thread()
     rows = texts(win.check_frame)
-    assert "Checked" in rows and any(text.startswith("07/10/2026 by the library check") for text in rows)
+    assert "Checked" in rows and any(text.startswith("07/10/2026 by the quality check") for text in rows)
     win.close()
     # No stored result: Check runs here, and its result is kept for the library check.
     fine = read_track(music / "Fine" / "01.flac")

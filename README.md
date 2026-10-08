@@ -79,7 +79,7 @@ so Windows SmartScreen warns about an unknown publisher.
 - **Library** (Ctrl+L): browse by album, artist, genre, year, composer or recently added; sort by any
   column; search. **Songs** lists every song in the library (with optional Plays and Last played
   columns), and **Most played**, **Recently played** and **Favourites** (♥ — right-click any song) keep
-  your listening close. **Play next / Add to queue** from any song or album.
+  your listening close. **Play next / Add to Up next** from any song or album.
 - **Select several songs** (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A) in the track list, the
   Library's song views, the search results and a wide window's Up next: play them next, queue them, add
   them to a playlist or your favourites, edit their tags, drag them onto a tab, or take them out of a
@@ -98,7 +98,7 @@ so Windows SmartScreen warns about an unknown publisher.
   marked as new until you open them.
 - **Volume levelling** (Settings → Sound, off by default): Track, Album or Smart, from ReplayGain
   tags or Ironbark's own loudness measurement, never turning a song up past its peak. While it
-  changes a song's level the samples aren't the file's own, so the status square turns amber.
+  changes a song's level the samples aren't the file's own, so the status dot turns amber.
 - **Stop after this song** (Ctrl+.) and a **sleep timer** (15–90 minutes or the end of the album;
   Ctrl+Shift+S) — a gentle fade in shared mode, a clean stop at the end of a song in bit-perfect mode.
 - **Lyrics** (L): from the song's tags or a `.lrc` / `.txt` file beside it, never from the internet;
@@ -138,7 +138,7 @@ so Windows SmartScreen warns about an unknown publisher.
   is compared with what Ironbark sent — untouched, resampled, level-changed, or altered by effects.
 - **Dropout early warning:** buffer health, slow reads and a log of every dropout with its likely
   cause.
-- **Status square:** green when everything is bit-perfect and proven, amber when something alters
+- **Status dot:** green when everything is bit-perfect and proven, amber when something alters
   the sound — hover it to see what.
 - **Clipping guard:** many loud masters peak *between* samples above full scale, which can crackle in
   a converter. Ironbark measures each track's true peak ahead of time and turns down only the
@@ -185,8 +185,9 @@ so Windows SmartScreen warns about an unknown publisher.
 - After Ironbark closed unexpectedly, the next start says so once in the status line, with a
   *Save diagnostics…* link.
 - Settings → Help → **Save diagnostics…** saves a zip for a problem report (versions, sound outputs,
-  logs and settings, with the names of folders, tabs, playlists and sound outputs left out) on your
-  computer. It is never sent anywhere.
+  logs and settings) on your computer. The folders in your settings, your home folder and the names
+  of tabs, playlists and sound outputs are replaced by stand-ins; song and album names in the logs
+  can still show. It is never sent anywhere.
 - Settings → Help → **About Ironbark**: the version, every bundled component's licence, and a *Copy
   version info* button.
 - Settings → Help → **Check for updates** (off by default, and only while network access is
@@ -304,7 +305,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 |---|---|
 | Delete | Remove the song from the playlist |
 | Alt+↑ / Alt+↓ | Move the song up / down the playlist |
-| Ctrl+Z | Undo: a song removed or moved, or Up next cleared |
+| Ctrl+Z | Undo: songs removed or moved, or taken out of Up next |
 | F2 | Rename the playlist |
 | E | Edit tags of the selected song (Experimental) |
 | Ctrl+S | Edit tags: save |
@@ -334,8 +335,10 @@ Settings, playlists and the logs are kept on your computer (on Windows, in `%APP
 the library database (with your play counts and favourites) and the network playback cache's copies
 are beside them (on Windows, in `%LOCALAPPDATA%\Ironbark`). If something goes wrong, Settings →
 Help → *Save diagnostics…* saves a zip on your computer that you can choose to attach to a problem
-report (versions, sound outputs, logs and settings, with the names of folders, tabs, playlists and
-sound outputs left out); it is never sent anywhere.
+report (versions, sound outputs, logs and settings). In it, the folders in your settings, your home
+folder and the names of tabs, playlists and sound outputs are replaced by stand-ins such as
+`<folder 1>`. Song, album and artist names the logs mention, and folders outside those, can still
+show: look through it before you send it. It is never sent anywhere.
 
 ## Feedback
 

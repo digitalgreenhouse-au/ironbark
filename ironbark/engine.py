@@ -1419,7 +1419,7 @@ class Player:
         self.tracks: list[Track] = []
         self._paths: tuple | None = None   # (the list, {path: its first place}) — made once per list
         self.index = -1
-        # Up next ("Play next" / "Add to queue"): songs that play before the list carries on.
+        # Up next ("Play next" / "Add to Up next"): songs that play before the list carries on.
         # Replaced whole on every change, so the decoder can read it without the lock. While a
         # queued song plays, `index` stays on the list's song it interrupted (where the list
         # carries on from) and `queued_now` is the song.

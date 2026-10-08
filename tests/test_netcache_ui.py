@@ -460,7 +460,7 @@ def test_settings_offers_every_pre_download_keep_and_size_choice(make_window, mo
     monkeypatch.setattr(netcache, "install", lambda prefs, player: stub)
     window, root, player, errors = make_window(experiments={"network_cache": True})
     window._start_cache()
-    assert [*window.net_predownload_box.cget("values")] == ["Off", "Next track", "Next 2 tracks", "Entire queue"]
+    assert [*window.net_predownload_box.cget("values")] == ["Off", "Next track", "Next 2 tracks", "Up to 200 songs ahead"]
     assert [*window.net_keep_box.cget("values")] == ["Don't keep", "Until playback finishes", "For 1 day",
                                                     "Until the cache is full"]
     assert [*window.net_size_box.cget("values")] == ["1 GB", "5 GB", "10 GB", "25 GB", "50 GB", "Unlimited"]

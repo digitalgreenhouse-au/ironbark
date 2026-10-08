@@ -1,4 +1,4 @@
-"""Up next (0.15.0): "Play next" / "Add to queue" songs play before the list carries on, in order;
+"""Up next (0.15.0): "Play next" / "Add to Up next" songs play before the list carries on, in order;
 a queued song joins on gaplessly (checked sample for sample through the stand-in sound card, as
 test_gapless.py), and the list carries on after the song the queue interrupted."""
 import time

@@ -71,7 +71,7 @@ PANEL_MAX_WIDTH = 960   # px at 100%: a wide window gets the panel centred, no w
 PANEL_MAX_HEIGHT = 760  # px at 100%: …and no taller than this (narrower, it runs to the window's foot)
 NARROW, MEDIUM = 560, 820   # px at 100%: below NARROW, Title + Time; below MEDIUM, + Artist and Album
 COLUMNS = ("title", "artist", "album", "year", "quality", "time")
-HEADINGS = {"title": "Title", "artist": "Artist", "album": "Album", "year": "Year", "quality": "Quality",
+HEADINGS = {"title": "Title", "artist": "Artist", "album": "Album", "year": "Year", "quality": "Format",
             "time": "Time"}
 LAYOUTS = {"narrow": ("title", "time"), "medium": ("title", "artist", "album", "time"), "wide": COLUMNS}
 SECTIONS = ("songs", "albums", "artists")
@@ -246,7 +246,7 @@ def song_values(hit: SongHit, inline_artist: bool = False, favourite: bool = Fal
 
 def add_song_items(menu, actions: Actions, hits: Sequence[SongHit], hints: dict[str, str] | None = None,
                    show_in_library: bool = True) -> None:
-    """A song's right-click items (one song, or several): Play, Play next, Add to queue, Open
+    """A song's right-click items (one song, or several): Play, Play next, Add to Up next, Open
     album, Add to playlist…, favourites, Show in Library, Show in Explorer. `hints`: the keys shown
     beside them (play / next / queue / album)."""
     hints = hints or {}
@@ -254,7 +254,7 @@ def add_song_items(menu, actions: Actions, hits: Sequence[SongHit], hints: dict[
     tracks = [hit.track for hit in hits]
     menu.add("Play", lambda: actions.play_song(first.track, first.album), hints.get("play", ""))
     menu.add("Play next", lambda: actions.queue_tracks(tracks, True), hints.get("next", ""))
-    menu.add("Add to queue", lambda: actions.queue_tracks(tracks, False), hints.get("queue", ""))
+    menu.add("Add to Up next", lambda: actions.queue_tracks(tracks, False), hints.get("queue", ""))
     menu.add("Open album", lambda: actions.open_album(first.album, False), hints.get("album", ""))
     menu.add_separator()
     add = menu.add_submenu("Add to playlist" if len(hits) == 1 else f"Add these {len(hits)} songs to playlist")
@@ -353,8 +353,10 @@ class QuickSearch:
         for key in ("<App>", "<Shift-F10>"):   # the keyboard's menu key: the selected result's menu
             tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
 
-        self.status = ttk.Label(inner, text="", style="Muted.TLabel", anchor="w")
+        self.status = ttk.Label(inner, text="", style="Muted.TLabel", anchor="w", justify="left")
         self.status.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
+        # (A long message wraps to a second line rather than being cut off in a narrow window.)
+        self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(1, e.width)), add="+")
         self.panel.bind("<Configure>", self._resized, add="+")
         self.panel.bind("<Destroy>", self._destroyed, add="+")
         if not self.docked:
@@ -659,7 +661,7 @@ class QuickSearch:
         text = " · ".join(parts) if parts else "No matches"
         try:
             if self.index_of().indexer.running:
-                text += " · the library is still being read, so more may turn up"
+                text += " · still reading the library: more may turn up"
         except AttributeError:
             pass
         self._say(self._note or text)
@@ -785,7 +787,7 @@ class QuickSearch:
         elif kind == "album":
             menu.add("Play", lambda: actions.open_album(thing.path, True), "Enter")
             menu.add("Play next", lambda: actions.queue_album(thing.path, True), "Shift+Enter")
-            menu.add("Add to queue", lambda: actions.queue_album(thing.path, False), "Ctrl+Enter")
+            menu.add("Add to Up next", lambda: actions.queue_album(thing.path, False), "Ctrl+Enter")
             menu.add("Open album", lambda: actions.open_album(thing.path, False), "Alt+Enter")
             menu.add_separator()
             menu.add("Show in Library", lambda: actions.show_in_library(thing.path))

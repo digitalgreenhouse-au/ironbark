@@ -85,12 +85,12 @@ def test_the_album_summary_is_worked_out_once_per_change(monkeypatch):
     real = ui.album_folder
     monkeypatch.setattr(ui, "album_folder", lambda path: (looked_up.append(path), real(path))[1])
     first = PlayerWindow._album_summary(SimpleNamespace(), tab)
-    assert first == "FLAC · 16-bit / 44.1 kHz · 10 tracks · 10:00"
+    assert first == "FLAC · 16-bit / 44.1 kHz · 10 songs · 10:00"
     looked_up.clear()
     assert PlayerWindow._album_summary(SimpleNamespace(), tab) == first
     assert looked_up == []                       # the second poll does no work
     tab.tracks = tracks[:5]                      # a new list (an edit, an album added): worked out again
-    assert PlayerWindow._album_summary(SimpleNamespace(), tab).endswith("5 tracks · 5:00")
+    assert PlayerWindow._album_summary(SimpleNamespace(), tab).endswith("5 songs · 5:00")
     # A Library tab says what the whole tab holds, not its first album (also worked out once).
     library = Tab("library", "C:/Music", tracks=tracks)
     assert PlayerWindow._album_summary(SimpleNamespace(), library) == "Library · 200 songs · 20 albums · 3:20:00"
