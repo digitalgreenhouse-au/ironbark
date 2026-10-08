@@ -656,6 +656,7 @@ class PlayerWindow:
         self._lyrics_view: LyricsView | None = None
         self._lyrics_follower: LyricsFollower | None = None
         self._lyrics_line = ""         # where the docked lyrics came from (the pane's count line)
+        self._up_next_counted: tuple | None = None   # (the queue counted, its count line): see _view_count
         self._inline: QuickSearch | None = None   # the whole library's results, docked under the search box
         # The status line: the whole message, and what's on show (see _show_status).
         self._status_text = ""
@@ -1558,13 +1559,20 @@ class PlayerWindow:
             return
         Popover.close_open()
         chrome.enter_fullscreen(self.root)
+        self._apply_on_top()
         self.bar.paint_max(True)
 
     def _leave_full_screen(self) -> bool:
         if not chrome.exit_fullscreen(self.root):
             return False
+        self._apply_on_top()
         self.bar.paint_max(self.root.state() == "zoomed")
         return True
+
+    def _apply_on_top(self):
+        """Keep on top as chosen — except in full screen, which covers the whole monitor anyway: on
+        top there, the player's other windows (Library, Help, Now Playing…) would open behind it."""
+        self.root.attributes("-topmost", self.on_top.get() and not chrome.is_fullscreen(self.root))
 
     def _escape_pressed(self, event):
         """Esc with no pop-over open: leaves full screen — but not while typing in a box (Esc clears
@@ -1711,10 +1719,11 @@ class PlayerWindow:
             self._set_notice(f"{keys.hint('rename')} renames a playlist: this tab isn't one", 3000)
 
     # -- undo (one playlist change) ----------------------------------------------------------------------
-    def _remember_edit(self, notice: str, undone: str, undo, possible):
-        """Keep a playlist change to undo (Ctrl+Z, or Undo in the status line), and say what it was.
-        `undo()` puts it back; `possible()` says whether it still can (nothing else changed since)."""
-        self._undo = (notice, undone, undo, possible)
+    def _remember_edit(self, notice: str, undone: str, undo, possible, changed: str = "the playlist"):
+        """Keep a change to a playlist (or to Up next) to undo (Ctrl+Z, or Undo in the status line), and
+        say what it was. `undo()` puts it back; `possible()` says whether it still can (nothing else
+        changed since); `changed` names what was edited, for the words when it can't."""
+        self._undo = (notice, undone, undo, possible, changed)
         self._set_notice(notice, UNDO_NOTE_MS)
 
     def _edit_playlist(self, tab: Tab, tracks: list[Track], notice: str, undone: str, select: int | None,
@@ -1762,10 +1771,10 @@ class PlayerWindow:
         if self._undo is None:
             self._set_notice("Nothing to undo", 2500)
             return
-        _notice, undone, undo, possible = self._undo
+        _notice, undone, undo, possible, changed = self._undo
         if not possible():
             self._undo = None
-            self._set_notice("Can't undo: the playlist has changed since", 5000)
+            self._set_notice(f"Can't undo: {changed} has changed since", 5000)
             return
         if undo() is False:
             return
@@ -2162,7 +2171,9 @@ class PlayerWindow:
         if not 0 <= index < len(self.tabs) or not self.tabs[index].tracks:
             return
         tab = self.tabs[index]
-        if self.playing_tab != index:
+        # The player keeps the list it's handed (never a copy), so a tab read again since it was
+        # played holds a new list: hand that over too, or the place would be counted in the old one.
+        if self.playing_tab != index or self.player.tracks is not tab.tracks:
             self.player.set_tracks(tab.tracks)
             self.playing_tab = index
         tab.last_index, tab.resume_at = track, start_at
@@ -2467,10 +2478,10 @@ class PlayerWindow:
         playing = self.playing_tab
         tab = self.tabs[playing] if playing is not None and playing < len(self.tabs) else None
         following = self.player.following_path()   # (Up next first, as the engine plays it)
-        up_next = self.player.up_next()
+        queue = self.player.queue
         entries = [(track.path, status.index < 0)]
         if following is not None and following != track.path:
-            entries.append((following, bool(up_next) and up_next[0].path == following))
+            entries.append((following, bool(queue) and queue[0].track.path == following))
         wanted = {path for path, _ in entries}
         if wanted != self._level_wanted:
             self._level_wanted = wanted   # (anything else still queued is skipped)
@@ -3282,18 +3293,18 @@ class PlayerWindow:
         self._paint_up_next()
 
     def _paint_up_next(self):
-        queue = self.player.up_next()
+        queue = self.player.queue   # (the player's own list, read every poll: never copied here)
         key = (len(queue), id(queue[0]) if queue else None)
         if key == self._up_next_key:
             if (self.up_next_pop.is_open and self._netcache is not None
-                    and self._up_next_marks(queue) != self._marks_shown):
+                    and self._up_next_marks([q.track for q in queue[:UP_NEXT_SHOWN]]) != self._marks_shown):
                 self._fill_up_next()   # (a network song's download moved on)
             return
         self._up_next_key = key
         if queue and self._up_next_docked():   # (the list itself is on show in the right pane)
             self.up_next_label.pack_forget()
         elif queue:
-            first = queue[0]
+            first = queue[0].track
             artist = f" — {first.artist}" if first.artist else ""
             self.up_next_label.configure(text=f"Up next ({len(queue)}) · {first.title}{artist}")
             if not self.up_next_label.winfo_ismapped():
@@ -3326,12 +3337,12 @@ class PlayerWindow:
         for child in body.winfo_children():
             child.destroy()
         entries = self.player.queue   # (replaced whole: one look for the rows and what each one plays)
-        queue = [q.track for q in entries]
+        queue = [q.track for q in entries[:UP_NEXT_SHOWN]]   # (only the songs listed: a queue can be huge)
         inset = theme.px(theme.MENU_INSET)
         head = tk.Frame(body, bg=theme.SURFACE)
         head.pack(fill="x", padx=inset, pady=theme.pad(0, theme.GAP_SMALL))
         ttk.Label(head, text="Up next", style="PopTitle.TLabel").pack(side="left")
-        ttk.Label(head, text=f"{len(queue)} song{'' if len(queue) == 1 else 's'}", style="PopMuted.TLabel").pack(
+        ttk.Label(head, text=f"{len(entries)} song{'' if len(entries) == 1 else 's'}", style="PopMuted.TLabel").pack(
             side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
         # (0.22.0) Clear is a small plain pill like Settings' buttons (it was a plain word).
         controls.PillButton(head, "Clear", lambda: self.clear_up_next(), kind="plain", small=True, bg="SURFACE",
@@ -3341,7 +3352,7 @@ class PlayerWindow:
         tones = {"accent": theme.ACCENT_TEXT, "warn": theme.WARN}
         column = any(mark for mark, _, _ in marks)   # (a column of marks only when there are network songs)
         longest = UP_NEXT_CHARS - (UP_NEXT_MARK_CHARS if column else 0)   # (the marks take some of the row)
-        for position, track in enumerate(queue[:UP_NEXT_SHOWN]):
+        for position, track in enumerate(queue):
             label = f"{track.title} — {track.artist}" if track.artist else track.title
             mark, tone, meaning = marks[position]
             row = MenuRow(body, label if len(label) <= longest else label[:longest - 1] + "…",
@@ -3358,8 +3369,8 @@ class PlayerWindow:
             row.remove_button.pack(side="right", padx=(0, theme.px(theme.GAP_SMALL)))
             if meaning:
                 Tooltip(row.lead, meaning)
-        if len(queue) > UP_NEXT_SHOWN:
-            ttk.Label(body, text=f"and {len(queue) - UP_NEXT_SHOWN} more", style="PopMuted.TLabel").pack(
+        if len(entries) > UP_NEXT_SHOWN:
+            ttk.Label(body, text=f"and {len(entries) - UP_NEXT_SHOWN} more", style="PopMuted.TLabel").pack(
                 anchor="w", padx=inset, pady=theme.pad(theme.GAP_HAIR, 0))
         if self._netcache is not None and getattr(self._netcache, "narrowed", False) and any(m[0] for m in marks):
             ttk.Label(body, text="The next song may need a short wait: the network is slower than the music "
@@ -3412,7 +3423,7 @@ class PlayerWindow:
         what = f"“{taken[0].track.title}”" if len(taken) == 1 else f"{len(taken)} songs"
         self._remember_edit(f"Took {what} out of Up next", f"Put {what} back in Up next",
                             lambda: (self.player.restore_queue(before, after), self._paint_up_next()),
-                            lambda: self.player.queue is after)
+                            lambda: self.player.queue is after, changed="Up next")
 
     def _change_library_folder(self):
         """Settings → Library → Change… (while there's one library folder): another in its place."""
@@ -3581,11 +3592,23 @@ class PlayerWindow:
 
     # -- home position -------------------------------------------------------
     def make_home(self):
-        geometry = placement.current(self.root)
-        if geometry:
-            self.prefs["home_geometry"] = geometry
-            self._update_home_text()
-            self._set_notice("Home set: the home button (or Ctrl+Shift+H) brings the player back here")
+        geometry = None if self.mini_mode else placement.current(self.root)
+        if not geometry:
+            # Home is a spot for the full window at its own size: full screen, maximised, minimised
+            # and the mini strip (grown to hold Settings) have none to keep.
+            if self.mini_mode:
+                first = f"Go back to the full window ({keys.hint('mini')})"
+            elif chrome.is_fullscreen(self.root):
+                first = f"Leave full screen ({keys.hint('full_screen')})"
+            elif self.root.state() == "zoomed":
+                first = "Restore the window from maximised"
+            else:
+                first = "Show the window"
+            self._set_notice(f"{first} first, then choose Use current: home is a spot and size for the window")
+            return
+        self.prefs["home_geometry"] = geometry
+        self._update_home_text()
+        self._set_notice("Home set: the home button (or Ctrl+Shift+H) brings the player back here")
 
     def snap_home(self):
         if self.mini_mode:   # home is a place for the full window
@@ -3762,7 +3785,7 @@ class PlayerWindow:
         """(0.25.0) The switch is for the mode on show: the full window and the mini strip each
         remember their own (the strip is on top at first, the full window isn't)."""
         self.prefs["mini_on_top" if self.mini_mode else "always_on_top"] = self.on_top.get()
-        self.root.attributes("-topmost", self.on_top.get())
+        self._apply_on_top()
 
     def _toggle_exclusive(self):
         on = self.exclusive.get()
@@ -4581,7 +4604,7 @@ class PlayerWindow:
     def _place_up_next(self):
         """The Up next line (only while songs are queued): above the track list, or with no tab open,
         just above the status line."""
-        if not self.player.up_next() or self._up_next_docked():
+        if not self.player.queue or self._up_next_docked():
             return
         place = (dict(before=self.playlist.frame) if self.playlist.frame.winfo_manager()
                  else dict(after=self.status_row))
@@ -4864,7 +4887,9 @@ class PlayerWindow:
             self._show_view()
 
     def _up_next_docked(self) -> bool:
-        return self._tier != layout.COLUMN and self.view == "up_next"
+        """The docked Up next is on show (with no tabs open the right pane is put away: the Up next
+        line shows the queue instead)."""
+        return self._tier != layout.COLUMN and self.view == "up_next" and not self._empty_shown
 
     def _show_view(self):
         """Put the right pane's view on show, and the others away: the tab's list, the whole library's
@@ -4934,12 +4959,17 @@ class PlayerWindow:
         def play(entry):
             self.player.play_queued(entry)
             self._paint_up_next()
+            self._paint_docks()
+
+        def remove(entries):
+            self._unqueue_entries(entries)
+            self._paint_docks()   # (at once: the list selects the song now in their place)
 
         def sleep_menu(widget):
             self._sleep_menu(self._menu()).popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
 
         dock = UpNextView(self.playlist.frame, scroll_parent=self.body, on_play=play,
-                          on_remove=self._unqueue_entries, on_clear=self.clear_up_next,
+                          on_remove=remove, on_clear=self.clear_up_next,
                           on_stop_after=self.stop_after_current, on_sleep_menu=sleep_menu)
         dock.set_tier(self._tier)
         return dock
@@ -4960,10 +4990,10 @@ class PlayerWindow:
         if self._tier == layout.COLUMN:
             return
         if self.view == "up_next" and self._up_next_view is not None:
-            entries = self.player.queue   # (replaced whole: one look for the rows and their marks)
+            queue = self.player.queue   # (the player's own list, replaced whole on every change)
             timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
             sleep_label = f"Sleep timer: {sleep.choice_label(timer.target).lower()}" if timer else "Sleep timer…"
-            self._up_next_view.show(entries, self._up_next_marks([q.track for q in entries], shown=200),
+            self._up_next_view.show(queue, self._up_next_marks([q.track for q in queue[:200]], shown=200),
                                     self.player.stop_after == "song", sleep_label)
         elif self.view == "lyrics" and self._lyrics_follower is not None:
             self._lyrics_follower.follow(True)
@@ -4972,8 +5002,12 @@ class PlayerWindow:
         """The right pane's count line: the tab's ("Album · 13 songs · 51:57"), Up next's, or where the
         lyrics came from. (The whole library's results say their own count under them.)"""
         if self.view == "up_next":
-            queue = self.player.up_next()
-            return up_next_count(len(queue), sum(t.duration or 0 for t in queue))
+            queue = self.player.queue   # (replaced whole on every change: counted once per change)
+            counted = self._up_next_counted
+            if counted is None or counted[0] is not queue:
+                counted = (queue, up_next_count(len(queue), sum(q.track.duration or 0 for q in queue)))
+                self._up_next_counted = counted
+            return counted[1]
         if self.view == "lyrics":
             return self._lyrics_line
         if self.search_scope == "library":
@@ -5172,14 +5206,19 @@ class PlayerWindow:
             if self.up_next_label.winfo_manager() and str(self.up_next_label.pack_info()["in"]) != str(self.body):
                 self._place_up_next()   # (it was in the wide window's list pane)
             self.empty_view.pack(fill="both", expand=True, after=self.status_row)
-            return
-        self.empty_view.pack_forget()
-        if self._tier == layout.COLUMN:
-            self._pack_column()
         else:
-            self._pack_split()
-        self.art_size = 0   # size the cover afresh
-        self.root.after_idle(self._fit_art)
+            self.empty_view.pack_forget()
+            if self._tier == layout.COLUMN:
+                self._pack_column()
+            else:
+                self._pack_split()
+            self.art_size = 0   # size the cover afresh
+            self.root.after_idle(self._fit_art)
+        if self._tier != layout.COLUMN and self.view == "up_next":
+            # A docked Up next is put away with the pane (and back with it): meanwhile the Up next line
+            # shows the queue.
+            self._up_next_key = None
+            self._paint_up_next()
 
     def _palette_changed(self, _palette):
         """After a palette change (theme.use): redraw what keeps its colours — the cover's
