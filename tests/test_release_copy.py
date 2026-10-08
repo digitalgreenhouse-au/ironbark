@@ -78,7 +78,6 @@ def test_the_new_status_messages_fit_the_narrow_window(make_window):
     if not _narrow_fonts_ok(root):
         pytest.skip("Tk's default font isn't the system's own size here (an earlier test changed the process)")
     messages = [
-        "Restore the window from maximised first, then choose Use current (Settings → Window)",
         f"Go back to the full window ({keys.hint('mini')}) first, then choose Use current (Settings → Window)",
         f"Home set: {keys.hint('snap_home')} or Snap to home (Settings) brings the player back here",
         "No home yet: choose Use current (Settings → Window) to make this spot home",

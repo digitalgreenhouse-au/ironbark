@@ -9,6 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.skip(reason="the wide window is unreachable since 0.34.0 (the window is a side"
+                              " player, its width capped under layout.SPLIT_MIN); these tests go with the"
+                              " wide layout's removal")
+
 from ironbark import keys, library_tracks, popups
 from ironbark.library import Track
 from ironbark.library_db import LibraryDB

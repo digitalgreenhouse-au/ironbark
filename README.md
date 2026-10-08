@@ -81,7 +81,7 @@ so Windows SmartScreen warns about an unknown publisher.
   columns), and **Most played**, **Recently played** and **Favourites** (♥ — right-click any song) keep
   your listening close. **Play next / Add to Up next** from any song or album.
 - **Select several songs** (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A) in the track list, the
-  Library's song views, the search results and a wide window's Up next: play them next, queue them, add
+  Library's song views and the search results: play them next, queue them, add
   them to a playlist or your favourites, edit their tags, drag them onto a tab, or take them out of a
   playlist — one Ctrl+Z puts them all back.
 - **Search the whole library** (Ctrl+K): songs, albums and artists as you type, from any window;
@@ -116,12 +116,9 @@ so Windows SmartScreen warns about an unknown publisher.
 - **Opens files from Explorer** (double-click, or *Open with* after the installer's optional task),
   and only one Ironbark runs at a time.
 - **Mini player** (Z): a small strip that stays on top, with its own position.
-- **Wide windows:** maximise it, or make it wider, and it splits in two — the cover and controls on
-  the left, the track list the full height on the right, with larger type. Covers are never
-  enlarged past their own pixels. **F11** is full screen (Esc leaves it). Above the list, *Tracks ·
-  Up next · Lyrics* switches the right pane between the tab's songs, Up next and the playing song's
-  lyrics, and *This tab | Whole library* beside the search box searches every song in the library
-  right there.
+- **A side player, by design:** the window is a tall strip that sits beside whatever you're working
+  on. Make it a little narrower or wider and as tall as you like; it never becomes a wide or
+  full-screen player — there are good players for that already.
 - **Light or dark** themes (or follow Windows); both meet the WCAG AA contrast guidelines. A quiet,
   rounded look: browser-style tabs, pill buttons, rounded fields and lists, and menus with a rounded
   highlight.
@@ -253,9 +250,9 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Enter | Track list: play the song (an album row: the album) |
 | Ctrl+Enter | Track list: add to Up next |
 | Ctrl+Shift+Enter | Track list: play next |
-| Ctrl+A | Track list (and a wide window's Up next): select every song |
+| Ctrl+A | Track list: select every song |
 | Menu key · Shift+F10 | The selected row's right-click menu |
-| Shift+click · Ctrl+click · Shift+↑ / ↓ | Track list, the Library's songs, the library search's results and a wide window's Up next: select several songs |
+| Shift+click · Ctrl+click · Shift+↑ / ↓ | Track list, the Library's songs, the library search's results: select several songs |
 
 ### Windows & tools
 
@@ -276,7 +273,6 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+Shift+H | Snap the window to its home spot |
 | F1 · ? | Keyboard shortcuts (this list) |
 | Ctrl+Q | Quit Ironbark |
-| F11 | Full screen and back (Esc leaves it too) |
 | Esc | Close a menu or window (a search box: clear it first) |
 | Tab · Shift+Tab | A question box: go from button to button (Enter presses the one ringed in green) |
 | A · B · X · Space | ABX window: hear A, B or X · stop or replay |

@@ -8,6 +8,10 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.skip(reason="the wide window is unreachable since 0.34.0 (the window is a side"
+                              " player, its width capped under layout.SPLIT_MIN); these tests go with the"
+                              " wide layout's removal")
+
 from ironbark import keys
 from ironbark.ui import split_status
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)

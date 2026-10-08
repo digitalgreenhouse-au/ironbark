@@ -78,10 +78,7 @@ def restore(window: tk.Misc, geometry: str, keep_size: bool = True) -> bool:
 
 
 def current(window: tk.Misc) -> str | None:
-    """The window's geometry, or None while it's minimised (Windows then reports -32000), maximised,
-    or full screen (Tk calls that "normal", but it's the monitor's size, never a place to keep)."""
-    if getattr(window, "_dg_fullscreen", None) is not None:
-        return None
+    """The window's geometry, or None while it's minimised (Windows then reports -32000)."""
     try:
         if window.state() != "normal":
             return None

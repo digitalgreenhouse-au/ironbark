@@ -115,7 +115,6 @@ DEFAULTS = {
     "net_cache_gb": 10,          # the most the cache holds, in GB (0 = no limit)
     "net_verify": True,          # check each finished download (a FLAC's own MD5 fingerprint too)
     "geometry": "",
-    "maximised": False,          # the full window was maximised when last left: it opens maximised
 }
 
 

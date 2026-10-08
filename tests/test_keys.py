@@ -94,8 +94,8 @@ def test_the_table_is_consistent_and_keeps_the_old_keys():
     for text, action_id in kept.items():
         assert action_id in [a.id for a in found[keys.parse(text)]], text
     reserved = [a.id for a in keys.ACTIONS if a.reserved]
-    assert reserved == []   # (F11 was kept for full screen until it came)
-    assert keys.BY_ID["full_screen"].keys == ("F11",) and keys.BY_ID["full_screen"].scope == "main"
+    assert reserved == []
+    assert "full_screen" not in keys.BY_ID   # no full screen: the window is a side player
     assert keys.BY_ID["find"].keys == ("Ctrl+K", "Ctrl+Shift+F")
 
 
@@ -123,7 +123,7 @@ def test_readme_keyboard_section_is_the_table():
     assert section.rstrip() == keys.readme_section().rstrip()
     for action in keys.listed():
         assert f"| {keys.keys_text(action)} | {action.label} |" in section, action.id
-    assert "| F11 | Full screen" in section
+    assert "F11" not in section and "full screen" not in section.lower()
 
 
 def test_mit_licence_and_privacy_match_the_files():

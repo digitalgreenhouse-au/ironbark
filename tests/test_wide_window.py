@@ -13,6 +13,10 @@ from tkinter import font as tkfont
 from types import SimpleNamespace
 
 import pytest
+
+pytestmark = pytest.mark.skip(reason="the wide window is unreachable since 0.34.0 (the window is a side"
+                              " player, its width capped under layout.SPLIT_MIN); these tests go with the"
+                              " wide layout's removal")
 from PIL import Image
 
 from ironbark import chrome, layout, playlist_view, settings, tabbar, theme

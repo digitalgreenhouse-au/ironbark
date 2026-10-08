@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.34.0 — 08/10/2026
+
+**A side player, by design.** Ironbark is a tall strip that sits beside whatever you're working on,
+and now it stays that way.
+
+- The window can be made a little narrower or wider (300–560 px at 100% display scaling; the usual
+  width is about 420) and as tall as you like. It no longer turns into a two-pane wide window, and it
+  can't be maximised: the maximise button, F11 full screen and "opens maximised" are gone. Windows+Up
+  and Snap's maximise do nothing to it, and snapping it to a side keeps it at its widest.
+- Double-clicking the tab strip brings the window to its home spot (Settings → Window → Use current);
+  until a home is set, it says how to set one.
+- A window left wide by an earlier version opens at the new widest width, in the usual layout.
+
 ## 0.33.1 — 08/10/2026
 
 Release-review fixes: the whole player was reviewed before its first release, and what the review found

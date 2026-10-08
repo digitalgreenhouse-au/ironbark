@@ -1,6 +1,8 @@
 """The main window before release: a song asked for by name from the album playing after that album's
 folder changed, the docked Up next keeping its selection on the same songs (and coping with a very
-long queue), full screen with Keep on top, the queue with no tabs open, and the wording of messages.
+long queue), the queue with no tabs open, and the wording of messages. The docked Up next belongs to
+the wide window, which the side player can't reach since 0.34.0: those tests are skipped until the
+wide layout is removed.
 The real window on temp settings with a fake player (test_light_mini.make_window): no device is opened
 and nothing of the user's is touched."""
 
@@ -15,12 +17,12 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import chrome, popups
+from ironbark import popups
 from ironbark.library import Track
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 from test_wide_window import _open
 
-windows_only = pytest.mark.skipif(sys.platform != "win32", reason="the borderless full screen is Windows' own")
+wide_only = pytest.mark.skip(reason="needs the wide window, unreachable since 0.34.0 (the window is a side player)")
 
 
 def _flac(path):
@@ -76,6 +78,7 @@ def _row_of(dock, title):
     return next(iid for iid in dock.tree.get_children() if dock.tree.item(iid, "values")[2] == title)
 
 
+@wide_only
 def test_docked_up_next_keeps_the_selection_on_its_song_as_the_queue_moves_on(make_window):
     window, root, player, errors, dock = _docked(make_window, "A", "B", "C")
     dock.tree.selection_set(_row_of(dock, "B"))
@@ -90,6 +93,7 @@ def test_docked_up_next_keeps_the_selection_on_its_song_as_the_queue_moves_on(ma
     assert not errors
 
 
+@wide_only
 def test_docked_up_next_keeps_the_selection_when_the_queue_keeps_its_length(make_window):
     window, root, player, errors, dock = _docked(make_window, "A", "B", "C")
     dock.tree.selection_set(_row_of(dock, "B"))
@@ -101,6 +105,7 @@ def test_docked_up_next_keeps_the_selection_when_the_queue_keeps_its_length(make
     assert not errors
 
 
+@wide_only
 def test_docked_up_next_acts_on_the_songs_chosen_even_before_the_list_catches_up(make_window, monkeypatch):
     window, root, player, errors, dock = _docked(make_window, "A", "B", "C", "D")
     shown = []
@@ -122,6 +127,7 @@ def test_docked_up_next_acts_on_the_songs_chosen_even_before_the_list_catches_up
 
 
 # -- a very long Up next, docked ----------------------------------------------------------------------
+@wide_only
 def test_a_very_long_up_next_docked_shows_its_head_and_keeps_the_window_quick(make_window):
     window, root, player, errors, dock = _docked(make_window, "A")
     songs = _songs("Song") * 100_000
@@ -147,35 +153,8 @@ def test_a_very_long_up_next_docked_shows_its_head_and_keeps_the_window_quick(ma
     assert len(dock.tree.selection()) == 1 and not errors
 
 
-# -- full screen with Keep on top ----------------------------------------------------------------------
-def _topmost(root) -> bool:
-    return bool(int(root.attributes("-topmost")))
-
-
-@windows_only
-def test_full_screen_with_keep_on_top_leaves_room_for_the_players_other_windows(make_window):
-    window, root, player, errors = _open(make_window, size=(1280, 800), always_on_top=True)
-    assert _topmost(root)
-    window.toggle_full_screen()
-    _pump(root, 0.4)
-    assert chrome.is_fullscreen(root) and not _topmost(root)        # (it covers the screen anyway)
-    window.show_help()                                               # F1: in front of it, not hidden behind
-    _pump(root, 0.6)
-    win = window._help.win
-    x, y = win.winfo_rootx() + win.winfo_width() // 2, win.winfo_rooty() + win.winfo_height() // 2
-    assert root.winfo_containing(x, y) is not None and root.winfo_containing(x, y).winfo_toplevel() is win
-    window._toggle_on_top()                                          # the switch, flicked while full screen
-    assert not _topmost(root) and window.on_top.get()
-    window.bring_to_front()                                          # (a second launch, say)
-    _pump(root, 0.3)
-    assert not _topmost(root)
-    window.toggle_full_screen()                                      # back: on top again
-    _pump(root, 0.4)
-    assert not chrome.is_fullscreen(root) and _topmost(root) and window.prefs["always_on_top"] is True
-    assert not errors
-
-
 # -- the queue with no tabs open, in a wide window ------------------------------------------------------
+@wide_only
 def test_up_next_queued_with_no_tabs_open_shows_in_a_wide_window_too(make_window):
     window, root, player, errors = _open(make_window)
     window.set_view("up_next")
@@ -199,20 +178,8 @@ def test_up_next_queued_with_no_tabs_open_shows_in_a_wide_window_too(make_window
 
 
 # -- "Use current" (make this spot home) when the window has no spot of its own ------------------------
-@windows_only
-def test_use_current_says_why_it_cant_while_full_screen_maximised_or_mini(make_window):
-    window, root, player, errors = _open(make_window, size=(1280, 800))
-    window.toggle_full_screen()
-    _pump(root, 0.4)
-    window.make_home()
-    assert window.prefs["home_geometry"] == "" and "full screen" in window._notice
-    window.toggle_full_screen()
-    root.state("zoomed")
-    _pump(root, 0.4)
-    window.make_home()
-    assert window.prefs["home_geometry"] == "" and "maximised" in window._notice
-    root.state("normal")
-    _pump(root, 0.4)
+def test_use_current_says_why_it_cant_from_the_mini_strip(make_window):
+    window, root, player, errors = _open(make_window, size=(420, 800))
     window.toggle_mini()                         # the mini strip: home is a spot for the full window
     _pump(root, 0.4)
     window.make_home()
@@ -225,6 +192,7 @@ def test_use_current_says_why_it_cant_while_full_screen_maximised_or_mini(make_w
 
 
 # -- the words when an undo can't be done -----------------------------------------------------------------
+@wide_only
 def test_an_up_next_edit_that_cant_be_undone_says_up_next(make_window):
     window, root, player, errors, dock = _docked(make_window, "A", "B", "C")
     dock.tree.selection_set(_row_of(dock, "B"))

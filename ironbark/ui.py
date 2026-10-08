@@ -52,8 +52,8 @@ now-playing text, the seek bar and the transport stacked on the left, the track 
 height on the right — with larger type from 1280 and 1920. The same widgets are packed into other
 frames (`_apply_layout`), never rebuilt; the narrow window is laid out exactly as before. A wide window
 shows the cover at its own size at most (a smaller one on a mat), a caption over the title, a count in
-the list's header row, and a maximise button on the strip. F11 is full screen on any size (borderless,
-on the same window: chrome.enter_fullscreen); F11, Esc, double-clicking the strip or Z leave it.
+the list's header row. (0.34.0) The window is a side player locked to the column: its width stops at
+FULL_MAX_WIDTH, under SPLIT_MIN, so the split tiers are never chosen; there is no maximise or full screen.
 The right pane's view switch (Tracks · Up next · Lyrics, remembered for the session) shows the tab's
 list, Up next docked (up_next_view.py) or the playing song's lyrics (lyrics_window's view and
 follower, as in the Lyrics window); beside the search box, This tab | Whole library: the whole
@@ -163,6 +163,11 @@ UP_NEXT_CHARS = 44     # an Up next row's words are cut with "…" past this man
 UP_NEXT_MARK_CHARS = 8 # …this many fewer while a column of network-download marks shares the row
 THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
 FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the mini strip has its own)
+# The full window is a side player: a tall strip beside whatever else is on the screen. It can be made
+# a little narrower or wider than usual (about 420 px) but never wide, and it can't be maximised or
+# made full screen; its height is free.
+FULL_MAX_WIDTH = 560        # px at 100%: the full window's widest
+NO_LIMIT = 32000            # px: a size Tk is told not to cap (taller than any screen)
 SETTINGS_WIDTH = 310       # px at 100%: the Settings panel (less in a narrow window)
 SETTINGS_CHOICE_W = 120    # px at 100%: Settings' drop-downs beside their names (their left edges line up)
 DROP_GAP = 4               # px at 100%: a pop-over from the strip opens this far below it
@@ -562,7 +567,7 @@ class PlayerWindow:
         root.withdraw()  # set the window up out of sight, then show it once
         root.title(APP_NAME)
         appicon.apply(root)   # (0.23.0) the app icon, on this window and every window opened after it
-        root.minsize(theme.px(FULL_MIN_SIZE[0]), theme.px(FULL_MIN_SIZE[1]))
+        self._limit_size(full=True)
 
         self.on_top = tk.BooleanVar(value=self.prefs["always_on_top"])
         root.attributes("-topmost", self.on_top.get())
@@ -672,7 +677,6 @@ class PlayerWindow:
         self._bind_keys()
 
         chrome.remove_caption(root)   # before restoring the size, so it isn't counted twice
-        chrome.keep_maximise_in_work_area(root)
         home = self.prefs["home_geometry"]
         start = home if self.open_at_home.get() and home else self.prefs["geometry"]
         if self.prefs["mini_mode"]:   # left as the mini strip last time: open that way
@@ -681,13 +685,10 @@ class PlayerWindow:
         if not placement.restore(root, start) and placement.parse(start) is None and self.mini_mode:
             root.geometry(f"{theme.px(MINI_DEFAULT_SIZE[0])}x{theme.px(MINI_DEFAULT_SIZE[1])}")
         parsed = placement.parse(start) if start else None
-        if parsed and parsed[0]:   # laid out for its size before it's shown: no narrow layout first
-            self._check_layout(size=(parsed[0], parsed[1]))
+        if parsed and parsed[0]:   # laid out for its size before it's shown (a width past the cap is capped)
+            self._check_layout(size=(min(parsed[0], theme.px(FULL_MAX_WIDTH)), parsed[1]))
         root.deiconify()
         self._settle_size(start)
-        if self.prefs["maximised"] and not self.mini_mode:   # it was left maximised: so it opens
-            root.state("zoomed")
-        root._dg_escape = self._escape_pressed   # Esc with no pop-over open (Popover._escape)
         theme.dark_title_bar(root)
         self._setup_drop()
         if self.media_controls.get():
@@ -737,7 +738,7 @@ class PlayerWindow:
                           on_new=lambda: self.new_menu.toggle(self.bar.add_btn, self._below_strip()),
                           on_settings=lambda: self._open_settings(),
                           on_double=self._bar_double_click, on_quit=self.quit,
-                          on_tab_menu=self._tab_menu, on_move=self.move_tab, on_maximise=self._toggle_maximise)
+                          on_tab_menu=self._tab_menu, on_move=self.move_tab)
         self.bar.pack(fill="x")
 
         body = ttk.Frame(self.root, padding=theme.pad(theme.GAP_WIDE, theme.GAP_LARGE, theme.GAP_WIDE, theme.GAP_MEDIUM))
@@ -1489,7 +1490,6 @@ class PlayerWindow:
             "snap_home": call("snap_home"),
             "help": call("show_help"),
             "quit": call("quit"),
-            "full_screen": call("toggle_full_screen"),
             "library": lambda: self.open_library(),
             "find": call("find_in_library"),
             "remove": call("_remove_selected"),
@@ -1605,44 +1605,8 @@ class PlayerWindow:
         if self._library is not None and self._library.win.winfo_exists():
             self._library.favourites_changed()
 
-    def toggle_full_screen(self):
-        """F11: full screen on the window's monitor (borderless, the same window: chrome.py), and back.
-        Never remembered: the next start opens as the window was before. (Not from the mini strip.)"""
-        if self.mini_mode:
-            return
-        if chrome.is_fullscreen(self.root):
-            self._leave_full_screen()
-            return
-        Popover.close_open()
-        chrome.enter_fullscreen(self.root)
-        self._apply_on_top()
-        self.bar.paint_max(True)
-
-    def _leave_full_screen(self) -> bool:
-        if not chrome.exit_fullscreen(self.root):
-            return False
-        self._apply_on_top()
-        self.bar.paint_max(self.root.state() == "zoomed")
-        return True
-
     def _apply_on_top(self):
-        """Keep on top as chosen — except in full screen, which covers the whole monitor anyway: on
-        top there, the player's other windows (Library, Help, Now Playing…) would open behind it."""
-        self.root.attributes("-topmost", self.on_top.get() and not chrome.is_fullscreen(self.root))
-
-    def _escape_pressed(self, event):
-        """Esc with no pop-over open: leaves full screen — but not while typing in a box (Esc clears
-        the search there) or dragging (Esc calls the drag off)."""
-        if not chrome.is_fullscreen(self.root) or keys.is_text_box(event.widget):
-            return
-        if self.playlist.drag.active or (self.bar._drag is not None and self.bar._drag["moving"]):
-            return
-        self._leave_full_screen()
-
-    def _toggle_maximise(self):
-        """The strip's maximise / restore button (a wide window): full screen counts as maximised."""
-        if not self._leave_full_screen():
-            chrome.toggle_maximise(self.root)
+        self.root.attributes("-topmost", self.on_top.get())
 
     def _jump(self, fraction: float):
         """0 – 9: to that tenth of the song on show (0: back to its start)."""
@@ -3656,14 +3620,10 @@ class PlayerWindow:
     def make_home(self):
         geometry = None if self.mini_mode else placement.current(self.root)
         if not geometry:
-            # Home is a spot for the full window at its own size: full screen, maximised, minimised
-            # and the mini strip (grown to hold Settings) have none to keep.
+            # Home is a spot for the full window at its own size: minimised, and the mini strip (grown
+            # to hold Settings), have none to keep.
             if self.mini_mode:
                 first = f"Go back to the full window ({keys.hint('mini')})"
-            elif chrome.is_fullscreen(self.root):
-                first = f"Leave full screen ({keys.hint('full_screen')})"
-            elif self.root.state() == "zoomed":
-                first = "Restore the window from maximised"
             else:
                 first = "Show the window"
             self._set_notice(f"{first} first, then choose Use current (Settings → Window)")
@@ -3679,9 +3639,6 @@ class PlayerWindow:
         if not home:
             self._set_notice("No home yet: choose Use current (Settings → Window) to make this spot home")
             return
-        self._leave_full_screen()
-        if self.root.state() == "zoomed":
-            self.root.state("normal")
         if placement.restore(self.root, home):
             self._settle_size(home)
         else:
@@ -3701,12 +3658,11 @@ class PlayerWindow:
             self.root.geometry(f"{want_w - dw}x{want_h - dh}")
 
     def _bar_double_click(self):
-        if self._leave_full_screen():
-            return
+        """Double-clicking the strip brings the window to its home spot, once one is set."""
         if self.prefs["home_geometry"]:
             self.snap_home()
         else:
-            chrome.toggle_maximise(self.root)
+            self._set_notice("No home yet: choose Use current (Settings → Window) to make this spot home")
 
     def _update_home_text(self):
         parsed = placement.parse(self.prefs["home_geometry"]) if self.prefs["home_geometry"] else None
@@ -3758,7 +3714,7 @@ class PlayerWindow:
         want_h = min(strip + panel + 2 * margin, bottom - top)
         x = max(left, min(x, right - want_w))
         y = max(top, min(y, bottom - want_h))
-        self.root.minsize(theme.px(MINI_MIN_SIZE[0]), theme.px(MINI_MIN_SIZE[1]))
+        self._limit_size(full=False)
         self.root.geometry(f"{want_w}x{want_h}+{x}+{y}")
         self.root.update_idletasks()
         self.mini_button.set_text("Full player")
@@ -4593,9 +4549,6 @@ class PlayerWindow:
         to this one window) keep working. Each mode returns to where it was last left."""
         grown_from = self._mini_settings_from   # Settings open from the strip: the strip's own place
         Popover.close_open()
-        self._leave_full_screen()
-        if self.root.state() == "zoomed":
-            self.root.state("normal")
         here = grown_from or placement.current(self.root)
         if here:   # remember where the mode we're leaving was
             self.prefs["mini_geometry" if self.mini_mode else "geometry"] = here
@@ -4612,6 +4565,18 @@ class PlayerWindow:
             self.art_size = 0   # size the cover afresh for the full window
             self._check_layout(force=True)
             self.root.after_idle(self._fit_art)
+
+    def _limit_size(self, full: bool):
+        """The window's size limits. The full window is a side player: its width stays between
+        FULL_MIN_SIZE and FULL_MAX_WIDTH (a little narrower or wider, never a wide or full-screen
+        player: Tk passes the cap to Windows, so dragging, Snap and a saved size all stop there),
+        and its height is free. The mini strip keeps only its own minimum."""
+        if full:
+            self.root.minsize(theme.px(FULL_MIN_SIZE[0]), theme.px(FULL_MIN_SIZE[1]))
+            self.root.maxsize(theme.px(FULL_MAX_WIDTH), NO_LIMIT)
+        else:
+            self.root.minsize(theme.px(MINI_MIN_SIZE[0]), theme.px(MINI_MIN_SIZE[1]))
+            self.root.maxsize(NO_LIMIT, NO_LIMIT)
 
     def _show_mini(self, on: bool):
         """Swap the layouts (no moving: toggle_mini and start-up place the window). (0.25.0) Keep
@@ -4633,7 +4598,7 @@ class PlayerWindow:
             self.bar.pack_forget()
             self.body.pack_forget()
             self.mini.pack(fill="both", expand=True)
-            self.root.minsize(theme.px(MINI_MIN_SIZE[0]), theme.px(MINI_MIN_SIZE[1]))
+            self._limit_size(full=False)
             if keys_inside(self.bar, self.body):
                 self._keys_before_mini = keys_at
                 self._keyboard_to(self.root)
@@ -4641,7 +4606,7 @@ class PlayerWindow:
             self.mini.pack_forget()
             self.bar.pack(fill="x")
             self.body.pack(fill="both", expand=True)
-            self.root.minsize(theme.px(FULL_MIN_SIZE[0]), theme.px(FULL_MIN_SIZE[1]))
+            self._limit_size(full=True)
             back, self._keys_before_mini = self._keys_before_mini, None
             # (Already back in the full window — something there took it meanwhile — it stays put.)
             if keys_inside(self.mini) or (back and not keys_inside(self.bar, self.body)):
@@ -4707,7 +4672,6 @@ class PlayerWindow:
         if event.widget is not self.root:
             return
         self._opening_size = None   # (shown: its own size from now on)
-        self.bar.paint_max(chrome.is_fullscreen(self.root) or self.root.state() == "zoomed")
         if self.mini_mode or self._mini_settings_from is not None:
             return
         if self._choose_tier() != self._tier:
@@ -5630,15 +5594,8 @@ class PlayerWindow:
         self.prefs["mini_on_top" if self.mini_mode else "always_on_top"] = self.on_top.get()
         # (0.25.0) While Settings has grown the mini strip's window, the strip's own place is kept.
         geometry = self._mini_settings_from or placement.current(self.root)
-        if geometry:  # not while minimised, maximised or full screen; the mini strip keeps its own
+        if geometry:  # not while minimised; the mini strip keeps its own
             self.prefs["mini_geometry" if self.mini_mode else "geometry"] = geometry
-        if not self.mini_mode and self._mini_settings_from is None:
-            full = getattr(self.root, "_dg_fullscreen", None)   # (full screen: as it was before it)
-            state = self.root.state()
-            if full is not None:
-                self.prefs["maximised"] = bool(full["zoomed"])
-            elif state in ("normal", "zoomed"):   # (minimised: it keeps what it was)
-                self.prefs["maximised"] = state == "zoomed"
         snapshot = json.dumps(self.prefs, sort_keys=True)
         if snapshot == self._saved_snapshot:
             return True

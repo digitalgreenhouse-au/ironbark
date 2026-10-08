@@ -105,7 +105,7 @@ ACTIONS: tuple[Action, ...] = (
            "Tabs & lists"),
     Action("list_queue", _keys("Ctrl+Enter",), "list", "Track list: add to Up next", "Tabs & lists"),
     Action("list_play_next", _keys("Ctrl+Shift+Enter",), "list", "Track list: play next", "Tabs & lists"),
-    Action("select_all", _keys("Ctrl+A",), "list", "Track list (and a wide window's Up next): select every song",
+    Action("select_all", _keys("Ctrl+A",), "list", "Track list: select every song",
            "Tabs & lists"),
     # -- Windows & tools ---------------------------------------------------------------------------
     Action("now_playing", _keys("I",), "app", "Now Playing", "Windows & tools", shift=True),
@@ -124,7 +124,6 @@ ACTIONS: tuple[Action, ...] = (
     Action("snap_home", _keys("Ctrl+Shift+H",), "main", "Snap the window to its home spot", "Windows & tools"),
     Action("help", _keys("F1", "?"), "app", "Keyboard shortcuts (this list)", "Windows & tools", shift=True),
     Action("quit", _keys("Ctrl+Q",), "app", "Quit Ironbark", "Windows & tools"),
-    Action("full_screen", _keys("F11",), "main", "Full screen and back (Esc leaves it too)", "Windows & tools"),
     # -- Library & search -------------------------------------------------------------------------
     Action("library", _keys("Ctrl+L",), "app", "Library (brings it to the front when it's open)",
            "Library & search"),
@@ -161,7 +160,7 @@ OTHER_KEYS: tuple[tuple[str, str, str], ...] = (
     ("A – Z · 0 – 9", "Library list: jump to the first name starting with what you type", "Library & search"),
     ("Menu key · Shift+F10", "The selected row's right-click menu", "Tabs & lists"),
     ("Shift+click · Ctrl+click · Shift+↑ / ↓",
-     "Track list, the Library's songs, the library search's results and a wide window's Up next: "
+     "Track list, the Library's songs, the library search's results: "
      "select several songs", "Tabs & lists"),
     ("Esc", "Close a menu or window (a search box: clear it first)", "Windows & tools"),
     ("Tab · Shift+Tab", "A question box: go from button to button (Enter presses the one ringed in green)",

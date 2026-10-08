@@ -377,8 +377,7 @@ class TabBar(tk.Frame):
     a few item changes, not a strip. Nothing is drawn per width: plates and rings are two cached end
     pictures with plain rectangles between them (shapes.ends).
 
-    In a wide window (`set_wide`) the strip gains a maximise / restore button between minimise and
-    close, and tabs may grow wider; the narrow window's strip is unchanged."""
+    `set_wide` only sets how wide a tab may grow; the strip's buttons are the same at every width."""
 
     DRAG_GAP = theme.DRAG_GAP   # (the strip's tokens live in theme; kept here for older callers)
     MIN_TAB = theme.MIN_TAB
@@ -390,8 +389,7 @@ class TabBar(tk.Frame):
     LAYERS = ("line", "plate", "divider", "selected", "ring", "mark", "name", "xdisc", "xglyph")
 
     def __init__(self, parent, root: tk.Tk, *, on_select, on_close, on_new, on_settings, on_double,
-                 on_quit, on_tab_menu=lambda index, event: None, on_move=lambda source, target: None,
-                 on_maximise=None):
+                 on_quit, on_tab_menu=lambda index, event: None, on_move=lambda source, target: None):
         self.row_height = theme.px(theme.STRIP_H)
         self.height = self.row_height
         super().__init__(parent, bg=theme.STRIP)
@@ -405,10 +403,7 @@ class TabBar(tk.Frame):
         self._drag: dict | None = None
         self._slot = 1        # one tab's width plus its gap, set by _layout
         self._per = 1         # one tab's width
-        self.tab_max = theme.TAB_MAX   # a tab's widest (px at 100%): wider in a wide window (set_wide)
-        self.on_maximise = on_maximise or (lambda: chrome.toggle_maximise(root))
-        self.max_btn: CaptionButton | None = None   # made the first time the window is wide
-        self._zoomed = False
+        self.tab_max = theme.TAB_MAX   # a tab's widest (px at 100%), see set_wide
         self.top_row = tk.Frame(self, bg=theme.STRIP, height=self.row_height)
         self.top_row.pack(fill="x")
         self.top_row.pack_propagate(False)
@@ -455,8 +450,8 @@ class TabBar(tk.Frame):
             self.close_btn = CaptionButton(self, root, "close", on_quit, hover="CLOSE_HOVER", hover_fg="ON_ACCENT",
                                            label="Close")
             self.close_btn.place(in_=self.top_row, relx=1.0, x=0, y=0, anchor="ne")
-            # No maximise button: a corner player rarely wants it, and the strip needs the room.
-            # Windows+Up still maximises; so does double-clicking the strip until a home is set.
+            # No maximise button: the window is a side player and can't be maximised (its width is
+            # capped, ui.FULL_MAX_WIDTH). Double-clicking the strip brings it home once a home is set.
             self.min_btn = CaptionButton(self, root, "min", root.iconify, label="Minimise")
             self.min_btn.place(in_=self.top_row, relx=1.0, x=-theme.px(theme.CAPTION_W), y=0, anchor="ne")
         disc = theme.DISC
@@ -494,38 +489,13 @@ class TabBar(tk.Frame):
     def _caption_room(self) -> int:
         if not chrome.CUSTOM:
             return 0
-        shown = 3 if self.max_btn is not None and self.max_btn.winfo_manager() else 2
-        return shown * theme.px(theme.CAPTION_W)
+        return 2 * theme.px(theme.CAPTION_W)   # minimise and close
 
     def set_wide(self, wide: bool, tab_max: int = theme.TAB_MAX):
-        """A wide window: the maximise / restore button shows between minimise and close, and tabs may
-        be up to `tab_max` px (at 100%) wide. Narrow: the strip as it always was."""
+        """Tabs may be up to `tab_max` px (at 100%) wide. (`wide` is what the layout code passes;
+        the strip's buttons are the same at every width.)"""
         self.tab_max = tab_max
-        if chrome.CUSTOM:
-            if wide and self.max_btn is None:
-                self.max_btn = CaptionButton(self, self.root, "restore" if self._zoomed else "max",
-                                             lambda: self.on_maximise(),
-                                             label="Restore" if self._zoomed else "Maximise")
-            caption = theme.px(theme.CAPTION_W)
-            if self.max_btn is not None:
-                if wide:
-                    self.max_btn.place(in_=self.top_row, relx=1.0, x=-caption, y=0, anchor="ne")
-                    self.max_btn.lift()
-                else:
-                    self.max_btn.place_forget()
-            self.min_btn.place_configure(x=-caption * (2 if wide else 1))
-            right = self._caption_room() + theme.px(theme.DISC_MARGIN)
-            self.settings_btn.place_configure(x=-right)
         self._layout()
-
-    def paint_max(self, zoomed: bool):
-        """The maximise button shows restore while the window is maximised (or full screen)."""
-        if zoomed == self._zoomed:
-            return
-        self._zoomed = zoomed
-        if self.max_btn is not None:
-            self.max_btn.configure(text=glyph(self.root, "restore" if zoomed else "max"))
-            self.max_btn.tip.text = "Restore" if zoomed else "Maximise"
 
     def _disc_top(self) -> int:
         return theme.px(theme.ROW_Y) - theme.px(theme.DISC) // 2
@@ -850,8 +820,7 @@ class TabBar(tk.Frame):
         self.tooltip._hide()
         i = self._slot_at(event.x, event.y)
         if i is None:
-            if not chrome.is_fullscreen(self.root):   # (full screen stays put: double-click, F11 or Esc leave it)
-                chrome.start_move(self.root)
+            chrome.start_move(self.root)
             return
         if i == self._x_shown and self._on_x(i, event.x, event.y):
             self._x_pressed = i
@@ -1511,7 +1480,7 @@ class Popover(tk.Frame):
     @staticmethod
     def _escape(root, event):
         """Esc in a window: it closes the open pop-over; with none open, the window's own Esc
-        (`root._dg_escape(event)`, e.g. leaving full screen) has it."""
+        (`root._dg_escape(event)`, when the window sets one) has it."""
         if Popover.close_open():
             return
         fallback = getattr(root, "_dg_escape", None)
