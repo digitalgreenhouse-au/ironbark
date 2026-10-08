@@ -40,6 +40,9 @@ EXPERIMENTS: tuple[Experiment, ...] = (
                "Songs on network drives play from a copy on this computer: a short \"Preparing…\" first, "
                "then they keep playing if the network drops. Takes effect when Ironbark next starts.",
                "0.32.0"),
+    Experiment("tape_reels", "Tape reels",
+               "A reel-to-reel deck playing along (key W): the album is the tape, and each reel turns at "
+               "its true speed as it fills or empties. F11 fills the screen.", "0.35.0"),
 )
 
 

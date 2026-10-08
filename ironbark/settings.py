@@ -67,6 +67,9 @@ DEFAULTS = {
     "vu_auto_loudness": None,    # Auto (loudness): {folder: [0 VU dBFS, album LUFS]}
     "scope_geometry": "",        # the Stereo scope window
     "scope_view": "lissajous",   # "lissajous" (the classic goniometer) or "polar" (half circle)
+    "reels_geometry": "",        # the Tape reels window (Experimental)
+    "reels_speed": "15",         # its tape speed: "7.5" or "15" inches a second
+    "reels_size": "10.5",        # its reels: "7" or "10.5" inch
     "ppm_type": "I",             # IEC 60268-10 Type I (DIN) or II (BBC/EBU)
     "pcm_geometry": "",          # the PCM stream window
     "pcm_base": "Decimal",       # Decimal / Hex / Binary

@@ -118,6 +118,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("abx", _keys("X",), "app", "ABX blind test", "Windows & tools", shift=True),   # x: the mystery version
     Action("test_signals", _keys("T",), "app", "Test signals", "Windows & tools", shift=True),
     Action("lyrics", _keys("L",), "app", "Lyrics", "Windows & tools", shift=True),
+    Action("reels", _keys("W",), "app", "Tape reels (Experimental)", "Windows & tools", shift=True),   # w: wind
     # z: zoom the window down to the mini strip, and back
     Action("mini", _keys("Z", "Ctrl+Shift+M"), "app", "Mini player and back", "Windows & tools", shift=True),
     Action("settings", _keys("Ctrl+,", "Ctrl+P"), "app", "Settings", "Windows & tools"),

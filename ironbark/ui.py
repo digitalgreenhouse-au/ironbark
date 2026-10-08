@@ -120,6 +120,7 @@ from .meters import album_files
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
 from .pcm_window import PcmWindow
 from .clip_window import ClipWindow
+from .reels_window import EXPERIMENT as TAPE_REELS, ReelsWindow
 from .scope_window import ScopeWindow
 from .spectrogram_window import SpectrogramWindow
 from .tag_window import TagHistoryWindow, TagWindow
@@ -522,6 +523,7 @@ class PlayerWindow:
         self._clip: ClipWindow | None = None
         self._spectrogram: SpectrogramWindow | None = None
         self._scope: ScopeWindow | None = None
+        self._reels: ReelsWindow | None = None
         self._compare: CompareWindow | None = None
         self._abx: AbxWindow | None = None
         self._testsignals: TestSignalsWindow | None = None
@@ -1414,6 +1416,11 @@ class PlayerWindow:
             self._paint_cache()
             self._set_notice(f"The network playback cache {'starts' if on else 'stops'} when Ironbark next starts",
                              5000)
+        if key == TAPE_REELS:
+            if self.experiment_vars[key].get():
+                self._set_notice(f"Tape reels: press {keys.hint('reels')} to open the deck", 5000)
+            elif self._reels is not None and self._reels.win.winfo_exists():
+                self._reels.close()
         if key == tag_editor.EXPERIMENT and not self._tag_editing():  # switched off: its windows go too
             for window in (self._tag_window, self._tag_history):
                 if window is not None and window.win.winfo_exists():
@@ -1498,6 +1505,7 @@ class PlayerWindow:
             "rename": call("rename_playlist_on_show"),
             "edit_tags": call("edit_selected_tags"),
             "lyrics": call("show_lyrics"),
+            "reels": call("show_reels"),
             "stop_after": lambda: void(self.stop_after_current()),   # (False only means "carry on" now)
             "sleep_timer": call("open_sleep_menu"),
         }, held=lambda: bool(popups.Prompt.stack))   # (no key acts while a question box waits)
@@ -3946,6 +3954,16 @@ class PlayerWindow:
             self._scope.lift()
         else:
             self._scope = self._with_keys(ScopeWindow(self.root, self.player, self.prefs))
+
+    def show_reels(self):
+        """(Experimental) A reel-to-reel deck playing along: the reels follow the song (one window at a time)."""
+        if not experiments.enabled(self.prefs, TAPE_REELS):
+            self._set_notice("Tape reels is Experimental: switch it on in Settings → Experimental", 5000)
+            return
+        if self._reels is not None and self._reels.win.winfo_exists():
+            self._reels.lift()
+        else:
+            self._reels = self._with_keys(ReelsWindow(self.root, self.player, self.prefs))
 
     def _playing_file(self) -> tuple[Path | None, float]:
         """The song playing (or paused) and how far in, to start Compare / ABX from."""

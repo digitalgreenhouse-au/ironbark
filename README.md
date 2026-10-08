@@ -196,6 +196,11 @@ so Windows SmartScreen warns about an unknown publisher.
 - **Tag editing** (E): edit titles, artists, albums, covers and more, one song or a whole album. Every
   save keeps a copy of the old tags (so it can be undone) and proves the audio is untouched before
   the file is replaced.
+- **Tape reels** (W): a reel-to-reel deck playing along. The album playing is the tape: the supply
+  reel empties onto the take-up reel as the songs play, and each reel turns at its true speed — the
+  tape runs at a steady 7½ or 15 inches a second, so a reel's rpm is that speed over its tape pack's
+  circumference (the full reel slowly, the emptier one faster). 7-inch or 10½-inch reels; a seek
+  spools the tape there. F11 or a double-click fills the screen.
 - **Hear clipping:** in the Clipping window, switch between an ordinary converter's clipped sound and
   the clean version at the same point in the music.
 - **Network playback cache:** songs on a network drive (a NAS) play from a copy fetched to this
@@ -268,6 +273,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | X | ABX blind test |
 | T | Test signals |
 | L | Lyrics |
+| W | Tape reels (Experimental) |
 | Z · Ctrl+Shift+M | Mini player and back |
 | Ctrl+, · Ctrl+P | Settings |
 | Ctrl+Shift+H | Snap the window to its home spot |

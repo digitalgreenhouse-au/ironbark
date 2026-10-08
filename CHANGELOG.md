@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.35.0 — 08/10/2026
+
+**Tape reels** (Experimental — switch it on in Settings → Experimental, then press W). A reel-to-reel
+deck playing along with your music.
+
+- The album playing is the tape: the left reel empties onto the right one as the songs play, and a
+  long album fills more than one reel.
+- Each reel turns at its true speed. The tape runs past the heads at a steady 7½ or 15 inches a
+  second, so a reel's rpm is that speed divided by its tape pack's circumference: the full reel
+  turns slowly, the emptier one faster, changing all the way through. Each reel's rpm is shown.
+- 7-inch or 10½-inch reels. Pausing brakes the reels to a stop; skipping ahead spools the tape there.
+- F11 or a double-click fills the screen; Esc comes back. The player itself stays a side player.
+
 ## 0.34.0 — 08/10/2026
 
 **A side player, by design.** Ironbark is a tall strip that sits beside whatever you're working on,

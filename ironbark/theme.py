@@ -175,6 +175,16 @@ SPECTROGRAM_STOPS = ((0.00, "#000000"), (0.18, "#0e0a46"), (0.38, "#641487"), (0
 # The taskbar's thumbnail buttons sit on Windows' taskbar, so they follow *its* light/dark setting.
 TASKBAR_GLYPH_ON_DARK = "#f0f0f0"
 TASKBAR_GLYPH_ON_LIGHT = "#1e1e1e"
+# Tape reels (Experimental): things on a deck keep their own colours in either theme — brushed
+# aluminium flanges, brown oxide tape, black rubber.
+REEL_FLANGE = "#b9bec5"
+REEL_FLANGE_RIM = "#858b93"
+REEL_TAPE = "#3d2b20"
+REEL_HUB = "#2b2e33"
+REEL_HUB_EAR = "#5a6068"
+REEL_HEAD = "#9aa0a7"
+REEL_CAPSTAN = "#d4d8dc"
+REEL_RUBBER = "#1c1e21"
 
 
 def colour(role_or_colour: str) -> str:
