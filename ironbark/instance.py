@@ -40,6 +40,9 @@ from . import APP_NAME
 log = logging.getLogger(__name__)
 
 FORWARD_TIMEOUT = 8.0     # s a second launch keeps trying to reach the running copy (it may still be starting)
+# s a second launch waits for a running copy that's closing: closing may wait 30 s for a tag save to finish
+# its file, then a few more for a favourite to be stored and the media controls to let go
+CLOSING_WAIT_S = 45.0
 ANSWER_WAIT_S = 2.0       # s at least for its answer once connected (it answers at once unless it has hung)
 MAX_REQUEST = 1 << 20     # bytes: the longest request taken (thousands of paths)
 ACK = b"\x01"
@@ -100,12 +103,14 @@ class Instance:
 
     def __init__(self, first: bool, requests: queue.Queue | None = None,
                  send: Callable[[list[str], bool, float], bool] | None = None,
-                 closers: tuple[Callable[[], None], ...] = (), listeners: tuple[Callable[[], None], ...] = ()):
+                 closers: tuple[Callable[[], None], ...] = (), listeners: tuple[Callable[[], None], ...] = (),
+                 listening: Callable[[], bool] | None = None):
         self.first = first
         self.requests: queue.Queue = requests if requests is not None else queue.Queue()
         self._send = send
         self._closers = list(closers)
         self._listeners = list(listeners)
+        self._listening = listening
 
     @classmethod
     def alone(cls) -> "Instance":
@@ -122,6 +127,17 @@ class Instance:
             return self._send(list(paths), front, timeout)
         except OSError:
             log.warning("couldn't reach the running copy", exc_info=True)
+            return False
+
+    def closing(self) -> bool:
+        """Is the running copy there but taking no requests? It's closing (or, for a moment, still
+        starting): either ends soon, so a later launch waits for it longer (CLOSING_WAIT_S) than for
+        one that's listening but never answers."""
+        if self.first or self._listening is None:
+            return False
+        try:
+            return not self._listening()
+        except OSError:
             return False
 
     def stop_listening(self) -> None:
@@ -286,6 +302,16 @@ def mutex_exists(name: str) -> bool:
     return True
 
 
+def pipe_listening(name: str) -> bool:
+    """Is a running copy listening on this pipe? Asked without connecting: Windows answers at once
+    when there's no such pipe (one busy with another launch counts as listening)."""
+    import ctypes
+
+    if _k32().WaitNamedPipeW(name, 1):
+        return True
+    return ctypes.get_last_error() != ERROR_FILE_NOT_FOUND
+
+
 def _close_handle(handle) -> None:
     _k32().CloseHandle(handle)
 
@@ -295,7 +321,8 @@ def _claim_windows(key: str) -> Instance:
     if taken:
         _close_handle(handle)
         return Instance(False, send=lambda paths, front, timeout: send_to_pipe(
-            pipe_name(key), encode(paths, front), timeout, running=lambda: mutex_exists(mutex_name(key))))
+            pipe_name(key), encode(paths, front), timeout, running=lambda: mutex_exists(mutex_name(key))),
+            listening=lambda: pipe_listening(pipe_name(key)))
     requests: queue.Queue = queue.Queue()
     closers, listeners = [lambda: _close_handle(handle)], []
     try:
@@ -507,7 +534,8 @@ def claim_with_socket(key: str, folder: Path) -> Instance:
     if not _lock(lock):
         lock.close()
         return Instance(False, send=lambda paths, front, timeout: send_to_socket(
-            info_path, paths, front, timeout, running=lambda: lock_held(lock_path)))
+            info_path, paths, front, timeout, running=lambda: lock_held(lock_path)),
+            listening=info_path.exists)   # (its port file goes as soon as it stops listening)
     requests: queue.Queue = queue.Queue()
     try:
         server = SocketServer(info_path, requests)

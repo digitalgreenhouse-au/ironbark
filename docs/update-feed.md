@@ -27,7 +27,7 @@ downloads or installs anything itself: when the file names a newer version, the 
 |-----------|----------|------------|
 | `version` | yes      | The latest release, as `MAJOR.MINOR.PATCH` (a leading `v` is fine). Compared number by number with the running version. |
 | `date`    | no       | The release date, Australian `dd/mm/yyyy`. |
-| `url`     | no       | The download page. Must be `https://` on `digitalgreenhouse.com.au` or `www.digitalgreenhouse.com.au`; anything else (or nothing) opens `https://www.digitalgreenhouse.com.au/ironbark` instead. |
+| `url`     | no       | The download page. Must be a plain `https://` address on `digitalgreenhouse.com.au` or `www.digitalgreenhouse.com.au`: no port, no user name, no `@` or `\`, no spaces and only ASCII characters. Anything else (or nothing) opens `https://www.digitalgreenhouse.com.au/ironbark` instead. |
 | `notes`   | no       | One or two plain sentences about what's new (the first 300 characters are used). |
 
 Other fields are ignored, so more can be added later without breaking older copies.
@@ -36,7 +36,8 @@ Other fields are ignored, so more can be added later without breaking older copi
 
 One HTTPS `GET` of the address above, with the User-Agent `Ironbark/<version>`. The web server sees
 the computer's internet address, as with any request; nothing else about the person or their music
-is sent. If the file is missing (404), the server doesn't answer (it gives up
+is sent. The file is only taken over HTTPS: if the website redirects the address to a plain `http://` one,
+the answer is ignored. If the file is missing (404), the server doesn't answer (it gives up
 after 30 seconds at the most) or there's no connection, Ironbark quietly tries again the next day.
 
 ## Testing a new file

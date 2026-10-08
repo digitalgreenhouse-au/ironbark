@@ -33,7 +33,9 @@ def setup(folder: Path, detailed: bool = False) -> Path | None:
     path = Path(folder) / FILE_NAME
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        handler = RotatingFileHandler(path, maxBytes=MAX_BYTES, backupCount=FILES - 1, encoding="utf-8")
+        # (errors: a file name Windows allows but UTF-8 can't hold is written escaped, not dropped)
+        handler = RotatingFileHandler(path, maxBytes=MAX_BYTES, backupCount=FILES - 1, encoding="utf-8",
+                                      errors="backslashreplace")
     except OSError:
         return None
     handler.setFormatter(logging.Formatter(FORMAT, DATE_FORMAT))

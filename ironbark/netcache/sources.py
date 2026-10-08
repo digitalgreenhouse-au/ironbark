@@ -131,6 +131,14 @@ def _letter(text: str) -> str | None:
     return None
 
 
+def network_target(letter: str) -> str | None:
+    """The server path (`\\\\server\\share`) a drive letter ("Z:") stands for — a mapped network
+    drive, or a `subst` onto a server path — or None. Asks Windows, which may wait on the network:
+    never on the window's thread."""
+    target = _connection(letter) or _dos_device(letter)
+    return target.rstrip("\\") if target and _unc_of(target) else None
+
+
 class Classifier:
     """Classifies paths with the cached tables described in the module note. `refresh()` is the
     only part that may wait on Windows' network calls: the cache's scheduler thread runs it."""

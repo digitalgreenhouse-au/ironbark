@@ -433,6 +433,13 @@ def _dict_or_none(value):
     return value if value is None or isinstance(value, dict) else _BAD
 
 
+def _between(low: float, high: float):
+    """A check: a number from `low` to `high`."""
+    def check(value):
+        return value if _number(value) and low <= value <= high else _BAD
+    return check
+
+
 _CHECKS = {
     "tabs": _tabs,
     "experiments": _dict_or_none,
@@ -452,6 +459,11 @@ _CHECKS = {
     "library_check": lambda value: value if value in ("off", "on", "paused") else _BAD,
     "library_song_columns": lambda value: ([v for v in value if v in ("plays", "last")] if isinstance(value, list)
                                            else _BAD),
+    # A test signal plays at this level as it stands: a dropped minus sign (20 for -20) would be a
+    # clipped full-scale tone. The window offers -80 to -3 dBFS.
+    "testsignals_level": _between(-80.0, -3.0),
+    "testsignals_bits": _one_of(16, 24),
+    "testsignals_kind": _one_of("tone", "jtest", "sweep"),
 }
 
 
