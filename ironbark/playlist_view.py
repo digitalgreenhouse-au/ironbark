@@ -87,7 +87,9 @@ COLUMNS = ("no", "title", "artist", "album", "quality", "plays", "cache", "time"
 QUALITY_W = 72      # px at 100%: the Format column ("24/96", "FLAC", "Opus")
 PLAYS_W = 52        # px at 100%: the Plays column
 CACHE_W = 60        # px at 100%: the Cached column ("◐ 72%")
-WIDEST = {"cache": "◐ 99%", "plays": "9,999"}   # the widest value each of those columns shows
+TIME_W = 52         # px at 100%: the Time column
+# The widest value each of those columns shows (Time: an album row's format, when there's no Format column).
+WIDEST = {"cache": "◐ 99%", "plays": "9,999", "time": "24/352.8"}
 VISIBLE_MOST = 200  # visible_tracks never hands back more rows than this
 SEARCH_MAX = 520    # px at 100%: the search box's widest, in a wide window's header row
 # How a wide window shares the list's width: by weight, Artist and Album never past their caps (px at
@@ -485,7 +487,7 @@ class PlaylistView:
         self.tree.column("quality", width=theme.px(QUALITY_W), stretch=False, anchor="w")
         self.tree.column("plays", width=theme.px(PLAYS_W), stretch=False, anchor="e")
         self.tree.column("cache", width=theme.px(CACHE_W), stretch=False, anchor="w")
-        self.tree.column("time", width=theme.px(52), stretch=False, anchor="e")
+        self.tree.column("time", width=theme.px(TIME_W), stretch=False, anchor="e")
         self._weights = dict(NARROW_WEIGHTS)   # changed in place by set_tier (the fitter reads them)
         self._caps: dict[str, int] = {}
         self._fit = fit_columns(self.tree, self._weights, minimum=theme.px(50), caps=self._caps)
@@ -640,9 +642,16 @@ class PlaylistView:
 
     def _size_columns(self):
         """The Cached and Plays columns as wide as their widest value in the rows' fonts (the playing
-        row's semibold too), never under their usual width: larger text mustn't cut "◐ 72%" short."""
+        row's semibold too), never under their usual width: larger text mustn't cut "◐ 72%" short. The
+        Time column too while album rows show their format in it (no Format column): "24/176.4" whole,
+        not "24/17…"."""
         fonts = [None] + ([self._bold] if self._bold is not None else [])
-        for column, usual in (("cache", CACHE_W), ("plays", PLAYS_W)):
+        sized = [("cache", CACHE_W), ("plays", PLAYS_W)]
+        if self._grouped and "quality" not in self.shown:
+            sized.append(("time", TIME_W))
+        else:
+            self.tree.column("time", width=theme.px(TIME_W))
+        for column, usual in sized:
             need = max(self.list.text_width(WIDEST[column], font) for font in fonts) + theme.px(CELL_ROOM)
             self.tree.column(column, width=max(theme.px(usual), need))
 
@@ -774,6 +783,9 @@ class PlaylistView:
         self._list_serial += 1
         if self.tier != layout.COLUMN:
             self._show_columns(draw=False)
+        else:   # (album rows or none: the Time column's width may change)
+            self._size_columns()
+            self._fit()
         words = self._typed()
         if words and count >= SEARCH_THREAD_AT:
             self._list(words=[], found=None, keep=False)   # (every song, until the search comes back)
@@ -1260,10 +1272,16 @@ class PlaylistView:
         self.list.select(None, see=False)
 
     def show_current(self, index: int):
-        """The playing song: marked (♪, green bold), selected and scrolled into view."""
+        """The playing song: marked (♪, green bold), and — while the selection is following playback
+        (nothing selected, or just the song that was playing) — selected and scrolled into view. Songs
+        the user picked stay picked, and the list stays where they are."""
+        self.list.sync()
+        chosen = self.list.chosen
+        following = not chosen or (len(chosen) == 1 and self.list.playing is not None
+                                   and self.list.is_selected(self.list.playing))
         self._mark_playing(index)
         row = self._row_of(index)
-        if row is not None:   # (a song the search hides keeps its mark, unselected)
+        if row is not None and following:   # (a song the search hides keeps its mark, unselected)
             self.list.select(row)
 
     def _mark_playing(self, index: int | None):
@@ -1274,10 +1292,14 @@ class PlaylistView:
         self.list.set_playing(self._row_of(index))
 
     def activate(self) -> bool:
-        """Play the selected song (an album header: its album). False when nothing is selected."""
+        """Play the selected song (an album header: its album). False when nothing is selected. With
+        several selected, the one the keyboard is on — or, when that one isn't lit (Ctrl+clicked out),
+        the first that is: what's acted on is what's lit."""
         self.list.sync()
         row = self.list.selected
-        if row is None or not self.list.chosen or row >= len(self._listing):
+        if row is not None and not self.list.is_selected(row):
+            row = self.list.chosen.first()
+        if row is None or row >= len(self._listing):
             return False
         found = self._listing.entry(row)
         if found == "none":

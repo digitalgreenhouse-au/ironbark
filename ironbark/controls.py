@@ -196,17 +196,22 @@ class Slider(Focusable, tk.Canvas):
     The seek bars (main window, mini strip) use it; `set(value, maximum)` is held back while it's
     being dragged, so the knob stays under the pointer, and shown when the drag ends. If the
     maximum changed meanwhile (the next song started), letting go doesn't seek: the spot was
-    chosen in a song that has gone."""
+    chosen in a song that has gone.
+
+    `allow(old, new)`: asked before a key or a click jumps the value (a drag moves it gradually and
+    isn't asked) — returns the value to go to, or None to stay where it is (the volume slider: no
+    sudden jump to a loud level where nothing else can turn it down)."""
 
     BUTTON1 = 0x100   # Tk's event state bit: the left button is held down
 
     def __init__(self, parent, *, on_release: Callable[[float], None],
                  on_drag: Callable[[float], None] | None = None, bg: str = "BG", height: int = SLIDER_HEIGHT,
-                 step: float | None = None):
+                 step: float | None = None, allow: Callable[[float, float], float | None] | None = None):
         self._height = max(8, theme.px(height))
         super().__init__(parent, height=self._height, width=1, bg=theme.colour(bg), highlightthickness=0, bd=0,
                          cursor="hand2")
         self.on_release, self.on_drag = on_release, on_drag
+        self.allow = allow
         self.step = step
         self._bg = bg
         self.value = 0.0
@@ -249,7 +254,10 @@ class Slider(Focusable, tk.Canvas):
             value = 0.0 if steps == "start" else self.maximum
         else:
             value = self.value + steps * (self.step or self.maximum / 20)
-        self.value = max(0.0, min(self.maximum, value))
+        value = self._allowed(max(0.0, min(self.maximum, value)))
+        if value is None:
+            return "break"
+        self.value = value
         self._draw()
         if self.on_drag:
             self.on_drag(self.value)
@@ -301,12 +309,27 @@ class Slider(Focusable, tk.Canvas):
             self._drag_lost()
         self._hover(False)
 
+    def _allowed(self, value: float) -> float | None:
+        """`value`, or what `allow` says instead (None: stay)."""
+        if self.allow is None or value == self.value:
+            return value
+        allowed = self.allow(self.value, value)
+        return None if allowed is None else max(0.0, min(self.maximum, allowed))
+
     def _press(self, event):
         if self.maximum <= 0:
             return
+        value = self._value_at(event.x)
+        allowed = self._allowed(value)
+        if allowed != value:   # held back: no drag from there either (it would jump on the first move)
+            if allowed is not None:
+                self.value = allowed
+                self._draw()
+                self.on_release(allowed)
+            return
         self.dragging = True
         self._held = None
-        self.value = self._value_at(event.x)
+        self.value = value
         self._draw()
         if self.on_drag:
             self.on_drag(self.value)

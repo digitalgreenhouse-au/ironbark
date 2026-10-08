@@ -551,6 +551,7 @@ class PlayerWindow:
         # (0.25.0) Settings opened from the mini strip: where the strip was before the window grew
         # to hold the panel (None the rest of the time). Saved in its place, and put back on close.
         self._mini_settings_from: str | None = None
+        self._keys_before_mini: str | None = None   # what had the keyboard in the full window (see _show_mini)
         # The theme comes first, so everything is built in its colours. (Dark by default.)
         if self.prefs.get("theme") not in dict(theme.THEME_CHOICES):
             self.prefs["theme"] = theme.DEFAULT_THEME
@@ -569,6 +570,7 @@ class PlayerWindow:
         except (TypeError, ValueError):   # (a hand-edited settings file)
             player.set_volume(settings.DEFAULTS["volume"])
         self.volume_var = tk.DoubleVar(value=player.volume * 100)
+        self._volume_question = None   # the Settings slider's jump up, waiting to be asked about (see _volume_jump)
         self.can_exclusive = devices.exclusive_supported()
         self.exclusive = tk.BooleanVar(value=bool(self.prefs["exclusive"]) and self.can_exclusive)
         self.open_at_home = tk.BooleanVar(value=bool(self.prefs["open_at_home"]))
@@ -1050,7 +1052,7 @@ class PlayerWindow:
         self.volume_text.pack(side="right", padx=theme.pad(theme.GAP_MEDIUM, 0))
         # (0.21.0) The drawn slider (controls.Slider), following volume_var however it's changed.
         self.volume_slider = controls.Slider(row, on_release=self._volume_slid, on_drag=self._volume_slid,
-                                             bg="SURFACE", step=VOLUME_STEP * 100)
+                                             bg="SURFACE", step=VOLUME_STEP * 100, allow=self._volume_jump)
         self.volume_slider.pack(side="left", fill="x", expand=True)
         self.volume_slider.set(self.volume_var.get(), 100.0)
         self.volume_var.trace_add("write", lambda *_: self.volume_slider.set(self.volume_var.get(), 100.0))
@@ -1323,6 +1325,23 @@ class PlayerWindow:
         self.player.set_volume(value / 100)
         self.volume_var.set(self.player.volume * 100)   # (the slider ignores this while it's being dragged)
         self._update_volume_text()
+
+    def _volume_jump(self, old: float, new: float) -> float | None:
+        """A key (End, Page Up) or a click on the Settings volume slider would jump it from `old` to `new`
+        (%). Where the player's volume is the only one, a jump of more than a step above the safe level
+        waits: it's asked about once the key or click is over (as Ctrl+Shift+↑ asks), and made on a yes.
+        A step at a time, a drag and going down are never asked."""
+        level = new / 100
+        if level <= max(old / 100, SAFE_VOLUME) + VOLUME_STEP + 1e-6 or not self._ears_at_risk():
+            return new
+        if self._volume_question is None:
+            self._volume_question = self.root.after_idle(self._ask_volume_jump, level)
+        return None
+
+    def _ask_volume_jump(self, level: float):
+        self._volume_question = None
+        if not self._ears_at_risk() or self._louder_ok(level):
+            self._volume_slid(level * 100)
 
     def _network_changed(self):
         """Off by default; read live by rip verification (ripcheck.network_allowed) and the update
@@ -1614,17 +1633,22 @@ class PlayerWindow:
     def full_volume(self):
         """Ctrl+Shift+↑: volume 100% (untouched). Where the player's volume is the only one (bit-perfect
         on a device without its own), that's the file at full level into the headphones: asked first."""
-        if self.player.volume < 1.0 and self._ears_at_risk():
-            reason = ("This device has no volume control of its own" if self.player.hardware_volume is False
-                      else "The player couldn't confirm this device has a volume control of its own")
-            self._for_prompt()
-            if not popups.confirm(self.root, "Turn the volume up to 100%?",
-                                  f"{reason}, and bit-perfect goes round the Windows volume: the music will "
-                                  f"play at full level (the volume is {volume_words(self.player.volume)} now).",
-                                  detail="Turn your headphone or amp volume down first.", ok="Turn it up",
-                                  tone="warn"):
-                return
+        if self.player.volume < 1.0 and self._ears_at_risk() and not self._louder_ok(1.0):
+            return
         self._set_volume(1.0)
+
+    def _louder_ok(self, level: float) -> bool:
+        """Ask before turning the volume up to `level` where it's the only one (see _ears_at_risk):
+        True to go ahead."""
+        reason = ("This device has no volume control of its own" if self.player.hardware_volume is False
+                  else "The player couldn't confirm this device has a volume control of its own")
+        loud = "full level" if level >= 1.0 else volume_words(level)
+        self._for_prompt()
+        return popups.confirm(self.root, f"Turn the volume up to {level:.0%}?",
+                              f"{reason}, and bit-perfect goes round the Windows volume: the music will "
+                              f"play at {loud} (the volume is {volume_words(self.player.volume)} now).",
+                              detail="Turn your headphone or amp volume down first.", ok="Turn it up",
+                              tone="warn")
 
     def toggle_mute(self):
         """Ctrl+Shift+↓: silence; again, back to the level it was (the default level if it was 0
@@ -4524,16 +4548,37 @@ class PlayerWindow:
         self.prefs["mini_mode"] = on
         self.on_top.set(bool(self.prefs["mini_on_top" if on else "always_on_top"]))
         self.root.attributes("-topmost", self.on_top.get())
+        # Tk keeps sending keys to a hidden widget that has the keyboard (Enter, Delete, Alt+↑ / ↓ would
+        # act on the track list unseen, Space would press a strip button that isn't there): the layout
+        # put away gives it up. The strip's window takes it, and the full window gets back what had it.
+        keys_at = self._keyboard_in()
+
+        def keys_inside(*widgets) -> bool:
+            return any(keys_at == str(w) or keys_at.startswith(f"{w}.") for w in widgets)
+
         if on:
             self.bar.pack_forget()
             self.body.pack_forget()
             self.mini.pack(fill="both", expand=True)
             self.root.minsize(theme.px(MINI_MIN_SIZE[0]), theme.px(MINI_MIN_SIZE[1]))
+            if keys_inside(self.bar, self.body):
+                self._keys_before_mini = keys_at
+                self._keyboard_to(self.root)
         else:
             self.mini.pack_forget()
             self.bar.pack(fill="x")
             self.body.pack(fill="both", expand=True)
             self.root.minsize(theme.px(FULL_MIN_SIZE[0]), theme.px(FULL_MIN_SIZE[1]))
+            back, self._keys_before_mini = self._keys_before_mini, None
+            # (Already back in the full window — something there took it meanwhile — it stays put.)
+            if keys_inside(self.mini) or (back and not keys_inside(self.bar, self.body)):
+                target = self.root
+                if back:
+                    try:
+                        target = self.root.nametowidget(back)
+                    except KeyError:   # (gone meanwhile: a tab closed, a view rebuilt)
+                        pass
+                self._keyboard_to(target)
 
     def _mini_geometry(self, full: str) -> str:
         """Where the mini strip goes: where it was last left; the first time, its default size
