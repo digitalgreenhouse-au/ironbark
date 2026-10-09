@@ -22,10 +22,10 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from .. import controls, placement, theme, toolwin
+from .. import controls, theme, toolwin
+from ..engine import State
 from . import abx, audition, compare
 from .compare_window import FileRow, choose_file
-from ..engine import State
 
 REFRESH_MS = 100
 RELOAD_AFTER_MS = 350      # wait for the bar to stop moving before decoding

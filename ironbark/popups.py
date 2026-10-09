@@ -26,10 +26,10 @@ Windows' own file and folder pickers are left as they are (expected, and not rel
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from tkinter import ttk
 from types import SimpleNamespace
-from typing import Callable
 
 from . import theme
 from .controls import PillButton
@@ -61,7 +61,7 @@ class Prompt(tk.Frame):
 
     Call `wait()` for the answer, or (tests) `press_default()` / `press_cancel()` / `answer(value)`."""
 
-    stack: list["Prompt"] = []     # the prompts on show, newest last (one over another is allowed)
+    stack: list[Prompt] = []     # the prompts on show, newest last (one over another is allowed)
 
     def __init__(self, window: tk.Misc, title: str, message: str = "", *, detail: str = "",
                  buttons=(("OK", True),), default: int = 0, cancel: Answer = None, entry: str | None = None,
@@ -191,7 +191,7 @@ class Prompt(tk.Frame):
         return theme.colour(self.edge_role)
 
     @staticmethod
-    def _owner(widget) -> "Prompt | None":
+    def _owner(widget) -> Prompt | None:
         """The prompt on show that a widget with the prompts' tag belongs to (its cover counts)."""
         for prompt in reversed(Prompt.stack):
             if widget is prompt.cover:
@@ -428,7 +428,7 @@ class MenuItem:
     shortcut: str = ""
     enabled: bool = True
     checked: bool | None = None          # a tick item (True / False); None = an ordinary item
-    submenu: "MenuItems | None" = None
+    submenu: MenuItems | None = None
     separator: bool = False
 
 
@@ -450,7 +450,7 @@ class MenuItems:
         if self.items and not self.items[-1].separator:   # never two in a row, never at the top
             self.items.append(MenuItem("", separator=True))
 
-    def add_submenu(self, label: str, enabled: bool = True) -> "MenuItems":
+    def add_submenu(self, label: str, enabled: bool = True) -> MenuItems:
         sub = MenuItems(_short(label))
         self.items.append(MenuItem(sub.title, None, "›", enabled, submenu=sub))
         return sub

@@ -2,9 +2,9 @@ import collections
 from types import SimpleNamespace
 from unittest import mock
 
-from ironbark.tools.details import describe_events, describe_health, describe_proof
 from ironbark.engine import Health, OutputInfo, _Session
 from ironbark.proof import Proof
+from ironbark.tools.details import describe_events, describe_health, describe_proof
 
 EXCLUSIVE = OutputInfo("DAC", 44100, None, True)
 SHARED = OutputInfo("DAC", 44100, 48000, False)

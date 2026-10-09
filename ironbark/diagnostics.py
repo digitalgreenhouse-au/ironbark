@@ -29,8 +29,8 @@ import platform
 import re
 import sys
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from . import APP_NAME, __version__, experiments, logs
 

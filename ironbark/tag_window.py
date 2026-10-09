@@ -22,9 +22,9 @@ import hashlib
 import io
 import threading
 import tkinter as tk
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, ttk
-from typing import Callable
 
 from PIL import Image, ImageOps, ImageTk
 

@@ -21,14 +21,13 @@ import numpy as np
 import pytest
 import sounddevice as sd
 import soundfile as sf
+from netfakes import FakeCopy, FakePreparer, FakeShare, make_manager, manager_mod, wait_until
 
 from ironbark import audiofile, engine
 from ironbark.engine import BLOCK_FRAMES, Player, State, _Session
 from ironbark.library import Track
 from ironbark.netcache import policy
 from ironbark.netcache.store import VERIFYING
-
-from netfakes import FakeCopy, FakePreparer, FakeShare, make_manager, manager_mod, wait_until
 
 RATE = 44100
 TIME_INFO = SimpleNamespace(outputBufferDacTime=0.0, currentTime=0.0)

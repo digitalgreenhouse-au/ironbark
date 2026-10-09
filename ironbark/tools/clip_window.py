@@ -33,9 +33,9 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
-from .. import controls, placement, theme, toolwin
-from . import audition, clipping
+from .. import controls, theme, toolwin
 from ..engine import State
+from . import audition, clipping
 
 log = logging.getLogger(__name__)
 

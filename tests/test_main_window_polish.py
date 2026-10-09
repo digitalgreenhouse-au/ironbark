@@ -11,13 +11,12 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import controls, theme
 from ironbark.library import Track
 from ironbark.playlist_view import PLAYING_MARK, album_heading
-
 from ironbark.ui import INFO_INK_INSET, STATUS_DOT
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 
 # -- drawing (no display needed) ----------------------------------------------------------------

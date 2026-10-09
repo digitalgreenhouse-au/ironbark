@@ -14,8 +14,14 @@ import soundfile as sf
 
 from ironbark import theme
 from ironbark.tools import stereo
-from ironbark.tools.meters import (AUTO_RANGE, MeterEngine, album_alignment, album_alignment_loudness,
-                               alignment_from_loudness, tone_offset)
+from ironbark.tools.meters import (
+    AUTO_RANGE,
+    MeterEngine,
+    album_alignment,
+    album_alignment_loudness,
+    alignment_from_loudness,
+    tone_offset,
+)
 
 RATE = 48000
 
@@ -352,6 +358,7 @@ def test_scope_draws_nothing_while_minimised(root, monkeypatch):
 
 def test_meter_auto_finds_the_album_without_listing_its_folder_every_tick(root, tmp_path, monkeypatch):
     from pathlib import Path
+
     from ironbark.tools import meter_window
     album = tmp_path / "album"
     album.mkdir()

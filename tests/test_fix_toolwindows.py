@@ -15,8 +15,8 @@ import pytest
 import soundfile as sf
 
 from ironbark import devices, theme
-from ironbark.tools import audition
 from ironbark.engine import State
+from ironbark.tools import audition
 
 RATE = 44100
 

@@ -37,7 +37,7 @@ WAIT_SLICE_S = 0.02   # a waiting read looks at cancel at least this often
 def open_shared(path) -> io.RawIOBase:
     """Open a file for reading so that others may still write, rename and delete it."""
     if sys.platform != "win32":
-        return io.open(os.fspath(path), "rb", buffering=0)
+        return open(os.fspath(path), "rb", buffering=0)
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -56,7 +56,7 @@ def open_shared(path) -> io.RawIOBase:
     except OSError:
         kernel32.CloseHandle(handle)
         raise
-    return io.open(fd, "rb", buffering=0)
+    return open(fd, "rb", buffering=0)
 
 
 class GrowingFile(io.RawIOBase):

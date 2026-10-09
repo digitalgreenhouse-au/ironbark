@@ -39,9 +39,9 @@ import sys
 import threading
 import types
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from . import artwork, theme
 
@@ -65,7 +65,7 @@ class NowPlaying:
     track_no: int = 0
     path: Path | None = None   # the song's file: the cover is looked up from it (artwork.py)
 
-    def same_song(self, other: "NowPlaying | None") -> bool:
+    def same_song(self, other: NowPlaying | None) -> bool:
         return other is not None and (self.title, self.artist, self.album, self.album_artist,
                                       self.track_no, self.path) == (other.title, other.artist, other.album,
                                                                     other.album_artist, other.track_no, other.path)

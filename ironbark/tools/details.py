@@ -12,9 +12,7 @@ made here is kept the same way (`remember`), so the library check needn't read t
 from __future__ import annotations
 
 import logging
-import math
 import os
-import sys
 import threading
 import time
 import tkinter as tk
@@ -22,17 +20,30 @@ from pathlib import Path
 from tkinter import ttk
 
 from .. import audiofile, controls, placement, shapes, theme, toolwin
-from . import loopback, ripcheck
-from ..statustext import (MIXER, QUALITY_WORDS, copy_failed_text, copy_note, fewer_bits, fmt_clock, fmt_duration,
-                         fmt_size, fmt_speed, levelling_text, network_line, output_line, to_db, tone_of)
-from ..analysis import (CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse,
-                       lossy_below)
+from ..analysis import CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse, lossy_below
 from ..engine import Health, OutputInfo, PlaybackEvent, Player, State
-from ..proof import Proof, compare_paths, describe_path
 from ..flacframes import FrameIndex, build_index
 from ..formats import FormatFlags
-from ..mp3frames import build_index as build_mp3_index
 from ..library import LOSSY_CODECS, Track, format_rate
+from ..mp3frames import build_index as build_mp3_index
+from ..proof import Proof, compare_paths, describe_path
+from ..statustext import (
+    MIXER,
+    QUALITY_WORDS,
+    copy_failed_text,
+    copy_note,
+    fewer_bits,
+    fmt_clock,
+    fmt_duration,
+    fmt_size,
+    fmt_speed,
+    levelling_text,
+    network_line,
+    output_line,
+    to_db,
+    tone_of,
+)
+from . import loopback, ripcheck
 from .meters import album_files
 
 log = logging.getLogger(__name__)

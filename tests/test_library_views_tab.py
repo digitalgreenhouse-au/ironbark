@@ -10,13 +10,13 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+from tagging import write_vorbis
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import library_index, library_view, playlists, theme
 from ironbark.library import read_track
 from ironbark.tabbar import Popover
 from ironbark.ui import Tab
-from tagging import write_vorbis
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 
 def _wait(root, ready, seconds: float = 10.0) -> bool:

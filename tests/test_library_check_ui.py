@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import library_check, library_index, playlists, popups, settings, tag_editor, theme
+from ironbark import library_index, playlists, popups, settings, tag_editor, theme
 from ironbark.library import Track, read_track
 from ironbark.library_check import Checker, Status
 
@@ -99,9 +99,10 @@ def music(tmp_path, monkeypatch):
 
 # -- the Library's Needs a look -------------------------------------------------------------------------
 def test_needs_a_look_asks_first_then_lists_what_the_check_found(root, music, monkeypatch, tk_thread_rule):
+    from test_library_view import column, wait_for_index
+
     from ironbark import library_view
     from ironbark.library_view import LibraryView
-    from test_library_view import column, wait_for_index
 
     monkeypatch.setattr(library_view, "CHECK_REREAD_S", 0.0)
     states = []
@@ -165,7 +166,8 @@ class ShownPlayer:
         self.track = track
 
     def status(self):
-        from ironbark.engine import OutputInfo, State, Status as PlayerStatus
+        from ironbark.engine import OutputInfo, State
+        from ironbark.engine import Status as PlayerStatus
         return PlayerStatus(State.PLAYING, 0, self.track, 1.0, self.track.duration,
                             output=OutputInfo("Test output", 44100, 48000, False))
 
@@ -304,7 +306,7 @@ def test_a_playlist_in_an_older_encoding_is_asked_about_before_it_is_rewritten(r
     old.write_bytes(original)
     assert playlists.fallback_encoding(old).startswith("Windows")   # (this PC's code page: Windows-1252 here)
     utf8 = tmp_path / "New.m3u8"
-    utf8.write_bytes("#EXTM3U\nC:\\Music\\Café.flac\n".encode("utf-8"))
+    utf8.write_bytes("#EXTM3U\nC:\\Music\\Café.flac\n".encode())
     assert playlists.fallback_encoding(utf8) == "" and playlists.fallback_encoding(tmp_path / "none.m3u") == ""
     answers, asked = [False], []
     monkeypatch.setattr(popups, "confirm", lambda *args, **kwargs: asked.append((args[1], kwargs["ok"])) or answers[0])
@@ -343,7 +345,7 @@ def test_recycle_says_where_a_bin_exists_and_never_runs_on_tk(tmp_path, monkeypa
     worker.join(10)
     assert not mix.exists() and threads == [worker]
     # The text decoder says which encoding read a file (the playlist warning goes by it).
-    assert cuesheet.decode_with("Café".encode("utf-8"))[1] == "utf-8"
+    assert cuesheet.decode_with("Café".encode())[1] == "utf-8"
     assert cuesheet.decode_with("\ufeffCafé".encode("utf-8"))[1] == "utf-8"
     assert cuesheet.decode_with("Café".encode("utf-16"))[1] == "utf-16"
     assert not cuesheet.decode_with("Caf\xe9".encode("cp1252"))[1].startswith("utf")

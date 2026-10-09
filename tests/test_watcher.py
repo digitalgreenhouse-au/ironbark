@@ -9,14 +9,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
 from fakework import FakeWork
 
 from ironbark import library, library_index, playlists, settings, watcher
 from ironbark.library_index import LibraryIndex
 from ironbark.tag_editor import Edit, TagSave, edit_jobs
+from ironbark.tagio.flac import FLACFile
 from ironbark.ui import PlayerWindow
-from ironbark.watcher import Report, Settling, Watcher
+from ironbark.watcher import Settling, Watcher
 
 RNG = np.random.default_rng(12)
 HOUR = 3600.0
@@ -250,6 +250,7 @@ def test_an_unplugged_library_folder_doesnt_silence_the_others(music, tmp_path):
 def tk_root():
     import gc
     import tkinter as tk
+
     from ironbark import theme
     try:
         root = tk.Tk()
@@ -328,5 +329,3 @@ def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root
     w2._watch_reports()
     assert w2._new_albums == [] and w2.notices == []
     library.close()
-
-

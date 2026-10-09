@@ -9,11 +9,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
+from test_main_window_polish import _near, _pixel, root  # noqa: F401  (root is a fixture)
 
 from ironbark import controls, keyfocus, shapes, theme
 from ironbark.library import Track
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
-from test_main_window_polish import _near, _pixel, root  # noqa: F401  (root is a fixture)
 
 
 # -- the style pictures (no display needed) ---------------------------------------------------------

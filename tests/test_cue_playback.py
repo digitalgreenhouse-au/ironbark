@@ -11,15 +11,15 @@ import numpy as np
 import pytest
 import sounddevice as sd
 import soundfile as sf
+
+from ironbark import analysis, audiofile, dragdrop, engine, formats, library, playlists
+from ironbark.audiofile import CuePath, CueRange
+from ironbark.engine import BLOCK_FRAMES, Player, _Session
 from ironbark.tagio.flac import CueSheet as FlacCueSheet
 from ironbark.tagio.flac import CueSheetIndex as CueSheetTrackIndex
 from ironbark.tagio.flac import CueSheetTrack, FLACFile
-
-from ironbark import analysis, audiofile, dragdrop, engine, formats, library, playlists
 from ironbark.tools import ripcheck
-from ironbark.audiofile import CuePath, CueRange
 from ironbark.tools.details import describe_analysis
-from ironbark.engine import BLOCK_FRAMES, Player, _Session
 
 RNG = np.random.default_rng(11)
 TIME_INFO = SimpleNamespace(outputBufferDacTime=0.0, currentTime=0.0)

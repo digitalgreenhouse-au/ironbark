@@ -7,17 +7,15 @@ the hidden desktop (conftest) and skip without a display."""
 from __future__ import annotations
 
 import gc
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_big_lists import _playlist_window
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import playlist_view, popups, theme
 from ironbark.library import Track
-
-from test_big_lists import _playlist_window
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 
 def _new_root(scaling: float | None = None):

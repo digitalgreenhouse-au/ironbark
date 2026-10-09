@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import font as tkfont
-from typing import Callable
 
 from PIL import Image, ImageDraw, ImageTk
 
@@ -1102,7 +1102,7 @@ class MenuRow(tk.Frame):
 
     def __init__(self, parent, text: str, command: Callable[[], None], shortcut: str = "", *,
                  enabled: bool = True, check: bool | None = None, closes: bool = True,
-                 on_hover: Callable[["MenuRow"], None] | None = None, ticks: bool | None = None,
+                 on_hover: Callable[[MenuRow], None] | None = None, ticks: bool | None = None,
                  chevron: str = "", lead: str | None = None, lead_fg: str = "", lead_width: int = 5):
         super().__init__(parent, bg=theme.SURFACE, cursor="hand2")
         self.command = command
@@ -1262,7 +1262,7 @@ class Popover(tk.Frame):
 
     The panel is SURFACE with a 1 px EDGE rim."""
 
-    open_one: "Popover | None" = None
+    open_one: Popover | None = None
     MARGIN = 8   # px at 100%: kept clear between the panel and its window's edges
 
     def __init__(self, root: tk.Misc, width: int, *, scroll: bool = False, transient: bool = False,
@@ -1276,7 +1276,7 @@ class Popover(tk.Frame):
         self.controls_on, self.at_edge = controls, at_edge
         self.area = None
         if scroll:
-            from .controls import ScrollArea   # (controls imports this module: import here, not at the top)
+            from .controls import ScrollArea  # (controls imports this module: import here, not at the top)
             self.area = ScrollArea(self, bg="SURFACE")
             self.area.pack(fill="both", expand=True)
             holder = self.area.inner

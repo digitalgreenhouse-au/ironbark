@@ -50,6 +50,7 @@ busy (another copy of the player writing) or can't be written (a full disk) is n
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -58,16 +59,24 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, audiofile, searchfold, settings
 from .audiofile import CuePath, CueRange
 from .browse import make_album
+from .library import (
+    Album,
+    Track,
+    is_music_name,
+    natural_key,
+    play_order,
+    read_track,
+    skip_folder,
+    sort_name,
+    split_cue_images,
+)
 from .musicfiles import DISC_FOLDER
-from .library import (Album, Track, is_music_name, natural_key, play_order, read_track, skip_folder,
-                      sort_name, split_cue_images)
 
 FILE_NAME = "library.db"
 SCHEMA_VERSION = 2          # PRAGMA user_version: bump with a step in _UPGRADES (else the library tables are remade)

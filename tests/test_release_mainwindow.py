@@ -5,18 +5,13 @@ and nothing of the user's is touched."""
 
 from __future__ import annotations
 
-import sys
 import time
-from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
-import pytest
 import soundfile as sf
-
-from ironbark import popups
-from ironbark.library import Track
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
+
+from ironbark.library import Track
 
 
 def _flac(path):

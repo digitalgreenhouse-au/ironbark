@@ -38,7 +38,7 @@ import uuid
 
 import pytest
 
-from ironbark import settings   # makes no window, so it may come before the desktop switch
+from ironbark import settings  # makes no window, so it may come before the desktop switch
 
 # One hidden desktop per test run: two runs at once (two branches' suites, say) would otherwise
 # share one, and a window of the other run sitting over this one's fools any check of what's at a

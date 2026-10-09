@@ -35,9 +35,9 @@ from __future__ import annotations
 import sys
 import textwrap
 import tkinter as tk
+from collections.abc import Callable
 from dataclasses import dataclass
 from tkinter import ttk
-from typing import Callable
 
 TAG = "IronbarkKeys"
 

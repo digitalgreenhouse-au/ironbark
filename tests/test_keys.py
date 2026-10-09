@@ -11,15 +11,13 @@ import re
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
-from types import SimpleNamespace
 
 import pytest
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import help_window, keys
 from ironbark.keys import ALT, CONTROL, SHIFT
 from ironbark.library import Track
-
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 REPO = Path(__file__).resolve().parents[1]
 LOCK = 0x2
@@ -579,8 +577,9 @@ def test_edit_tags_enter_moves_on_ctrl_s_saves_esc_asks(make_window):
 
 
 def test_help_and_about_follow_the_theme(make_window):
-    from ironbark import theme
     from test_light_mini import _colours_in_use, _only_in
+
+    from ironbark import theme
 
     window, root, player, errors = make_window()
     window.show_help()

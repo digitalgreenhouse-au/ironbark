@@ -1,24 +1,70 @@
 name: Tests
 
+# Three tiers, so a push gets an answer in minutes and a release still gets everything:
+# - checks: ruff (the linter), import rules (lint-imports) and the two tiers' config: every push.
+# - quick:  every test that makes no window (`-m "not ui"`), on Windows and on Ubuntu: every push.
+#           The Ubuntu run is advisory until it has been seen green (continue-on-error): the player is
+#           Windows-first and its tests were written there.
+# - full:   the whole suite, windows and all, on Windows: pull requests, pushes to main and dev,
+#           a nightly run, and the "Run workflow" button.
+
 on:
   push:
-    branches: [main, dev]
   pull_request:
-  workflow_dispatch:   # a "Run workflow" button on GitHub's Actions tab
+  schedule:
+    - cron: "17 16 * * *"   # 16:17 UTC = 03:17 Sydney (AEDT): nightly, when the runner is quiet
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  tests:
-    name: Tests (Windows)
-    runs-on: windows-latest
-    timeout-minutes: 30
+  checks:
+    name: Lint and import rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # Actions are pinned to a commit (a tag can be moved to other code); the comment says which release.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
       - name: Install (exactly as locked)
         run: uv sync --locked
-      - name: Run the tests
+      - name: ruff
+        run: uv run ruff check ironbark tests
+      - name: Import rules (which module may import which)
+        run: uv run lint-imports
+
+  quick:
+    name: Quick tier (${{ matrix.os }})
+    needs: checks
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
+      - name: PortAudio (Linux only; the Windows and macOS wheels carry their own)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      - name: Install (exactly as locked)
+        run: uv sync --locked
+      - name: Run the tests that make no window
+        run: uv run pytest -q -m "not ui"
+
+  full:
+    name: Full suite (Windows)
+    needs: checks
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
+      - name: Install (exactly as locked)
+        run: uv sync --locked
+      - name: Run every test
         run: uv run pytest -q

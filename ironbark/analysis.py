@@ -38,12 +38,11 @@ from __future__ import annotations
 import hashlib
 import math
 import threading
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
 
 import numpy as np
-import soundfile as sf
 
 from . import audiofile
 from .formats import FormatFlags, FormatScan

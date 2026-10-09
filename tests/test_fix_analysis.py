@@ -10,12 +10,19 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import analysis, audiofile, loudness
-from ironbark.tools import abx, clipping, compare, meters
-from ironbark.analysis import (TAPS_PER_PHASE, TruePeak, oversampling_phases, album_measure, analyse,
-                               true_peak, wall_verdict)
-from ironbark.tools.details import describe_analysis
+from ironbark import audiofile, loudness
+from ironbark.analysis import (
+    TAPS_PER_PHASE,
+    TruePeak,
+    album_measure,
+    analyse,
+    oversampling_phases,
+    true_peak,
+    wall_verdict,
+)
 from ironbark.mp3frames import _frame, _skip_id3v2
+from ironbark.tools import abx, clipping, compare, meters
+from ironbark.tools.details import describe_analysis
 
 RATE = 44100
 

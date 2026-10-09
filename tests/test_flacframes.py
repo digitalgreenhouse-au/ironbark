@@ -1,8 +1,8 @@
 import numpy as np
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
 
 from ironbark.flacframes import build_index
+from ironbark.tagio.flac import FLACFile
 
 
 def write(path, seconds, rate=44100, subtype="PCM_16", quiet_then_loud=False):

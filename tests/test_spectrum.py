@@ -13,8 +13,8 @@ import pytest
 import soundfile as sf
 
 from ironbark import theme
-from ironbark.tools import spectrum
 from ironbark.analysis import wall_verdict
+from ironbark.tools import spectrum
 
 RATE = 44100
 
@@ -321,6 +321,7 @@ def test_pcm_window_leaves_a_still_stack_alone(root, monkeypatch):
 
 def test_pcm_window_counts_bits_off_the_window_thread(root, monkeypatch):
     import threading
+
     from ironbark.tools.pcm_window import PcmWindow
     threads = []
     real_add = spectrum.BitScope.add

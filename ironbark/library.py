@@ -25,9 +25,18 @@ from types import SimpleNamespace
 import soundfile as sf
 
 from . import audiofile, cuesheet, m4a
-from .musicfiles import (AUDIO_EXTENSIONS, DISC_FOLDER, SKIP_FOLDERS, album_folder, album_folder_text,  # noqa: F401
-                         is_music_name, natural_key, skip_folder, sort_name)
 from .audiofile import CuePath, CueRange
+from .musicfiles import (  # noqa: F401
+    AUDIO_EXTENSIONS,
+    DISC_FOLDER,
+    SKIP_FOLDERS,
+    album_folder,
+    album_folder_text,
+    is_music_name,
+    natural_key,
+    skip_folder,
+    sort_name,
+)
 from .tagio import TagError
 from .tagio import genres as genre_list
 from .tagio.flac import FLACFile

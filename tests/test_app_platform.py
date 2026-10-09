@@ -20,15 +20,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_dragdrop import flac, music, touch  # noqa: F401  (music is a fixture)
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
-from ironbark import (APP_NAME, __version__, crash, diagnostics, dragdrop, instance, logs, settings, tag_editor,
-                      tkgc)
+from ironbark import APP_NAME, __version__, crash, diagnostics, dragdrop, instance, logs, settings, tag_editor, tkgc
 from ironbark import __main__ as start
 from ironbark.engine import State
 from ironbark.ui import PlayerWindow, Tab
-
-from test_dragdrop import flac, music, touch  # noqa: F401  (music is a fixture)
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 REAL_NATIVE_BOX = crash.native_box     # (the shared set-up swaps these for stand-ins in every test)
 REAL_DEFAULT_KEY = instance.default_key
@@ -207,7 +205,6 @@ def test_a_second_launch_never_loads_the_player_or_the_library_database(tmp_path
     # even imported, so it can't open library.db or start a look at the library alongside the
     # running copy. Run as a program of its own, as Explorer would start it.
     import subprocess
-
     import textwrap
 
     script = textwrap.dedent("""

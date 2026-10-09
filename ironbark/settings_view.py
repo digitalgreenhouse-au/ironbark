@@ -16,8 +16,8 @@ the bottom bar, and the keyboard: while the view is open, Tab and Shift+Tab go r
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import ttk
-from typing import Callable
 
 from . import controls, keyfocus, theme
 

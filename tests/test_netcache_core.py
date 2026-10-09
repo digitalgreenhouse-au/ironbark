@@ -15,16 +15,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
+from netfakes import FakeClassifier, FakeShare
 
-from ironbark import audiofile, netcache
-from ironbark import places
+from ironbark import audiofile, netcache, places
 from ironbark.netcache import policy, sources, verify
 from ironbark.netcache import store as store_mod
 from ironbark.netcache.manager import Manager
-from ironbark.netcache.store import (DOWNLOADING, PARTIAL, QUEUED, READY, STALE, VERIFYING, Item, OwnerLock,
-                                     Store)
-
-from netfakes import FakeClassifier, FakeShare
+from ironbark.netcache.store import DOWNLOADING, PARTIAL, QUEUED, READY, STALE, VERIFYING, Item, OwnerLock, Store
 
 
 @pytest.fixture(autouse=True)
@@ -303,6 +300,7 @@ def test_install_and_uninstall_put_audiofile_back_as_it_was(tmp_path):
 
 def test_network_playback_settings_fall_back_when_wrong(tmp_path, monkeypatch):
     import json
+
     from ironbark import settings
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "settings.json")
     (tmp_path / "settings.json").write_text(json.dumps(

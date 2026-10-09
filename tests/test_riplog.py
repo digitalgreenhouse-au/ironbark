@@ -13,7 +13,6 @@ import pytest
 import soundfile as sf
 
 from ironbark import theme
-from ironbark.tools import ripcheck
 from ironbark.tools.ripcheck import SECTOR, check_log, checksums, describe_log, find_rip, parse_log
 
 RNG = np.random.default_rng(41)
@@ -290,8 +289,8 @@ class FakePlayer:
 
 
 def test_now_playing_checks_against_the_log_with_the_network_off(root, disc, tmp_path):
-    from ironbark.tools.details import NowPlayingWindow
     from ironbark.library import read_track
+    from ironbark.tools.details import NowPlayingWindow
     tracks, files, sums = disc
     write_log(tmp_path, eac_log(tracks, sums))
     win = NowPlayingWindow(root, FakePlayer(read_track(files[0])), prefs={})

@@ -22,9 +22,9 @@ import dataclasses
 import sys
 import tkinter as tk
 import weakref
+from collections.abc import Callable
 from tkinter import font as tkfont
 from tkinter import ttk
-from typing import Callable
 
 
 # -- colours -------------------------------------------------------------------------------
@@ -539,7 +539,7 @@ def _elements(root: tk.Tk, style: ttk.Style) -> None:
     `root._dg_style_images`; after a palette change the same pictures get new pixels."""
     from PIL import ImageTk
 
-    from . import shapes   # (shapes draws with this module's colours: imported when it's needed)
+    from . import shapes  # (shapes draws with this module's colours: imported when it's needed)
 
     pictures = shapes.element_pictures()
     natural = {name: picture.size for name, (picture, _border) in pictures.items()}

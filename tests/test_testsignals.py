@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 
 from ironbark import theme
-from ironbark.tools import testsignals as ts
-from ironbark.tools import audition
 from ironbark.engine import State
+from ironbark.tools import audition
+from ironbark.tools import testsignals as ts
 
 RATE = 48000
 
@@ -382,6 +382,7 @@ def test_window_never_plays_on_a_device_that_isnt_there(root, fake_devices):
 
 def test_stop_works_while_measuring_and_drops_that_measurement(root, fake_devices):
     import threading
+
     from ironbark.tools.testsignals_window import TestSignalsWindow
     release = threading.Event()
 
