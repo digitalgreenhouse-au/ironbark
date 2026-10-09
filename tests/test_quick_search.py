@@ -1,9 +1,7 @@
-"""The song search panel (quick_search.py, Ctrl+K): searching a real library database, the panel's
-debounce and latest-wins asks on its query thread, the sections, the keys (Enter, Shift / Ctrl / Alt
-+ Enter, ↓, Esc), the right-click menu, its width tiers, and the track list's "Search the whole
-library" row. Favourites (favourites.py) and the database's song lookups for the Library's views."""
+"""Searching the whole library (quick_search.py): a real library database searched, the track list's
+"Search the whole library" row, Ctrl+K (the Library tab's search box). Favourites (favourites.py) and
+the database's song lookups for the Library's views."""
 import gc
-import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -14,12 +12,11 @@ import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
 
-from ironbark import audiofile, library_index, popups, settings, theme
+from ironbark import audiofile, library_index, settings, theme
 from ironbark.favourites import Favourites
 from ironbark.library import Album, Track
-from ironbark.library_db import SongHit, SongHits
 from ironbark.playlist_view import SEARCH_LIBRARY, PlaylistView
-from ironbark.quick_search import Actions, Catalogue, QuickSearch, count_text, search_library, song_values
+from ironbark.quick_search import Catalogue, count_text, search_library, song_values
 
 
 def flac(path: Path, **tags) -> Path:
@@ -158,38 +155,7 @@ def test_favourites_show_at_once_and_are_stored_in_order(library):
     db.release()
 
 
-# -- the panel, with a stand-in database --------------------------------------------------------------
-class FakeDB:
-    """Just what the panel's query thread uses: search_songs (recorded), albums, generation."""
-
-    def __init__(self, tracks: list[Track], albums: list[Album]):
-        self.tracks, self._albums = tracks, albums
-        self.asked: list[str] = []
-        self.generation = 1
-
-    def _con(self):
-        return None
-
-    def release(self):
-        pass
-
-    def interrupt(self, thread):
-        pass
-
-    def note_damage(self, error):
-        return False
-
-    def albums(self):
-        return list(self._albums)
-
-    def search_songs(self, query, limit=200):
-        self.asked.append(query)
-        words = query.lower().split()
-        rows = [SongHit(i + 1, t, t.path.parent) for i, t in enumerate(self.tracks)
-                if all(w in f"{t.title} {t.artist} {t.album}".lower() for w in words)]
-        return SongHits(rows[:limit], len(rows))
-
-
+# -- the track list's whole-library row -------------------------------------------------------------
 @pytest.fixture
 def root():
     try:
@@ -202,176 +168,6 @@ def root():
     root.destroy()
     del root
     gc.collect()  # on this thread (Tk objects freed on another thread abort Python)
-
-
-def panel(root, calls, **actions):
-    tracks = [Track(Path(f"C:/M/21/0{n}.flac"), title, artist="Adele", album="21", track_no=n, duration=200.0,
-                    sample_rate=44100, bits=16)
-              for n, title in ((1, "Rolling in the Deep"), (2, "Rumour Has It"))]
-    albums = [Album(Path("C:/M/21"), "21", 2, 44100, 16, ("FLAC",), artist="Adele", year=2011, title="21")]
-    db = FakeDB(tracks, albums)
-    index = SimpleNamespace(db=db, indexer=SimpleNamespace(running=False))
-    act = Actions(play_song=lambda t, a: calls.append(("play", t.title, a.name)),
-                  queue_tracks=lambda ts, front: calls.append(("queue", [t.title for t in ts], front)),
-                  open_album=lambda a, play: calls.append(("album", a.name, play)),
-                  queue_album=lambda a, front: calls.append(("queue album", a.name, front)),
-                  show_in_explorer=lambda path: calls.append(("explorer", Path(path).name)), **actions)
-    qs = QuickSearch(root, lambda: index, act, top=lambda: theme.px(30))
-    root.update()
-    return qs, db
-
-
-def press(widget, sequence):
-    widget.focus_force()
-    widget.update()
-    widget.event_generate(sequence)
-
-
-def hold_searches(db: FakeDB) -> threading.Event:
-    """The stand-in database's searches wait (on the query thread) until the event is set, so a
-    test's Enter is in before the results, however busy the computer is."""
-    held = threading.Event()
-    search = db.search_songs
-    db.search_songs = lambda query, limit=200: (held.wait(10), search(query, limit))[1]
-    return held
-
-
-def test_typing_waits_for_a_pause_and_lists_sections(root, tk_thread_rule):
-    calls = []
-    qs, db = panel(root, calls)
-    qs.open()
-    root.update()
-    assert qs.is_open and qs.panel.winfo_ismapped() and qs.panel.winfo_y() == theme.px(30)
-    qs.query.set("a")
-    assert qs._search_job is not None
-    qs.flush()
-    assert db.asked == [] and "2 or more letters" in qs.status.cget("text")   # one letter: not searched
-    for text in ("ad", "ade", "adel", "adele"):          # typing: one search, after the pause
-        qs.query.set(text)
-    assert db.asked == [] and qs._search_job is not None
-    assert qs.wait()
-    assert db.asked == ["adele"]
-    rows = qs.tree.get_children()
-    assert rows == ("s:songs", "t1", "t2", "s:albums", "a0", "s:artists", "r0")
-    assert qs.tree.set("s:songs", "title") == "2 songs" and qs.tree.set("a0", "title").startswith("21")
-    assert qs.status.cget("text").startswith("2 songs · 1 album · 1 artist")
-    qs.list.select(0)
-    qs._act("play")                                      # Enter on a section heading folds it
-    assert qs.tree.get_children()[:2] == ("s:songs", "s:albums")
-    qs._act("play")
-    assert "t1" in qs.tree.get_children()
-
-
-def test_enter_keys_act_on_the_selected_result(root):
-    calls = []
-    qs, _db = panel(root, calls)
-    qs.open("rumour")
-    assert qs.wait()
-    press(qs.search.entry, "<KeyPress-Down>")            # ↓: into the results, the first song selected
-    assert qs.list.selection() == 1 and str(root.focus_get()) == str(qs.tree)
-    press(qs.tree, "<Shift-KeyPress-Return>")
-    press(qs.tree, "<Control-KeyPress-Return>")
-    assert calls == [("queue", ["Rumour Has It"], True), ("queue", ["Rumour Has It"], False)]
-    assert qs.is_open and "Up next" in qs.status.cget("text")
-    press(qs.tree, "<Alt-KeyPress-Return>")
-    assert calls[-1] == ("album", "21", False) and not qs.is_open
-    qs.open()
-    press(qs.search.entry, "<KeyPress-Return>")          # Enter in the box: the first result plays
-    assert calls[-1] == ("play", "Rumour Has It", "21") and not qs.is_open
-
-
-def test_enter_before_the_results_arrive_acts_once_they_do(root):
-    calls = []
-    qs, db = panel(root, calls)
-    held = hold_searches(db)
-    qs.open()
-    qs.query.set("rolling")
-    press(qs.search.entry, "<KeyPress-Return>")          # pressed before the pause: nothing waits
-    assert calls == [] and qs.searching
-    held.set()
-    assert qs.wait()
-    assert calls == [("play", "Rolling in the Deep", "21")]
-
-
-def test_esc_clears_then_closes_and_a_click_outside_closes(root):
-    calls = []
-    outside = tk.Frame(root, width=50, height=20)
-    outside.place(x=0, y=0)
-    qs, _db = panel(root, calls)
-    before = tk.Entry(root)
-    before.place(x=0, y=0)
-    before.focus_force()
-    root.update()
-    qs.open("adele")
-    assert qs.wait()
-    assert qs._escape() == "break" and qs.query.get() == "" and qs.is_open
-    qs._escape()
-    root.update()
-    assert not qs.is_open and root.focus_get() is before   # the keyboard goes back where it was
-    qs.open()
-    qs._click_anywhere(SimpleNamespace(widget=qs.tree))  # inside: stays
-    assert qs.is_open
-    qs._click_anywhere(SimpleNamespace(widget=outside))
-    assert not qs.is_open
-
-
-def test_right_click_menu_and_drag(root, monkeypatch):
-    shown = []
-    monkeypatch.setattr(popups.PopupMenu, "popup", lambda self, x, y: shown.append(self))
-    calls = []
-    favourites = Favourites(lambda: None)
-    qs, _db = panel(root, calls, favourites=favourites, playlists=lambda: [Path("C:/P/Road trip.m3u8")])
-    qs.open("rolling")
-    assert qs.wait()
-    root.update()
-    x, y, _w, h = qs.tree.bbox("t1")
-    qs._context(SimpleNamespace(x=x + 5, y=y + h // 2, x_root=0, y_root=0))
-    menu = shown[-1]
-    assert menu.labels() == ["Play", "Play next", "Add to Up next", "Open album", "Add to playlist",
-                             "Add to favourites", "Show in Library", "Show in Explorer"]
-    monkeypatch.setattr(favourites, "_start_writer", lambda: None)   # (nothing to store it in here)
-    menu.menu.find("Add to favourites").command()
-    assert qs.tree.set("t1", "title").startswith("♥ ")  # marked at once
-    menu.menu.find("Play").command()
-    assert calls[-1] == ("play", "Rolling in the Deep", "21") and not qs.is_open   # (it takes you there)
-    qs.open("adele")
-    assert qs.wait()
-    assert qs._carried("t1")[0].title == "Rolling in the Deep" and qs._carried("a0") == Path("C:/M/21")
-    assert qs._carried("s:songs") is None
-
-
-def test_columns_follow_the_panel_width(root):
-    calls = []
-    qs, _db = panel(root, calls)
-    qs.open("adele")
-    assert qs.wait()
-    root.update()
-    assert qs.layout == "narrow" and tuple(qs.tree.cget("displaycolumns")) == ("title", "time")
-    assert qs.tree.set("t1", "title") == "Rolling in the Deep  ·  Adele"   # the artist rides in the title
-    root.geometry(f"{theme.px(1100)}x{theme.px(600)}")
-    root.update()
-    root.update()
-    assert qs.layout == "wide" and "quality" in qs.tree.cget("displaycolumns")
-    assert qs.tree.set("t1", "title") == "Rolling in the Deep"
-    assert qs.panel.winfo_width() <= theme.px(960) + 2
-
-
-def test_a_newer_search_replaces_one_on_its_way(root, tk_thread_rule):
-    calls = []
-    qs, db = panel(root, calls)
-    gate = threading.Event()
-    search = db.search_songs
-    db.search_songs = lambda query, limit=200: (gate.wait(5), search(query, limit))[1]
-    qs.open("rolling")
-    qs.flush()
-    qs.query.set("rumour")
-    qs.flush()
-    gate.set()
-    assert qs.wait()
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and qs.results.query != "rumour":
-        qs._poll()
-    assert qs.results.query == "rumour" and [h.track.title for h in qs.results.songs.rows] == ["Rumour Has It"]
 
 
 def test_track_list_offers_the_whole_library_when_nothing_matches(root):
@@ -393,25 +189,24 @@ def test_track_list_offers_the_whole_library_when_nothing_matches(root):
 from test_light_mini import _pump, make_window  # noqa: E402,F401  (make_window is a fixture)
 
 
-def test_ctrl_k_opens_the_panel_and_enter_plays_the_song_in_its_album(make_window):
+def test_ctrl_k_is_the_library_tabs_search_box_and_the_rows_link_turns_whole_library_on(make_window):
     from ironbark import keys
+    from ironbark.ui import Tab
 
     window, root, player, errors = make_window()
-    library_index.shared(window._library_roots()).refresh()
-    assert window.keys.run(window.playlist.tree, "k", keys.CONTROL)
+    window.tabs = [Tab("library", ""), *window.tabs]
+    window.current = 1
+    window._refresh_tabs()
     _pump(root, 0.2)
-    quick = window._quick
-    assert quick is not None and quick.is_open and str(root.tk.call("focus")) == str(quick.search.entry)
-    quick.query.set("song")
-    assert quick.wait()
-    assert [hit.track.title for hit in quick.results.songs.rows] == ["Song"]
-    player.calls.clear()
-    quick._act("play", first=True)
-    _pump(root, 0.3)
-    assert not quick.is_open and window.current == 0 and "play" in player.calls
-    window.playlist.query.set("zzz")                   # nothing in the tab: the whole library, with the words
+    window.playlist.set_whole_library(False)
+    window.playlist.query.set("zzz")                   # nothing in the tab: the whole-library row, with the words
     window.playlist._render()
     window.playlist.tree.selection_set("library")
-    assert window.playlist.activate() and quick.is_open and quick.query.get() == "zzz"
-    quick.close()
+    assert window.playlist.activate()
+    assert window.current == 1 and window.playlist.scope_var.get() is True and window.playlist.query.get() == "zzz"
+    window.playlist.set_whole_library(False)
+    assert window.keys.run(window.playlist.tree, "k", keys.CONTROL)   # Ctrl+K: the Library tab's box, emptied
+    _pump(root, 0.2)
+    assert window.current == 0 and window.tabs[0].main and window.playlist.query.get() == ""
+    assert window.playlist.scope_var.get() is True and str(root.tk.call("focus")) == str(window.playlist.entry)
     assert not errors

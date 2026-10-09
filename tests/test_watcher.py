@@ -286,7 +286,7 @@ def wait_for_albums(window, root):
 
 
 def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root, monkeypatch):
-    from ironbark.library_window import NEW_DOT, LibraryWindow
+    from ironbark.library_view import NEW_DOT, LibraryView
     index, look = build(music)
     prefs = {"new_music": {"since": time.time() - 1, "opened": {}}}
     look.since = prefs["new_music"]["since"]   # (as _start_watching sets it: reports carry the new albums)
@@ -297,25 +297,25 @@ def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root
     w._watch_reports()
     assert w.notices == ["New music: 3 new albums in the Library"]
     assert set(w._new_albums) == {music / "Alpha", music / "Beta", music / "Gamma"}
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})       # (the sort is kept for the session)
+    monkeypatch.setattr(LibraryView, "_sorts", {})       # (the sort is kept for the session)
     monkeypatch.setattr(library_index, "_shared", index)   # the one index the player and the window share
-    library = LibraryWindow(tk_root, music, None, lambda p: None, lambda p: None, lambda r, q: None,
+    library = LibraryView(tk_root, music, None, lambda p: None, lambda p: None, lambda r, q: None,
                             new_albums=lambda: w._new_albums)
     w._library = library
     wait_for_albums(library, tk_root)
     assert "3 new albums" in library.status.cget("text")
-    names = [library.tree.set(iid, "album") for iid in library.tree.get_children()]
+    names = library.column_values("album")   # (every row listed: the view in a small root shows a few)
     assert names == [NEW_DOT + "Alpha", NEW_DOT + "Beta", NEW_DOT + "Gamma", "Old Album", "Other"]
-    assert library._view_labels["recent"].cget("text") == "Recently added ●"
     library.set_view("recent")
+    assert library.view_button.cget("text") == "Recently added ● ▾"   # (the drop-down's button carries the dot)
     assert library.sort == ("added", True)        # Recently added: newest first
     w._mark_opened(music / "Beta")                 # opened in a tab: the dot goes
     assert str(music / "Beta") in prefs["new_music"]["opened"]
-    names = [library.tree.set(iid, "album") for iid in library.tree.get_children()]
+    names = library.column_values("album")   # (every row listed: the view in a small root shows a few)
     assert NEW_DOT + "Beta" not in names and "Beta" in names and "2 new albums" in library.status.cget("text")
     w._mark_opened(music / "Alpha")
     w._mark_opened(music / "Gamma")
-    assert library._view_labels["recent"].cget("text") == "Recently added"
+    assert library.view_button.cget("text") == "Recently added ▾"   # (the dot goes)
     assert "new album" not in library.status.cget("text")
     # a later start: the opened ones stay opened (kept in the settings). (0.31) Worked out on a
     # worker thread, which hands a report to the watcher's queue for _watch_reports.

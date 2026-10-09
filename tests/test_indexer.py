@@ -736,7 +736,7 @@ def test_no_tk_call_off_tks_thread_while_the_library_is_built_and_rescanned(tk_t
     import tkinter as tk
 
     from ironbark import theme
-    from ironbark.library_window import LibraryWindow
+    from ironbark.library_view import LibraryView
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     music = tmp_path / "Music"
@@ -750,7 +750,7 @@ def test_no_tk_call_off_tks_thread_while_the_library_is_built_and_rescanned(tk_t
     root.withdraw()
     theme.apply(root)
     try:
-        window = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+        window = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
         deadline = time.monotonic() + 30
         while (window._refresh is not None or window._loading or len(window.albums) < 6) \
                 and time.monotonic() < deadline:

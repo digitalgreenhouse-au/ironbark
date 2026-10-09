@@ -17,7 +17,7 @@ import pytest
 from ironbark import controls, playlist_view, popups, theme
 from ironbark.library import Track
 
-from test_library_window import flac, wait_for_index
+from test_library_view import flac, wait_for_index
 
 
 @pytest.fixture
@@ -152,10 +152,10 @@ def library(tmp_path, monkeypatch):
 
 
 def test_library_search_waits_for_a_pause_and_enter_uses_the_words(root, library):
-    from ironbark.library_window import LibraryWindow
+    from ironbark.library_view import LibraryView
 
     chosen = []
-    w = LibraryWindow(root, library, None, on_choose=chosen.append, on_root_changed=lambda p: None,
+    w = LibraryView(root, library, None, on_choose=chosen.append, on_root_changed=lambda p: None,
                       on_load_all=lambda r, q: None)
     wait_for_index(w, root)
     fills = []
@@ -168,11 +168,11 @@ def test_library_search_waits_for_a_pause_and_enter_uses_the_words(root, library
     assert [p.name for p in chosen] == ["Tommy"] and fills == [1]
 
 
-def test_a_closed_library_window_is_freed(root, library):
-    from ironbark.library_window import LibraryWindow
+def test_a_closed_library_view_is_freed(root, library):
+    from ironbark.library_view import LibraryView
     from ironbark.tabbar import Popover
 
-    w = LibraryWindow(root, library, None, lambda p: None, lambda p: None, lambda r, q: None,
+    w = LibraryView(root, library, None, lambda p: None, lambda p: None, lambda r, q: None,
                       on_queue=lambda path, front: None)
     wait_for_index(w, root)
     _pump(root, 0.1)
@@ -186,7 +186,7 @@ def test_a_closed_library_window_is_freed(root, library):
     window, var = weakref.ref(w), w.search_var
     traces = root.tk.call("trace", "info", "variable", str(var))
     assert len(root.tk.splitlist(traces)) == 2        # the box's own and the window's
-    w.win.destroy()                            # the title bar's ×, as well as Esc / a choice (close)
+    w.frame.destroy()                            # the title bar's ×, as well as Esc / a choice (close)
     assert len(root.tk.splitlist(root.tk.call("trace", "info", "variable", str(var)))) == 0
     assert w.search_var is None and w.view_var is None
     del w, var

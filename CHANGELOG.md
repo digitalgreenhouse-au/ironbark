@@ -4,6 +4,25 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.41.0 — 09/10/2026
+
+**The Library's views live in the Library tab.** What used to be a separate Library window — Albums,
+Artists, Genres, Years, Composers, Recently added, Most played, Recently played, Favourites, Needs a
+look — now shows inside the Library tab in place of its song list: Ctrl+L, the **Songs ▾** button
+beside the tab's search box, or the + menu's *Browse library…*. The views sit in one drop-down (the
+eleven words never fitted a narrow window); Esc, Ctrl+L again or opening an album puts the song list
+back; the seek bar and transport stay, so the music can still be controlled. Narrower than about
+480 px the lists show fewer columns ("Artist – Album" and Year; Title and Time).
+
+- **Ctrl+K** (and Ctrl+Shift+F) now goes to the Library tab's search box with *Whole library* on —
+  the search panel that used to open over the window is gone, as that box does the same job.
+- **Add songs from the Library…** on a playlist tab's right-click menu: the Library tab opens with a
+  bar at its foot; pick songs (click, Ctrl+click, Shift+click, Ctrl+A, or an album's header), **Add**
+  puts them in the playlist and comes back; Cancel or Esc comes back with nothing added.
+- The views' ⋯ menu holds Rescan, *Open all albums in a tab* and *Add folder…*; "Add to tab" adds to
+  the tab you were on before the Library tab.
+- The Library window's saved size and place are no longer used.
+
 ## 0.40.0 — 09/10/2026
 
 **The Library is a tab.** The main Library tab holds every song of every library folder, grouped by

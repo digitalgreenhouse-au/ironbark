@@ -15,13 +15,13 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import help_window, keys, library_check, library_index, library_window, placement, theme
+from ironbark import help_window, keys, library_check, library_index, library_view, placement, theme
 from ironbark.indexer import Indexer
 from ironbark.library_db import LibraryDB
-from ironbark.library_window import LibraryWindow
+from ironbark.library_view import LibraryView
 
 from test_library_songs import song_window, wait_for_songs
-from test_library_window import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
+from test_library_view import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
 
 
 def pump(root, until, seconds=20.0):
@@ -48,13 +48,13 @@ def test_the_album_list_keeps_its_place_and_selection_when_the_library_changes(r
     from ironbark import settings
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
-    monkeypatch.setattr(LibraryWindow, "_closed", {})
+    monkeypatch.setattr(LibraryView, "_sorts", {})
+    monkeypatch.setattr(LibraryView, "_closed", {})
     music = tmp_path / "Music"
     for n in range(40):
         flac(music / f"Album {n:02d}" / "01.flac", title=f"Song {n}", artist=f"Artist {n:02d}",
              album=f"Album {n:02d}", date="2001")
-    w = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    w = LibraryView(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                       on_load_all=lambda r, q: None)
     wait_for_index(w, root)
     pump(root, lambda: len(w.list.source) == 40)
@@ -87,7 +87,8 @@ def test_the_album_list_keeps_its_place_and_selection_when_the_library_changes(r
 
 # -- Library → Songs: Enter or ↓ straight after typing ------------------------------------------------------
 def test_enter_or_down_straight_after_typing_a_song_search_acts_once_the_songs_are_here(root, music, monkeypatch):
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    monkeypatch.setattr(LibraryView, "_sorts", {})
+    root.deiconify()                             # (on show: the keyboard focus below is real)
     calls = []
     w = song_window(root, music, calls)
     w.close = lambda: None                       # (kept open to look at it after a play)
@@ -107,7 +108,7 @@ def test_enter_or_down_straight_after_typing_a_song_search_acts_once_the_songs_a
     w._focus_list()                              # ↓ before the results: done once they're here
     pump(root, lambda: w._songs_asked is None and w.list.selection() == 0)
     assert column(w, "title") == ["Rolling"] and w.list.top == 0
-    assert str(w.win.focus_lastfor()) == str(w.tree)
+    assert str(w.frame.focus_lastfor()) == str(w.tree)
 
     # An Enter waiting for one view's songs isn't carried into another view.
     w.search_var.set("hits")
@@ -115,12 +116,12 @@ def test_enter_or_down_straight_after_typing_a_song_search_acts_once_the_songs_a
     w.set_view("albums")
     settle(root, 0.4)
     assert len(calls) == 1
-    w.win.destroy()
+    w.frame.destroy()
 
 
 # -- the Songs view's sort arrow over search results ---------------------------------------------------------
 def test_song_search_results_show_no_sort_arrow_until_a_heading_is_clicked(root, music, monkeypatch):
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    monkeypatch.setattr(LibraryView, "_sorts", {})
     w = song_window(root, music, [])
     w.set_view("songs")
     wait_for_songs(w, root)
@@ -129,7 +130,7 @@ def test_song_search_results_show_no_sort_arrow_until_a_heading_is_clicked(root,
     w._flush_search()
     wait_for_songs(w, root)
     assert sorted(column(w, "title")) == ["A", "B"]
-    assert not any(w.tree.heading(c, "text").endswith(("▲", "▼")) for c in library_window.COLUMNS)
+    assert not any(w.tree.heading(c, "text").endswith(("▲", "▼")) for c in library_view.COLUMNS)
     w.sort_by("title")                                     # clicked: A to Z (not reversed), and it says so
     wait_for_songs(w, root)
     assert w.tree.heading("title", "text") == "Title ▲" and column(w, "title") == ["A", "B"]
@@ -152,7 +153,7 @@ def test_needs_look_keeps_its_count_while_the_check_reads_more(root, music, monk
     """While the check runs, Needs a look reads its results again every few seconds: the status line keeps
     describing the list on show meanwhile (it used to flash "Reading the songs…")."""
     checker = StubChecker()
-    w = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    w = LibraryView(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                       on_load_all=lambda r, q: None, view="needs_look", checker=checker)
     wait_for_index(w, root)
     db = library_index.shared([music]).db
@@ -160,7 +161,7 @@ def test_needs_look_keeps_its_count_while_the_check_reads_more(root, music, monk
     stat = song.stat()
     db.save_check(str(song), stat.st_size, stat.st_mtime_ns, library_check.CHECK_FORMAT, "clipping", 1.0, "{}")
     checker.changes += 1
-    monkeypatch.setattr(library_window, "CHECK_REREAD_S", 0.0)
+    monkeypatch.setattr(library_view, "CHECK_REREAD_S", 0.0)
     pump(root, lambda: "1 song needs a look" in w.status.cget("text"))
 
     checker.changes += 1                        # more stored: read again…
@@ -177,7 +178,7 @@ def test_needs_look_heading_menu_offers_no_columns_it_cannot_show(root, music, m
 
     shown = []
     monkeypatch.setattr(popups.PopupMenu, "popup", lambda self, x, y: shown.append(self))
-    w = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    w = LibraryView(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                       on_load_all=lambda r, q: None, view="needs_look", checker=StubChecker())
     wait_for_index(w, root)
     w.tree.identify_region = lambda x, y: "heading"
@@ -296,22 +297,3 @@ def shown_root():
     shown.destroy()
     del shown
     gc.collect()  # on this thread (Tk objects freed on another thread abort Python)
-
-
-def test_closing_the_search_panel_drops_an_enter_waiting_for_its_results(shown_root):
-    from test_quick_search import hold_searches, panel, press
-
-    root = shown_root
-    calls = []
-    qs, db = panel(root, calls)
-    held = hold_searches(db)   # (the results can't arrive before the Enter on a busy computer)
-    qs.open()
-    qs.query.set("rolling")
-    press(qs.search.entry, "<KeyPress-Return>")  # pressed before the results…
-    assert qs._pending is not None
-    qs.close()                                   # …then a click elsewhere puts the panel away
-    held.set()
-    assert qs.wait()
-    assert calls == [] and not qs.is_open
-    qs.open()                                    # opened again: the search that came in is on show
-    assert qs.results is not None and qs.results.songs.rows[0].track.title == "Rolling in the Deep"

@@ -16,7 +16,7 @@ from fakework import FakeWork
 
 from ironbark import experiments, library, settings, tag_editor, theme
 from ironbark.engine import State
-from ironbark.library_window import LibraryWindow
+from ironbark.library_view import LibraryView
 from ironbark.playlist_view import PlaylistView
 from ironbark.tag_window import TagHistoryWindow, TagWindow
 from ironbark.favourites import Favourites
@@ -109,7 +109,7 @@ def test_the_menu_and_key_offer_it(root, music, popups):
 
 def test_the_library_offers_it(root, music, popups):
     edited = []
-    lib = LibraryWindow(root, music.parent, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    lib = LibraryView(root, music.parent, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                         on_load_all=lambda r, q: None, on_edit_tags=edited.append)
     deadline = time.monotonic() + 20
     while lib._refresh is not None and time.monotonic() < deadline:

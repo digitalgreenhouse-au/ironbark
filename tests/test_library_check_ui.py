@@ -99,14 +99,14 @@ def music(tmp_path, monkeypatch):
 
 # -- the Library's Needs a look -------------------------------------------------------------------------
 def test_needs_a_look_asks_first_then_lists_what_the_check_found(root, music, monkeypatch, tk_thread_rule):
-    from ironbark import library_window
-    from ironbark.library_window import LibraryWindow
-    from test_library_window import column, wait_for_index
+    from ironbark import library_view
+    from ironbark.library_view import LibraryView
+    from test_library_view import column, wait_for_index
 
-    monkeypatch.setattr(library_window, "CHECK_REREAD_S", 0.0)
+    monkeypatch.setattr(library_view, "CHECK_REREAD_S", 0.0)
     states = []
     checker = Checker(lambda: library_index.shared(music).db, on_state=states.append, in_process=True)
-    w = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    w = LibraryView(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                       on_load_all=lambda r, q: None, checker=checker)
     wait_for_index(w, root)
     w.set_view("needs_look")
@@ -114,7 +114,7 @@ def test_needs_a_look_asks_first_then_lists_what_the_check_found(root, music, mo
     assert tuple(w.tree.cget("displaycolumns")) == ("title", "artist", "album", "found")
     assert w.status.cget("text").startswith("“Check the whole library…” reads every song once")
     assert w.check_button.winfo_manager() and w.check_button.cget("text") == "Check the whole library…"
-    assert not w.check_other.winfo_manager() and not w.load_all_button.winfo_manager()
+    assert not w.check_other.winfo_manager()
     asked = []
     monkeypatch.setattr(popups, "confirm", lambda *args, **kwargs: asked.append((args, kwargs)) or False)
     w.check_button.invoke()                       # how long? worked out on the query thread, then asked
