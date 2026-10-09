@@ -75,10 +75,8 @@ import hashlib
 import re
 import ssl
 import threading
-import time
 import urllib.error
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 import zlib
 from dataclasses import dataclass, field
@@ -87,7 +85,11 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import APP_NAME, __version__, audiofile, cuesheet
+from . import audiofile, cuesheet
+from .library import is_music_name, read_in_play_order
+from .network import Cancelled, NetworkOff, fetch, network_allowed   # noqa: F401  (the player's one way online)
+from .tagio import TagError
+from .tagio.flac import FLACFile
 
 SECTOR = 588                 # samples per CD sector (1/75 s at 44.1 kHz)
 AR_SKIP = 5 * SECTOR         # AccurateRip: 2940 samples skipped at the disc's two ends
@@ -98,28 +100,12 @@ LEAD_IN = 150                # the 2 s every CD starts with; CDTOC tags and CDDB
 AR_URL = ("https://www.accuraterip.com/accuraterip/{a:x}/{b:x}/{c:x}/"
           "dBAR-{n:03d}-{id1:08x}-{id2:08x}-{cddb:08x}.bin")
 CTDB_URL = "http://db.cuetools.net/lookup2.php?version=3&ctdb=1&fuzzy=1&metadata=none&toc={toc}"
-TIMEOUT = 20                 # seconds the server may stay silent (connecting, or between data)
-DEADLINE = 30                # seconds for a whole answer, however slowly it trickles in
-MAX_BYTES = 4 << 20          # an answer bigger than this isn't what we asked for
-CHUNK = 64 << 10             # bytes read at a time, so a slow answer can be given up on
 MAX_CONFIDENCE = 1_000_000   # a CTDB confidence above this (or below 0) isn't a real count of rips
 BLOCK = 1 << 18              # samples read at a time
 CD_MAX_TRACKS = 99           # the most tracks a CD can hold (the Red Book CD standard)
 CD_MAX_SECTORS = 80 * 60 * 75   # 80 minutes: past the Red Book's longest disc (79:59.74)
 LOG_MAX = 4 << 20            # a .log bigger than this isn't a rip log (those are a few KB) …
 LOG_READ = 1 << 20           # … and only its first megabyte is read
-
-_urlopen = urllib.request.urlopen   # tests replace this; nothing else in the player goes online
-
-
-class NetworkOff(RuntimeError):
-    """Raised if anything tries to go online while Settings → Allow network access is off."""
-
-
-def network_allowed(prefs: dict | None) -> bool:
-    """The one switch: Settings → Network → Allow network access (off unless turned on)."""
-    return bool(prefs and prefs.get("allow_network"))
-
 
 # -- the disc's layout ---------------------------------------------------------------
 @dataclass
@@ -433,13 +419,12 @@ def _discs(tracks: list) -> list[list]:
 def _disc_and_others(track: Path) -> tuple[list[Path], list[Path]]:
     """(the audio files of the track's disc, the folder's other audio files), real files in
     play order (a CUE image once)."""
-    from .library import _in_play_order, is_music_name
     real_track = audiofile.real_path(track)
     folder = real_track.parent
     paths = [p for p in folder.iterdir() if is_music_name(p.name) and p.is_file()]
     ours: list[Path] = []
     others: list[Path] = []
-    for group in _discs(_in_play_order(folder, paths)):
+    for group in _discs(read_in_play_order(folder, paths)):
         files: list[Path] = []
         for t in group:   # a CUE image is listed as its tracks: check the file
             real = audiofile.real_path(t.path)
@@ -629,8 +614,6 @@ def _not_cd_audio(path: Path, info) -> str:
 def _cdtoc_tag(path: Path) -> str:
     if path.suffix.lower() != ".flac":
         return ""
-    from .tagio import TagError
-    from .tagio.flac import FLACFile
     try:
         tags = FLACFile(path).tags
     except (TagError, OSError):
@@ -753,47 +736,6 @@ def checksums(rip: Rip, cancel: threading.Event | None = None, progress=lambda p
 
 
 # -- the databases -------------------------------------------------------------------
-class Cancelled(Exception):
-    """The check was cancelled (its window closed) while waiting for an answer."""
-
-
-def fetch(url: str, prefs: dict | None, cancel: threading.Event | None = None,
-          https_only: bool = False) -> bytes | None:
-    """GET one address. None = not found (404). Refuses unless network access is allowed —
-    checked here, at the one place this program goes online, not just in the window. Gives up
-    after DEADLINE seconds (TimeoutError) and stops when `cancel` is set (Cancelled), checked
-    between pieces of the answer. `https_only`: an answer that a redirect brought from a plain
-    http:// address is refused (URLError)."""
-    if not network_allowed(prefs):
-        raise NetworkOff("network access is off (Settings → Network)")
-    if cancel is not None and cancel.is_set():
-        raise Cancelled()
-    request = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME.replace(' ', '-')}/{__version__}"})
-    deadline = time.monotonic() + DEADLINE
-    try:
-        with _urlopen(request, timeout=TIMEOUT) as response:
-            answered_from = str(getattr(response, "url", None) or url)   # (where any redirects ended)
-            if https_only and not answered_from.lower().startswith("https://"):
-                raise urllib.error.URLError(f"the answer came from a plain http address: {answered_from}")
-            read = getattr(response, "read1", response.read)   # read1: whatever has arrived
-            data = bytearray()
-            while len(data) < MAX_BYTES:
-                if cancel is not None and cancel.is_set():
-                    raise Cancelled()
-                if time.monotonic() > deadline:
-                    raise TimeoutError(f"no complete answer in {DEADLINE} s")
-                piece = read(min(CHUNK, MAX_BYTES - len(data)))
-                if not piece:
-                    break
-                data += piece
-            return bytes(data)
-    except urllib.error.HTTPError as error:
-        error.close()   # its connection, now rather than whenever it's garbage-collected
-        if error.code == 404:
-            return None
-        raise
-
-
 @dataclass
 class ArPressing:
     id1: int

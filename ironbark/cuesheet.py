@@ -46,6 +46,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
+from .tagio import flac_cuesheet
+
 FRAMES_PER_SECOND = 75
 CD_RATE = 44100
 SAMPLES_PER_FRAME_CD = CD_RATE // FRAMES_PER_SECOND   # 588
@@ -315,8 +317,6 @@ def read(path: str | Path) -> CueSheet:
 
 def from_flac(path: str | Path) -> CueSheet | None:
     """The CUESHEET block inside a FLAC file, or None if it has none (or won't open)."""
-    from .tagio import flac_cuesheet
-
     path = Path(path)
     block, rate = flac_cuesheet(path)
     return from_flac_block(block, rate, path)

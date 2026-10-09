@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import theme
+from . import artwork, theme
 
 log = logging.getLogger(__name__)
 
@@ -176,8 +176,6 @@ def cover_png(path: Path | None, size: int = 300) -> bytes | None:
     """The song's cover as PNG bytes for Windows' media panel (artwork.py finds it)."""
     if path is None:
         return None
-    from . import artwork
-
     try:
         image = artwork.cover_for(Path(path), size)
     except Exception:

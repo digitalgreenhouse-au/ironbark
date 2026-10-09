@@ -55,11 +55,10 @@ CLIP_RUN = 3                 # this many full-scale samples in a row count as cl
 LOSSY_BELOW_HZ = 20000.0     # a sharp wall below this suggests a lossy source…
 CONVERTER_WALL = 0.43        # …but below CD rate, only one below this fraction of the sample rate
 UPSAMPLED_BELOW_HZ = 24500.0 # …and below this, in a 88.2 kHz+ file, upsampling from CD quality
-CUT_SHORT_SLACK = 2304       # frames: decoding may end this little short of the stated length (a margin)
+CUT_SHORT_SLACK = audiofile.CUT_SHORT_SLACK
 FLOOR_MARGIN_DB = 10.0       # "sound" = at least this far above the spectrum's own floor
 SHARP_DB = 25.0              # a drop this big within ~1 kHz is a wall, not a fade
-SUBTYPE_BITS = {"PCM_S8": 8, "PCM_U8": 8, "PCM_16": 16, "PCM_24": 24, "PCM_32": 32,
-                "ALAC_16": 16, "ALAC_20": 20, "ALAC_24": 24, "ALAC_32": 32}
+SUBTYPE_BITS = audiofile.SUBTYPE_BITS
 FLOAT_SUBTYPES = audiofile.FLOAT_SUBTYPES
 
 
@@ -185,7 +184,7 @@ def dr_of(rms_blocks: list[np.ndarray], peak_blocks: list[np.ndarray]) -> float 
 
 OVERSAMPLE = 4        # the live true-peak meter (meters.py): BS.1770's own 4x
 FILE_OVERSAMPLE = 8   # (0.24.0) whole-file measures: Check, the clipping guard, the Clipping window
-_TAPS_PER_PHASE = 48
+TAPS_PER_PHASE = 48
 _STRETCH = 2048       # TruePeak works a block out this many points (per phase) at a time
 _ROUNDING = 1e-9      # far more than a 48-term sum can be rounded by: keeps TruePeak's skip exact
 
@@ -231,11 +230,11 @@ def guard_trim(peak: float, headroom_db: float = 0.0, spare_db: float = GUARD_SP
     return ceiling / peak * 10 ** (-spare_db / 20)
 
 
-def _oversampling_phases(factor: int = OVERSAMPLE) -> list[np.ndarray]:
+def oversampling_phases(factor: int = OVERSAMPLE) -> list[np.ndarray]:
     """A `factor`x reconstruction filter (windowed sinc, 48 taps per phase), split into its
     phases: what a DAC does to turn samples back into a smooth wave. Phase p gives the wave
     p/factor of a sample after each sample (phase 0 is the samples themselves)."""
-    n = np.arange(-_TAPS_PER_PHASE * factor // 2, _TAPS_PER_PHASE * factor // 2)
+    n = np.arange(-TAPS_PER_PHASE * factor // 2, TAPS_PER_PHASE * factor // 2)
     h = np.sinc(n / factor) * np.kaiser(len(n), 8.0)
     return [h[p::factor] for p in range(factor)]
 
@@ -252,9 +251,9 @@ class TruePeak:
     end of the stream."""
 
     def __init__(self, channels: int, factor: int = FILE_OVERSAMPLE):
-        self.phases = _oversampling_phases(factor)
+        self.phases = oversampling_phases(factor)
         self.gains = [float(np.abs(phase).sum()) for phase in self.phases]
-        self.overlap = _TAPS_PER_PHASE - 1
+        self.overlap = TAPS_PER_PHASE - 1
         self.previous = np.zeros((self.overlap, channels))
         self.peak = 0.0
 
@@ -291,7 +290,7 @@ class TruePeak:
     def finish(self) -> None:
         """The end of the stream: the filter's tail (silence after the last sample), so the
         wave around the last few samples is measured too."""
-        self.add(np.zeros((_TAPS_PER_PHASE, self.previous.shape[1])))
+        self.add(np.zeros((TAPS_PER_PHASE, self.previous.shape[1])))
 
 
 def true_peak(path: str | Path, cancel: threading.Event | None = None) -> float | None:
@@ -381,37 +380,6 @@ def find_cutoff(power: np.ndarray, rate: int) -> tuple[float | None, bool]:
     return cutoff, sharp
 
 
-def cut_short(f: sf.SoundFile, frames_read: int) -> bool:
-    """Whether a file whose decoding ended after `frames_read` frames stopped clearly short of
-    the length its header states: cut off (an incomplete download, say), not just at its end.
-    An MP3 without a length header (Xing / Info / VBRI) has only an estimate made from its
-    size, which can be off either way, so it never counts as cut short."""
-    if frames_read + CUT_SHORT_SLACK >= f.frames:
-        return False
-    if audiofile.is_mp3(f):
-        try:
-            return audiofile.has_length_header(f.name)
-        except (OSError, ValueError, IndexError):
-            return False
-    return True
-
-
-def _blocks(f: sf.SoundFile, damaged: list, **kwargs):
-    """audiofile.blocks() (int32 from a float or lossy file comes out scaled and clipped, as
-    playback sends it), except that a file which stops decoding part-way (damaged) ends the loop
-    instead of raising, and says so in `damaged`; so does one cut short of its stated length."""
-    done = 0
-    try:
-        for block in audiofile.blocks(f, **kwargs):
-            done += len(block)
-            yield block
-    except RuntimeError:  # libsndfile: the rest can't be decoded
-        damaged.append(True)
-        return
-    if cut_short(f, done):
-        damaged.append(True)
-
-
 def analyse(
     path: str | Path,
     bits: int,
@@ -449,7 +417,7 @@ def analyse(
         damaged: list = []
         # A floating-point file is measured as it is, overs above full scale included (int32 would clip them).
         dtype = "float64" if is_float else "int32"
-        for block in _blocks(f, damaged, blocksize=block_frames, dtype=dtype, always_2d=True):
+        for block in audiofile.read_blocks(f, damaged, blocksize=block_frames, dtype=dtype, always_2d=True):
             if cancel is not None and cancel.is_set():
                 return None
             if not is_float:   # (no stored MD5 for float files: WAV / AIFF carry none)
@@ -547,7 +515,7 @@ def album_measure(paths: Iterable, cancel: threading.Event | None = None,
                 total = max(1, f.frames)
                 done = 0
                 rms_blocks, peak_blocks = [], []
-                for block in _blocks(f, damaged, blocksize=block_frames, dtype="float64", always_2d=True):
+                for block in audiofile.read_blocks(f, damaged, blocksize=block_frames, dtype="float64", always_2d=True):
                     if cancel is not None and cancel.is_set():
                         return None
                     meter.add(block)

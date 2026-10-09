@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import ripcheck, theme
+from ironbark import network, ripcheck, theme
 from ironbark.ripcheck import SECTOR, check_log, checksums, describe_log, find_rip, parse_log
 
 RNG = np.random.default_rng(41)
@@ -23,7 +23,7 @@ SECTORS = (20, 23, 21)
 def no_internet(monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("a test tried to go online")
-    monkeypatch.setattr(ripcheck, "_urlopen", refuse)
+    monkeypatch.setattr(network, "_urlopen", refuse)
     monkeypatch.setattr(socket.socket, "connect", refuse)
 
 

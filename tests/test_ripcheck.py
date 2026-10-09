@@ -17,7 +17,7 @@ import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
 
-from ironbark import ripcheck, settings, theme
+from ironbark import network, ripcheck, settings, theme
 from ironbark.ripcheck import (AR_SKIP, CTDB_SKIP, SECTOR, Checksums, NetworkOff, NotARip, Toc, checksums,
                                  find_rip, toc_from_cdtoc, toc_from_lengths, tocs_from_log)
 
@@ -31,7 +31,7 @@ def no_internet(monkeypatch):
     tries to open a connection fails the test."""
     def refuse(*args, **kwargs):
         raise AssertionError("a test tried to go online")
-    monkeypatch.setattr(ripcheck, "_urlopen", refuse)
+    monkeypatch.setattr(network, "_urlopen", refuse)
     monkeypatch.setattr(socket.socket, "connect", refuse)
 
 
@@ -296,7 +296,7 @@ def server(monkeypatch, ar=None, ctdb=None, ar_error=None):
         assert url.startswith("http://db.cuetools.net/lookup2.php?version=3&ctdb=1&fuzzy=1&metadata=none&toc=")
         return Answer(ctdb if ctdb is not None else ctdb_xml([]))
 
-    monkeypatch.setattr(ripcheck, "_urlopen", urlopen)
+    monkeypatch.setattr(network, "_urlopen", urlopen)
     return asked
 
 
@@ -536,7 +536,7 @@ class Trickle:
 
 def test_a_trickling_answer_is_given_up_on(monkeypatch):
     answer = Trickle()
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: answer)
+    monkeypatch.setattr(network, "_urlopen", lambda request, timeout: answer)
     monkeypatch.setattr(ripcheck, "DEADLINE", 0.2)
     started = time.monotonic()
     with pytest.raises(TimeoutError):
@@ -554,7 +554,7 @@ def test_closing_the_window_stops_the_lookups(monkeypatch, disc):
         cancel.set()   # Now Playing closes while the first answer is arriving
         return Trickle()
 
-    monkeypatch.setattr(ripcheck, "_urlopen", urlopen)
+    monkeypatch.setattr(network, "_urlopen", urlopen)
     assert ripcheck.verify(files[0], ON, cancel) is None
     assert asked == [rip.toc.accuraterip_url()]   # the second lookup was never sent
 
@@ -565,7 +565,7 @@ def test_a_server_error_lets_go_of_its_connection(monkeypatch):
     def urlopen(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 500, "Server Error", {}, body)
 
-    monkeypatch.setattr(ripcheck, "_urlopen", urlopen)
+    monkeypatch.setattr(network, "_urlopen", urlopen)
     with pytest.raises(urllib.error.HTTPError):
         ripcheck.fetch("https://www.accuraterip.com/x.bin", ON)
     assert body.closed

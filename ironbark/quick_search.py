@@ -54,7 +54,7 @@ from .browse import album_label
 from .favourites import HEART
 from .library import Album, Track, sort_name
 from .library_db import SongHit, SongHits
-from .playlist_view import TreeDrag, _clock, _quality, fit_columns
+from .playlist_view import TreeDrag, clock_text, fit_columns, quality_text
 from .tabbar import Popover
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
 
@@ -236,7 +236,7 @@ def song_values(hit: SongHit, inline_artist: bool = False, favourite: bool = Fal
         title += f"  ·  {where}"
     if favourite:
         title = f"{HEART} {title}"
-    return (title, track.artist, track.album, track.year or "", _quality(track), _clock(track.duration))
+    return (title, track.artist, track.album, track.year or "", quality_text(track), clock_text(track.duration))
 
 
 def add_song_items(menu, actions: Actions, hits: Sequence[SongHit], hints: dict[str, str] | None = None,

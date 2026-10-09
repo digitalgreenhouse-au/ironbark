@@ -73,17 +73,16 @@ def describe_seconds(seconds: float) -> str:
     return f"{hours}:{rest // 60:02d}:{rest % 60:02d}" if hours else f"{rest // 60}:{rest % 60:02d}"
 
 
-class ReelsWindow:
+class ReelsWindow(toolwin.ToolWindow):
+    TITLE = "Tape reels"
+    SIZE = (420, 640)
+    MIN_SIZE = (260, 320)
+    GEOMETRY_KEY = "reels_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, on_close=lambda: None):
-        self.player, self.prefs, self.on_close = player, prefs, on_close
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Tape reels")
-        self.win.geometry(f"{theme.px(420)}x{theme.px(640)}")
-        self.win.minsize(theme.px(260), theme.px(320))
-        placement.restore(self.win, prefs.get("reels_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", self._escape)
+        self.player = player
+        super().__init__(parent, prefs, on_close)
         self.win.bind("<F11>", lambda e: self.toggle_full_screen())
 
         self.bar = ttk.Frame(self.win, padding=theme.pad(10, 8, 10, 4))
@@ -118,10 +117,8 @@ class ReelsWindow:
         self._asked = 0.0
         self._last = time.perf_counter()
         self._shown_info = ""
-        self._keep_going = toolwin.KeepGoing(self.win)
         theme.on_change(lambda _palette: self._layout())
-        self.win.bind("<Configure>", self._moved, add="+")
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
     # -- settings -------------------------------------------------------------------------------
     def _reel(self) -> reels.ReelSize:
@@ -162,13 +159,6 @@ class ReelsWindow:
         return spool, spool.seconds * speed, seconds * speed, status.state is State.PLAYING
 
     # -- frames ------------------------------------------------------------------------------------
-    def _tick(self):
-        if not self.win.winfo_exists():
-            return
-        with self._keep_going:
-            self._step()
-        self._job = self.win.after(REFRESH_MS, self._tick)
-
     def _step(self):
         now = time.perf_counter()
         dt, self._last = now - self._last, now
@@ -369,25 +359,14 @@ class ReelsWindow:
             self.canvas.pack(fill="both", expand=True, padx=theme.px(10), pady=theme.pad(4, 6))
         self.win.attributes("-fullscreen", self._full_screen)
 
+    def _keeps_place(self) -> bool:
+        return not self._full_screen
+
     def _escape(self, _event=None):
         if self._full_screen:
             self.toggle_full_screen()
         else:
             self.close()
 
-    def _moved(self, event):
-        if event.widget is self.win and not self._full_screen:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["reels_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
-        if self._job:
-            self.win.after_cancel(self._job)
-            self._job = None
-        self.win.destroy()
-        self.on_close()
+    def _closing(self):
+        pass

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ironbark.details import output_line
+from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo
 from ironbark.library import Track, format_rate
 

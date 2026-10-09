@@ -855,3 +855,41 @@ def mp3_shortfall(f, path) -> tuple[int, int] | None:
             _shortfalls.pop(next(iter(_shortfalls)))
         _shortfalls[key] = result
     return result
+
+
+SUBTYPE_BITS = {"PCM_S8": 8, "PCM_U8": 8, "PCM_16": 16, "PCM_24": 24, "PCM_32": 32,
+                "ALAC_16": 16, "ALAC_20": 20, "ALAC_24": 24, "ALAC_32": 32}
+
+
+CUT_SHORT_SLACK = 2304       # frames: decoding may end this little short of the stated length (a margin)
+
+
+def cut_short(f: sf.SoundFile, frames_read: int) -> bool:
+    """Whether a file whose decoding ended after `frames_read` frames stopped clearly short of
+    the length its header states: cut off (an incomplete download, say), not just at its end.
+    An MP3 without a length header (Xing / Info / VBRI) has only an estimate made from its
+    size, which can be off either way, so it never counts as cut short."""
+    if frames_read + CUT_SHORT_SLACK >= f.frames:
+        return False
+    if is_mp3(f):
+        try:
+            return has_length_header(f.name)
+        except (OSError, ValueError, IndexError):
+            return False
+    return True
+
+
+def read_blocks(f: sf.SoundFile, damaged: list, **kwargs):
+    """blocks() (int32 from a float or lossy file comes out scaled and clipped, as
+    playback sends it), except that a file which stops decoding part-way (damaged) ends the loop
+    instead of raising, and says so in `damaged`; so does one cut short of its stated length."""
+    done = 0
+    try:
+        for block in blocks(f, **kwargs):
+            done += len(block)
+            yield block
+    except RuntimeError:  # libsndfile: the rest can't be decoded
+        damaged.append(True)
+        return
+    if cut_short(f, done):
+        damaged.append(True)

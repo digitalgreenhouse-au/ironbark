@@ -16,7 +16,8 @@ import soundfile as sf
 import sounddevice as sd
 
 from ironbark import engine, levelling, tagio
-from ironbark.details import describe_proof, output_line
+from ironbark.details import describe_proof
+from ironbark.statustext import output_line
 from ironbark.engine import BLOCK_FRAMES, OutputInfo, Player
 from ironbark.levelling import GainTags, Levelling, level_for, mode_for, parse_gain, parse_peak, parse_r128
 from ironbark.library import Track

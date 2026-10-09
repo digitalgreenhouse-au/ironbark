@@ -79,19 +79,18 @@ def confirm_play(parent, signal: testsignals.TestSignal, output: str) -> bool:
         ok="Play", tone="warn", cover=True)
 
 
-class TestSignalsWindow:
+class TestSignalsWindow(toolwin.ToolWindow):
+    TITLE = "Test signals"
+    SIZE = (520, 720)
+    MIN_SIZE = (400, 560)
+    GEOMETRY_KEY = "testsignals_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, on_close=lambda: None, stream_factory=None,
                  recorder=record, confirm=confirm_play):
-        self.player, self.prefs, self.on_close = player, prefs, on_close
+        self.player = player
         self._stream_factory, self._recorder, self._confirm = stream_factory, recorder, confirm
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Test signals")
-        self.win.geometry(f"{theme.px(520)}x{theme.px(720)}")
-        self.win.minsize(theme.px(400), theme.px(560))
-        placement.restore(self.win, prefs.get("testsignals_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        super().__init__(parent, prefs, on_close)
 
         outer = ttk.Frame(self.win, padding=theme.px(theme.GAP_WIDE))
         outer.pack(fill="both", expand=True)
@@ -179,13 +178,11 @@ class TestSignalsWindow:
         self._result: dict | None = None      # what the measuring thread hands back
         self._message = ""
         self._rates: dict[str, int] = {}      # output name -> its rate (asked once)
-        self._keep_going = toolwin.KeepGoing(self.win)
         self._options_changed()
         # Space stops the test sound (it never starts one: that's asked first), and only then is it
         # this window's: otherwise it plays / pauses the music, as in every window.
         self.win.bind("<space>", lambda e: (self.stop() or "break") if self.playing or self.measuring else None)
-        self.win.bind("<Configure>", self._moved, add="+")
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
     # -- options ------------------------------------------------------------------------------
     @staticmethod
@@ -437,14 +434,6 @@ class TestSignalsWindow:
                      "while a test plays.")
         self.note.configure(text="\n".join(notes))
 
-    def _tick(self):
-        self._job = None
-        if not self.win.winfo_exists():
-            return
-        with self._keep_going:
-            self._step()
-        self._job = self.win.after(REFRESH_MS, self._tick)
-
     def _step(self):
         if self._result is not None and self._result.get("done"):
             self._take_result()
@@ -460,22 +449,8 @@ class TestSignalsWindow:
             label.configure(wraplength=width)
 
     # -- window -------------------------------------------------------------------------------
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["testsignals_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
-        if self._job:
-            self.win.after_cancel(self._job)
+    def _closing(self):
         self._result = None
         if self.audition is not None:
             self.audition.stop()
         toolwin.give_back_sound(self)
-        self.win.destroy()
-        self.on_close()

@@ -24,7 +24,8 @@ from tkinter import ttk
 from typing import Callable
 
 from . import APP_NAME, __version__, controls, experiments, keys, placement, theme
-from .playlist_view import _fold, fit_columns
+from .playlist_view import fit_columns
+from .searchfold import fold
 from .virtual_list import CELL_ROOM, ELLIPSIS
 
 WEBSITE = "https://www.digitalgreenhouse.com.au"
@@ -275,12 +276,12 @@ class HelpWindow:
     def fill(self):
         """List the rows the filter finds (every word typed, in the key, the words or the group),
         each under its group's heading."""
-        words = [_fold(w) for w in (self.query.get() if self.query is not None else "").split()]
+        words = [fold(w) for w in (self.query.get() if self.query is not None else "").split()]
         self.tree.delete(*self.tree.get_children())
         self.rows.clear()
         shown_group = None
         for n, (group, keys_text, what) in enumerate(keys.sheet_rows()):
-            haystack = _fold(f"{keys_text} {what} {group}")
+            haystack = fold(f"{keys_text} {what} {group}")
             if words and not all(w in haystack for w in words):
                 continue
             if group != shown_group:

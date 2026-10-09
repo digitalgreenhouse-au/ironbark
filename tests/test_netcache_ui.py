@@ -18,7 +18,8 @@ from types import SimpleNamespace
 import pytest
 
 from ironbark import audiofile, experiments, netcache, settings
-from ironbark.details import (COPY_FAILED, describe_proof, network_hover, network_line, source_rows)
+from ironbark.details import describe_proof, source_rows
+from ironbark.statustext import COPY_FAILED, network_hover, network_line
 from ironbark.engine import NetworkView, State, Status
 from ironbark.library import Track
 from ironbark.proof import Proof

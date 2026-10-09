@@ -16,7 +16,7 @@ import tkinter as tk
 
 import pytest
 
-from ironbark import crash, diagnostics, instance, keys, logs, ripcheck, settings, updates
+from ironbark import crash, diagnostics, instance, keys, logs, network, ripcheck, settings, updates
 from ironbark import __main__ as start
 from ironbark.netcache import sources
 
@@ -303,14 +303,14 @@ class Answer(io.BytesIO):
 
 def test_the_update_feed_is_never_taken_from_a_plain_http_redirect(monkeypatch):
     on = {"check_updates": True, "allow_network": True}
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(
+    monkeypatch.setattr(network, "_urlopen", lambda request, timeout: Answer(
         json.dumps({"version": "99.0.0"}).encode(), "http://www.digitalgreenhouse.com.au/ironbark/version.json"))
     assert updates.check(on) is None
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(
+    monkeypatch.setattr(network, "_urlopen", lambda request, timeout: Answer(
         json.dumps({"version": "99.0.0"}).encode(), "https://www.digitalgreenhouse.com.au/ironbark/version.json"))
     assert updates.check(on).version == "99.0.0"
     # Rip verification's own plain-http look-ups are unchanged.
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(b"ok", "http://db.cuetools.net/x"))
+    monkeypatch.setattr(network, "_urlopen", lambda request, timeout: Answer(b"ok", "http://db.cuetools.net/x"))
     assert ripcheck.fetch("http://db.cuetools.net/x", on) == b"ok"
 
 

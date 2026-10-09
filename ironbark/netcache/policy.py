@@ -39,11 +39,12 @@ from __future__ import annotations
 import math
 from collections import deque
 
+from ..engine import QUIET_WINDOW_S, quiet_point   # noqa: F401  (the engine's: it decides where to cut)
+
 MIN_START_S = 3.0            # a forced start (play pressed while preparing): the buffer plus the patience
 QUICK_RESUME_S = 5.0
 STALL_STEP_WINDOW_S = 300
 UNSTABLE_COMPLETE_ETA_S = 120
-QUIET_WINDOW_S = 0.05
 EWMA_TAU_S = 10.0
 P20_WINDOW_S = 60
 GAP_WINDOW_S = 900
@@ -271,24 +272,6 @@ def feasible(v: float | None, seconds_left: float, bytes_left_now: int, bytes_le
     if v is None:
         return True
     return v * max(0.0, seconds_left) >= bytes_left_now + bytes_left_next
-
-
-def quiet_point(block, rate: int, window_s: float = QUIET_WINDOW_S) -> int:
-    """Index k in `block` (frames × channels, integer or float) within its last `window_s` where the
-    loudest channel is nearest zero — where to cut before a pause, so the last sample heard is
-    a quiet one. The latest such sample, to re-decode as little as possible."""
-    import numpy as np
-    frames = len(block)
-    if frames == 0:
-        return 0
-    span = max(1, min(frames, int(round(window_s * rate))))
-    tail = np.asarray(block[frames - span:])
-    level = np.abs(tail.astype(np.float64))
-    if level.ndim > 1:
-        level = level.max(axis=1)
-    lowest = level.min()
-    k = int(np.flatnonzero(level == lowest)[-1])
-    return frames - span + k
 
 
 def evict_order(items, protected: set, now: float, keep: str = "limit", in_plan: set | None = None,

@@ -95,17 +95,16 @@ def _copies_here(track: Path, cancel: threading.Event, every: bool) -> bool:
     return False
 
 
-class MeterWindow:
+class MeterWindow(toolwin.ToolWindow):
+    TITLE = "Meters"
+    SIZE = (640, 700)
+    MIN_SIZE = (420, 360)
+    GEOMETRY_KEY = "meters_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, on_close=lambda: None):
-        self.player, self.prefs, self.on_close = player, prefs, on_close
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Meters")
-        self.win.geometry(f"{theme.px(640)}x{theme.px(700)}")
-        self.win.minsize(theme.px(420), theme.px(360))
-        placement.restore(self.win, prefs.get("meters_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        self.player = player
+        super().__init__(parent, prefs, on_close)
 
         choices = ttk.Frame(self.win, padding=theme.pad(10, 8, 10, 0))
         choices.pack(fill="x")
@@ -168,11 +167,9 @@ class MeterWindow:
         self._face = None
         self._layout = None
         self._live_shown = _UNSET   # the reading the needles and bars show
-        self._keep_going = toolwin.KeepGoing(self.win)
         theme.on_change(self._palette_changed)
         self._restart()
-        self.win.bind("<Configure>", self._moved, add="+")
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
     # -- engine --------------------------------------------------------------
     def _restart(self):
@@ -418,13 +415,6 @@ class MeterWindow:
         c.create_text(0, scale_y + theme.px(2), text="dBFS · dBTP · LUFS", anchor="nw", fill=theme.MUTED,
                       font=theme.font(theme.SIZE_TINY))
 
-    def _tick(self):
-        if not self.win.winfo_exists():
-            return
-        with self._keep_going:
-            self._step()
-        self._job = self.win.after(REFRESH_MS, self._tick)
-
     def _step(self):
         self._follow_album()
         self._paint_alignment()
@@ -502,23 +492,9 @@ class MeterWindow:
         if self.engine is not None:
             self.engine.reset_loudness()
 
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["meters_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
-        if self._job:
-            self.win.after_cancel(self._job)
+    def _closing(self):
         if self.engine is not None:
             self.engine.stop()
         if self._auto is not None:
             self._auto["cancel"].set()
         self.player.unmonitor(self.feed)
-        self.win.destroy()
-        self.on_close()

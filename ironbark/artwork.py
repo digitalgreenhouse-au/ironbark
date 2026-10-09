@@ -18,6 +18,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from .musicfiles import is_music_name, natural_key, skip_folder
 from . import tagio
 from .library import album_folder
 
@@ -111,8 +112,6 @@ def _thumbnail(key: tuple, source, size: int, upscale: bool = True) -> Image.Ima
 
 def first_audio_file(folder: Path) -> Path | None:
     """The first audio file in a folder (or its CD1/Disc 1 subfolder), without a full scan."""
-    from .library import is_music_name, natural_key, skip_folder
-
     try:
         entries = sorted(folder.iterdir(), key=lambda p: natural_key(p.name))
     except OSError:

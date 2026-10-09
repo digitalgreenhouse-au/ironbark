@@ -11,7 +11,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from . import audiofile, compare, controls, placement, theme
+from . import audiofile, compare, controls, placement, theme, toolwin
 from .library import AUDIO_EXTENSIONS
 
 # Every kind of file the player plays (AIFF, Apple Lossless, Ogg… as well as FLAC, WAV, MP3).
@@ -45,17 +45,15 @@ class FileRow:
             self.label.configure(text=f"{audiofile.display_name(path)}\n{path.parent}", style="TLabel")
 
 
-class CompareWindow:
+class CompareWindow(toolwin.ToolWindow):
+    TITLE = "Compare two files"
+    SIZE = (480, 460)
+    MIN_SIZE = (360, 300)
+    GEOMETRY_KEY = "compare_geometry"
+    REFRESH_MS = 100
+
     def __init__(self, parent: tk.Misc, prefs: dict, path_a=None, path_b=None, on_close=lambda: None):
-        self.prefs, self.on_close = prefs, on_close
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Compare two files")
-        self.win.geometry(f"{theme.px(480)}x{theme.px(460)}")
-        self.win.minsize(theme.px(360), theme.px(300))
-        placement.restore(self.win, prefs.get("compare_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        super().__init__(parent, prefs, on_close)
 
         outer = ttk.Frame(self.win, padding=theme.px(theme.GAP_WIDE))
         outer.pack(fill="both", expand=True)
@@ -89,7 +87,6 @@ class CompareWindow:
         for letter, path in (("A", path_a), ("B", path_b)):
             self.rows[letter].set(None if not path else path if isinstance(path, Path) else Path(path))
         self._refresh_button()
-        self.win.bind("<Configure>", self._moved, add="+")
 
     def _choose(self, letter: str):
         other = self.rows["B" if letter == "A" else "A"].path
@@ -163,19 +160,5 @@ class CompareWindow:
             child.configure(wraplength=width)
 
     # -- window -------------------------------------------------------------------------------
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["compare_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
+    def _closing(self):
         self._cancel.set()
-        if self._job:
-            self.win.after_cancel(self._job)
-        self.win.destroy()
-        self.on_close()

@@ -87,7 +87,7 @@ FAVOURITE_MARK = "♥"
 SEARCH_LIBRARY = "Search the whole library (Ctrl+Shift+F)"
 
 
-def _clock(seconds: float) -> str:
+def clock_text(seconds: float) -> str:
     seconds = int(round(seconds))
     return f"{seconds // 60}:{seconds % 60:02d}"
 
@@ -112,7 +112,7 @@ def album_heading(tracks: list[Track], folder) -> str:
     return f"{name}  ·  {artist}" if artist and _fold(artist) != _fold(name) else name
 
 
-def _quality(track: Track) -> str:
+def quality_text(track: Track) -> str:
     if track.lossy:
         return track.codec
     return f"{track.bits}/{track.sample_rate / 1000:g}" if track.sample_rate else ""
@@ -686,7 +686,7 @@ class PlaylistView:
         number = (i - self._start_of(i) + 1) if self._grouped else (i + 1)
         plays = self._plays_text(track) if "plays" in self.shown else ""
         return (str(i), (number, self._title(i, bool(self._words), track), track.artist, track.album,
-                         _quality(track), plays, self._marks.get(i, ""), _clock(track.duration)), ())
+                         quality_text(track), plays, self._marks.get(i, ""), clock_text(track.duration)), ())
 
     def _header_row(self, g: int) -> tuple:
         folder, start, _end = self._groups[g]
@@ -694,7 +694,7 @@ class PlaylistView:
         if track is None:
             text, quality = getattr(folder, "name", "") or ELLIPSIS, ""
         else:
-            text, quality = album_heading([track], folder), _quality(track)
+            text, quality = album_heading([track], folder), quality_text(track)
         return (f"a{g}", ("", text, "", "", quality, "", "", "" if "quality" in self.shown else quality),
                 ("album",))
 

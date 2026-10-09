@@ -77,17 +77,16 @@ def describe_dc(reading: stereo.ScopeReading | None) -> tuple[str, bool]:
     return f"DC offset this track: {' · '.join(parts)}{note}", warn
 
 
-class ScopeWindow:
+class ScopeWindow(toolwin.ToolWindow):
+    TITLE = "Stereo scope"
+    SIZE = (420, 640)
+    MIN_SIZE = (300, 420)
+    GEOMETRY_KEY = "scope_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, on_close=lambda: None):
-        self.player, self.prefs, self.on_close = player, prefs, on_close
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Stereo scope")
-        self.win.geometry(f"{theme.px(420)}x{theme.px(640)}")
-        self.win.minsize(theme.px(300), theme.px(420))
-        placement.restore(self.win, prefs.get("scope_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        self.player = player
+        super().__init__(parent, prefs, on_close)
 
         bar = ttk.Frame(self.win, padding=theme.pad(10, 8, 10, 4))
         bar.pack(fill="x")
@@ -124,10 +123,8 @@ class ScopeWindow:
         self._geometry = None      # (x, y, width, height, centre x, centre y, radius) of the picture
         self._last = time.perf_counter()
         self._colours = _glow_colours(theme.BG, theme.GOOD)
-        self._keep_going = toolwin.KeepGoing(self.win)
         theme.on_change(self._palette_changed)
-        self.win.bind("<Configure>", self._moved, add="+")
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
     def _palette_changed(self, _palette):
         """The glow picture's colours are kept between frames: take the new ones (and draw the
@@ -188,13 +185,6 @@ class ScopeWindow:
         image = Image.fromarray((lit * 255).astype(np.uint8))
         image.putpalette(self._colours)
         return image
-
-    def _tick(self):
-        if not self.win.winfo_exists():
-            return
-        with self._keep_going:
-            self._step()
-        self._job = self.win.after(REFRESH_MS, self._tick)
 
     def _step(self):
         now = time.perf_counter()
@@ -301,21 +291,7 @@ class ScopeWindow:
                 label.configure(text=text, fg=colour)
 
     # -- window ----------------------------------------------------------------------------
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["scope_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
-        if self._job:
-            self.win.after_cancel(self._job)
+    def _closing(self):
         self.engine.stop()
         self.player.unmonitor(self.feed)
         self._photo = None   # its picture goes with the window, on this thread
-        self.win.destroy()
-        self.on_close()

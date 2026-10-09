@@ -6,7 +6,8 @@ import soundfile as sf
 
 from ironbark import artwork, audiofile, compare, formats, settings
 from ironbark.analysis import AlbumResult, analyse
-from ironbark.details import describe_album, describe_proof, describe_range, output_line
+from ironbark.details import describe_album, describe_proof, describe_range
+from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo
 from ironbark.library_index import Diff, LibraryIndex
 from ironbark.proof import Proof

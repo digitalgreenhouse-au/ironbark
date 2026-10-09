@@ -18,8 +18,8 @@ import numpy as np
 import pytest
 
 from ironbark import audiofile, engine
-from ironbark.details import (COPY_FAILED, COPY_SKIPPED, copy_failed_text, describe_proof, network_hover,
-                              source_rows)
+from ironbark.details import describe_proof, source_rows
+from ironbark.statustext import COPY_FAILED, COPY_SKIPPED, copy_failed_text, network_hover
 from ironbark.engine import NetworkView, Player, WaitInfo, _Stall
 from ironbark.library import Track
 from ironbark.netcache.fetch import Changed

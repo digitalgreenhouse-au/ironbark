@@ -181,17 +181,16 @@ class LyricsFollower:
         threading.Thread(target=work, name="lyrics", daemon=True).start()
 
 
-class LyricsWindow:
+class LyricsWindow(toolwin.ToolWindow):
+    TITLE = "Lyrics"
+    SIZE = SIZE
+    MIN_SIZE = (240, 200)
+    GEOMETRY_KEY = "lyrics_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, reader=lyrics.find):
-        self.player, self.prefs, self.reader = player, prefs, reader
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Lyrics")
-        self.win.geometry(f"{theme.px(SIZE[0])}x{theme.px(SIZE[1])}")
-        self.win.minsize(theme.px(240), theme.px(200))
-        placement.restore(self.win, prefs.get("lyrics_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        super().__init__(parent, prefs)
+        self.player, self.reader = player, reader
 
         head = ttk.Frame(self.win, padding=theme.pad(theme.GAP_WIDE, theme.GAP_LARGE, theme.GAP_WIDE, theme.GAP_SMALL))
         head.pack(fill="x")
@@ -202,34 +201,12 @@ class LyricsWindow:
         self.view = LyricsView(self.win)
         self.view.pack(fill="both", expand=True)
         self.follower = LyricsFollower(self.view, player, reader, self._song_shown)
-        self._keep_going = toolwin.KeepGoing(self.win)
-        self.win.bind("<Configure>", self._moved, add="+")
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
-    def _tick(self):
-        with self._keep_going:
-            self._follow()
-        self._job = self.win.after(REFRESH_MS, self._tick)
-
-    def _follow(self):
-        self.follower.follow(toolwin.on_screen(self.win))
+    def _step(self):
+        self.follower.follow(self.on_screen())
 
     def _song_shown(self, title: str, line: str):
         self.title_label.configure(text=title)
         self.source_label.configure(text=line)
 
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["lyrics_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
-        if self._job:
-            self.win.after_cancel(self._job)
-            self._job = None
-        self.win.destroy()

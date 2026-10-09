@@ -42,20 +42,19 @@ def fmt_clock(seconds: float) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-class SpectrogramWindow:
+class SpectrogramWindow(toolwin.ToolWindow):
+    TITLE = "Spectrogram"
+    SIZE = (900, 480)
+    MIN_SIZE = (420, 260)
+    GEOMETRY_KEY = "spectrogram_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, on_close=lambda: None,
                  analysis_for=lambda path: None):
         """analysis_for(path) -> the Now Playing check's Analysis for that file, or None."""
-        self.player, self.prefs, self.on_close = player, prefs, on_close
+        self.player = player
         self.analysis_for = analysis_for
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Spectrogram")
-        self.win.geometry(f"{theme.px(900)}x{theme.px(480)}")
-        self.win.minsize(theme.px(420), theme.px(260))
-        placement.restore(self.win, prefs.get("spectrogram_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        super().__init__(parent, prefs, on_close)
 
         bar = ttk.Frame(self.win, padding=theme.pad(10, 8, 10, 4))
         bar.pack(fill="x")
@@ -94,9 +93,7 @@ class SpectrogramWindow:
         self._cancel = threading.Event()
         self._relayout_job = None
         self._made_total = 0       # live columns made so far (to redraw only when there's news)
-        self._keep_going = toolwin.KeepGoing(self.win)
-        self.win.bind("<Configure>", self._moved, add="+")
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
     # -- layout --------------------------------------------------------------------
     def _resized(self, event=None):
@@ -181,13 +178,6 @@ class SpectrogramWindow:
                 self._picture = picture
 
         threading.Thread(target=work, name="spectrogram", daemon=True).start()
-
-    def _tick(self):
-        if not self.win.winfo_exists():
-            return
-        with self._keep_going:
-            self._step()
-        self._job = self.win.after(REFRESH_MS, self._tick)
 
     def _step(self):
         self._drain()
@@ -382,22 +372,9 @@ class SpectrogramWindow:
         self.canvas.create_line(x, y0, x, y0 + height, fill=theme.TEXT, tags="position")
 
     # -- window --------------------------------------------------------------------------
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["spectrogram_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
+    def _closing(self):
         self._cancel.set()
-        for job in (self._job, self._relayout_job):
-            if job:
-                self.win.after_cancel(job)
+        if self._relayout_job:
+            self.win.after_cancel(self._relayout_job)
         self.player.unmonitor(self.feed)
         self._photo = self._live_photo = self._key_photo = None   # its pictures go with the window, on this thread
-        self.win.destroy()
-        self.on_close()

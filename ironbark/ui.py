@@ -91,7 +91,7 @@ from typing import Callable
 
 from PIL import Image, ImageTk
 
-from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
+from . import (APP_NAME, __version__, analysis, appicon, artwork, audiofile, browse, chrome, controls, crash, devices, diagnostics,
                dragdrop, experiments, keys, levelling, library_check, library_db, library_index,
                library_tracks, logs, loudness, mediakeys, placement, playlists, popups,
                quick_search, recycle, settings, shapes, sleep, tag_editor, theme, tkgc, updates, watcher)
@@ -99,8 +99,9 @@ from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .compare_window import CompareWindow
 from .testsignals_window import TestSignalsWindow
-from .details import (NowPlayingWindow, cache_mark, copy_failed_text, copy_note, network_hover, network_line,
-                      network_now_line, output_line)
+from .details import NowPlayingWindow
+from .statustext import (cache_mark, copy_failed_text, copy_note, network_hover, network_line, network_now_line,
+                         output_line)
 from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
 from .favourites import Favourites
@@ -117,7 +118,8 @@ from .reels_window import EXPERIMENT as TAPE_REELS, ReelsWindow
 from .scope_window import ScopeWindow
 from .spectrogram_window import SpectrogramWindow
 from .tag_window import TagHistoryWindow, TagWindow
-from .playlist_view import PlaylistView, _fold
+from .playlist_view import PlaylistView
+from .searchfold import fold
 from .quick_search import QuickSearch
 from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
 
@@ -662,8 +664,6 @@ class PlayerWindow:
         self._named: list[tuple[str, ...]] = [tuple(paths)] if paths else []
         if settings.problem:   # a damaged settings file was set aside at start: said once
             self._set_notice(settings.problem, 12000)
-        from . import crash
-
         if crash.take_unexpected_exit():   # the last run ended in a crash: said once, with the way to report it
             self._notice_link = (CRASH_NOTICE, "Save diagnostics…", lambda: self.save_diagnostics())
             self._set_notice(CRASH_NOTICE, CRASH_NOTE_MS)
@@ -1929,7 +1929,7 @@ class PlayerWindow:
                 elif tab.kind == "library":
                     albums = self._library_albums(root)
                     if tab.query:  # the same search as the Library window's
-                        words = [_fold(w) for w in tab.query.split()]
+                        words = [fold(w) for w in tab.query.split()]
                         albums = [a for a in albums if browse.matches(a, words, _fold)]
                     progress["total"] = len(albums)
                     tracks = self._library_tracks(albums)
@@ -2265,7 +2265,6 @@ class PlayerWindow:
         """Background worker: true peak of each file it's given (a few seconds per track, longer
         for hi-res). Songs skipped past meanwhile are dropped when their turn comes, so the one
         playing is never left waiting behind them; and no error stops the worker."""
-        from .analysis import true_peak
 
         while True:
             path = self._peak_jobs.get()
@@ -2280,7 +2279,7 @@ class PlayerWindow:
                 continue
             unwanted = _Unwanted(lambda path=path: path not in self._peak_wanted)
             try:
-                peak = true_peak(path, unwanted)
+                peak = analysis.true_peak(path, unwanted)
             except audiofile.NotCached as error:   # (a network song not downloaded yet: nothing recorded)
                 self._again_later(path, error, unwanted)
                 continue
@@ -4292,7 +4291,6 @@ class PlayerWindow:
         popups.tell(self.root, "Diagnostics weren't saved", f"{result['error']}", tone="warn")
 
     def _open_log_folder(self):
-        from . import crash
 
         Popover.close_open()
         crash.open_folder(settings.settings_path().parent)
