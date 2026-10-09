@@ -25,7 +25,8 @@ TOOLKIT = "tk" + "inter"
 WINDOW = "_win" + "dow"
 MAIN_WINDOW = "u" + "i"
 
-CORE = ["engine", "audiofile", "library", "library_db", "indexer", "tagio", "netcache", "analysis",
+CORE = ["engine", "session", "audiofile", "library", "library_db", "library_sql", "library_import", "indexer",
+        "tagio", "netcache", "analysis",
         "loudness", "proof", "devices", "settings", "places", "musicfiles"]
 WINDOW_SIDE = [MAIN_WINDOW, "tools", "toolwin", "controls", "tabbar", "popups", "theme", "shapes"]
 # The widget kit and the app platform's few toolkit users; every *_view and *_window module may too.

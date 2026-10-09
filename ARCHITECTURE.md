@@ -21,7 +21,8 @@ ironbark/ui.py       the one main window (PlayerWindow): tabs, transport, settin
                      the *_view and *_window modules
         │
         ▼
-the player           engine (playback), devices, library + library_db + indexer (the library),
+the player           engine (the Player) + session (one open stream: decoder, queue, callback),
+                     devices, library + library_db + library_sql + indexer (the library),
                      analysis, loudness, levelling, proof (measurement the player itself needs),
                      settings, experiments, placement, logs, crash, diagnostics (the app platform),
                      places + netcache/ (where files live; the network playback cache)
@@ -48,7 +49,7 @@ gains no new methods.
 
 | Thread | What runs there | Rules |
 |---|---|---|
-| **The sound card's callback** (started by PortAudio) | `engine._Session._callback`: fills each request from the block queue, measures the levels and the track peak, feeds the meters | Nothing that waits, no file, console or network access, no logging, no tkinter, as little work as possible. Written as the callback's docstring; held by `tests/test_callback_rules.py`. |
+| **The sound card's callback** (started by PortAudio) | `session._Session._callback`: fills each request from the block queue, measures the levels and the track peak, feeds the meters | Nothing that waits, no file, console or network access, no logging, no tkinter, as little work as possible. Written as the callback's docstring; held by `tests/test_callback_rules.py`. |
 | **The decoder** (one per open stream) | Reads blocks from the file into the queue; lines up the next track for gapless playback; owns the files it reads | Only it closes a file it reads. |
 | **Tk's thread** (the main thread) | Every widget, every window, the poll that updates the display | Nothing slow. Tk is single-threaded: a widget touched from another thread can abort the program. |
 | **Workers** (`offthread.Background`) | Disk and database reads for the window | `self.work.run(work, then=…)`: `work()` on a worker thread, `then(value)` back on Tk's thread through **one** queue drained on Tk's timer. Progress goes the same way (`post`). |
@@ -60,7 +61,7 @@ object freed by another thread's garbage collection aborts the process; and the 
 
 ## Playback, briefly
 
-A `_Session` is one open output stream. The decoder thread reads blocks into a queue; the
+A `_Session` (session.py) is one open output stream. The decoder thread reads blocks into a queue; the
 callback drains it. Near the end of a track the decoder carries straight on into the next one when
 the sample rate and channel count match, on the same stream, so there is no gap; a track that
 can't join gets a new stream and the player says why. Two output modes: shared (float32 through
