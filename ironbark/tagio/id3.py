@@ -197,6 +197,11 @@ class Frame:
     def __repr__(self):
         return f"<{type(self).__name__} {self.id}>"
 
+    @classmethod
+    def parse(cls, id: str, body: bytes, source: int) -> Frame:
+        """A frame of this kind from its body; a plain Frame keeps the body as it is."""
+        return cls(id, body, source)
+
 
 class StoredFrame(Frame):
     """A frame that can't be read here — encrypted, or compressed data that won't inflate within
@@ -364,7 +369,7 @@ def _is_text_id(id: str) -> bool:
     return id.startswith("T") and id != "TXXX"
 
 
-_PARSERS = {"TXXX": UserTextFrame, "COMM": CommentFrame, "USLT": CommentFrame, "APIC": PictureFrame,
+_PARSERS: dict[str, type[Frame]] = {"TXXX": UserTextFrame, "COMM": CommentFrame, "USLT": CommentFrame, "APIC": PictureFrame,
             "SYLT": SyncedLyricsFrame}
 
 
@@ -637,7 +642,7 @@ def _frames(body: bytes, at: int, major: int, tag_unsync: bool) -> tuple[list[Fr
             if new_id is None:   # read on past it, but a rewrite (as v2.3) would drop it
                 problem = problem or f"an ID3v2.2 {frame_id} frame, which has no v2.3 equivalent"
                 continue
-            frame = parse_frame(new_id, frame.raw, 2)
+            frame = parse_frame(new_id, frame.raw or b"", 2)
         frames.append(frame)
     return frames, problem
 
@@ -678,9 +683,10 @@ def _decode_frame(frame_id: str, data: bytes, flags: bytes, major: int, tag_unsy
         if fmt & 0x02 or tag_unsync:
             data = deunsync(data)
         if fmt & 0x08:
-            data = _inflate(data, declared, allowance)
-            if data is None:
+            inflated = _inflate(data, declared, allowance)
+            if inflated is None:
                 return kept, 0
+            data = inflated
             return parse_frame(frame_id, data, major), len(data)
     elif major == 3:
         status, fmt = flags
@@ -695,9 +701,10 @@ def _decode_frame(frame_id: str, data: bytes, flags: bytes, major: int, tag_unsy
         if fmt & 0x20:   # grouping identity byte
             data = data[1:]
         if fmt & 0x80:
-            data = _inflate(data, declared, allowance)
-            if data is None:
+            inflated = _inflate(data, declared, allowance)
+            if inflated is None:
                 return kept, 0
+            data = inflated
             return parse_frame(frame_id, data, major), len(data)
     return parse_frame(frame_id, data, major), 0   # (written back with no flags: the body is stored plainly)
 
@@ -726,8 +733,9 @@ def genres(values: list[str]) -> list[str]:
                 if end < 0:
                     break
                 code, text = text[1:end], text[end + 1:]
-                if _genre_number(code) is not None:
-                    add(genre_list.name(_genre_number(code)) or code)
+                number = _genre_number(code)
+                if number is not None:
+                    add(genre_list.name(number) or code)
                 elif code == "RX":
                     add("Remix")
                 elif code == "CR":
@@ -736,8 +744,9 @@ def genres(values: list[str]) -> list[str]:
                     add(code)
             if text.startswith("(("):
                 text = text[1:]
-            if _genre_number(text) is not None:
-                add(genre_list.name(_genre_number(text)) or text)
+            number = _genre_number(text)
+            if number is not None:
+                add(genre_list.name(number) or text)
             elif text in ("RX", "CR"):
                 add("Remix" if text == "RX" else "Cover")
             else:

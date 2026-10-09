@@ -113,7 +113,7 @@ def check(item, gen: int, part: Path, *, decode: bool = True, should_yield=lambd
             for block in audiofile.blocks(f, max(1, f.samplerate * VERIFY_CHUNK_S), "int32", always_2d=True):
                 if cancel():
                     return Result(False, "", "cancelled", cancelled=True)
-                if md5 is not None:
+                if md5 is not None and bits:   # (md5 exists only when bits is known)
                     md5.update(pcm_bytes(np.ascontiguousarray(block), bits))
                 decoded += len(block)
                 while should_yield() and not cancel():

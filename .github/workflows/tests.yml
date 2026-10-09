@@ -33,6 +33,8 @@ jobs:
         run: uv run ruff check ironbark tests
       - name: Import rules (which module may import which)
         run: uv run lint-imports
+      - name: Types (mypy, the modules listed in pyproject.toml)
+        run: uv run mypy
 
   quick:
     name: Quick tier (${{ matrix.os }})

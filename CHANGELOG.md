@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.43.0 — 10/10/2026
+
+- **[ARCHITECTURE.md](ARCHITECTURE.md):** a map of the code — the four layers, the threads and
+  their rules, where files live on disk, how to add a Check tool.
+- **One table for the Check tools** (`tools/registry.py`): what each key opens, what it's called,
+  what the window needs, whether an Experimental switch gates it and whether the library check
+  waits while it's open. The main window opens every tool through it, so adding a tool is one line
+  there and one key in `keys.py`. The named openers (`show_meters` and the rest) remain.
+- **Type checking** (mypy) joins the checks on every push, gradually: sixteen modules of the tag
+  code and the network cache are clean and listed in `pyproject.toml`; the rest follow module by
+  module. Twenty-one small narrowings on the way (an `Optional` checked before use, a class
+  attribute declared, an error raised with its cause). Nothing about how the player behaves changed.
+
 ## 0.42.0 — 10/10/2026
 
 - **Fixed:** a Library tab with a search query failed at the search's folding step (a name that

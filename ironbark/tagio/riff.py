@@ -96,7 +96,7 @@ class ChunkFile:
                 f.seek(self.size)
                 f.write(b"\x00" * (end - self.size) + new)
         self._fix_form_size()
-        self.__init__(self.path)
+        type(self).__init__(self, self.path)   # re-read in place
 
     def delete(self) -> None:
         if self.damaged_tag:
@@ -106,7 +106,7 @@ class ChunkFile:
             _chunk_id, at, length = chunk
             replace_region(self.path, at, min(at + 8 + length + (length & 1), self.size), b"")
             self._fix_form_size()
-        self.__init__(self.path)
+        type(self).__init__(self, self.path)   # re-read in place
 
     def _fix_form_size(self) -> None:
         with open(self.path, "r+b") as f:
