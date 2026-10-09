@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
+from fakework import FakeWork
 
 from ironbark import library, library_index, playlists, settings, watcher
 from ironbark.library_index import LibraryIndex
@@ -215,22 +216,6 @@ def test_settling_rules():
     assert set(settling.last) == {"b"}                            # c wasn't asked about: forgotten
 
 
-def test_the_thread_reports_and_stops(music):
-    index = LibraryIndex(music)
-    look = Watcher(lambda: index, every_s=0.05, recheck_s=0.05)
-    look.start()
-    deadline = time.monotonic() + 20
-    reports: list[Report] = []
-    while len(reports) < 2 and time.monotonic() < deadline:
-        reports += look.drain()
-        time.sleep(0.02)
-    look.stop()
-    assert reports[0].first_build and len(reports[0].diff.added) == 3
-    assert reports[1].diff.nothing
-    time.sleep(0.2)
-    assert not look.running
-
-
 def test_a_missing_library_folder_is_reported_not_raised(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     look = Watcher(lambda: LibraryIndex(tmp_path / "nowhere"))
@@ -260,10 +245,6 @@ def test_an_unplugged_library_folder_doesnt_silence_the_others(music, tmp_path):
     library_index.close_shared()
 
 
-def test_watching_is_on_by_default():
-    assert settings.DEFAULTS["watch_music"] is True
-
-
 # -- the player and the Library window (Tk smoke tests, skipped without a display) ----------------
 @pytest.fixture
 def tk_root():
@@ -287,7 +268,8 @@ def player_side(index, look, prefs):
     from types import SimpleNamespace
     notices = []
     w = SimpleNamespace(prefs=prefs, watcher=look, _new_albums=[], _library=None, _notice="",
-                        _index=lambda: index, notices=notices, checker=SimpleNamespace(kick=lambda: None))
+                        _index=lambda: index, notices=notices, checker=SimpleNamespace(kick=lambda: None),
+                        work=FakeWork())
     w._set_notice = lambda text, ms=0: (notices.append(text), setattr(w, "_notice", text))
     for name in ("_new_music_state", "_update_new_albums", "_watch_reports", "_mark_opened"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
@@ -304,7 +286,7 @@ def wait_for_albums(window, root):
 
 
 def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root, monkeypatch):
-    from ironbark.library_window import NEW_DOT, LibraryWindow
+    from ironbark.library_view import NEW_DOT, LibraryView
     index, look = build(music)
     prefs = {"new_music": {"since": time.time() - 1, "opened": {}}}
     look.since = prefs["new_music"]["since"]   # (as _start_watching sets it: reports carry the new albums)
@@ -315,25 +297,25 @@ def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root
     w._watch_reports()
     assert w.notices == ["New music: 3 new albums in the Library"]
     assert set(w._new_albums) == {music / "Alpha", music / "Beta", music / "Gamma"}
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})       # (the sort is kept for the session)
+    monkeypatch.setattr(LibraryView, "_sorts", {})       # (the sort is kept for the session)
     monkeypatch.setattr(library_index, "_shared", index)   # the one index the player and the window share
-    library = LibraryWindow(tk_root, music, None, lambda p: None, lambda p: None, lambda r, q: None,
+    library = LibraryView(tk_root, music, None, lambda p: None, lambda p: None, lambda r, q: None,
                             new_albums=lambda: w._new_albums)
     w._library = library
     wait_for_albums(library, tk_root)
     assert "3 new albums" in library.status.cget("text")
-    names = [library.tree.set(iid, "album") for iid in library.tree.get_children()]
+    names = library.column_values("album")   # (every row listed: the view in a small root shows a few)
     assert names == [NEW_DOT + "Alpha", NEW_DOT + "Beta", NEW_DOT + "Gamma", "Old Album", "Other"]
-    assert library._view_labels["recent"].cget("text") == "Recently added ●"
     library.set_view("recent")
+    assert library.view_button.cget("text") == "Recently added ● ▾"   # (the drop-down's button carries the dot)
     assert library.sort == ("added", True)        # Recently added: newest first
     w._mark_opened(music / "Beta")                 # opened in a tab: the dot goes
     assert str(music / "Beta") in prefs["new_music"]["opened"]
-    names = [library.tree.set(iid, "album") for iid in library.tree.get_children()]
+    names = library.column_values("album")   # (every row listed: the view in a small root shows a few)
     assert NEW_DOT + "Beta" not in names and "Beta" in names and "2 new albums" in library.status.cget("text")
     w._mark_opened(music / "Alpha")
     w._mark_opened(music / "Gamma")
-    assert library._view_labels["recent"].cget("text") == "Recently added"
+    assert library.view_button.cget("text") == "Recently added ▾"   # (the dot goes)
     assert "new album" not in library.status.cget("text")
     # a later start: the opened ones stay opened (kept in the settings). (0.31) Worked out on a
     # worker thread, which hands a report to the watcher's queue for _watch_reports.
@@ -348,20 +330,3 @@ def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root
     library.close()
 
 
-def test_watch_for_new_music_is_in_settings_library(tk_root, tmp_path, monkeypatch):
-    """Settings → Library has the slider, on by default; switching it off stops the watcher."""
-    monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
-    import inspect
-    source = inspect.getsource(PlayerWindow._build_settings)
-    assert '"Watch for new music"' in source and 'self._caption(b, "Library")' in source
-    from types import SimpleNamespace
-    import tkinter as tk
-    look = Watcher(lambda: LibraryIndex(tmp_path / "Music"), every_s=60)
-    w = SimpleNamespace(prefs={"new_music": None}, watcher=look, watch_music=tk.BooleanVar(value=True))
-    for name in ("_new_music_state", "_start_watching", "_toggle_watch"):
-        setattr(w, name, getattr(PlayerWindow, name).__get__(w))
-    w._toggle_watch()
-    assert look.running and isinstance(w.prefs["new_music"]["since"], float) and w.prefs["watch_music"] is True
-    w.watch_music.set(False)
-    w._toggle_watch()
-    assert not look.running and w.prefs["watch_music"] is False

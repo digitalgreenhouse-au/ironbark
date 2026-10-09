@@ -5,9 +5,9 @@ display."""
 import time
 
 from ironbark import library_index, settings, theme
-from ironbark.library_window import LibraryWindow, added_text
+from ironbark.library_view import LibraryView, added_text
 
-from test_library_window import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
+from test_library_view import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
 
 def wait_for_songs(window, root):
     """Until the song view's songs (and the rows on show) have come from the query thread."""
@@ -29,14 +29,14 @@ def song_window(root, music, calls, favourites=None):
     actions = Actions(play_song=lambda t, a: calls.append(("play", t.title, a.name)),
                       queue_tracks=lambda ts, front: calls.append(("queue", [t.title for t in ts], front)),
                       favourites=favourites)
-    w = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    w = LibraryView(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                       on_load_all=lambda r, q: None, actions=actions)
     wait_for_index(w, root)
     return w
 
 
 def test_songs_view_lists_sorts_and_searches_every_song(root, music, monkeypatch, tk_thread_rule):
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    monkeypatch.setattr(LibraryView, "_sorts", {})
     calls = []
     w = song_window(root, music, calls)
     w.set_view("songs")
@@ -55,13 +55,13 @@ def test_songs_view_lists_sorts_and_searches_every_song(root, music, monkeypatch
     assert w.queue_selected(front=True)
     assert calls == [("queue", ["Overture"], True)]
     assert w._choose_selected()                          # Enter: plays it in its album (and the window closes)
-    assert calls[-1] == ("play", "Overture", "Tommy") and not w.win.winfo_exists()
+    assert calls[-1] == ("play", "Overture", "Tommy") and not w.frame.winfo_exists()
 
 
 def test_favourites_most_and_recently_played(root, music, monkeypatch, tk_thread_rule):
     from ironbark.favourites import Favourites
 
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    monkeypatch.setattr(LibraryView, "_sorts", {})
     favourites = Favourites(lambda: library_index.shared(music).db)
     favourites.load().join(5)
     favourites.take_loaded()
@@ -93,17 +93,17 @@ def test_favourites_most_and_recently_played(root, music, monkeypatch, tk_thread
 
 def test_album_column_shows_the_tag_and_long_names_end_with_an_ellipsis(root, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    monkeypatch.setattr(LibraryView, "_sorts", {})
     music = tmp_path / "Music"
     flac(music / "Madvillain-Madvillainy (2004) FLAC" / "01.flac", title="Accordion", artist="Madvillain",
          album="Madvillainy")
     flac(music / "Untagged folder" / "01.flac", title="Song")
     long = "An album name far too long to fit in the column of a narrow Library window at all"
     flac(music / "Long" / "01.flac", title="Song", artist="Band", album=long)
-    w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+    w = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
     wait_for_index(w, root)
     assert column(w, "album")[1:] == ["Madvillainy", "Untagged folder"]   # the tag; the folder when untagged
-    w.win.geometry(f"{theme.px(420)}x{theme.px(500)}")
+    root.geometry(f"{theme.px(420)}x{theme.px(500)}")
     root.update()
     root.update()
     shown = w.tree.set(w.tree.get_children()[0], "album")
@@ -116,30 +116,30 @@ def test_album_column_shows_the_tag_and_long_names_end_with_an_ellipsis(root, tm
 
 
 def test_type_to_jump_and_open_all_asks_first_when_big(root, music, monkeypatch):
-    from ironbark import library_window, popups
+    from ironbark import library_view, popups
 
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    monkeypatch.setattr(LibraryView, "_sorts", {})
     loaded = []
-    w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: loaded.append(q))
+    w = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: loaded.append(q))
     wait_for_index(w, root)
     assert w._jump("to") == 2 and w._jump("h") == 1 and w._jump("zz") is None
     w.set_view("artists")
     assert w._items[w._jump("who")] == ("group", "The Who")   # "The" left off, as names sort
     w.set_view("albums")
-    assert w.load_all_button.cget("text") == "Open all 3 albums in a tab"
+    assert w._load_all_text == "Open all 3 albums in a tab" and w._load_all_ok   # (the ⋯ menu)
     asked = []
-    monkeypatch.setattr(library_window, "LOAD_ALL_WARN", 2)
+    monkeypatch.setattr(library_view, "LOAD_ALL_WARN", 2)
     monkeypatch.setattr(popups, "confirm", lambda *args, **kwargs: asked.append(args[1]) or False)
     w._load_all()
-    assert asked == ["Open 4 songs in one tab?"] and loaded == [] and w.win.winfo_exists()
+    assert asked == ["Open 4 songs in one tab?"] and loaded == [] and w.frame.winfo_exists()
     monkeypatch.setattr(popups, "confirm", lambda *args, **kwargs: True)
     w._load_all()
-    assert loaded == [""] and not w.win.winfo_exists()
+    assert loaded == [""] and not w.frame.winfo_exists()
 
 
 def test_show_in_library_selects_the_album(root, music, monkeypatch):
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
-    w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+    monkeypatch.setattr(LibraryView, "_sorts", {})
+    w = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
     wait_for_index(w, root)
     w.set_view("songs")
     w.search_var.set("zzz")
@@ -155,7 +155,7 @@ def test_a_song_played_under_two_spellings_of_its_path_is_listed_once(root, musi
     listed once (two rows with one key used to stop the list), its plays added up."""
     import os
 
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
+    monkeypatch.setattr(LibraryView, "_sorts", {})
     errors = []
     root.report_callback_exception = lambda *info: errors.append(info)
     w = song_window(root, music, [])
@@ -182,11 +182,11 @@ def test_a_long_song_list_is_sorted_off_tk_and_its_rows_made_as_they_show(root, 
     Tk's thread makes only the rows on show."""
     import threading
 
-    from ironbark import library_check, library_window
+    from ironbark import library_check, library_view
     from ironbark.library_db import SongHit
 
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})
-    w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+    monkeypatch.setattr(LibraryView, "_sorts", {})
+    w = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
     wait_for_index(w, root)
     db = library_index.shared(music).db
     real = db.songs(db.song_ids())
@@ -195,11 +195,11 @@ def test_a_long_song_list_is_sorted_off_tk_and_its_rows_made_as_they_show(root, 
             for n in range(20_000)]
     monkeypatch.setattr(library_check, "needs_look", lambda db: list(many))
     sorted_on = []
-    sort_key = library_window._song_sort_key
-    monkeypatch.setattr(library_window, "_song_sort_key",
+    sort_key = library_view._song_sort_key
+    monkeypatch.setattr(library_view, "_song_sort_key",
                         lambda column: sorted_on.append(threading.current_thread().name) or sort_key(column))
     made = []
-    w._song_row = lambda hit, extra: made.append(hit.id) or LibraryWindow._song_row(w, hit, extra)
+    w._song_row = lambda hit, extra: made.append(hit.id) or LibraryView._song_row(w, hit, extra)
     w.set_view("needs_look")
     wait_for_songs(w, root)
     assert len(w.list.source) == 20_000 and sorted_on and set(sorted_on) == {"library-query"}
@@ -222,7 +222,7 @@ def test_a_page_the_songs_list_has_moved_away_from_is_not_read():
     again if they're on show after all."""
     from types import SimpleNamespace
 
-    from ironbark.library_window import PAGE, SongPages, _read_page
+    from ironbark.library_view import PAGE, SongPages, _read_page
     from ironbark.indexer import Answer
 
     pages = SongPages(list(range(100_000)), lambda hit, extra: ("k", (), ()), lambda page, ids: None)
@@ -232,5 +232,5 @@ def test_a_page_the_songs_list_has_moved_away_from_is_not_read():
     assert _read_page(db, pages, 50_000 // PAGE, list(range(PAGE))) == ["read 200"]
     pages.asked.add(0)
     window = SimpleNamespace(_pages=pages, _page_serial=3, view="songs")
-    assert LibraryWindow._take_page(window, Answer("page:3:0", 9, None)) is True   # (drawn again: asked again)
+    assert LibraryView._take_page(window, Answer("page:3:0", 9, None)) is True   # (drawn again: asked again)
     assert 0 not in pages.asked and 0 not in pages.pages

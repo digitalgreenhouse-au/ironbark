@@ -63,6 +63,8 @@ def glyph(root: tk.Misc, name: str) -> str:
     return fancy if icon_font(root) else plain
 
 
+TINT = "tint"          # a tinted tab's plate: between the strip and the hover plate
+TINT_MIX = 0.45
 TOOLTIP_DELAY_MS = 450   # (0.21.0) every tooltip waits this long under a still pointer — one delay app-wide
 TOOLTIP_WRAP = 320       # px at 100%: a tooltip's longest line (less in a narrow window); longer text wraps
 TOOLTIP_MIN_WRAP = 160   # px at 100%: …but never narrower than this
@@ -377,7 +379,7 @@ class TabBar(tk.Frame):
     a few item changes, not a strip. Nothing is drawn per width: plates and rings are two cached end
     pictures with plain rectangles between them (shapes.ends).
 
-    `set_wide` only sets how wide a tab may grow; the strip's buttons are the same at every width."""
+    The strip's buttons are the same at every width."""
 
     DRAG_GAP = theme.DRAG_GAP   # (the strip's tokens live in theme; kept here for older callers)
     MIN_TAB = theme.MIN_TAB
@@ -403,7 +405,9 @@ class TabBar(tk.Frame):
         self._drag: dict | None = None
         self._slot = 1        # one tab's width plus its gap, set by _layout
         self._per = 1         # one tab's width
-        self.tab_max = theme.TAB_MAX   # a tab's widest (px at 100%), see set_wide
+        self.tab_max = theme.TAB_MAX   # a tab's widest (px at 100%)
+        self._locked: frozenset = frozenset()   # tabs with no × (set_tabs)
+        self._tinted: frozenset = frozenset()   # tabs on a plate of their own (set_tabs)
         self.top_row = tk.Frame(self, bg=theme.STRIP, height=self.row_height)
         self.top_row.pack(fill="x")
         self.top_row.pack_propagate(False)
@@ -434,6 +438,7 @@ class TabBar(tk.Frame):
         c = self.canvas
         self._line = c.create_rectangle(0, 0, 0, 0, outline="", tags="line")
         self._plate = self._three_slice("plate", 1)
+        self._tints: list = []   # the tinted tabs' plates (set_tabs: tinted)
         self._sel_ends = (c.create_image(0, 0, anchor="nw", state="hidden", tags="selected"),
                           c.create_image(0, 0, anchor="nw", state="hidden", tags="selected"))
         self._sel_mid = c.create_rectangle(0, 0, 0, 0, outline="", state="hidden", tags="selected")
@@ -491,12 +496,6 @@ class TabBar(tk.Frame):
             return 0
         return 2 * theme.px(theme.CAPTION_W)   # minimise and close
 
-    def set_wide(self, wide: bool, tab_max: int = theme.TAB_MAX):
-        """Tabs may be up to `tab_max` px (at 100%) wide. (`wide` is what the layout code passes;
-        the strip's buttons are the same at every width.)"""
-        self.tab_max = tab_max
-        self._layout()
-
     def _disc_top(self) -> int:
         return theme.px(theme.ROW_Y) - theme.px(theme.DISC) // 2
 
@@ -533,12 +532,15 @@ class TabBar(tk.Frame):
             self._set(item, state="hidden")
 
     # -- tabs ----------------------------------------------------------------
-    def set_tabs(self, titles: list[str], current: int, playing: int | None):
-        state = (list(titles), current, playing)
+    def set_tabs(self, titles: list[str], current: int, playing: int | None, locked=(), tinted=()):
+        """`locked`: tabs with no × (they can't be closed); `tinted`: tabs drawn on a plate of their
+        own, a shade apart from the strip (the main Library tab)."""
+        state = (list(titles), current, playing, frozenset(locked), frozenset(tinted))
         if state == self._state:
             return
         self._state = state
         self._titles, self._current, self._playing = list(titles), current, playing
+        self._locked, self._tinted = frozenset(locked), frozenset(tinted)
         self._layout()
 
     def _make_slots(self, count: int):
@@ -684,22 +686,37 @@ class TabBar(tk.Frame):
         return x0, top, x1, bottom, radius
 
     def _paint_plate(self):
-        """A rounded STRIP_HI plate under a hovered tab (never the selected one)."""
-        i = self._hover
+        """A rounded STRIP_HI plate under a hovered tab (never the selected one), and the tinted
+        tabs' own plates — a shade between the strip and that — under them the rest of the time."""
+        self._paint_one_plate(self._plate, self._hover, "STRIP_HI")
+        for i, plate in self._tint_plates():
+            self._paint_one_plate(plate, i if (i != self._hover and i != self._current) else None, TINT)
+
+    def _tint_plates(self):
+        """A plate (three canvas items) per tinted tab, made as needed."""
+        wanted = sorted(self._tinted)
+        while len(self._tints) < len(wanted):
+            self._tints.append(self._three_slice("plate", 1))
+        for plate in self._tints[len(wanted):]:
+            self._hide(*plate)
+        return list(zip(wanted, self._tints))
+
+    def _paint_one_plate(self, plate, i: int | None, fill: str):
         if i is None or i == self._current or i >= len(self._titles):
-            self._hide(*self._plate)
+            self._hide(*plate)
             return
         x0, top, x1, bottom, radius = self._plate_box(i)
         if x1 - x0 < 2:
-            self._hide(*self._plate)
+            self._hide(*plate)
             return
-        left, right = shapes.ends_photos(self, bottom - top, radius, fill="STRIP_HI")
-        self._at(self._plate[0], x0, top)
-        self._at(self._plate[1], x1 - radius, top)
-        self._at(self._plate[2], x0 + radius, top, x1 - radius, bottom)
-        self._set(self._plate[0], image=left, state="normal")
-        self._set(self._plate[1], image=right, state="normal")
-        self._set(self._plate[2], fill=theme.STRIP_HI, state="normal")
+        colour = theme.mix("STRIP", "STRIP_HI", TINT_MIX) if fill == TINT else theme.STRIP_HI
+        left, right = shapes.ends_photos(self, bottom - top, radius, fill=colour)
+        self._at(plate[0], x0, top)
+        self._at(plate[1], x1 - radius, top)
+        self._at(plate[2], x0 + radius, top, x1 - radius, bottom)
+        self._set(plate[0], image=left, state="normal")
+        self._set(plate[1], image=right, state="normal")
+        self._set(plate[2], fill=colour, state="normal")
 
     def _paint_ring(self):
         """A 2 px DG-green ring round the tab something dragged would land on (no fill: green
@@ -799,8 +816,11 @@ class TabBar(tk.Frame):
             self._paint_close()
 
     def _reveal_x(self):
-        """The pointer has rested on a tab: its × shows (and its name makes room for it)."""
+        """The pointer has rested on a tab: its × shows (and its name makes room for it) — not on a
+        locked tab, which has none."""
         self._x_job = None
+        if self._hover is not None and self._hover in self._locked:
+            return
         if self._hover is not None and self.winfo_exists() and not self._slim():
             self._x_shown = self._hover
             self._layout()
@@ -842,7 +862,7 @@ class TabBar(tk.Frame):
 
     def _middle(self, event):
         i = self._slot_at(event.x, event.y)
-        if i is not None:
+        if i is not None and i not in self._locked:
             self.on_close(i)
 
     def _right(self, event):

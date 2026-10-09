@@ -12,7 +12,7 @@ chops it flat — heard, if at all, as a slight crackle or edge on the loudest m
   passes full scale; passes closer together than OVER_GAP_S count as one over. The whole-song
   strip (`scan`) and the live view's "overs per second" both use it.
 - `simulate_dac` / `listening_versions` make the "hear it" versions (Experimental
-  `clip_audition`): A = an ordinary DAC (rebuild at 8x, chop at full scale, back down),
+  "Hear it"): A = an ordinary DAC (rebuild at 8x, chop at full scale, back down),
   B = the same loop, untouched apart from being turned down just below its true peak, and
   the difference between them (what the chop takes away).
 """
@@ -28,8 +28,11 @@ from typing import Callable
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
-from . import audiofile
-from .analysis import FILE_OVERSAMPLE, _TAPS_PER_PHASE, _blocks, _oversampling_phases, guard_trim
+from .. import audiofile
+from .abx import level_of
+from ..analysis import FILE_OVERSAMPLE, TAPS_PER_PHASE, oversampling_phases, guard_trim
+from ..audiofile import read_blocks
+from .audition import level_gains
 
 FACTOR = FILE_OVERSAMPLE      # 8 rebuilt points per sample
 OVER_GAP_S = 0.010            # passes over full scale closer together than this are one over
@@ -37,7 +40,7 @@ SCAN_BLOCK_S = 3              # the whole-song pass reads this much at a time
 LOOP_S = 4.0                  # Hear it: the loop around the chosen over
 DIFFERENCE_BOOST_DB = 20.0    # "just the difference" is played this much louder than the music…
 DIFFERENCE_MAX = 0.5          # …but never with a peak above half of full scale
-_HALF = _TAPS_PER_PHASE // 2  # the filter reaches this many samples either side
+_HALF = TAPS_PER_PHASE // 2  # the filter reaches this many samples either side
 
 
 def db(level: float) -> float:
@@ -56,7 +59,7 @@ def oversample(x: np.ndarray, factor: int = FACTOR, phases=None) -> np.ndarray:
     assumed before and after (give the call a little context either side when that matters)."""
     x = np.asarray(x, dtype=np.float64)
     x = x[:, None] if x.ndim == 1 else x
-    phases = phases or _oversampling_phases(factor)
+    phases = phases or oversampling_phases(factor)
     frames, channels = x.shape
     padded = np.concatenate([np.zeros((_HALF - 1, channels)), x, np.zeros((_HALF, channels))])
     out = np.empty((frames, factor, channels))
@@ -72,7 +75,7 @@ def decimate(y: np.ndarray, factor: int = FACTOR) -> np.ndarray:
     inverse of `oversample` for sound that was never changed in between."""
     y = np.asarray(y, dtype=np.float64)
     y = y[:, None] if y.ndim == 1 else y
-    phases = _oversampling_phases(factor)
+    phases = oversampling_phases(factor)
     h = np.empty(len(phases) * len(phases[0]))
     for p, phase in enumerate(phases):
         h[p::factor] = phase
@@ -112,8 +115,8 @@ class OverFinder:
     def __init__(self, channels: int, rate: int, factor: int = FACTOR, gap_s: float = OVER_GAP_S,
                  start_frame: int = 0):
         self.channels, self.rate, self.factor = channels, rate, factor
-        self.phases = _oversampling_phases(factor)
-        self.overlap = _TAPS_PER_PHASE - 1
+        self.phases = oversampling_phases(factor)
+        self.overlap = TAPS_PER_PHASE - 1
         self.previous = np.zeros((self.overlap, channels))
         self.gap = gap_s * rate * factor          # in rebuilt points
         self.fed = start_frame                    # frames fed so far (the next block's first frame)
@@ -190,7 +193,7 @@ class OverFinder:
 
     def finish(self) -> None:
         """The end of the stream: the filter's tail (silence after the last sample), then close."""
-        self.add(np.zeros((_TAPS_PER_PHASE, self.channels)))
+        self.add(np.zeros((TAPS_PER_PHASE, self.channels)))
         self._close()
 
 
@@ -219,7 +222,7 @@ def scan(path, cancel: threading.Event | None = None,
         total = max(1, f.frames)
         done = 0
         damaged: list = []   # a file that stops decoding part-way (or is cut short): scanned up to there
-        for block in _blocks(f, damaged, blocksize=rate * SCAN_BLOCK_S, dtype="float64", always_2d=True):
+        for block in read_blocks(f, damaged, blocksize=rate * SCAN_BLOCK_S, dtype="float64", always_2d=True):
             if cancel is not None and cancel.is_set():
                 return None
             finder.add(block)
@@ -293,8 +296,7 @@ class Versions:
 
 
 def _loudness(x: np.ndarray, rate: int) -> tuple[float | None, str]:
-    from .abx import _level   # the ABX test's level measure: integrated LUFS, RMS for very short sound
-    return _level(x, rate)
+    return level_of(x, rate)
 
 
 def listening_versions(path, at: float, loop_s: float = LOOP_S) -> Versions:
@@ -302,16 +304,15 @@ def listening_versions(path, at: float, loop_s: float = LOOP_S) -> Versions:
     B is turned down just below its true peak (as the clipping guard would); A is matched to
     B's loudness (the louder one is turned down, never the quieter up); the difference is
     boosted DIFFERENCE_BOOST_DB but kept well below full scale."""
-    from .audition import level_gains
 
     with audiofile.open(path) as f:
         rate, total = f.samplerate, f.frames
         length = min(total, int(round(loop_s * rate)))
         begin = int(round(at * rate)) - length // 2
         begin = max(0, min(begin, total - length))
-        margin = min(begin, _TAPS_PER_PHASE)            # a little sound before, for the filter
+        margin = min(begin, TAPS_PER_PHASE)            # a little sound before, for the filter
         f.seek(begin - margin)
-        x = f.read(length + margin + _TAPS_PER_PHASE, dtype="float64", always_2d=True)
+        x = f.read(length + margin + TAPS_PER_PHASE, dtype="float64", always_2d=True)
     chopped, clean = simulate_dac(x)
     keep = slice(margin, margin + length)
     original, a_full, b_full = x[keep], chopped[keep], clean[keep]

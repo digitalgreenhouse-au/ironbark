@@ -14,7 +14,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import audition, devices, theme
+from ironbark import devices, theme
+from ironbark.tools import audition
 from ironbark.engine import State
 
 RATE = 44100
@@ -108,36 +109,36 @@ def fake_audition():
 def make(kind, root, player):
     """(window, object, attribute): the window, and something its every refresh uses."""
     if kind == "meters":
-        from ironbark.meter_window import MeterWindow
+        from ironbark.tools.meter_window import MeterWindow
         win = MeterWindow(root, player, {"vu_align": "-18 dBFS (EBU R68)"})
         return win, win, "_draw_live"
     if kind == "pcm":
-        from ironbark.pcm_window import PcmWindow
+        from ironbark.tools.pcm_window import PcmWindow
         win = PcmWindow(root, player, {})
         return win, win, "_drain"
     if kind == "spectrogram":
-        from ironbark.spectrogram_window import SpectrogramWindow
+        from ironbark.tools.spectrogram_window import SpectrogramWindow
         win = SpectrogramWindow(root, player, {})
         return win, win, "_drain"
     if kind == "scope":
-        from ironbark.scope_window import ScopeWindow
+        from ironbark.tools.scope_window import ScopeWindow
         win = ScopeWindow(root, player, {})
         return win, win.engine, "reading_at"
     if kind == "clipping":
-        from ironbark.clip_window import ClipWindow
+        from ironbark.tools.clip_window import ClipWindow
         win = ClipWindow(root, player, {}, stream_factory=FakeStream)
         return win, win, "_drain"
     if kind == "abx":
-        from ironbark.abx_window import AbxWindow
+        from ironbark.tools.abx_window import AbxWindow
         win = AbxWindow(root, player, {}, stream_factory=FakeStream)
         win.audition = fake_audition()
         return win, player, "status"
     if kind == "testsignals":
-        from ironbark.testsignals_window import TestSignalsWindow
+        from ironbark.tools.testsignals_window import TestSignalsWindow
         win = TestSignalsWindow(root, player, {}, stream_factory=FakeStream, confirm=lambda *a: False)
         win.audition, win.signal = fake_audition(), win.build_signal()
         return win, player, "status"
-    from ironbark.details import NowPlayingWindow
+    from ironbark.tools.details import NowPlayingWindow
     win = NowPlayingWindow(root, player, prefs={})
     return win, player, "status"
 
@@ -230,8 +231,8 @@ def write_pair(tmp_path):
 
 
 def test_one_sound_at_a_time_between_the_windows(root, stand_in_devices, tmp_path):
-    from ironbark.abx_window import AbxWindow
-    from ironbark.testsignals_window import TestSignalsWindow
+    from ironbark.tools.abx_window import AbxWindow
+    from ironbark.tools.testsignals_window import TestSignalsWindow
     a, b = write_pair(tmp_path)
     player = AnyPlayer()
     abx = AbxWindow(root, player, {"abx_length": 5}, path_a=a, start_s=4.0, stream_factory=FakeStream)

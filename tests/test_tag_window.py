@@ -12,16 +12,17 @@ import numpy as np
 import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
+from fakework import FakeWork
 
-from ironbark import experiments, layout, library, settings, tag_editor, theme
+from ironbark import experiments, library, settings, tag_editor, theme
 from ironbark.engine import State
-from ironbark.library_window import LibraryWindow
+from ironbark.library_view import LibraryView
 from ironbark.playlist_view import PlaylistView
 from ironbark.tag_window import TagHistoryWindow, TagWindow
 from ironbark.favourites import Favourites
 from ironbark.ui import PlayerWindow, Tab
 
-ON = {"experiments": {tag_editor.EXPERIMENT: True}}
+ON: dict = {}   # (tag editing was Experimental until 0.37.0; nothing to switch on now)
 
 
 def flac(path: Path, **tags) -> Path:
@@ -74,52 +75,42 @@ def labels(menu) -> list[str]:
 
 def window(root, prefs, tracks, **extra):
     """Just enough of a PlayerWindow for the track menu and the tag-editing methods."""
-    w = SimpleNamespace(root=root, prefs=prefs, tabs=[Tab("album", "C:/Music/Album")], current=0, _tier=layout.COLUMN,
+    w = SimpleNamespace(root=root, prefs=prefs, tabs=[Tab("album", "C:/Music/Album")], current=0,
                         playlist=SimpleNamespace(columns=(), wanted=lambda: (), shown=(),
                                                  selected_rows=lambda: [0, 1]),
                         opened=[], _tag_window=None, _tag_history=None, sleep_timer=None,
                         player=SimpleNamespace(stop_after=None), favourites=Favourites(lambda: None), **extra)
     w.tabs[0].tracks = tracks
-    for name in ("_menu", "_track_menu", "_columns_menu", "_sleep_menu", "stop_after_current", "_tag_editing",
+    for name in ("_menu", "_track_menu", "_columns_menu", "_sleep_menu", "stop_after_current",
                  "edit_selected_tags", "edit_album_tags", "show_tag_history", "_with_songs"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
     w._known_playlists = lambda: []
-    w.edit_tags = lambda tracks: w.opened.append(("edit", len(tracks))) if w._tag_editing() else None
+    w.edit_tags = lambda tracks: w.opened.append(("edit", len(tracks)))
     return w
 
 
-def test_with_the_switch_off_there_is_no_tag_editing_ui(root, music, popups):
+def test_an_old_settings_file_with_the_switch_off_still_offers_tag_editing(root, music, popups):
     tracks = library.scan_album(music)
-    w = window(root, {}, tracks)
+    w = window(root, {"experiments": {"tag_editor": False}}, tracks)   # (0.16.0–0.36.0: Experimental, off)
     w._track_menu([0], SimpleNamespace(x_root=0, y_root=0))
-    assert not any("tag" in label.lower() for label in labels(popups[-1]))
+    assert "Edit tags…" in labels(popups[-1]) and "Tag history (undo)…" in labels(popups[-1])
     w.edit_selected_tags()                                   # the E key
-    PlayerWindow.edit_tags(w, tracks)                        # even called directly: nothing opens
-    w.show_tag_history()
-    w.edit_album_tags(music)
-    root.update()
-    assert w.opened == [] and w._tag_window is None and w._tag_history is None
-    assert root.winfo_children() == [] or all(not isinstance(c, tk.Toplevel) for c in root.winfo_children())
+    assert w.opened == [("edit", 2)]
 
 
-def test_with_the_switch_on_the_menu_and_key_offer_it(root, music, popups):
+def test_the_menu_and_key_offer_it(root, music, popups):
     tracks = library.scan_album(music)
     w = window(root, dict(ON), tracks)
     w._track_menu([0, 1], SimpleNamespace(x_root=0, y_root=0))
     assert "Edit tags of these 2 songs…" in labels(popups[-1]) and "Tag history (undo)…" in labels(popups[-1])
     w.edit_selected_tags()
     assert w.opened == [("edit", 2)]
-    experiments.set_enabled(w.prefs, tag_editor.EXPERIMENT, False)  # switched off again: gone at once
-    w._track_menu([0], SimpleNamespace(x_root=0, y_root=0))
-    assert not any("tag" in label.lower() for label in labels(popups[-1]))
 
 
-def test_the_library_offers_it_only_while_switched_on(root, music, popups):
-    switch = {"on": False}
+def test_the_library_offers_it(root, music, popups):
     edited = []
-    lib = LibraryWindow(root, music.parent, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
-                        on_load_all=lambda r, q: None, on_edit_tags=edited.append,
-                        can_edit_tags=lambda: switch["on"])
+    lib = LibraryView(root, music.parent, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+                        on_load_all=lambda r, q: None, on_edit_tags=edited.append)
     deadline = time.monotonic() + 20
     while lib._refresh is not None and time.monotonic() < deadline:
         root.update()
@@ -129,9 +120,6 @@ def test_the_library_offers_it_only_while_switched_on(root, music, popups):
     root.update()
     x, y, _w, h = lib.tree.bbox(iid)
     event = SimpleNamespace(x=x + 5, y=y + h // 2, x_root=0, y_root=0)
-    lib._context(event)
-    assert "Edit tags…" not in labels(popups[-1])
-    switch["on"] = True
     lib._context(event)
     assert "Edit tags…" in labels(popups[-1])
     lib.close()
@@ -198,7 +186,7 @@ def test_new_tags_show_in_open_tabs_straight_away(tmp_path, music, monkeypatch):
     index = SimpleNamespace(update=lambda paths: updated.append(paths))
     w = SimpleNamespace(tabs=[tab], player=SimpleNamespace(up_next=lambda: []), _art_track=None,
                         _show_current_tab=lambda: shown.append(True), _index=lambda: index, _index_updated=False,
-                        TAG_FIELDS=PlayerWindow.TAG_FIELDS)
+                        TAG_FIELDS=PlayerWindow.TAG_FIELDS, work=FakeWork())
     audio = FLACFile(tracks[0].path)
     audio["title"], audio["album"] = "Renamed", "New album"
     audio.save()
@@ -228,17 +216,3 @@ def test_waiting_saves_go_through_once_the_player_moves_on(music):
     PlayerWindow._retry_tag_saves(w)
     assert applied == [[tracks[0].path]] and w._tag_waiting == [] and notices == ["Saved the new tags for “01”"]
     assert library.read_track(tracks[0].path).album == "Later"
-
-
-def test_switching_it_off_closes_its_windows(root, music):
-    tracks = library.scan_album(music)
-    prefs = dict(ON)
-    tw = TagWindow(root, tracks, prefs, on_saved=lambda s: None, busy=lambda: set())
-    hw = TagHistoryWindow(root, prefs, on_saved=lambda s: None, busy=lambda: set())
-    w = SimpleNamespace(prefs=prefs, experiment_vars={tag_editor.EXPERIMENT: tk.BooleanVar(root, value=False)},
-                        _tag_window=tw, _tag_history=hw, _paint_version=lambda: None)
-    w._tag_editing = lambda: PlayerWindow._tag_editing(w)
-    PlayerWindow._toggle_experiment(w, tag_editor.EXPERIMENT)
-    root.update()
-    assert not experiments.enabled(prefs, tag_editor.EXPERIMENT)
-    assert not tw.win.winfo_exists() and not hw.win.winfo_exists()

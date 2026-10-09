@@ -32,7 +32,8 @@ from tkinter import ttk
 
 import numpy as np
 
-from . import controls, placement, spectrum, theme, toolwin
+from .. import controls, placement, theme, toolwin
+from . import spectrum
 from .details import describe_bits
 
 REFRESH_MS = 120
@@ -115,20 +116,19 @@ class BitCounter:
                 self.block = block
 
 
-class PcmWindow:
+class PcmWindow(toolwin.ToolWindow):
+    TITLE = "PCM stream"
+    SIZE = (1040, 740)
+    MIN_SIZE = (560, 360)
+    GEOMETRY_KEY = "pcm_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, on_close=lambda: None,
                  analysis_for=lambda path: None):
         """analysis_for(path) -> the Now Playing check's Analysis for that file, or None."""
-        self.player, self.prefs, self.on_close = player, prefs, on_close
+        self.player = player
         self.analysis_for = analysis_for
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("PCM stream")
-        self.win.geometry(f"{theme.px(1040)}x{theme.px(740)}")
-        self.win.minsize(theme.px(560), theme.px(360))
-        placement.restore(self.win, prefs.get("pcm_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        super().__init__(parent, prefs, on_close)
 
         bar = ttk.Frame(self.win, padding=theme.pad(10, 8, 10, 4))
         bar.pack(fill="x")
@@ -199,9 +199,7 @@ class PcmWindow:
         self.frozen: dict | None = None
         self._idle = True          # nothing new heard (paused or stopped)
         self._painted = None       # what the live stack on show was made from (see _paint_live)
-        self._keep_going = toolwin.KeepGoing(self.win)
-        self.win.bind("<Configure>", self._moved, add="+")
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
     # -- data ------------------------------------------------------------------
     def _drain(self):
@@ -224,13 +222,6 @@ class PcmWindow:
         if offset >= len(block["sent"]) + block["rate"] // 2:
             return None, 0  # nothing new for half a second: stopped or paused
         return block, min(offset, len(block["sent"]) - 1)
-
-    def _tick(self):
-        if not self.win.winfo_exists():
-            return
-        with self._keep_going:
-            self._step()
-        self._job = self.win.after(REFRESH_MS, self._tick)
 
     def _step(self):
         self._drain()
@@ -430,20 +421,6 @@ class PcmWindow:
         self.scope_info.configure(text=f"Bitscope · bar = how often each bit is 1 over the last second (± = the sign, "
                                        f"then each sample's size, loudest bit first; empty = never used). {track}{whole}")
 
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["pcm_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
-        if self._job:
-            self.win.after_cancel(self._job)
+    def _closing(self):
         self.counter.stop()
         self.player.unmonitor(self.feed)
-        self.win.destroy()
-        self.on_close()

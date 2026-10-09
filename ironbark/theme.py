@@ -152,7 +152,7 @@ LIGHT = Palette(
 
 PALETTES = {"dark": DARK, "light": LIGHT}
 # Settings → Window → Theme: (prefs value, what the menu says). Dark by default.
-THEME_CHOICES = (("dark", "Dark"), ("light", "Light"), ("system", "Follow Windows"))
+THEME_CHOICES = (("dark", "Dark"), ("light", "Light"))   # (0.38.0: no "Follow Windows" — nothing polls Windows)
 DEFAULT_THEME = "dark"
 
 current: Palette = DARK
@@ -272,7 +272,8 @@ def windows_uses_light() -> bool | None:
     """Is Windows set to light mode for apps? (Settings → Personalisation → Colours → "Choose
     your app mode".) None when it can't be told (not Windows, or the value isn't there).
 
-    Read-only registry look, cheap enough to poll: HKCU\\Software\\Microsoft\\Windows\\
+    Read once, at the first start after 0.38.0, to turn a saved "Follow Windows" into Dark or Light
+    (nothing polls it any more). A read-only registry look: HKCU\\Software\\Microsoft\\Windows\\
     CurrentVersion\\Themes\\Personalize, DWORD AppsUseLightTheme (1 = light, 0 = dark) — the same
     key mediakeys.py reads SystemUsesLightTheme from for the taskbar. Microsoft Learn doesn't
     document this value as an API (it documents UISettings' foreground colour for Win32 apps);
@@ -290,14 +291,17 @@ def windows_uses_light() -> bool | None:
         return None
 
 
-def palette_for(choice: str, windows_light: bool | None = None) -> Palette:
-    """The palette for a Settings choice ("dark" / "light" / "system"). "system" follows Windows
-    (`windows_light`, read now if not given); when Windows can't be asked it stays Dark."""
-    if choice == "system":
-        if windows_light is None:
-            windows_light = windows_uses_light()
-        return LIGHT if windows_light else DARK
+def palette_for(choice: str) -> Palette:
+    """The palette for a Settings choice ("dark" / "light"; anything else is Dark)."""
     return PALETTES.get(choice, PALETTES[DEFAULT_THEME])
+
+
+def settled_choice(choice: str) -> str:
+    """A saved Theme choice as it is now: "system" (Follow Windows, until 0.38.0) becomes Light or
+    Dark once, as Windows is set at that moment."""
+    if choice == "system":
+        return "light" if windows_uses_light() else "dark"
+    return choice
 
 
 # -- text ----------------------------------------------------------------------------------
@@ -335,8 +339,6 @@ SIZE_LARGE = 10       # a slightly bigger mark (the × in Up next); the line und
 SIZE_HEADING = 11     # a pop-over's title
 SIZE_TITLE = 12       # a window's title line
 SIZE_DISPLAY = 13     # the now-playing title (semibold)
-SIZE_DISPLAY_WIDE = 16    # …in a wide window (the split layouts from 1280 logical px)
-SIZE_DISPLAY_LARGE = 20   # …and from 1920 logical px
 SIZE_MONO = 10        # sample numbers (PCM stream)
 
 # Icon glyphs (Segoe Fluent Icons / MDL2 Assets), in points — each size has one job.
@@ -439,7 +441,6 @@ GAP_PANE = 24         # (wide window) round the now-playing stack, and between i
 
 # List rows: the text's line height times this.
 ROW_SPACING = 1.5
-ROW_SPACING_ROOMY = 1.75   # a wide window's list (layout.SPLIT_M and wider)
 
 # Corners (px at 100%): one rule for the whole app — icon-only buttons are round, buttons with
 # words are pills, and what you type into or what holds content has corners of 4, 8 or 12.
@@ -500,8 +501,6 @@ SEARCH_ENTRY = "Search.TEntry"
 CARD_ENTRY = "Card.TEntry"
 CARD_COMBOBOX = "Pop.TCombobox"
 CARD_SCROLLBAR = "Pop.Slim.Vertical.TScrollbar"
-ROOMY_TREE = "Roomy.Treeview"              # the main window's list in a wide window…
-ROOMY_LARGE_TREE = "RoomyLarge.Treeview"   # …and from 1920 logical px
 
 _scale: float | None = None
 
@@ -685,14 +684,7 @@ def apply(root: tk.Tk) -> None:
     body_line = tkfont.nametofont("TkDefaultFont", root=root).metrics("linespace")
     style.configure("Treeview", background=BG, fieldbackground=BG, foreground=TEXT, bordercolor=BG,
                     lightcolor=BG, darkcolor=BG, rowheight=int(body_line * ROW_SPACING))
-    # The main window's list in a wide window: roomier rows, and from 1920 logical px larger text.
-    # ("Treeview" itself is shared with the Library window and never changes with the main window.)
-    large_line = tkfont.Font(root=root, font=font(SIZE_LARGE)).metrics("linespace")
-    style.configure(ROOMY_TREE, rowheight=int(body_line * ROW_SPACING_ROOMY))
-    style.configure(ROOMY_LARGE_TREE, font=font(SIZE_LARGE), rowheight=int(large_line * ROW_SPACING_ROOMY))
-    style.configure(f"{ROOMY_LARGE_TREE}.Heading", font=font(SIZE_BODY))
-    for name in ("Treeview", ROOMY_TREE, ROOMY_LARGE_TREE):
-        style.map(name, background=[("selected", BG)], foreground=[("selected", ON_ACCENT)])
+    style.map("Treeview", background=[("selected", BG)], foreground=[("selected", ON_ACCENT)])
     style.layout("Treeview.Row", [("Treeitem.row", {"sticky": "nswe"}), ("Round.selection", {"sticky": "nswe"})])
     style.layout("Treeview.Heading", [("Round.heading", {"sticky": "nswe"}), ("Treeheading.padding", {
         "sticky": "nswe", "children": [("Treeheading.image", {"side": "right", "sticky": ""}),
@@ -723,12 +715,6 @@ def apply(root: tk.Tk) -> None:
     # The main window's now-playing title, and the line under it (artist — album).
     style.configure("Display.TLabel", font=font(SIZE_DISPLAY, "semibold"))
     style.configure("Subtitle.TLabel", foreground=MUTED, font=font(SIZE_LARGE))
-    # …in a wide window: a bigger title (from 1280 logical px, larger again from 1920), artist line
-    # and format line.
-    style.configure("DisplayWide.TLabel", font=font(SIZE_DISPLAY_WIDE, "semibold"))
-    style.configure("DisplayLarge.TLabel", font=font(SIZE_DISPLAY_LARGE, "semibold"))
-    style.configure("SubtitleLarge.TLabel", foreground=MUTED, font=font(SIZE_HEADING))
-    style.configure("InfoLarge.TLabel", foreground=MUTED, font=font(SIZE_BODY))
     # (0.22.0) Section headings in every window as in Settings (PopCaption): small bold capitals in
     # the secondary text colour, with a faint line above each one but the first (controls.section).
     # (They were DG green until 0.21.0; muted, the green and amber *values* stand out.)

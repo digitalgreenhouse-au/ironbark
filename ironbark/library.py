@@ -25,6 +25,8 @@ from types import SimpleNamespace
 import soundfile as sf
 
 from . import audiofile, cuesheet, m4a
+from .musicfiles import (AUDIO_EXTENSIONS, DISC_FOLDER, SKIP_FOLDERS, album_folder, album_folder_text,  # noqa: F401
+                         is_music_name, natural_key, skip_folder, sort_name)
 from .audiofile import CuePath, CueRange
 from .tagio import TagError
 from .tagio import genres as genre_list
@@ -38,10 +40,6 @@ log = logging.getLogger(__name__)
 
 _UNREADABLE = (TagError, OSError, IndexError, struct.error)  # a damaged file: listed with what's known
 
-AUDIO_EXTENSIONS = {".flac", ".wav", ".mp3", ".aif", ".aiff", ".aifc", ".m4a", ".ogg", ".oga", ".opus"}
-# Folders that never hold anyone's music: the Recycle Bin and Windows' own system folder on a
-# drive, and the hidden folders macOS and NAS boxes keep beside the music (Finder data, thumbnails).
-_SKIP_FOLDERS = {"$recycle.bin", "system volume information", ".trashes", ".appledouble", "@eadir", "#recycle"}
 # The codec a file's name suggests (for the Library's quality column, before anything is read)
 _CODEC_BY_EXT = {".flac": "FLAC", ".wav": "WAV", ".mp3": "MP3", ".aif": "AIFF", ".aiff": "AIFF", ".aifc": "AIFF",
                  ".m4a": "ALAC", ".ogg": "Vorbis", ".oga": "Vorbis", ".opus": "Opus"}
@@ -148,20 +146,6 @@ def format_rate(hz: int) -> str:
 
 def channel_name(channels: int) -> str:
     return {1: "mono", 2: "stereo"}.get(channels, f"{channels} ch")
-
-
-def natural_key(text: str) -> list:
-    """Sort key that orders "2" before "10". Only runs of decimal digits count as numbers (every
-    odd-numbered piece of the split): "²" or "①" are digits to str.isdigit, but not to int()."""
-    return [int(chunk) if i % 2 else chunk for i, chunk in enumerate(re.split(r"(\d+)", text.lower()))]
-
-
-_LEADING_THE = re.compile(r"^\s*the\s+", re.IGNORECASE)
-
-
-def sort_name(text: str) -> list:
-    """Sort key for names: "The Beatles" sorts under B, and "2" comes before "10"."""
-    return natural_key(_LEADING_THE.sub("", text, count=1).strip() or text)
 
 
 def year_of(date: str) -> int | None:
@@ -632,18 +616,6 @@ def _read_mp3(path: Path) -> Track:
     )
 
 
-def is_music_name(name: str) -> bool:
-    """A music file, by its name: an audio extension, and not one of the "._" files macOS leaves
-    beside every file on drives and network shares it has used (they hold Finder data, not audio,
-    under the same extension)."""
-    return not name.startswith("._") and Path(name).suffix.lower() in AUDIO_EXTENSIONS
-
-
-def skip_folder(name: str) -> bool:
-    """A folder no music search should go into (see _SKIP_FOLDERS)."""
-    return name.lower() in _SKIP_FOLDERS
-
-
 def scan_folder(folder: str | Path) -> list[Track]:
     """Every audio file under `folder` (including Disc 1/Disc 2 style subfolders), in play order.
 
@@ -656,7 +628,7 @@ def scan_folder(folder: str | Path) -> list[Track]:
     for here, dirs, names in os.walk(folder):
         dirs[:] = [d for d in dirs if not skip_folder(d)]
         paths += [Path(here, name) for name in names if is_music_name(name)]
-    return _in_play_order(folder, paths)
+    return read_in_play_order(folder, paths)
 
 
 def scan_album(folder: str | Path) -> list[Track]:
@@ -667,12 +639,13 @@ def scan_album(folder: str | Path) -> list[Track]:
     for entry in folder.iterdir():
         if entry.is_file() and is_music_name(entry.name):
             paths.append(entry)
-        elif entry.is_dir() and _DISC_FOLDER.match(entry.name):
+        elif entry.is_dir() and DISC_FOLDER.match(entry.name):
             paths += [p for p in entry.iterdir() if p.is_file() and is_music_name(p.name)]
-    return _in_play_order(folder, paths)
+    return read_in_play_order(folder, paths)
 
 
-def _in_play_order(folder: Path, paths: list[Path]) -> list[Track]:
+def read_in_play_order(folder: Path, paths: list[Path]) -> list[Track]:
+    """The tracks of these files (read now), in play order (a CUE image once, as its tracks)."""
     return play_order(folder, split_cue_images([read_track(p) for p in paths]))
 
 
@@ -849,10 +822,23 @@ def expand_cue_paths(paths: list[Path]) -> list[Path]:
     return [t.path for t in split_cue_images([read_track(Path(p)) for p in paths])]
 
 
+def album_files(track: Path) -> tuple[Path, list[Path]]:
+    """(album folder, its audio files) for a track — the folder plus "Disc 1"-style subfolders,
+    with `track` itself first."""
+    folder = album_folder(track)
+    files = []
+    for entry in sorted(folder.iterdir()):
+        if is_music_name(entry.name) and entry.is_file():
+            files.append(entry)
+        elif entry.is_dir() and DISC_FOLDER.match(entry.name):
+            files += sorted(p for p in entry.iterdir() if is_music_name(p.name) and p.is_file())
+    if audiofile.cue_of(track) is not None:  # one track of a CUE image: the album is its tracks
+        files = expand_cue_paths(files)
+    files = [track] + [f for f in files if f != track]
+    return folder, files
+
+
 # -- library (a folder of album folders) ---------------------------------------
-_DISC_FOLDER = re.compile(r"^\s*(cd|dis[ck])\s*\d+\b", re.IGNORECASE)
-
-
 @dataclass
 class Album:
     path: Path
@@ -897,7 +883,7 @@ def find_albums(root: str | Path) -> list[Album]:
         if any(f.lower().endswith(".cue") for f in files):
             count = cue_track_count(Path(folder), flacs)  # a CUE image counts as its tracks
         album = Path(folder)
-        if _DISC_FOLDER.match(album.name) and album != root:
+        if DISC_FOLDER.match(album.name) and album != root:
             album = album.parent
         counts[album] = counts.get(album, 0) + count
         first_file.setdefault(album, Path(folder) / flacs[0])
@@ -919,21 +905,6 @@ def find_albums(root: str | Path) -> list[Album]:
         if names[album.name] > 1 and album.path != root:
             album.name = f"{album.name}  ({album.path.parent.name})"
     return sorted(albums, key=lambda a: natural_key(a.name))
-
-
-def album_folder(track_path: Path) -> Path:
-    """The album a track belongs to: its folder, or the parent of a "CD1"/"Disc 2" folder."""
-    folder = track_path.parent
-    return folder.parent if _DISC_FOLDER.match(folder.name) else folder
-
-
-def album_folder_text(folder: str) -> str:
-    """album_folder for a file's folder given as text: the folder, or the parent of a "CD1" /
-    "Disc 2" folder (no Path objects made: for working through a whole library)."""
-    parent, name = os.path.split(folder)
-    if not name:   # a drive or the top of a share: no parent to go to
-        return folder
-    return parent if _DISC_FOLDER.match(name) else folder
 
 
 def group_by_album(tracks: list[Track]) -> list[tuple[Path, int, int]]:

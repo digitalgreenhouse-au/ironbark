@@ -4,6 +4,101 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.41.0 — 09/10/2026
+
+**The Library's views live in the Library tab.** What used to be a separate Library window — Albums,
+Artists, Genres, Years, Composers, Recently added, Most played, Recently played, Favourites, Needs a
+look — now shows inside the Library tab in place of its song list: Ctrl+L, the **Songs ▾** button
+beside the tab's search box, or the + menu's *Browse library…*. The views sit in one drop-down (the
+eleven words never fitted a narrow window); Esc, Ctrl+L again or opening an album puts the song list
+back; the seek bar and transport stay, so the music can still be controlled. Narrower than about
+480 px the lists show fewer columns ("Artist – Album" and Year; Title and Time).
+
+- **Ctrl+K** (and Ctrl+Shift+F) now goes to the Library tab's search box with *Whole library* on —
+  the search panel that used to open over the window is gone, as that box does the same job.
+- **Add songs from the Library…** on a playlist tab's right-click menu: the Library tab opens with a
+  bar at its foot; pick songs (click, Ctrl+click, Shift+click, Ctrl+A, or an album's header), **Add**
+  puts them in the playlist and comes back; Cancel or Esc comes back with nothing added.
+- The views' ⋯ menu holds Rescan, *Open all albums in a tab* and *Add folder…*; "Add to tab" adds to
+  the tab you were on before the Library tab.
+- The Library window's saved size and place are no longer used.
+
+## 0.40.0 — 09/10/2026
+
+**The Library is a tab.** The main Library tab holds every song of every library folder, grouped by
+album. It's always there: it can't be closed, but it can be dragged along the strip like any other
+tab, and it sits on a plate of its own, a shade apart from the rest. A song plays in place; the small
+mark at the right of each row (or Ctrl+Shift+O) opens that song's album in a new tab, the music
+untouched.
+
+- **Rename any tab**: right-click → Rename tab… (or F2). The name is yours; the now-playing head
+  still shows the album's real title, and "Use the album's name" puts it back. A playlist tab renames
+  its file, as before.
+- **The search box searches the whole library** — a small switch beside it, on by default. Typing
+  lists this tab's matches first, then "From your library": a song outside this tab plays from the
+  Library tab (selected and scrolled to it); in a playlist tab every library row carries a "+", and
+  one click (or Enter, or Ctrl+Shift+A) adds the song to the playlist you're in, with Undo. Switch it
+  off and the box filters the tab only, as before.
+- Not yet: the Library window's views (Artists, Genres, Years, …) inside the tab, the bulk "Add
+  songs…" picking mode, and Ctrl+K folding into the tab. Those are the next version.
+
+## 0.39.0 — 09/10/2026
+
+**Settings fills the window.** Press the gear (or Ctrl+,) and Settings takes the place of the cover,
+transport and track list under the tab strip, the full width of the player, with a small **Done**
+button at the bottom. Done, Esc, the gear again or a click on a tab bring the player back; the music
+isn't touched.
+
+- Two pages. **Simple**, what you see first: Output, Bit-perfect, Volume · Theme, Album art, Keep on
+  top · the library folders and Local network access · Keyboard shortcuts, About, the version.
+  **Advanced settings…**, a button at the bottom: Clipping guard and headroom, Volume levelling and
+  pre-amp · Media keys, Home · Network playback · Experimental · Help (Save diagnostics…, Open log
+  folder, Detailed logging). Back returns to the simple page.
+- From the mini player the gear still grows the strip downwards to hold Settings, as before.
+
+## 0.38.0 — 09/10/2026
+
+**Ironbark never uses the internet, and nothing runs in the background.**
+
+- The update check and the online rip look-ups (AccurateRip, CUETools DB) are gone, and with them
+  Settings → Network. The rip-log check stays: it proves a disc against the checksums the ripper's
+  own EAC / XLD log recorded, with nothing sent anywhere.
+- **Local network access** (Settings → Library, off by default) now covers music on your home
+  network too: with it off, a library folder on a NAS, a shared folder or a mapped drive is left out
+  (listed greyed in Settings), and opening or dropping one says so. On, everything is as before.
+- Nothing polls: Theme is Dark or Light (a saved "Follow Windows" becomes one or the other once);
+  the library is looked at once at start-up and when you press Rescan, not every few minutes (the
+  "Watch for new music" switch is gone; new-album dots and the "New music" line still work); the
+  whole-library quality check runs only while you leave it on, and is paused at the next start
+  until you press Resume.
+
+## 0.37.0 — 09/10/2026
+
+**Three features are now standard**, no switch needed: **tag editing** (right-click a song → Edit
+tags…, or press E; Tag history undoes), **Hear it** in the Clipping window (A: an ordinary converter,
+B: clean, D: just the difference), and the **network playback cache** for music on a NAS or a shared
+folder. Tape reels stays Experimental.
+
+- New in Settings → Library: **Local network access** (off by default). Switch it on and the cache
+  runs: songs on network drives play from a copy on this computer and keep playing if the network
+  drops; Settings → Network playback shows its choices. Off, nothing of the cache runs. Never the
+  internet.
+- An older settings file that had the three experiments switched off is simply ignored.
+
+## 0.36.0 — 09/10/2026
+
+**Under the bonnet.** Nothing new to see; the code is in better shape for what comes next.
+
+- The side player's unreachable wide layout (two panes, full screen, the docked Up next and Lyrics
+  views, the whole-library search beside the box) is gone from the code, not just locked away.
+- The Check tools (Now Playing, Meters, PCM stream, Spectrogram, Stereo scope, Clipping, Compare, ABX,
+  Test signals, rip verification, Tape reels) live in their own package, `ironbark/tools/`, and share
+  one window base. The player itself is smaller and never depends on them.
+- Everything the player reads off its own thread goes through one worker with one way back, instead
+  of twenty-one threads each polling for its answer.
+- One place goes online (`network.py`), behind the one switch.
+- Tests: `uv run pytest -q -m "not ui"` runs the window-free tests in a few minutes.
+
 ## 0.35.0 — 08/10/2026
 
 **Tape reels** (Experimental — switch it on in Settings → Experimental, then press W). A reel-to-reel

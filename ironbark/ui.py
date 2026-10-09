@@ -7,8 +7,7 @@ Also here: drag and drop (folders, music files and playlists from Explorer; song
 albums inside the player — the rules are in dragdrop.py) and the keyboard's media keys / Windows'
 media panel / taskbar buttons (mediakeys.py).
 
-Tag editing (0.16.0, Experimental — no menu, key or button for it while its switch is off):
-right-click songs → Edit tags… (key E), or an album in the Library; Tag history… undoes. The
+Tag editing (0.16.0): right-click songs → Edit tags… (key E), or an album in the Library; Tag history… undoes. The
 careful saving is tag_editor.py; a song that's playing waits until the player moves on (`_poll`).
 
 Up next: right-click songs (or an album in the Library) → Play next / Add to Up next; they play
@@ -33,13 +32,15 @@ shows an "Open your library" button (Ctrl+L) instead of the empty layout.
 
 Pop-ups (0.21.0): every question box is an in-app prompt and every right-click menu a
 popups.PopupMenu (popups.py), so they follow Dark / Light; a prompt leaves the mini strip first
-(`_for_prompt`). Settings scrolls when it's taller than the window (tabbar.Popover(scroll=True)).
+(`_for_prompt`). Settings (0.39.0) is a view the full width of the window in place of the column
+(settings_view.py): a Simple page and an Advanced page, Done at the bottom; the window builds its
+controls (`_build_settings`) and packs the view (`_show_settings_view`).
 
 Opening from outside: files, folders, playlists and CUE sheets named on the command line, or handed
 over by a later launch (instance.py — "Open with", a double-click on a file while the player is
 open) are opened like a drop on the window (`open_paths`); a file asked for this way plays at once.
-Also: Settings → Help → Save diagnostics… (diagnostics.py), Detailed logging (logs.py) and Check for
-updates (updates.py); Python's cycle collector runs on this thread (tkgc.py).
+Also: Settings → Help → Save diagnostics… (diagnostics.py) and Detailed logging (logs.py); Python's
+cycle collector runs on this thread (tkgc.py). Ironbark never uses the internet (0.38.0).
 
 The keyboard: every shortcut is in one table (keys.py) — `_bind_keys` says what each does here, and
 every window the player opens is attached to it (`_with_keys`), so the keys work wherever the
@@ -47,17 +48,10 @@ keyboard is. F1 (or ?) lists them all (help_window.py); Settings → Help has th
 A playlist change (Delete, a move, Up next cleared) can be undone once: Ctrl+Z, or Undo in the
 status line.
 
-Wide windows (layout.py): from 780–880 logical px wide the window splits in two — the cover, the
-now-playing text, the seek bar and the transport stacked on the left, the track list the window's full
-height on the right — with larger type from 1280 and 1920. The same widgets are packed into other
-frames (`_apply_layout`), never rebuilt; the narrow window is laid out exactly as before. A wide window
-shows the cover at its own size at most (a smaller one on a mat), a caption over the title, a count in
-the list's header row. (0.34.0) The window is a side player locked to the column: its width stops at
-FULL_MAX_WIDTH, under SPLIT_MIN, so the split tiers are never chosen; there is no maximise or full screen.
-The right pane's view switch (Tracks · Up next · Lyrics, remembered for the session) shows the tab's
-list, Up next docked (up_next_view.py) or the playing song's lyrics (lyrics_window's view and
-follower, as in the Lyrics window); beside the search box, This tab | Whole library: the whole
-library's results (quick_search.py, docked) show in the list's place as you type (`_show_view`).
+The window is a side player (0.34.0): a tall column beside whatever else is on the screen. Its width
+stays between FULL_MIN_SIZE and FULL_MAX_WIDTH (Tk passes the cap to Windows, so dragging, Snap and
+a saved size all stop there), its height is free, and it can't be maximised or made full screen.
+One layout, packed once (`_pack_column`).
 
 The status line (`_show_status`) never moves anything above it: it keeps one line's height. A message
 too wide for it is split at a space (never inside a word) and its first part shown on a second line
@@ -72,9 +66,9 @@ and Ctrl+. / Ctrl+Shift+S, for this session only (`stop_after_current`, `set_sle
 Lyrics: key L (lyrics_window.py).
 
 The whole-library quality check (library_check.py, opt-in from the Library's Needs a look) runs on
-its own thread and worker processes; it carries on CHECK_AFTER_MS after start-up when it was left
-on, looks again when the watcher finds changed music, holds off while a blind test or test signals
-run, and stops with the player. Its stored results serve Now Playing's Check and the clipping
+its own thread and worker processes only while you leave it on: a check left on is paused at the
+next start until you press Resume (0.38.0: nothing runs in the background by itself); it holds off
+while a blind test or test signals run, and stops with the player. Its stored results serve Now Playing's Check and the clipping
 guard's true peaks (`_stored_peak`)."""
 
 from __future__ import annotations
@@ -89,7 +83,6 @@ import sys
 import threading
 import time
 import tkinter as tk
-import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -98,36 +91,36 @@ from typing import Callable
 
 from PIL import Image, ImageTk
 
-from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
-               dragdrop, experiments, keys, layout, levelling, library_check, library_db, library_index,
-               library_tracks, logs, loudness, mediakeys, placement, playlist_view, playlists, popups,
-               quick_search, recycle, settings, shapes, sleep, tag_editor, theme, tkgc, updates, watcher)
-from .abx_window import AbxWindow
+from . import (APP_NAME, __version__, analysis, appicon, artwork, audiofile, browse, chrome, controls, crash, devices, diagnostics,
+               dragdrop, experiments, keys, levelling, offthread, library_check, library_db, library_index,
+               library_tracks, logs, loudness, mediakeys, placement, places, playlists, popups,
+               quick_search, recycle, settings, settings_view, shapes, sleep, tag_editor, theme, tkgc, watcher)
+from .tools.abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
-from .compare_window import CompareWindow
-from .testsignals_window import TestSignalsWindow
-from .details import (NowPlayingWindow, cache_mark, copy_failed_text, copy_note, network_hover, network_line,
-                      network_now_line, output_line)
+from .tools.compare_window import CompareWindow
+from .tools.testsignals_window import TestSignalsWindow
+from .tools.details import NowPlayingWindow
+from .statustext import (cache_mark, copy_failed_text, copy_note, network_hover, network_line, network_now_line,
+                         output_line)
 from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
 from .favourites import Favourites
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
-from .library_window import LibraryWindow, adding_folder
-from .lyrics_window import LyricsFollower, LyricsView, LyricsWindow
-from .meter_window import MeterWindow
-from .meters import album_files
+from .library_view import LibraryView, adding_folder, view_menu
+from .lyrics_window import LyricsWindow
+from .tools.meter_window import MeterWindow
+from .tools.meters import album_files
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
-from .pcm_window import PcmWindow
-from .clip_window import ClipWindow
-from .reels_window import EXPERIMENT as TAPE_REELS, ReelsWindow
-from .scope_window import ScopeWindow
-from .spectrogram_window import SpectrogramWindow
+from .tools.pcm_window import PcmWindow
+from .tools.clip_window import ClipWindow
+from .tools.reels_window import EXPERIMENT as TAPE_REELS, ReelsWindow
+from .tools.scope_window import ScopeWindow
+from .tools.spectrogram_window import SpectrogramWindow
 from .tag_window import TagHistoryWindow, TagWindow
-from .playlist_view import PlaylistView, _fold
-from .quick_search import QuickSearch
+from .playlist_view import PlaylistView
+from .searchfold import fold
 from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
-from .up_next_view import UpNextView, count_text as up_next_count
 
 log = logging.getLogger(__name__)
 
@@ -143,7 +136,6 @@ LONG_SEEK_STEP = 30.0  # Shift+← / →
 VOLUME_STEP = 0.05   # per mouse-wheel notch over the transport, and per Ctrl+↑ / ↓
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
 WHEEL_NOTCH = 120 if sys.platform == "win32" else 1   # Tk's wheel delta for one notch (Windows: 120)
-NETWORK_CACHE = "network_cache"   # the Experimental switch (experiments.py)
 ALBUM_AGAIN_S = 30.0   # a network album not all downloaded yet: its loudness is measured again after this long
 SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: its drive or server isn't answering
 # Settings -> Network playback (the network playback cache): (saved value, what the choice says)
@@ -156,13 +148,11 @@ NET_SIZES = ((1, "1 GB"), (5, "5 GB"), (10, "10 GB"), (25, "25 GB"), (50, "50 GB
 QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
-CHECK_AFTER_MS = 60000  # a library quality check left on carries on this long after start-up
 FAVOURITES_WAIT_S = 6.0  # longest closing waits for a ♥ to be stored (the database can be busy for 5 s)
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
 UP_NEXT_CHARS = 44     # an Up next row's words are cut with "…" past this many characters…
 UP_NEXT_MARK_CHARS = 8 # …this many fewer while a column of network-download marks shares the row
-THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
 FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the mini strip has its own)
 # The full window is a side player: a tall strip beside whatever else is on the screen. It can be made
 # a little narrower or wider than usual (about 420 px) but never wide, and it can't be maximised or
@@ -176,40 +166,14 @@ HEAD_ICON_SLOT = 24        # px at 100%: the lock's and ⓘ's slots (and round h
 INFO_INK_INSET = 6         # px at 100%: the ⓘ glyph's ink stops this far inside its slot (measured from Segoe
                            # Fluent Icons / MDL2 Assets at 10 pt), so the slot reaches this far into the margin
 STATUS_DOT = 8             # px at 100%: the status dot
-UPDATE_FIRST_MS = 30000    # Check for updates: the first look this long after start-up…
-UPDATE_EVERY_MS = 3600000  # …then this often (updates.due decides whether a day has passed)
-UPDATE_NOTE_MS = 30000     # how long "Ironbark X.Y.Z is available" stays in the status line
 COVER_SETTLE_MS = 120      # while the window is resized, the cover is fetched afresh once it pauses this long
 CRASH_NOTE_MS = 60000      # how long "Ironbark closed unexpectedly last time" stays in the status line
 CRASH_NOTICE = f"{APP_NAME} closed unexpectedly last time"
 
-# The now-playing text in each layout (layout.py): larger in the wider windows.
-TITLE_STYLES = {layout.COLUMN: "Display.TLabel", layout.SPLIT: "Display.TLabel",
-                layout.SPLIT_M: "DisplayWide.TLabel", layout.SPLIT_L: "DisplayLarge.TLabel"}
-SUB_STYLES = {layout.COLUMN: "Subtitle.TLabel", layout.SPLIT: "Subtitle.TLabel",
-              layout.SPLIT_M: "SubtitleLarge.TLabel", layout.SPLIT_L: "SubtitleLarge.TLabel"}
-INFO_STYLES = {layout.COLUMN: "Info.TLabel", layout.SPLIT: "Info.TLabel", layout.SPLIT_M: "Info.TLabel",
-               layout.SPLIT_L: "InfoLarge.TLabel"}
-# The caption over the title in a wide window: what the top of the window is showing.
-NOW_PLAYING = "NOW PLAYING"
-CAPTIONS = {"album": "ALBUM", "folder": "FOLDER", "library": "LIBRARY", "playlist": "PLAYLIST", "files": "FILES"}
-KIND_NAMES = {"album": "Album", "folder": "Folder", "library": "Library", "playlist": "Playlist", "files": "Files"}
-# What the two internet switches say they do (Settings → Network, Settings → Help): what goes out, and
-# what doesn't need them.
-NETWORK_ACCESS_TEXT = ("Lets Ironbark use the internet itself: rip verification's look-ups (AccurateRip and "
-                       "CUETools DB; the CUETools DB look-up isn't encrypted, so others on your network can see "
-                       "which disc is looked up) and Check for updates (Help, below). Music on network drives "
-                       "(\\\\server\\share, or a mapped drive like Z:) and OneDrive plays without it: Windows "
-                       "fetches those files, as it does for any program.")
-UPDATE_CHECK_TEXT = (f"Once a day, asks digitalgreenhouse.com.au whether a newer {APP_NAME} is out. The request "
-                     f"names this {APP_NAME}'s version, and the website sees your computer's internet address, as "
-                     "any website does; nothing else goes with it. Needs Allow network access (Network, above).")
+LOCAL_NETWORK_TEXT = ("Lets Ironbark read music on your home network (a NAS, a shared folder, a mapped drive) "
+                      "and keep copies here, so songs keep playing if the network drops (Network playback, below). "
+                      "Off, nothing on the network is read. Never the internet.")
 
-
-def _layout_scale() -> float:
-    """Windows' display scaling for working out the layout: theme.scale() to the nearest percent
-    (Tk measures 96.05 dots an inch at 100%, which would put a 1920 px window just under 1920)."""
-    return round(theme.scale(), 2)
 
 
 def split_status(text: str, width: int, measure: Callable[[str], int]) -> tuple[str, str]:
@@ -317,12 +281,11 @@ def library_folders(prefs: dict) -> list[Path]:
     return found or [default_music_folder()]
 
 
-def _refresh_library(index: library_index.LibraryIndex) -> None:
-    """Bring the library database up to date (a worker thread's work: nothing of the window's)."""
+def _look_once(look: watcher.Watcher, index: library_index.LibraryIndex) -> None:
+    """One look at the library folders (a worker thread's work: nothing of the window's): what
+    changed is read, the new albums worked out, and the report left for _watch_reports."""
     try:
-        index.refresh()
-    except Exception:
-        log.exception("couldn't bring the library up to date")
+        look.results.put(look.check(new_albums=True))
     finally:
         index.db.release()
 
@@ -433,8 +396,9 @@ class Tab:
     kind: str                         # "album" (from the Library), "folder" (everything under it), "library",
                                       # "playlist" (an .m3u8 file; path is the file) or "files" (music files
                                       # dropped from Explorer: they're its extras; path = the first one's folder)
-    path: str
+    path: str                         # "" = the main Library tab (every library folder; 0.40.0)
     query: str = ""                   # Library search, for a "library" tab
+    name: str = ""                    # a name given with Rename… (shown on the strip in place of the album's)
     tracks: list[Track] | None = None  # None until loaded
     loading: bool = False
     album_name: str = ""               # a one-album tab's name from the tags, looked up in the background
@@ -449,6 +413,7 @@ class Tab:
     extras: list[str] = field(default_factory=list)  # album folders (Library, drops) or single files added, played after
     play_when_loaded: bool = False     # play was pressed while it was loading
     unavailable: bool = False          # its folder / file wasn't there at the last load (a drive not connected)
+    needs_network: bool = False        # …because it's on the network and Local network access is off
     load_progress: dict | None = field(default=None, repr=False, compare=False)  # the load under way
     summary: tuple | None = field(default=None, repr=False, compare=False)  # (tracks, key, text) of the album line
     numbers: tuple | None = field(default=None, repr=False, compare=False)  # (tracks, count, (songs, albums, seconds))
@@ -460,7 +425,16 @@ class Tab:
         return self.tracks[self.last_index] if 0 <= self.last_index < len(self.tracks) else self.tracks[0]
 
     @property
+    def main(self) -> bool:
+        """The main Library tab: every library folder, always there, never closed."""
+        return self.kind == "library" and self.path == ""
+
+    @property
     def title(self) -> str:
+        if self.name:
+            return self.name
+        if self.main:
+            return "Library"
         if self.kind == "playlist":
             return Path(self.path).stem
         if self.album_name:
@@ -474,6 +448,8 @@ class Tab:
 
     def source(self) -> dict:
         saved = {"kind": self.kind, "path": self.path, "query": self.query}
+        if self.name:
+            saved["name"] = self.name
         if self.extras:
             saved["extras"] = list(self.extras)
         track =self.view_track() if self.last_index >= 0 else None
@@ -485,6 +461,8 @@ class Tab:
         return saved
 
     def same(self, kind: str, path, query: str = "") -> bool:
+        if self.main or (kind == "library" and str(path) == ""):
+            return self.main and kind == "library" and str(path) == ""
         return self.kind == kind and Path(self.path) == Path(path) and self.query == query
 
 
@@ -527,13 +505,17 @@ class PlayerWindow:
         self._compare: CompareWindow | None = None
         self._abx: AbxWindow | None = None
         self._testsignals: TestSignalsWindow | None = None
-        self._library: LibraryWindow | None = None
-        self._quick: QuickSearch | None = None       # the song search panel (Ctrl+K), made when first opened
+        self._library: LibraryView | None = None     # the Library's views (library_view.py), made when first opened
+        self._library_shown = False                  # …and on show in place of the track list
+        self._picking_for: Tab | None = None         # the playlist songs are being picked for in the Library tab
+        self._before_main: Tab | None = None         # the tab on show before the Library tab was selected
         # Favourite songs (♥): read from the library database on a worker, then kept here.
         self.favourites = Favourites(lambda: self._index().db)
         self.favourites.changed.append(self._favourites_changed)
         # The whole-library quality check: off until chosen in the Library; the choice is kept.
-        self.checker = library_check.Checker(lambda: self._index().db, state=self.prefs.get("library_check", "off"),
+        # (A check left "on" is "paused" at the next start: nothing runs until Resume is pressed.)
+        saved_check = self.prefs.get("library_check", "off")
+        self.checker = library_check.Checker(lambda: self._index().db, state="paused" if saved_check == "on" else saved_check,
                                              on_state=lambda state: self.prefs.update(library_check=state))
         self._tag_window: TagWindow | None = None
         self._tag_history: TagHistoryWindow | None = None
@@ -561,10 +543,10 @@ class PlayerWindow:
         self._mini_settings_from: str | None = None
         self._keys_before_mini: str | None = None   # what had the keyboard in the full window (see _show_mini)
         # The theme comes first, so everything is built in its colours. (Dark by default.)
-        if self.prefs.get("theme") not in dict(theme.THEME_CHOICES):
+        self.prefs["theme"] = theme.settled_choice(self.prefs.get("theme", ""))   # (a "Follow Windows" from before 0.38.0)
+        if self.prefs["theme"] not in dict(theme.THEME_CHOICES):
             self.prefs["theme"] = theme.DEFAULT_THEME
-        self._windows_light = theme.windows_uses_light() if self.prefs["theme"] == "system" else None
-        theme.use(theme.palette_for(self.prefs["theme"], self._windows_light))
+        theme.use(theme.palette_for(self.prefs["theme"]))
 
         root.withdraw()  # set the window up out of sight, then show it once
         root.title(APP_NAME)
@@ -584,18 +566,16 @@ class PlayerWindow:
         self.open_at_home = tk.BooleanVar(value=bool(self.prefs["open_at_home"]))
         self.clip_guard = tk.BooleanVar(value=bool(self.prefs["clip_guard"]))
         self.show_art = tk.BooleanVar(value=bool(self.prefs["show_art"]))
-        self.allow_network = tk.BooleanVar(value=bool(self.prefs["allow_network"]))
+        self.local_network = tk.BooleanVar(value=bool(self.prefs["local_network"]))
         self.media_controls = tk.BooleanVar(value=bool(self.prefs["media_controls"]))
-        self.watch_music = tk.BooleanVar(value=bool(self.prefs["watch_music"]))
-        self.check_updates = tk.BooleanVar(value=bool(self.prefs["check_updates"]))
         self.detailed_logging = tk.BooleanVar(value=bool(self.prefs["detailed_logging"]))
-        self._update_found: updates.Release | None = None   # set by the update check's thread
-        self._update_checking = False
-        self.update_available: updates.Release | None = None
-        self._update_job = None
         # Spotting new music (0.17.0): a thread looks at the library folder every few minutes;
         # its reports are picked up by _poll (never handled on the watcher's thread).
         self.watcher = watcher.Watcher(self._index)
+        since = self._new_music_state()
+        if not isinstance(since.get("since"), (int, float)):
+            since["since"] = time.time()   # nothing already in the library counts as new
+        self.watcher.since = since["since"]   # (its reports then carry the new albums)
         self._new_albums: list[Path] = []        # the new albums, newest first (watcher.new_albums)
         self._listening: _Listening | None = None   # the song being heard, for its play count
         self._plays_seen = 0   # plays stored (_plays_stored) when the Plays columns last read their counts
@@ -626,6 +606,9 @@ class PlayerWindow:
         self._album_wanted: Path | None = None
         self._album_later: dict[Path, float] = {}   # network albums to measure again after this (monotonic)
         self._album_cancel = threading.Event()
+        # Everything read for the window off Tk's thread goes through here (offthread.py): one queue
+        # of answers, taken onto Tk's thread by one timer.
+        self.work = offthread.Background(root)
         threading.Thread(target=self._measure_peaks, name="true-peak", daemon=True).start()
         threading.Thread(target=self._measure_albums, name="album-loudness", daemon=True).start()
         # Stop after this song and the sleep timer: for this session only.
@@ -644,30 +627,8 @@ class PlayerWindow:
             hardware_volume = player.refresh_hardware_volume()
             player.set_exclusive(True)
 
-        # The layout (layout.py): the narrow column until the window's size says otherwise.
-        self._tier = layout.COLUMN
-        self._layout_job = None
-        self._plan: layout.Plan | None = None
-        self._heights: layout.Heights | None = None   # measured once per layout (_measure_heights)
-        self._measured: dict[str, layout.Heights] = {}   # each wide layout's heights when last measured
-        self._opening_size: tuple[int, int] | None = None   # (real px) the size it opens at, before it shows
-        self._head_full = ("Nothing playing", "Open your library: Ctrl+L")   # title and artist line, uncut
-        self._head_texts = ("", "")    # the caption and the format line
-        self._head_cut = (False, False)  # whether a wide window shows the title / artist line shortened
-        self._fits: dict[tuple, str] = {}   # shortened text, by (text, style, width)
-        self._cover_tip = ""           # a wide window's cover tooltip: its own size, and how it's shown
-        self._art_image = None         # the last cover fetched, for a quick stand-in while resizing
-        self._art_hidden = False       # a wide window too short for a cover: the cover box is put away
-        # A wide window's right pane, for this session: its view ("tracks", "up_next", "lyrics") and
-        # what the search box searches ("tab" or "library"); the docked views are made when first shown.
-        self.view = "tracks"
-        self.search_scope = "tab"
-        self._up_next_view: UpNextView | None = None
-        self._lyrics_view: LyricsView | None = None
-        self._lyrics_follower: LyricsFollower | None = None
-        self._lyrics_line = ""         # where the docked lyrics came from (the pane's count line)
-        self._up_next_counted: tuple | None = None   # (the queue counted, its count line): see _view_count
-        self._inline: QuickSearch | None = None   # the whole library's results, docked under the search box
+        self._head_full = ("Nothing playing", "Open your library: Ctrl+L")   # title and artist line
+        self._head_fmt = ""           # the format line
         # The status line: the whole message, and what's on show (see _show_status).
         self._status_text = ""
         self._status_fitted: tuple | None = None
@@ -686,9 +647,6 @@ class PlayerWindow:
             start = self._mini_geometry(start)
         if not placement.restore(root, start) and placement.parse(start) is None and self.mini_mode:
             root.geometry(f"{theme.px(MINI_DEFAULT_SIZE[0])}x{theme.px(MINI_DEFAULT_SIZE[1])}")
-        parsed = placement.parse(start) if start else None
-        if parsed and parsed[0]:   # laid out for its size before it's shown (a width past the cap is capped)
-            self._check_layout(size=(min(parsed[0], theme.px(FULL_MAX_WIDTH)), parsed[1]))
         root.deiconify()
         self._settle_size(start)
         theme.dark_title_bar(root)
@@ -696,7 +654,6 @@ class PlayerWindow:
         if self.media_controls.get():
             self._start_media()
         self._media_job = root.after(MEDIA_POLL_MS, self._media_poll)
-        self._theme_job = root.after(THEME_POLL_MS, self._follow_windows)
 
         self._polls = 0
         self._saved_snapshot = json.dumps(self.prefs, sort_keys=True)
@@ -712,22 +669,15 @@ class PlayerWindow:
         self._named: list[tuple[str, ...]] = [tuple(paths)] if paths else []
         if settings.problem:   # a damaged settings file was set aside at start: said once
             self._set_notice(settings.problem, 12000)
-        from . import crash
-
         if crash.take_unexpected_exit():   # the last run ended in a crash: said once, with the way to report it
             self._notice_link = (CRASH_NOTICE, "Save diagnostics…", lambda: self.save_diagnostics())
             self._set_notice(CRASH_NOTICE, CRASH_NOTE_MS)
         self._poll_job = self.root.after(POLL_MS, self._poll)
         self.favourites.load()
-        if self.watch_music.get():
-            self._start_watching(INDEX_AFTER_MS / 1000)
-        else:
-            self.root.after(INDEX_AFTER_MS, self._refresh_index)
+        self.root.after(INDEX_AFTER_MS, self._refresh_index)   # one look: what changed since last time
         self._update_new_albums()
-        self._update_job = self.root.after(UPDATE_FIRST_MS, self._update_tick)
-        if experiments.enabled(self.prefs, NETWORK_CACHE):
+        if self.local_network.get():
             self.root.after_idle(self._start_cache)   # (once the window is up: no I/O to speak of)
-        self._check_job = self.root.after(CHECK_AFTER_MS, self.checker.kick)   # (nothing unless it was left on)
         # Up and running: from here Python's cycle collector runs only on this thread (tkgc.py).
         self.collector = tkgc.Collector(root)
         self.collector.start()
@@ -746,21 +696,9 @@ class PlayerWindow:
         body = ttk.Frame(self.root, padding=theme.pad(theme.GAP_WIDE, theme.GAP_LARGE, theme.GAP_WIDE, theme.GAP_MEDIUM))
         body.pack(fill="both", expand=True)
         self.body = body
-        # A wide window's two panes (layout.py), not packed in the narrow window: on the left the
-        # now-playing stack (cover, text, seek bar, transport) centred in its pane, on the right the
-        # track list. Made before the widgets they hold: a widget packed into a frame other than its
-        # parent must be above that frame in Tk's stacking order.
-        self.split = ttk.Frame(body)
-        self.left = tk.Frame(self.split, bg=theme.BG, width=1)
-        self.left.pack_propagate(False)
-        self.left.pack(side="left", fill="y")
-        self.stack = ttk.Frame(self.left)
-        self.right = ttk.Frame(self.split)
-        self.right.pack(side="left", fill="both", expand=True)
-
         # Now playing: a square cover the full width of the window, the details underneath.
         # It follows the window's width, but never takes more than half its height, so the
-        # track list always keeps room. (Packed by _pack_column / _pack_split.)
+        # track list always keeps room. (Packed by _pack_column.)
         head = ttk.Frame(body)
         self.head = head
         self.art_box = tk.Frame(head, bg=theme.BG, height=1)
@@ -771,14 +709,11 @@ class PlayerWindow:
         self.art_label.place(relx=0.5, rely=0, anchor="n")
         # Click: Now Playing; double-click: the mini strip (0.19.0).
         click_or_double(self.art_label, self.show_details, self.toggle_mini)
-        Tooltip(self.art_label, lambda: self._cover_tip)   # (a wide window: the cover's size)
         self.art_box.bind("<Configure>", lambda e: self._fit_art())
         self.root.bind("<Configure>", self._on_resize, add="+")
         text = ttk.Frame(head)
         text.pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
         self.head_text = text
-        # A wide window's caption over the title: NOW PLAYING, or what the tab is (ALBUM, PLAYLIST, …).
-        self.kind_label = ttk.Label(text, text="", style="Section.TLabel", anchor="w")
         if not self.show_art.get():
             self.art_box.pack_forget()
             text.pack_configure(pady=0)
@@ -787,9 +722,6 @@ class PlayerWindow:
         self.sub_label = ttk.Label(text, text="Open your library: Ctrl+L", style="Subtitle.TLabel",
                                    anchor="w")
         self.sub_label.pack(fill="x")
-        # Shortened with "…" (a wide window): the whole text in a tooltip.
-        Tooltip(self.title_label, lambda: self._head_full[0] if self._head_cut[0] else "")
-        Tooltip(self.sub_label, lambda: self._head_full[1] if self._head_cut[1] else "")
         info_row = ttk.Frame(text)
         info_row.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
         # Right of the format line, one group in one size and style: the status dot, the
@@ -906,13 +838,14 @@ class PlayerWindow:
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu,
-                                     on_search_library=lambda query: self._search_whole_library(query),
+                                     on_search_library=self.find_in_library, on_views=self._views_menu,
                                      is_favourite=lambda track: track in self.favourites,
                                      plays_db=lambda: self._index().db,
-                                     on_view=self.set_view, on_scope=self.set_search_scope,
-                                     on_library_key=self._library_key)
+                                     on_library_search=self._search_library_for_list,
+                                     on_library_hit=self._library_hit, on_open_album=self._open_album_of,
+                                     on_scope=self._scope_changed)
         self.playlist.set_columns(self.prefs.get("track_columns") or ())
-        self.playlist.set_wide_columns(self.prefs.get("wide_track_columns") or ())
+        self.playlist.set_whole_library(bool(self.prefs.get("search_whole_library", True)))
         # "Up next (3) · Song": shown above the status line only while songs are queued; click
         # for the list. (Packed from the bottom, ahead of the track list, like the status line.)
         self.up_next_label = ttk.Label(body, text="", style="UpNext.TLabel", anchor="w", cursor="hand2")
@@ -944,8 +877,13 @@ class PlayerWindow:
         self._empty_shown = False
         self._paint_empty_mark()
 
-        self.settings_pop = self._build_settings()
-        self.settings_pop.on_hide = self._settings_closed
+        # Settings: a view in place of the column (settings_view.py). Its frame belongs to the root, so
+        # it can be packed in the body (the full window) or under the mini strip.
+        self.settings = settings_view.SettingsView(self.root, self.root, on_done=lambda: self._show_settings_view(False))
+        self.settings.on_hide = self._settings_closed
+        self._build_settings(self.settings)
+        self.settings.finish()
+        self.root.bind("<Escape>", lambda e: self._escape_settings(), add="+")
         self.new_menu = self._build_new_menu()
 
         # Mini mode: built now, shown in place of the strip + body by toggle_mini.
@@ -997,23 +935,22 @@ class PlayerWindow:
         holder.pack_propagate(False)
         return box
 
-    def _build_settings(self) -> Popover:
-        """Grouped into Sound / Window / Library / Network / Experimental / Help, every on/off choice
-        a slider switch with one plain line saying what it does.
-
-        (0.21.0) It scrolls when it doesn't fit the window (it's ~1300 px tall at 150%
-        scaling) — mouse wheel anywhere over it, and a slim scrollbar that shows only then. Its
-        buttons are flat pills and the volume is the same drawn slider as the seek bar."""
-        pop = Popover(self.root, width=theme.px(SETTINGS_WIDTH), scroll=True, controls=True, at_edge=True)
-        self.settings_area = pop.area
-        b = pop.body
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x")
+    def _build_settings(self, view: settings_view.SettingsView):
+        """The controls, on the view's two pages. **Simple** (what shows first): Output, Bit-perfect,
+        Volume · Theme, Album art, Keep on top · the library folders, Local network access · Keyboard
+        shortcuts, About, the version. **Advanced**: Clipping guard and its headroom, Volume levelling
+        and its pre-amp · Media keys, Home · Network playback (while Local network access is on) ·
+        Experimental · Help (Save diagnostics…, Open log folder, Detailed logging). Every on/off choice
+        is a slider switch with one plain line saying what it does."""
+        self.settings_area = view.area
+        b, a = view.simple, view.advanced
+        row = view.head
         ttk.Label(row, text="Settings", style="PopTitle.TLabel").pack(side="left")
         self.mini_button = self._pop_button(row, "Mini player", self.toggle_mini,   # (it closes Settings first)
                                             "Shrink the player to a small strip. Also Z, or double-click the cover")
         self.mini_button.pack(side="right")
 
+        # -- Simple --
         self._caption(b, "Sound", first=True)
         self._output_choices: list[str | None] = []
         self.output_box = self._choice_box(b, "", (), full=True)
@@ -1024,32 +961,6 @@ class PlayerWindow:
         if self.can_exclusive:
             self._setting(b, "Bit-perfect", "Sound exactly as recorded. Other apps go quiet.",
                           self.exclusive, self._toggle_exclusive)
-        self._setting(b, "Clipping guard", "Lowers only tracks that would crackle, by just enough.",
-                      self.clip_guard, self._guard_changed)
-        # (0.24.0) "My DAC has headroom": room some converters have above full scale. Off by default.
-        self.headroom_box = self._choice_box(b, "My DAC has headroom",
-                                             [headroom_label(v) for v in GUARD_HEADROOM_CHOICES])
-        self.headroom_box.current(headroom_index(self.prefs.get("clip_headroom", 0.0)))
-        self.headroom_box.bind("<<ComboboxSelected>>", self._headroom_chosen)
-        Tooltip(self.headroom_box, "Only if your converter is known to take overs: the clipping guard then lets "
-                                   "the wave go this far past full scale before it turns a track down. "
-                                   "Measured converters range from none to about 3.5 dB. Off = none.")
-        # Volume levelling: off by default (any change of level means the device no longer gets the
-        # file's own samples); the pre-amp goes with it.
-        self.levelling_box = self._choice_box(b, "Volume levelling", [label for _, label in levelling.MODES])
-        self.levelling_box.current([key for key, _ in levelling.MODES].index(self._levelling_setting()))
-        self.levelling_box.bind("<<ComboboxSelected>>", self._levelling_chosen)
-        Tooltip(self.levelling_box, "Plays songs at about the same loudness, from their ReplayGain tags (or "
-                                    "Ironbark measures them). Track: each song on its own. Album: an album's "
-                                    "songs keep their own balance. Smart: Album while an album plays in order, "
-                                    "else Track. Not bit-perfect while it's on.")
-        self.preamp_box = self._choice_box(b, "Levelling pre-amp",
-                                           [levelling.preamp_label(v) for v in levelling.PREAMP_CHOICES],
-                                           state="disabled" if self._levelling_setting() == "off" else "readonly")
-        self.preamp_box.current(levelling.PREAMP_CHOICES.index(self._preamp_db()))
-        self.preamp_box.bind("<<ComboboxSelected>>", self._preamp_chosen)
-        Tooltip(self.preamp_box, "Added to every levelling gain. A song is only turned up as far as its "
-                                 "peak allows (it stays under −0.1 dB true peak).")
         row = ttk.Frame(b, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
         ttk.Label(row, text="Volume", style="Pop.TLabel").pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM))
@@ -1066,24 +977,9 @@ class PlayerWindow:
         self.theme_box = self._choice_box(b, "Theme", [label for _, label in theme.THEME_CHOICES], gap=0)
         self.theme_box.current([key for key, _ in theme.THEME_CHOICES].index(self.prefs["theme"]))
         self.theme_box.bind("<<ComboboxSelected>>", self._theme_chosen)
-        Tooltip(self.theme_box, "Follow Windows: light or dark, as Windows' own app setting is "
-                                "(Personalisation → Colours)")
         self._setting(b, "Album art", "Off gives the track list more room.", self.show_art, self._toggle_art)
         self._setting(b, "Keep on top", "Stay in front of other windows. The mini player has its own (on at first).",
                       self.on_top, self._toggle_on_top)
-        self._setting(b, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
-                      self.media_controls, self._toggle_media)
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-        self.home_text = ttk.Label(row, text="", style="Pop.TLabel")
-        self.home_text.pack(side="left", fill="x", expand=True)
-        self.snap_button = self._pop_button(row, "Snap to home", lambda: (Popover.close_open(), self.snap_home()),
-                                            "Also Ctrl+Shift+H, or double-click the empty strip at the top")
-        self.snap_button.pack(side="right")
-        self._pop_button(row, "Use current", self.make_home, "Make the window's current spot and size its home").pack(
-            side="right", padx=theme.pad(0, theme.GAP))
-        self._setting(b, "Open at home", "Start up at the home position.", self.open_at_home)
-        self._update_home_text()
 
         self._caption(b, "Library")
         self.library_rows = ttk.Frame(b, style="Pop.TFrame")   # one row per library folder
@@ -1093,35 +989,8 @@ class PlayerWindow:
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self._pop_button(row, "Add folder…", self._add_library_folder,
                          "Add another folder of music to the Library").pack(side="right")
-        self._setting(b, "Watch for new music", "Checks the folders every few minutes.",
-                      self.watch_music, self._toggle_watch)
+        self._setting(b, "Local network access", LOCAL_NETWORK_TEXT, self.local_network, self._local_network_changed)
 
-        self._caption(b, "Network")
-        network_row = self._setting(b, "Allow network access", NETWORK_ACCESS_TEXT,
-                                    self.allow_network, self._network_changed)
-        # Network playback (only while its Experimental switch is on): how songs on network drives
-        # are fetched into the copy on this computer they play from.
-        self.netplay_box = ttk.Frame(b, style="Pop.TFrame")
-        self._netplay_after = network_row
-        self._build_netplay(self.netplay_box)
-        if experiments.enabled(self.prefs, NETWORK_CACHE):
-            self.netplay_box.pack(fill="x", after=network_row)
-
-        if experiments.EXPERIMENTS:
-            self._caption(b, "Experimental")
-        else:  # one line, to keep the panel short: the switches appear when there's something to try
-            tk.Frame(b, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
-            row = ttk.Frame(b, style="Pop.TFrame")
-            row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-            ttk.Label(row, text="EXPERIMENTAL", style="PopCaption.TLabel").pack(side="left")
-            note = ttk.Label(row, text="none right now", style="PopMuted.TLabel")
-            note.pack(side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
-            Tooltip(note, "New features appear here first, off until you switch them on")
-        for experiment in experiments.EXPERIMENTS:
-            var = tk.BooleanVar(value=experiments.enabled(self.prefs, experiment.key))
-            self.experiment_vars[experiment.key] = var
-            self._setting(b, experiment.title, experiment.description, var,
-                          lambda key=experiment.key: self._toggle_experiment(key))
         self._caption(b, "Help")
         self.help_box = ttk.Frame(b, style="Pop.TFrame")
         self.help_box.pack(fill="x")
@@ -1131,11 +1000,81 @@ class PlayerWindow:
                          "Every key, with a filter box. Also F1 or ? in any Ironbark window").pack(side="left")
         self._pop_button(row, "About Ironbark", lambda: self._from_settings(self.show_about),
                          "Version, licences, privacy and the website").pack(side="right")
-        self._add_help_buttons(self.help_box)
         self.version_label = ttk.Label(b, text="", style="PopMuted.TLabel")
         self.version_label.pack(anchor="e", pady=theme.pad(theme.GAP_LARGE, 0))
         self._paint_version()
-        return pop
+
+        # -- Advanced --
+        self._caption(a, "Sound", first=True)
+        self._setting(a, "Clipping guard", "Lowers only tracks that would crackle, by just enough.",
+                      self.clip_guard, self._guard_changed)
+        # (0.24.0) "My DAC has headroom": room some converters have above full scale. Off by default.
+        self.headroom_box = self._choice_box(a, "My DAC has headroom",
+                                             [headroom_label(v) for v in GUARD_HEADROOM_CHOICES])
+        self.headroom_box.current(headroom_index(self.prefs.get("clip_headroom", 0.0)))
+        self.headroom_box.bind("<<ComboboxSelected>>", self._headroom_chosen)
+        Tooltip(self.headroom_box, "Only if your converter is known to take overs: the clipping guard then lets "
+                                   "the wave go this far past full scale before it turns a track down. "
+                                   "Measured converters range from none to about 3.5 dB. Off = none.")
+        # Volume levelling: off by default (any change of level means the device no longer gets the
+        # file's own samples); the pre-amp goes with it.
+        self.levelling_box = self._choice_box(a, "Volume levelling", [label for _, label in levelling.MODES])
+        self.levelling_box.current([key for key, _ in levelling.MODES].index(self._levelling_setting()))
+        self.levelling_box.bind("<<ComboboxSelected>>", self._levelling_chosen)
+        Tooltip(self.levelling_box, "Plays songs at about the same loudness, from their ReplayGain tags (or "
+                                    "Ironbark measures them). Track: each song on its own. Album: an album's "
+                                    "songs keep their own balance. Smart: Album while an album plays in order, "
+                                    "else Track. Not bit-perfect while it's on.")
+        self.preamp_box = self._choice_box(a, "Levelling pre-amp",
+                                           [levelling.preamp_label(v) for v in levelling.PREAMP_CHOICES],
+                                           state="disabled" if self._levelling_setting() == "off" else "readonly")
+        self.preamp_box.current(levelling.PREAMP_CHOICES.index(self._preamp_db()))
+        self.preamp_box.bind("<<ComboboxSelected>>", self._preamp_chosen)
+        Tooltip(self.preamp_box, "Added to every levelling gain. A song is only turned up as far as its "
+                                 "peak allows (it stays under −0.1 dB true peak).")
+
+        self._caption(a, "Window")
+        self._setting(a, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
+                      self.media_controls, self._toggle_media)
+        row = ttk.Frame(a, style="Pop.TFrame")
+        row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
+        self.home_text = ttk.Label(row, text="", style="Pop.TLabel")
+        self.home_text.pack(side="left", fill="x", expand=True)
+        self.snap_button = self._pop_button(row, "Snap to home", lambda: (self._close_settings(), self.snap_home()),
+                                            "Also Ctrl+Shift+H, or double-click the empty strip at the top")
+        self.snap_button.pack(side="right")
+        self._pop_button(row, "Use current", self.make_home, "Make the window's current spot and size its home").pack(
+            side="right", padx=theme.pad(0, theme.GAP))
+        self._setting(a, "Open at home", "Start up at the home position.", self.open_at_home)
+        self._update_home_text()
+
+        # Network playback (only while Local network access is on): how songs on network drives are
+        # fetched into the copy on this computer they play from.
+        self.netplay_box = ttk.Frame(a, style="Pop.TFrame")
+        self._netplay_after = None
+        self._build_netplay(self.netplay_box)
+        if self.local_network.get():
+            self.netplay_box.pack(fill="x")
+
+        if experiments.EXPERIMENTS:
+            self._caption(a, "Experimental")
+        else:  # one line, to keep the page short: the switches appear when there's something to try
+            tk.Frame(a, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
+            row = ttk.Frame(a, style="Pop.TFrame")
+            row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+            ttk.Label(row, text="EXPERIMENTAL", style="PopCaption.TLabel").pack(side="left")
+            note = ttk.Label(row, text="none right now", style="PopMuted.TLabel")
+            note.pack(side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
+            Tooltip(note, "New features appear here first, off until you switch them on")
+        for experiment in experiments.EXPERIMENTS:
+            var = tk.BooleanVar(value=experiments.enabled(self.prefs, experiment.key))
+            self.experiment_vars[experiment.key] = var
+            self._setting(a, experiment.title, experiment.description, var,
+                          lambda key=experiment.key: self._toggle_experiment(key))
+        self._caption(a, "Help")
+        self.help_more = ttk.Frame(a, style="Pop.TFrame")
+        self.help_more.pack(fill="x")
+        self._add_help_buttons(self.help_more)
 
     def _choice(self, parent, label: str, choices, key: str, tip: str, on_change=None,
                 width: int | None = None) -> ttk.Combobox:
@@ -1228,7 +1167,7 @@ class PlayerWindow:
         if manager is None:
             from . import netcache
 
-            on = experiments.enabled(self.prefs, NETWORK_CACHE)
+            on = self.local_network.get()
             text = "Cache: starts when Ironbark next starts" if on else "Cache: off"
             # (Copies from an earlier run, which Empty the cache deletes: looked for only while on show.)
             left = netcache.left_on_disk() if self.netplay_box.winfo_manager() else 0
@@ -1286,23 +1225,17 @@ class PlayerWindow:
                               "The copies of network songs on this computer are deleted (the songs on the "
                               "network drive aren't touched).", ok="Empty", danger=True):
             return
-        done: list = []
-        threading.Thread(target=lambda: done.append(netcache.clear_folder()), name="cache-clear",
-                         daemon=True).start()
+        self.work.run(netcache.clear_folder, self._idle_cache_emptied, name="cache-clear")
         self._set_notice("Emptying the cache…", 3000)
-        self.root.after(200, lambda: self._idle_cache_emptied(done))
 
-    def _idle_cache_emptied(self, done: list):
-        if not done:
-            self.root.after(200, lambda: self._idle_cache_emptied(done))
-            return
-        if not done[0]:
+    def _idle_cache_emptied(self, cleared):
+        if not cleared or isinstance(cleared, offthread.Error):
             self._set_notice("Another copy of Ironbark is using the cache: close it, then try again", 6000)
         self._paint_cache()
 
     # -- the network playback cache (Experimental) --------------------------------------------
     def _start_cache(self):
-        """Experimental -> Network playback cache is on: start it (read when Ironbark starts)."""
+        """Local network access is on: start the network playback cache (read when Ironbark starts)."""
         from . import netcache
 
         try:
@@ -1337,11 +1270,10 @@ class PlayerWindow:
         self._set_notice(text, 8000)
 
     def _add_help_buttons(self, box: ttk.Frame):
-        """The rest of Settings → Help, under Keyboard shortcuts / About: what to reach for when
-        something's wrong (Save diagnostics…, Open log folder, Detailed logging), and Check for
-        updates."""
+        """The rest of Settings → Help (the Advanced page): what to reach for when something's wrong
+        (Save diagnostics…, Open log folder, Detailed logging)."""
         row = ttk.Frame(box, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+        row.pack(fill="x")
         self.diagnostics_button = self._pop_button(row, "Save diagnostics…", self.save_diagnostics,
                                                    "Save a .zip to send with a problem report: versions, sound "
                                                    "outputs, logs and settings. Your folders, tabs, playlists and "
@@ -1352,12 +1284,12 @@ class PlayerWindow:
                          "Where crash.log and app.log are kept").pack(side="right")
         self._setting(box, "Detailed logging", "Notes more of what the player does in its log, to help track "
                       "down a problem. Off normally.", self.detailed_logging, self._detailed_logging_changed)
-        self._setting(box, "Check for updates", UPDATE_CHECK_TEXT, self.check_updates, self._updates_changed)
 
     def _from_settings(self, show):
         """A Settings button that opens a window: Settings closes first (the mini strip's grown
         window goes back to the strip)."""
         Popover.close_open()
+        self._close_settings()
         show()
 
     def _volume_slid(self, value: float):
@@ -1384,55 +1316,42 @@ class PlayerWindow:
         if not self._ears_at_risk() or self._louder_ok(level):
             self._volume_slid(level * 100)
 
-    def _network_changed(self):
-        """Off by default; read live by rip verification (ripcheck.network_allowed) and the update
-        check, the only parts of the player that go online."""
-        self.prefs["allow_network"] = self.allow_network.get()
-        if self._now_playing is not None and self._now_playing.win.winfo_exists():
-            self._now_playing.network_changed()
-        self._check_for_update_if_due()
-
-    def _updates_changed(self):
-        """Check for updates: off by default, and only switched on while network access is allowed."""
-        if self.check_updates.get() and not self.allow_network.get():
-            self.check_updates.set(False)
-            self._set_notice("Check for updates needs network access: switch on Allow network access first", 8000)
-        self.prefs["check_updates"] = self.check_updates.get()
-        self._check_for_update_if_due()
-
     def _detailed_logging_changed(self):
         self.prefs["detailed_logging"] = self.detailed_logging.get()
         logs.set_detailed(self.detailed_logging.get())
 
+    def _local_network_changed(self):
+        """Settings → Library → Local network access: music on the home network may be read (the
+        library folders there are looked at now; a tab on one reads when next chosen) and the network
+        playback cache may run — its settings show with it; the cache itself starts or stops when
+        Ironbark next starts."""
+        on = self.local_network.get()
+        self.prefs["local_network"] = on
+        if on:
+            self.netplay_box.pack(fill="x")
+        else:
+            self.netplay_box.pack_forget()
+        self._paint_cache()
+        self._paint_library_folders()
+        index = self._index()   # (the library folders the switch allows: a look under way at others stops)
+        if self._library is None:
+            self.work.run(lambda: _look_once(self.watcher, index), name="library-folders")
+        self._set_notice(f"The network playback cache {'starts' if on else 'stops'} when Ironbark next starts", 5000)
+
     def _toggle_experiment(self, key: str):
         experiments.set_enabled(self.prefs, key, self.experiment_vars[key].get())
         self._paint_version()
-        if key == NETWORK_CACHE:   # (its settings show with it; the cache itself starts or stops with Ironbark)
-            on = self.experiment_vars[key].get()
-            if on:
-                self.netplay_box.pack(fill="x", after=self._netplay_after)
-            else:
-                self.netplay_box.pack_forget()
-            self._paint_cache()
-            self._set_notice(f"The network playback cache {'starts' if on else 'stops'} when Ironbark next starts",
-                             5000)
         if key == TAPE_REELS:
             if self.experiment_vars[key].get():
                 self._set_notice(f"Tape reels: press {keys.hint('reels')} to open the deck", 5000)
             elif self._reels is not None and self._reels.win.winfo_exists():
                 self._reels.close()
-        if key == tag_editor.EXPERIMENT and not self._tag_editing():  # switched off: its windows go too
-            for window in (self._tag_window, self._tag_history):
-                if window is not None and window.win.winfo_exists():
-                    window.close()  # (one in the middle of saving stops after the file in hand)
 
     def _paint_version(self):
         """The version, and how many experiments are on — so it's never a mystery why the player
         behaves differently from the release."""
         on = len(experiments.switched_on(self.prefs))
         extra = f" · {on} experiment{'' if on == 1 else 's'} on" if on else ""
-        if self.update_available is not None:
-            extra += f" · {self.update_available.version} available"
         self.version_label.configure(text=f"{APP_NAME} {__version__}{extra}")
 
     def _build_new_menu(self) -> Popover:
@@ -1469,6 +1388,8 @@ class PlayerWindow:
             "full_volume": call("full_volume"),
             "new_tab": call("open_new_menu"),
             "close_tab": lambda: self.close_tab(self.current) if self.tabs else None,
+            "open_album_tab": lambda: self.playlist.open_selected_album(),
+            "add_to_this_playlist": lambda: self.playlist.add_selected_library_song(),
             "reopen_tab": call("reopen_tab"),
             "next_tab": lambda: self._cycle_tab(1),
             "previous_tab": lambda: self._cycle_tab(-1),
@@ -1497,12 +1418,12 @@ class PlayerWindow:
             "snap_home": call("snap_home"),
             "help": call("show_help"),
             "quit": call("quit"),
-            "library": lambda: self.open_library(),
+            "library": call("toggle_library"),
             "find": call("find_in_library"),
             "remove": call("_remove_selected"),
             "move_song": lambda key: self._move_selected(1 if key.endswith("Down") else -1),
             "undo": call("undo"),
-            "rename": call("rename_playlist_on_show"),
+            "rename": call("rename_current"),
             "edit_tags": call("edit_selected_tags"),
             "lyrics": call("show_lyrics"),
             "reels": call("show_reels"),
@@ -1526,12 +1447,9 @@ class PlayerWindow:
         self.new_menu.toggle(self.bar.add_btn, self._below_strip())
 
     def search_this_tab(self):
-        """Ctrl+F: the track list's search box (a wide window: its Tracks view, searching this tab)."""
+        """Ctrl+F: the track list's search box."""
         if self.mini_mode:
             self.toggle_mini()
-        if self._tier != layout.COLUMN and (self.view != "tracks" or self.search_scope != "tab"):
-            self.search_scope = "tab"
-            self.set_view("tracks")
         self.playlist.focus_search()
 
     def settings_from_key(self):
@@ -1542,20 +1460,36 @@ class PlayerWindow:
         self._open_settings()
 
     def find_in_library(self, query: str | None = None):
-        """Ctrl+K / Ctrl+Shift+F, from any window: the song search panel over this window
-        (quick_search.py), ready to type in. `query`: search for that (the track list's "Search the
-        whole library")."""
+        """Ctrl+K / Ctrl+Shift+F, from any window: search the whole library — the Library tab's search
+        box, emptied, its Whole library switch on, ready to type in. `query` (the track list's "Search
+        the whole library" row): stay in this tab, switch Whole library on and search for that."""
         if self.mini_mode:
             self.toggle_mini()
         if self.root.state() == "iconic":
             self.root.deiconify()
         self.root.lift()
-        if self._quick is None:
-            self._quick = QuickSearch(self.root, self._index, self.song_actions(), top=self._below_strip)
-        self._quick.open(query)
+        if query is None:
+            main = self._main_tab(make=True)
+            if self.current != main:
+                self.select_tab(main)
+            self._show_library_view(False)
+            self.playlist.query.set("")
+        self.playlist.set_whole_library(True)
+        self._scope_changed(True)
+        if query is not None:
+            self.playlist.query.set(query)
+        self.playlist.focus_search()
+
+    def _views_menu(self):
+        """The Library tab's "Songs ▾" button: the views drop-down over the tab's own list (Songs is
+        ticked); a view picked opens the Library's views on it."""
+        button = self.playlist.views_button
+        x, y = button.winfo_rootx(), button.winfo_rooty() + button.winfo_height()
+        view_menu(self.root, "songs", lambda view: self.open_library(view=view), lambda: None,
+                  (x, y + theme.px(2)), new=bool(self._new_albums))
 
     def song_actions(self) -> quick_search.Actions:
-        """What the search panel and the Library's song views can ask of the player."""
+        """What the Library's song views (and the track list's library rows) can ask of the player."""
         return quick_search.Actions(
             play_song=self.play_song, queue_tracks=self._queue_tracks,
             open_album=lambda album, play: self.open_tab("album", album, play=play, interrupt=play),
@@ -1610,7 +1544,7 @@ class PlayerWindow:
     def _favourites_changed(self):
         """A song was made a favourite (or not), or the stored list arrived: the ♥ marks follow."""
         self.playlist.refresh_titles()
-        if self._library is not None and self._library.win.winfo_exists():
+        if self._library is not None:
             self._library.favourites_changed()
 
     def _apply_on_top(self):
@@ -1714,10 +1648,7 @@ class PlayerWindow:
             finally:
                 tracks.db.release()   # (this thread's connection)
 
-        def finish():
-            if "tracks" not in result:
-                self.root.after(50, finish)
-                return
+        def finish(_done):
             if self._notice == reading:
                 self._set_notice("")
             if result["tracks"] is None:
@@ -1726,8 +1657,7 @@ class PlayerWindow:
                 then(result["tracks"])
 
         self._set_notice(reading, 0)
-        threading.Thread(target=work, name="read-songs", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="read-songs")
 
     def _remove_selected(self):
         """Delete in a playlist's track list: the selected songs out of it, all undone at once (other
@@ -1856,15 +1786,22 @@ class PlayerWindow:
         for source in saved if isinstance(saved, list) else []:
             try:
                 path, kind = source.get("path", ""), source.get("kind")
-                if not (path and isinstance(path, str) and kind in ("album", "folder", "library", "playlist", "files")):
+                main = kind == "library" and path == ""
+                if not (main or (path and isinstance(path, str)
+                                 and kind in ("album", "folder", "library", "playlist", "files"))):
                     continue
+                if main and any(t.main for t in self.tabs):
+                    continue   # (one main Library tab)
                 tab = Tab(kind, path, str(source.get("query") or ""))
+                tab.name = str(source.get("name") or "")
                 resume = source.get("resume") or {}
                 tab.resume_path, tab.resume_at = str(resume.get("path", "")), float(resume.get("at", 0))
                 tab.extras = [p for p in source.get("extras", []) if isinstance(p, str)]
             except (AttributeError, TypeError, ValueError):   # (a hand-edited settings file)
                 continue
             self.tabs.append(tab)
+        if not any(t.main for t in self.tabs):   # the main Library tab is always there (first, the first time)
+            self.tabs.insert(0, Tab("library", ""))
         if folder:
             self.open_tab("folder", folder, play=True)
         elif self.tabs:
@@ -1883,12 +1820,6 @@ class PlayerWindow:
         interrupt: play it even so (it was asked for by name: "Open with", a double-click)."""
         if kind == "album":
             self._mark_opened(Path(str(path)))
-        if self._tier != layout.COLUMN and (self.view != "tracks" or self.search_scope != "tab"):
-            # The tab asked for: its list on show, not Up next, the lyrics or the whole library's results.
-            if self.search_scope != "tab":
-                self.search_scope = "tab"
-                self.playlist.query.set("")   # (the library's search words would filter the tab)
-            self.set_view("tracks")
         if play and not interrupt and self.player.status().state is not State.STOPPED:
             play = False
             self._set_notice(f"Opened “{Path(str(path)).name}” · the music playing carries on: press play "
@@ -1903,8 +1834,15 @@ class PlayerWindow:
     def select_tab(self, index: int, then_play: bool = False):
         if not 0 <= index < len(self.tabs):
             return
-        if index != self.current and self.playlist.searching and self.playlist.scope == "tab":
+        self._close_settings()   # (a tab clicked while Settings is on show: back to the player)
+        self._show_library_view(False)   # (…or the Library's views)
+        if self.playlist.picking is not None and index != self.current:
+            self._picking_for = None   # (another tab clicked while picking songs: picking ends, nothing added)
+            self.playlist.set_picking(None)
+        if index != self.current and self.playlist.searching and not self.playlist.whole_library:
             self.playlist.query.set("")  # a search belongs to the tab it was typed in (not the whole library's)
+        if 0 <= self.current < len(self.tabs) and not self.tabs[self.current].main and self.tabs[index].main:
+            self._before_main = self.tabs[self.current]   # (the Library's "Add to tab" adds to it)
         self.current = index
         tab = self.tabs[index]
         if tab.tracks is None:
@@ -1917,6 +1855,9 @@ class PlayerWindow:
         if not 0 <= index < len(self.tabs):
             return
         closing = self.tabs[index]
+        if closing.main:
+            self._set_notice("The Library tab stays open: it's your whole library (drag it to move it)", 5000)
+            return
         if closing.loading:   # the load under way is forgotten: reopened, the tab is read afresh
             self._forget_songs(closing)
         closing.play_when_loaded = False
@@ -1991,7 +1932,7 @@ class PlayerWindow:
         if tab.loading:
             return
         tab.loading = True
-        progress = {"done": 0, "total": 0, "tracks": None, "missing": 0, "unavailable": False}
+        progress = {"done": 0, "total": 0, "tracks": None, "missing": 0, "unavailable": False, "needs_network": False}
         tab.load_progress = progress
         index = self._index()
         if tab.kind in ("album", "folder") and index.indexer.running:
@@ -1999,19 +1940,23 @@ class PlayerWindow:
 
         def work():
             try:
-                root = Path(tab.path)
-                if not (root.is_file() if tab.kind == "playlist" else root.is_dir()):
+                root = Path(tab.path) if not tab.main else None   # (the main Library tab: every library folder)
+                if root is not None and not places.allowed(root, self.prefs):
+                    progress["unavailable"] = progress["needs_network"] = True   # on the network; the switch is off
+                    tracks = []
+                elif root is not None and not (root.is_file() if tab.kind == "playlist" else root.is_dir()):
                     progress["unavailable"] = True   # a drive that isn't connected (or since moved)
                     tracks = []
                 elif tab.kind == "playlist":
-                    tracks = self._read_playlist(root)
+                    tracks = self._read_playlist(root, allowed=lambda song: places.allowed(song, self.prefs))
                     progress["missing"] = sum(1 for t in tracks if t.missing)
                 elif tab.kind == "library":
                     albums = self._library_albums(root)
                     if tab.query:  # the same search as the Library window's
-                        words = [_fold(w) for w in tab.query.split()]
+                        words = [fold(w) for w in tab.query.split()]
                         albums = [a for a in albums if browse.matches(a, words, _fold)]
                     progress["total"] = len(albums)
+                    self.work.post(self._say_loading, tab, progress)
                     tracks = self._library_tracks(albums)
                     progress["done"] = len(albums)
                 elif tab.kind == "files":
@@ -2046,10 +1991,14 @@ class PlayerWindow:
             if tab.kind == "playlist" and Path(tab.path) in self._writing_playlists:
                 self.root.after(50, start)   # songs are being added to it: read it once they're in
                 return
-            threading.Thread(target=work, name="tab-load", daemon=True).start()
-            self.root.after(50, self._finish_load, tab, progress)
+            self.work.run(work, lambda _done: self._finish_load(tab, progress), name="tab-load")
 
         start()
+
+    def _say_loading(self, tab: Tab, progress: dict):
+        """A library tab's worker says how far it has got (on Tk's thread, through the queue)."""
+        if tab.load_progress is progress and progress["tracks"] is None and tab.kind == "library":
+            self._set_notice(f"Loading library… {progress['done']} of {progress['total'] or '?'} albums", 0)
 
     def _extra_tracks(self, extra: str) -> list[Track]:
         """The songs an extra stands for: an album folder's, a file, or one track of a CUE image
@@ -2077,22 +2026,26 @@ class PlayerWindow:
         if tab.load_progress is not progress:
             return  # closed while loading (it's read afresh if reopened)
         index = self._tab_index(tab)
-        if progress["tracks"] is None:
-            if tab.kind == "library":
-                self._set_notice(f"Loading library… {progress['done']} of {progress['total'] or '?'} albums", 0)
-            self.root.after(100, self._finish_load, tab, progress)
-            return
+        if index < 0:
+            tab.loading, tab.load_progress = False, None
+            return  # the tab was closed (or the tabs replaced) meanwhile: nothing to show
         tab.loading, tab.load_progress = False, None
         play, tab.play_when_loaded = tab.play_when_loaded, False
-        tab.unavailable = progress["unavailable"]
+        tab.unavailable, tab.needs_network = progress["unavailable"], progress["needs_network"]
         if tab.unavailable:
             # Kept as it was, place and all (nothing is saved over it), and read again when it's
-            # next chosen — by then its drive may be connected.
-            self._set_notice(f"“{tab.title}” isn't connected right now: {tab.path}", 8000)
+            # next chosen — by then its drive may be connected, or the switch on.
+            if tab.needs_network:
+                self._set_notice(f"“{tab.title}” is on your network: switch on Settings → Library → Local network "
+                                 "access to read it", 8000)
+            else:
+                self._set_notice(f"“{tab.title}” isn't connected right now: {tab.path}", 8000)
             if index == self.current:
                 self._show_current_tab()
             return
         tab.tracks = progress["tracks"]
+        if tab.main and getattr(self, "_play_from_main", None):
+            self.root.after_idle(self._play_from_main_now)
         if tab.resume_path and tab.last_index < 0:  # where it got to last time
             tab.last_index = progress["resume"] if "resume" in progress else _index_of_key(tab.tracks, tab.resume_path)
             if tab.last_index < 0:
@@ -2114,7 +2067,15 @@ class PlayerWindow:
             else:
                 self._play_tab(index, 0)
 
+    def _list_modes(self, tab: Tab | None):
+        """What the track list shows for this tab: the open-album marks (the Library tab), the "+" on
+        library rows (a playlist)."""
+        self.playlist.set_open_column(tab is not None and tab.main)
+        self.playlist.set_views_button(tab is not None and tab.main)
+        self.playlist.set_adds(tab is not None and tab.kind == "playlist")
+
     def _show_current_tab(self):
+        self._list_modes(self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None)
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         self.playlist.set_tracks(tab.tracks if tab and tab.tracks else [],
                                  flat=bool(tab and tab.kind == "playlist"))
@@ -2157,8 +2118,11 @@ class PlayerWindow:
         for tab in self.tabs:
             if not tab.info_requested:
                 self._load_tab_info(tab)
-        self.bar.set_tabs([t.title for t in self.tabs], self.current, self.playing_tab)
+        mains = {i for i, t in enumerate(self.tabs) if t.main}
+        self.bar.set_tabs([t.title for t in self.tabs], self.current, self.playing_tab, locked=mains, tinted=mains)
         self._show_empty(not self.tabs)
+        if self._library_shown:
+            self._library.opened()   # (its Add to tab button names the tab)
 
     def _load_tab_info(self, tab: Tab):
         """Look up a tab's album name without loading the whole album, so every tab is
@@ -2187,15 +2151,11 @@ class PlayerWindow:
             finally:   # always published: the tab's label waits for it
                 tab.info = (name, artist, first, found.album if found is not None else "")
 
-        threading.Thread(target=work, name="tab-info", daemon=True).start()
-        self.root.after(80, self._finish_tab_info, tab)
+        self.work.run(work, lambda _done: self._finish_tab_info(tab), name="tab-info")
 
     def _finish_tab_info(self, tab: Tab):
-        if self._tab_index(tab) < 0:
+        if self._tab_index(tab) < 0 or tab.info is None:
             return  # closed meanwhile
-        if tab.info is None:
-            self.root.after(80, self._finish_tab_info, tab)
-            return
         tab.album_name, tab.artist, tab.first_file, tab.first_album = tab.info
         self._refresh_tabs()
 
@@ -2345,7 +2305,6 @@ class PlayerWindow:
         """Background worker: true peak of each file it's given (a few seconds per track, longer
         for hi-res). Songs skipped past meanwhile are dropped when their turn comes, so the one
         playing is never left waiting behind them; and no error stops the worker."""
-        from .analysis import true_peak
 
         while True:
             path = self._peak_jobs.get()
@@ -2360,7 +2319,7 @@ class PlayerWindow:
                 continue
             unwanted = _Unwanted(lambda path=path: path not in self._peak_wanted)
             try:
-                peak = true_peak(path, unwanted)
+                peak = analysis.true_peak(path, unwanted)
             except audiofile.NotCached as error:   # (a network song not downloaded yet: nothing recorded)
                 self._again_later(path, error, unwanted)
                 continue
@@ -2604,18 +2563,19 @@ class PlayerWindow:
 
     # -- playlists -------------------------------------------------------------
     @staticmethod
-    def _read_playlist(path: Path) -> list[Track]:
+    def _read_playlist(path: Path, allowed=lambda song: True) -> list[Track]:
         """A playlist's songs, in order. Files that aren't there stay listed (marked missing),
         so a playlist never loses songs just because a drive was unplugged. A drive or server
         that doesn't answer is asked once: when looking for one of its songs fails slowly (a NAS
         switched off can take half a minute a look), its other songs are listed as missing without
-        asking again."""
+        asking again. `allowed(song)`: False for a song on the network while Local network access is
+        off — listed as missing, never looked for."""
         silent: set[str] = set()   # drives / servers (path anchors) that didn't answer
         tracks = []
         for song in playlists.read(path):
             anchor = song.anchor.lower()
             here = False
-            if anchor not in silent:
+            if anchor not in silent and allowed(song):
                 started = time.monotonic()
                 here = song.is_file()
                 if not here and time.monotonic() - started > SLOW_LOOK_S:
@@ -2709,10 +2669,7 @@ class PlayerWindow:
             finally:
                 result["done"] = True
 
-        def finish():
-            if "done" not in result:
-                self.root.after(50, finish)
-                return
+        def finish(_done):
             self._writing_playlists.discard(path)
             if "error" in result:
                 self._for_prompt()
@@ -2720,8 +2677,7 @@ class PlayerWindow:
             else:
                 self._set_notice(added)
 
-        threading.Thread(target=work, name="playlist-add", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="playlist-add")
 
     def _may_rewrite(self, path: Path) -> bool:
         """A playlist another program saved in an older encoding (a Windows code page) is written back
@@ -2841,11 +2797,10 @@ class PlayerWindow:
         add.add("New playlist…", songs(lambda found: self.new_playlist(found)))   # (Ctrl+N makes an empty one)
         menu.add("Remove from favourites" if favourite else "Add to favourites",
                  songs(lambda found: self.favourites.set(found, not favourite)), quick_search.HEART)
-        if self._tag_editing():
-            menu.add_separator()
-            menu.add("Edit tags…" if single else f"Edit tags of these {len(rows):,} songs…",
-                     songs(lambda found: self.edit_tags(found)), keys.hint("edit_tags"))
-            menu.add("Tag history (undo)…", self.show_tag_history)
+        menu.add_separator()
+        menu.add("Edit tags…" if single else f"Edit tags of these {len(rows):,} songs…",
+                 songs(lambda found: self.edit_tags(found)), keys.hint("edit_tags"))
+        menu.add("Tag history (undo)…", self.show_tag_history)
         if tab.kind == "playlist" and single:
             index = rows[0]
             menu.add_separator()
@@ -2866,20 +2821,11 @@ class PlayerWindow:
 
     def _columns_menu(self, menu):
         """Artist / Album / Plays columns in the track list (off by default: the window is narrow).
-        Fills `menu` (a PopupMenu, or a submenu of one) with a tick item per column. A wide window has
-        its own setting, with Format too (the columns its layout has room for); a column ticked but
-        hidden because its value is the same on every row of the tab says so."""
-        if self._tier == layout.COLUMN:
-            choices = (("artist", "Artist"), ("album", "Album"), ("plays", "Plays"))
-        else:
-            allowed = layout.ALLOWED[self._tier]
-            choices = tuple(c for c in (("artist", "Artist"), ("album", "Album"), ("quality", "Format"),
-                                        ("plays", "Plays")) if c[0] in allowed)
+        Fills `menu` (a PopupMenu, or a submenu of one) with a tick item per column."""
+        choices = (("artist", "Artist"), ("album", "Album"), ("plays", "Plays"))
         wanted = self.playlist.wanted()
         for column, label in choices:
             on = column in wanted
-            if on and self._tier != layout.COLUMN and column not in self.playlist.shown:
-                label += " (same on every row)"
             menu.add_check(label, on, lambda c=column, on=on: self._set_track_column(c, not on))
         return menu
 
@@ -2890,12 +2836,8 @@ class PlayerWindow:
 
     def _set_track_column(self, column: str, on: bool):
         columns = [c for c in self.playlist.wanted() if c != column] + ([column] if on else [])
-        if self._tier == layout.COLUMN:
-            self.playlist.set_columns(columns)
-            self.prefs["track_columns"] = list(self.playlist.columns)
-        else:
-            self.playlist.set_wide_columns(columns)
-            self.prefs["wide_track_columns"] = list(self.playlist.wide_columns)
+        self.playlist.set_columns(columns)
+        self.prefs["track_columns"] = list(self.playlist.columns)
 
     def _tab_menu(self, index: int, event):
         if not 0 <= index < len(self.tabs):
@@ -2904,8 +2846,14 @@ class PlayerWindow:
         menu = self._menu()
         on_show = index == self.current   # (the keys act on the tab on show: their hints only there)
         if tab.kind == "playlist":
+            menu.add("Add songs from the Library…", lambda: self.start_picking(index))
             menu.add("Rename playlist…", lambda: self.rename_playlist(index), keys.hint("rename") if on_show else "")
             menu.add("Delete playlist…", lambda: self.delete_playlist(index))
+            menu.add_separator()
+        else:
+            menu.add("Rename tab…", lambda: self.rename_tab(index), keys.hint("rename") if on_show else "")
+            if tab.name:
+                menu.add("Use the album's name", lambda: self.rename_tab(index, ""))
             menu.add_separator()
         if len(self.tabs) > 1:
             menu.add("Move left", lambda: self.move_tab(index, index - 1), keys.hint("move_tab", 0) if on_show else "",
@@ -2913,8 +2861,34 @@ class PlayerWindow:
             menu.add("Move right", lambda: self.move_tab(index, index + 1), keys.hint("move_tab", 1) if on_show else "",
                      enabled=index < len(self.tabs) - 1)
             menu.add_separator()
-        menu.add("Close tab", lambda: self.close_tab(index), keys.hint("close_tab") if on_show else "")
+        if not tab.main:
+            menu.add("Close tab", lambda: self.close_tab(index), keys.hint("close_tab") if on_show else "")
         menu.popup(event.x_root, event.y_root)
+
+    def rename_tab(self, index: int, name: str | None = None):
+        """Rename… on an album / folder / files / Library tab: a name of its own, saved with the tab
+        (the now-playing head keeps the album's real title). `name` "" puts the album's name back;
+        None asks. A playlist tab renames its file instead (rename_playlist)."""
+        if not 0 <= index < len(self.tabs):
+            return
+        tab = self.tabs[index]
+        if tab.kind == "playlist":
+            self.rename_playlist(index)
+            return
+        if name is None:
+            self._for_prompt()
+            name = popups.ask_text(self.root, "Rename tab", "A name for this tab:", initial=tab.title, ok="Rename")
+            if name is None or tab not in self.tabs:
+                return
+        tab.name = name.strip()
+        self._refresh_tabs()
+        if index == self.current:
+            self._show_current_tab()
+
+    def rename_current(self):
+        """F2: rename the tab on show (a playlist: its file)."""
+        if 0 <= self.current < len(self.tabs):
+            self.rename_tab(self.current)
 
     def rename_playlist(self, index: int):
         tab = self.tabs[index]
@@ -2970,18 +2944,15 @@ class PlayerWindow:
             finally:
                 result["done"] = True
 
-        def finish():
-            if "done" not in result:
-                self.root.after(50, finish)
-            elif "error" in result:
+        def finish(_done):
+            if "error" in result:
                 self._set_notice(f"Couldn't move the playlist to the {recycle.BIN_NAME} ({result['error']}): "
                                  "it's still where it was", 10000)
             else:
                 self._set_notice(f"Moved the playlist “{name}” to the {recycle.BIN_NAME}: restore it from there "
                                  "to have it back", 10000)
 
-        threading.Thread(target=work, name="playlist-delete", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="playlist-delete")
 
     # -- opening things ------------------------------------------------------
     def choose_folder(self):
@@ -2996,7 +2967,9 @@ class PlayerWindow:
         return library_folders(self.prefs)[0]
 
     def _library_roots(self) -> list[Path]:
-        return library_folders(self.prefs)
+        """The library folders the player reads now: all of them, or with Local network access off,
+        the ones on this computer (the others stay listed in Settings → Library, greyed)."""
+        return [folder for folder in library_folders(self.prefs) if places.allowed(folder, self.prefs)]
 
     def _current_tab_title(self) -> str | None:
         return self.tabs[self.current].title if 0 <= self.current < len(self.tabs) else None
@@ -3016,13 +2989,12 @@ class PlayerWindow:
         def work():
             result["tracks"] = self._scan_or_nothing(album)
 
-        threading.Thread(target=work, name="add-album", daemon=True).start()
-        self.root.after(50, self._finish_add_album, tab, album, result, on_done)
+        self.work.run(work, lambda _done: self._finish_add_album(tab, album, result, on_done), name="add-album")
 
     def _finish_add_album(self, tab: Tab, album: Path, result: dict, on_done):
         if self._tab_index(tab) < 0:
             return  # the tab was closed meanwhile
-        if "tracks" not in result or tab.loading:  # (a tab still loading gets it once it's loaded)
+        if tab.loading:  # (a tab still loading gets it once it's loaded)
             self.root.after(50, self._finish_add_album, tab, album, result, on_done)
             return
         tracks = result["tracks"]
@@ -3050,44 +3022,117 @@ class PlayerWindow:
         on_done(message)
 
     def open_library(self, view: str | None = None, album: Path | None = None, search: str | None = None):
-        """The Library window (one at a time): an open one is brought to the front as it was, search
-        and all (Ctrl+L) — unless the library folders have been changed in Settings since: then it's
-        made afresh for the new folders. `view`: show that view (e.g. "recent" for new music);
-        `album`: show (and select) that album; `search`: search the Library for that."""
+        """The Library's views (library_view.py) in the Library tab, in place of its track list — the
+        tab selected (made, when the saved tabs had none), the view's search box ready to type in.
+        `view`: show that view (e.g. "recent" for new music); `album`: show (and select) that album;
+        `search`: search the Library for that. The views are made once and kept; the library folders
+        changed in Settings since, they're made afresh for the new folders."""
+        if self.mini_mode:
+            self.toggle_mini()
+        if self.root.state() == "iconic":
+            self.root.deiconify()
+        self.root.lift()
+        main = self._main_tab(make=True)
+        if self.current != main:
+            self.select_tab(main)
+        if self._library is not None and list(self._library.roots) != self._library_roots():
+            self._show_library_view(False)
+            self._library.destroy()
+            self._library = None
+        if self._library is None:
+            self._library = self._make_library()
         if view is not None:
             self.prefs["library_view"] = view
-        if (self._library is not None and self._library.win.winfo_exists()
-                and list(self._library.roots) != self._library_roots()):
-            self._library.close()
-        if self._library is not None and self._library.win.winfo_exists():
-            if view is not None:
-                self._library.set_view(view)
-            if album is not None or search is not None:
-                self._library.show(album=album, search=search)
-            self._library.lift()
-            return
+            self._library.set_view(view)
+        self._show_library_view(True)
+        if album is not None or search is not None:
+            self._library.show(album=album, search=search)
+        self._library.focus_search()
+
+    def toggle_library(self):
+        """Ctrl+L: the Library's views — or, on show already, the track list back."""
+        if self._library_shown:
+            self._show_library_view(False)
+        else:
+            self.open_library()
+
+    def _make_library(self) -> LibraryView:
+        """The Library's views, built hidden in the window's body. Their keys (scope "library") answer
+        on the views' list and search box; "Add to tab" adds to the tab that was on show before the
+        Library tab (`_add_target`)."""
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         current = Path(tab.path) if tab and tab.kind == "album" else None
-        if album is not None:
-            current = Path(album)
-        library = LibraryWindow(self.root, self._library_roots(), current,
-                                on_choose=lambda path: self.open_tab("album", path, play=True),
-                                on_root_changed=self._set_library_folders,
-                                on_load_all=lambda root, query: self.open_tab("library", root, query),
-                                on_add=self.add_album_to_current, add_target=self._current_tab_title,
-                                on_drag=self._album_drag, on_queue=self.queue_album,
-                                view=self.prefs.get("library_view") or "albums",
-                                on_view=lambda view: self.prefs.update(library_view=view),
-                                geometry=self.prefs["library_geometry"],
-                                on_moved=lambda geometry: self.prefs.update(library_geometry=geometry),
-                                on_edit_tags=self.edit_album_tags, can_edit_tags=self._tag_editing,
-                                new_albums=lambda: self._new_albums, actions=self.song_actions(),
-                                on_add_tracks=self._add_tracks_to_current, checker=self.checker,
-                                song_columns=tuple(self.prefs.get("library_song_columns") or ()),
-                                on_song_columns=lambda columns: self.prefs.update(library_song_columns=columns))
-        self._library = self._with_keys(library, "library", library.key_handlers())
-        if album is not None or search:
-            library.show(album=album, search=search or None)
+        library = LibraryView(self.body, self._library_roots(), current,
+                              on_choose=lambda path: self.open_tab("album", path, play=True),
+                              on_root_changed=self._set_library_folders,
+                              on_load_all=lambda root, query: self.open_tab("library", root, query),
+                              on_add=lambda album, done: self.add_album_to_current(album, done, tab=self._add_target()),
+                              add_target=lambda: (self._add_target().title if self._add_target() else None),
+                              on_drag=self._album_drag, on_queue=self.queue_album,
+                              view=self.prefs.get("library_view") or "albums",
+                              on_view=lambda view: self.prefs.update(library_view=view),
+                              on_edit_tags=self.edit_album_tags,
+                              new_albums=lambda: self._new_albums, actions=self.song_actions(),
+                              on_add_tracks=self._add_tracks_to_target, checker=self.checker,
+                              song_columns=tuple(self.prefs.get("library_song_columns") or ()),
+                              on_song_columns=lambda columns: self.prefs.update(library_song_columns=columns),
+                              on_close=lambda: self._show_library_view(False),
+                              on_songs=lambda: self._show_library_view(False))
+        library.frame.pack_forget()
+        library.hidden()
+        self.keys.mark(library.tree, "library")
+        self.keys.mark(library.search.entry, "library")
+        self.keys.add_handlers(self.root, library.key_handlers())
+        return library
+
+    def _add_target(self) -> Tab | None:
+        """The tab the Library's "Add to tab" adds to: the one that was on show before the Library tab
+        (never the Library tab itself: it's every library folder already)."""
+        tab = self._before_main
+        return tab if tab is not None and tab in self.tabs and not tab.main else None
+
+    def _add_tracks_to_target(self, tracks: list[Track]) -> str:
+        """Songs from the Library's song views onto the bottom of the tab `_add_target` names (a new
+        tab of their own when there's none). Returns what was done, to say."""
+        tracks = [t for t in tracks if not t.missing]
+        if not tracks:
+            return "Nothing to add"
+        tab = self._add_target()
+        if tab is None:
+            self.open_files_tab([t.path for t in tracks])
+            return "Opened in a new tab"
+        message = self._add_tracks_to_tab(tab, tracks, [audiofile.key(t.path) for t in tracks])
+        self._set_notice(message)
+        return message
+
+    def _show_library_view(self, on: bool):
+        """The Library's views in place of the track list (the cover goes too, so the list gets the
+        height; the seek bar, transport and status line stay) — or the track list back."""
+        if on == self._library_shown or (on and self._library is None):
+            return
+        self._library_shown = on
+        if on:
+            Popover.close_open()
+            if self.settings.is_open:
+                self.settings.close()
+            for w in (self.head, self.playlist.frame, self.empty_view):
+                w.pack_forget()
+            self._library.frame.pack(fill="both", expand=True, after=self.status_row)
+            self._library.opened()
+            self._place_up_next()
+            return
+        self._library.frame.pack_forget()
+        self._library.hidden()
+        if self.mini_mode or self.settings.is_open:
+            return
+        if self._empty_shown:
+            self.empty_view.pack(fill="both", expand=True, after=self.status_row)
+        else:
+            self.head.pack(fill="x", before=self.seek_row)
+            self.playlist.frame.pack(fill="both", expand=True, after=self.status_row)
+            self.art_size = 0   # size the cover afresh
+            self.root.after_idle(self._fit_art)
+        self._place_up_next()
 
     # -- the library index --------------------------------------------------------------------------
     def _index(self) -> library_index.LibraryIndex:
@@ -3101,14 +3146,14 @@ class PlayerWindow:
         index = self._index()
         if index.refreshed:
             return
-        threading.Thread(target=_refresh_library, args=(index,), name="library-start", daemon=True).start()
+        self.work.run(lambda: _look_once(self.watcher, index), name="library-start")
 
-    def _library_albums(self, root: Path) -> list:
+    def _library_albums(self, root: Path | None) -> list:
         """Every album in the library, from the database, when `root` is one of the library
-        folders (a "library" tab: the Library's "Open all albums in a tab"); else every album found
-        under `root`. (A worker thread's work.)"""
+        folders (a "library" tab: the Library's "Open all albums in a tab") or None (the main Library
+        tab: every folder); else every album found under `root`. (A worker thread's work.)"""
         index = self._index()
-        if Path(root) in index.roots:
+        if root is None or Path(root) in index.roots:
             if not index.built:
                 index.refresh()   # the first look isn't finished: wait for it (it may be under way)
             return index.albums()
@@ -3139,6 +3184,131 @@ class PlayerWindow:
             return tracks
         return scan_folder(folder) if whole_tree else scan_album(folder)
 
+    # -- the search box's Whole library toggle (0.40.0) --------------------------------------------------
+    def _scope_changed(self, on: bool):
+        self.prefs["search_whole_library"] = bool(on)
+
+    def _search_library_for_list(self, words: list[str]):
+        """The track list's box, Whole library on: the library's matches for these words, from the
+        database on the worker, handed back to the list (stale answers are dropped there)."""
+        index = self._index()
+        query = " ".join(words)
+
+        def work():
+            try:
+                return index.db.search_songs(query, 200).rows
+            except Exception:
+                log.exception("the library search for the track list failed")
+                return []
+            finally:
+                index.db.release()
+
+        self.work.run(work, lambda hits: self.playlist.set_library_hits(words, hits if isinstance(hits, list) else []),
+                      name="list-library-search")
+
+    def _library_hit(self, hit, how: str):
+        """A library row in the track list: "play" — a song outside this tab plays from the Library
+        tab (selected, scrolled to it); "add" — into this playlist tab, with Undo."""
+        tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
+        if how == "add" and tab is not None and tab.kind == "playlist":
+            self.add_to_playlist(Path(tab.path), [hit.track])
+            self._set_notice(f"Added “{hit.track.title}” to “{tab.title}”", 4000)
+            return
+        self.play_in_library(hit.track)
+
+    def _main_tab(self, make: bool = False) -> int | None:
+        """The main Library tab's index; `make`: put one first when the saved tabs had none."""
+        main = next((i for i, t in enumerate(self.tabs) if t.main), None)
+        if main is None and make:
+            self.tabs.insert(0, Tab("library", ""))
+            main = 0
+            if self.playing_tab is not None:
+                self.playing_tab += 1
+            self._refresh_tabs()
+        return main
+
+    def play_in_library(self, track: Track):
+        """Play this song from the main Library tab: the tab is selected and plays from it (or, while
+        it's still loading, once it has loaded)."""
+        main = self._main_tab(make=True)
+        self._play_from_main = audiofile.key(track.path)
+        self.select_tab(main)
+        self._play_from_main_now()
+
+    # -- picking songs for a playlist in the Library tab -------------------------------------------------
+    def start_picking(self, index: int):
+        """"Add songs from the Library…" on a playlist tab: the Library tab with a bar at its foot — pick
+        songs (any selection), Add puts them in the playlist and comes back; Cancel or Esc comes back
+        with nothing added."""
+        if not 0 <= index < len(self.tabs) or self.tabs[index].kind != "playlist":
+            return
+        tab = self.tabs[index]
+        main = self._main_tab(make=True)
+        if self.current != main:
+            self.select_tab(main)
+        self._show_library_view(False)
+        self._picking_for = tab
+        self.playlist.set_picking(tab.title, self._pick_add, lambda: self.end_picking(back=True))
+        self.playlist.list.select(None, see=False)   # (nothing picked yet: not the song on show)
+        self.playlist.focus_search()
+
+    def _pick_add(self):
+        """Add: the songs picked (an album header: its songs) go into the playlist, read off Tk's thread
+        when they're many; then back to the playlist tab, "Added N songs · Undo" in the status line."""
+        tab, main = self._picking_for, self._main_tab()
+        if tab is None or main is None or self.current != main:
+            self.end_picking(back=True)
+            return
+        tracks = self.tabs[main].tracks
+        rows = self.playlist.selected_rows() if tracks else []
+        if not rows:
+            return
+        self._with_songs(tracks, rows, lambda songs: self._picked(tab, songs))
+
+    def _picked(self, tab: Tab, songs: list[Track]):
+        if tab not in self.tabs:
+            self.end_picking(back=False)
+            return
+        message = self._add_tracks_to_tab(tab, songs, [audiofile.key(t.path) for t in songs])
+        self.end_picking(back=True)
+        self._set_notice(message)
+
+    def end_picking(self, back: bool = True):
+        """Picking is over: the bar goes; `back`, the playlist tab comes to the front (if it's still open)."""
+        tab, self._picking_for = self._picking_for, None
+        self.playlist.set_picking(None)
+        at = self._tab_index(tab) if tab is not None else -1
+        if back and at >= 0:
+            self.select_tab(at)
+
+    def _play_from_main_now(self):
+        """The song asked for from the Library tab, once its list is there."""
+        key = getattr(self, "_play_from_main", None)
+        main = next((i for i, t in enumerate(self.tabs) if t.main), None)
+        if key is None or main is None:
+            return
+        tab = self.tabs[main]
+        if tab.tracks is None:
+            return   # (_finish_load calls again)
+        self._play_from_main = None
+        index = _index_of_key(tab.tracks, key)
+        if index is None or index < 0:
+            self._set_notice("That song isn't in the Library's list yet (it's being read)", 5000)
+            return
+        self._play_tab(main, index)
+        self.playlist.show_current(index)
+
+    def _open_album_of(self, index: int):
+        """The open-album mark on a Library tab row (or Ctrl+Shift+O): the song's album in a new tab,
+        the music untouched."""
+        tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
+        if tab is None or tab.tracks is None or not 0 <= index < len(tab.tracks):
+            return
+        track = tab.tracks[index]
+        if track is None:
+            return
+        self.open_tab("album", album_folder(Path(audiofile.real_path(track.path))))
+
     def _scan_or_nothing(self, album: Path) -> list[Track]:
         """An album's tracks, for a worker thread that must always answer: none if it can't be read."""
         try:
@@ -3150,22 +3320,16 @@ class PlayerWindow:
             log.exception("couldn't read %s", album)
             return []
 
-    # -- tag editing (Experimental) -----------------------------------------------------------------
-    def _tag_editing(self) -> bool:
-        """Is Settings → Experimental → Tag editing on? Every way in checks this first."""
-        return experiments.enabled(self.prefs, tag_editor.EXPERIMENT)
-
+    # -- tag editing ------------------------------------------------------------------------------------
     def edit_selected_tags(self):
         """Key E: edit the selected songs (or the album whose header is selected)."""
-        if not self._tag_editing():
-            return
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         rows = self.playlist.selected_rows() if tab is not None and tab.tracks else []
         if rows:
             self._with_songs(tab.tracks, rows, self.edit_tags)
 
     def edit_tags(self, tracks: list[Track]):
-        if not self._tag_editing() or not tracks:
+        if not tracks:
             return
         if self._tag_window is not None and self._tag_window.win.winfo_exists():
             if self._tag_window.saving is not None:
@@ -3181,27 +3345,20 @@ class PlayerWindow:
 
     def edit_album_tags(self, album: Path):
         """From the Library: edit a whole album's tags."""
-        if not self._tag_editing():
-            return
         result: dict = {}
 
         def work():
             result["tracks"] = self._scan_or_nothing(album)
 
-        def finish():
-            if "tracks" not in result:
-                self.root.after(50, finish)
-            elif result["tracks"]:
+        def finish(_done):
+            if result["tracks"]:
                 self.edit_tags(result["tracks"])
             else:
                 self._set_notice(f"No music found in “{album.name}”")
 
-        threading.Thread(target=work, name="tag-album", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="tag-album")
 
     def show_tag_history(self):
-        if not self._tag_editing():
-            return
         if self._tag_history is not None and self._tag_history.win.winfo_exists():
             self._tag_history.reload()
             self._tag_history.lift()
@@ -3294,7 +3451,7 @@ class PlayerWindow:
             finally:
                 self._index_updated = True
 
-        threading.Thread(target=work, name="library-index", daemon=True).start()
+        self.work.run(work, name="library-index")
 
     # -- Up next ----------------------------------------------------------------------------------
     def queue_album(self, album: Path, front: bool):
@@ -3305,17 +3462,13 @@ class PlayerWindow:
         def work():
             result["tracks"] = self._scan_or_nothing(album)
 
-        def finish():
-            if "tracks" not in result:
-                self.root.after(50, finish)
-                return
+        def finish(_done):
             if result["tracks"]:
                 self._queue_tracks(result["tracks"], front)
             else:
                 self._set_notice(f"No music found in “{album.name}”")
 
-        threading.Thread(target=work, name="queue-album", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="queue-album")
 
     def _queue_tracks(self, tracks: list[Track], front: bool):
         added = self.player.play_next(tracks) if front else self.player.add_to_queue(tracks)
@@ -3327,6 +3480,8 @@ class PlayerWindow:
         self._paint_up_next()
 
     def _paint_up_next(self):
+        if self.settings.is_open:
+            return   # (painted again when the column is back)
         queue = self.player.queue   # (the player's own list, read every poll: never copied here)
         key = (len(queue), id(queue[0]) if queue else None)
         if key == self._up_next_key:
@@ -3335,9 +3490,7 @@ class PlayerWindow:
                 self._fill_up_next()   # (a network song's download moved on)
             return
         self._up_next_key = key
-        if queue and self._up_next_docked():   # (the list itself is on show in the right pane)
-            self.up_next_label.pack_forget()
-        elif queue:
+        if queue:
             first = queue[0].track
             artist = f" — {first.artist}" if first.artist else ""
             self.up_next_label.configure(text=f"Up next ({len(queue):,}) · {first.title}{artist}")
@@ -3504,12 +3657,10 @@ class PlayerWindow:
         self.prefs["library_folder"] = str(folders[0])   # (what a version before several folders reads)
         index = self._index()   # (takes the new folders on: a look still under way for the old ones stops)
         self.root.after_idle(self._paint_library_folders)   # (not now: the Remove clicked is one of the rows)
-        if self._library is not None and self._library.win.winfo_exists():
-            self._library.set_roots(folders)
-        if self.watcher.running:
-            self.watcher.look_now()
-        elif not (self._library is not None and self._library.win.winfo_exists()):
-            threading.Thread(target=_refresh_library, args=(index,), name="library-folders", daemon=True).start()
+        if self._library is not None:
+            self._library.set_roots(folders)   # (its own refresh looks through the new folders)
+        else:
+            self.work.run(lambda: _look_once(self.watcher, index), name="library-folders")
         self._update_new_albums()
 
     # -- spotting new music (watcher.py) -----------------------------------------------------------
@@ -3521,20 +3672,6 @@ class PlayerWindow:
             self.prefs["new_music"] = state
         return state
 
-    def _start_watching(self, delay_s: float = 0.0):
-        state = self._new_music_state()
-        if not isinstance(state.get("since"), (int, float)):
-            state["since"] = time.time()   # nothing already in the library counts as new
-        self.watcher.since = state["since"]   # (its reports then carry the new albums)
-        self.watcher.start(delay_s)
-
-    def _toggle_watch(self):
-        self.prefs["watch_music"] = self.watch_music.get()
-        if self.watch_music.get():
-            self._start_watching()
-        else:
-            self.watcher.stop()
-
     def _update_new_albums(self):
         """Work the new albums out afresh — on a worker thread, as it reads the database;
         _watch_reports takes the answer in."""
@@ -3543,8 +3680,8 @@ class PlayerWindow:
         if not isinstance(since, (int, float)):
             self._new_albums = []
             return
-        threading.Thread(target=_find_new_albums, args=(self._index(), since, self.watcher.results),
-                         name="new-albums", daemon=True).start()
+        index, results = self._index(), self.watcher.results
+        self.work.run(lambda: _find_new_albums(index, since, results), name="new-albums")
 
     def _watch_reports(self):
         """Take in what the watcher found, and new albums worked out on a worker (called from
@@ -3562,13 +3699,11 @@ class PlayerWindow:
         changed = False
         for report in reports:
             changed = changed or not report.diff.nothing
-        if changed:
-            self.checker.kick()   # (new or changed music: checked as it arrives, when the check is on)
         for report in reports:
             text = watcher.note(report, len(watcher.arrived(report, self._new_albums)))
             if text:
                 self._set_notice(text, NEW_MUSIC_NOTE_MS)
-        if self._library is not None and self._library.win.winfo_exists():
+        if self._library is not None:
             if changed:
                 self._library.reload()
             elif found is not None:
@@ -3582,7 +3717,7 @@ class PlayerWindow:
             return
         self._new_music_state()["opened"][str(folder)] = time.time()
         self._new_albums = [f for f in self._new_albums if f != folder]
-        if self._library is not None and self._library.win.winfo_exists():
+        if self._library is not None:
             self._library.refill()
 
     def _status_clicked(self, _event=None):
@@ -3597,8 +3732,6 @@ class PlayerWindow:
             self.reopen_tab()
         elif self._notice.startswith("New music"):
             self.open_library(view="recent")
-        elif self.update_available is not None and self._notice == self._update_text(self.update_available):
-            self.open_download_page()
 
     def _paint_library_folders(self):
         """Settings → Library: a row per library folder — Change… while there's one, Remove when
@@ -3608,14 +3741,16 @@ class PlayerWindow:
             return
         for child in self.library_rows.winfo_children():
             child.destroy()
-        folders = self._library_roots()
+        folders = library_folders(self.prefs)
         for folder in folders:
             row = ttk.Frame(self.library_rows, style="Pop.TFrame")
             row.pack(fill="x", pady=theme.pad(0, theme.GAP_HAIR))
             text = str(folder)
-            label = ttk.Label(row, text=text if len(text) <= 30 else "…" + text[-29:], style="Pop.TLabel")
+            allowed = places.allowed(folder, self.prefs)
+            label = ttk.Label(row, text=text if len(text) <= 30 else "…" + text[-29:],
+                              style="Pop.TLabel" if allowed else "PopMuted.TLabel")
             label.pack(side="left", fill="x", expand=True)
-            Tooltip(label, text)
+            Tooltip(label, text if allowed else f"{text} · on your network: needs Local network access (below)")
             if len(folders) == 1:
                 self._pop_button(row, "Change…", self._change_library_folder,
                                  "Choose the folder your music is in").pack(side="right")
@@ -3687,7 +3822,53 @@ class PlayerWindow:
         if self.mini_mode:   # (0.25.0) the strip's own gear: Settings opens under the strip
             self._open_mini_settings()
             return
-        self.settings_pop.toggle(self.bar.settings_btn, self._below_strip())
+        if self.settings.is_open:
+            self.settings.close()
+        else:
+            self._show_library_view(False)
+            self._show_settings_view(True)
+
+    def _close_settings(self):
+        if self.settings.is_open:
+            self.settings.close()
+
+    def _escape_settings(self):
+        """Esc in the window (after any pop-over, which Esc closes first): Settings closes; else picking
+        songs ends (back to the playlist, nothing added); else the Library's views go (the track list back)."""
+        if Popover.open_one is not None:
+            return
+        if self.settings.is_open:
+            self.settings.close()
+        elif self.playlist.picking is not None:
+            self.end_picking(back=True)
+        elif self._library_shown:
+            self._show_library_view(False)
+
+    def _show_settings_view(self, on: bool):
+        """(0.39.0) The Settings view in place of the column — cover, seek bar, transport, track
+        list, Up next line and status line — or the column back. From the mini strip the view sits
+        under the strip instead (`_open_mini_settings`), and the strip's own close puts things back."""
+        if on:
+            Popover.close_open()
+            for w in (self.head, self.seek_row, self.transport, self.up_next_label, self.playlist.frame,
+                      self.empty_view, self.status_row):
+                w.pack_forget()
+            self.status_more.place_forget()
+            self.settings.frame.pack(in_=self.body, fill="both", expand=True)
+            self.root.tk.call("raise", str(self.settings.frame))
+            self.settings.opened()
+            return
+        self.settings.frame.pack_forget()
+        if self.mini_mode:
+            return
+        self.status_row.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP, 0))
+        if self._empty_shown:
+            self.empty_view.pack(fill="both", expand=True, after=self.status_row)
+        else:
+            self._pack_column()
+            self.art_size = 0   # size the cover afresh
+            self.root.after_idle(self._fit_art)
+        self._up_next_key = None   # (the Up next line is painted again)
 
     def _below_strip(self) -> int:
         """Where a pop-over from the strip's buttons opens: DROP_GAP below the strip."""
@@ -3698,8 +3879,8 @@ class PlayerWindow:
         the panel under the strip — downwards, or upwards when the strip sits low on the screen —
         and `_settings_closed` puts the strip back to its own size and place. The strip keeps its
         height meanwhile (pack_propagate off), so nothing in it moves."""
-        if self.settings_pop.is_open:
-            self.settings_pop.hide()
+        if self.settings.is_open:
+            self.settings.close()
             return
         Popover.close_open()
         here = placement.current(self.root)
@@ -3714,11 +3895,11 @@ class PlayerWindow:
         self.mini.pack(side="top", fill="x")
         self.root.update_idletasks()
         margin = theme.px(Popover.MARGIN)
-        panel = self.settings_pop.natural_height()
-        if panel < theme.px(200):   # not measured yet: the panel then scrolls in whatever it gets
+        panel = self.settings.natural_height()
+        if panel < theme.px(200):   # not measured yet: the view then scrolls in whatever it gets
             panel = theme.px(640)
         left, top, right, bottom = chrome.work_area(self.root)
-        want_w = min(max(width, self.settings_pop.width + 2 * margin), right - left)
+        want_w = min(max(width, theme.px(SETTINGS_WIDTH) + 2 * margin), right - left)
         want_h = min(strip + panel + 2 * margin, bottom - top)
         x = max(left, min(x, right - want_w))
         y = max(top, min(y, bottom - want_h))
@@ -3726,7 +3907,8 @@ class PlayerWindow:
         self.root.geometry(f"{want_w}x{want_h}+{x}+{y}")
         self.root.update_idletasks()
         self.mini_button.set_text("Full player")
-        self.settings_pop.toggle(self.mini.settings_button, strip + theme.px(DROP_GAP))
+        self.settings.frame.pack(fill="both", expand=True)   # under the strip, in the grown window
+        self.settings.opened()
 
     def _settings_closed(self):
         """(0.25.0) Settings closed. If it was opened from the mini strip, the window goes back to
@@ -4156,6 +4338,9 @@ class PlayerWindow:
 
         def work():
             try:
+                if places.refused(paths, self.prefs):
+                    result["plan"], result["needs_network"] = dragdrop.DropPlan(missing=paths), True
+                    return
                 result["plan"] = dragdrop.plan_drop(paths)
                 if tab is not None:  # adding to a tab: read the songs here too
                     result["songs"] = self._read_dropped(result["plan"])
@@ -4164,8 +4349,7 @@ class PlayerWindow:
                 result["plan"] = dragdrop.DropPlan(missing=paths)
 
         self._set_notice("Opening what was dropped…", 0)
-        threading.Thread(target=work, name="drop", daemon=True).start()
-        self.root.after(50, self._finish_drop, tab, result)
+        self.work.run(work, lambda _done: self._finish_drop(tab, result), name="drop")
         return "copy"
 
     def _read_dropped(self, plan: dragdrop.DropPlan) -> tuple[list[Track], list[str]]:
@@ -4191,11 +4375,14 @@ class PlayerWindow:
         return tracks, extras
 
     def _finish_drop(self, tab: Tab | None, result: dict):
-        if "plan" not in result or (tab is not None and tab.loading and self._tab_index(tab) >= 0):
-            self.root.after(50, self._finish_drop, tab, result)
+        if tab is not None and tab.loading and self._tab_index(tab) >= 0:
+            self.root.after(50, self._finish_drop, tab, result)   # (once the tab has loaded)
             return
         plan = result["plan"]
         note = plan.note()
+        if result.get("needs_network"):
+            self._set_notice("That's on your network: switch on Settings → Library → Local network access first", 8000)
+            return
         if plan.nothing:
             self._set_notice(f"Nothing to open · {note}" if note else "Nothing to open", 8000)
             return
@@ -4276,23 +4463,25 @@ class PlayerWindow:
 
         def work():
             try:
+                if places.refused(named, self.prefs):
+                    result["plan"], result["needs_network"] = dragdrop.DropPlan(missing=named), True
+                    return
                 result["plan"] = dragdrop.plan_drop(named)
             except Exception:
                 log.exception("couldn't sort out the files named")
                 result["plan"] = dragdrop.DropPlan(missing=named)
 
         self._set_notice("Opening…", 0)
-        threading.Thread(target=work, name="open-paths", daemon=True).start()
-        self.root.after(50, self._finish_open_paths, result)
+        self.work.run(work, lambda _done: self._finish_open_paths(result), name="open-paths")
 
     def _finish_open_paths(self, result: dict):
         if self._closing:   # (sorted out only after closing began: nothing to open it in)
             return
-        if "plan" not in result:
-            self.root.after(50, self._finish_open_paths, result)
-            return
         plan = result["plan"]
         note = plan.note()
+        if result.get("needs_network"):
+            self._set_notice("That's on your network: switch on Settings → Library → Local network access first", 8000)
+            return
         if plan.nothing:
             self._set_notice(f"Nothing to open · {note}" if note else "Nothing to open", 8000)
             return
@@ -4365,8 +4554,7 @@ class PlayerWindow:
                 result["error"] = error
 
         self._set_notice("Saving diagnostics…", 0)
-        threading.Thread(target=work, name="diagnostics", daemon=True).start()
-        self.root.after(100, self._finish_diagnostics, result)
+        self.work.run(work, lambda _done: self._finish_diagnostics(result), name="diagnostics")
 
     def _private_names(self) -> dict[str, list[str]]:
         """Names the diagnostics leave out besides paths: the open tabs' titles (album and folder
@@ -4376,9 +4564,6 @@ class PlayerWindow:
                 "search": [tab.query for tab in self.tabs if tab.query]}
 
     def _finish_diagnostics(self, result: dict):
-        if not result:
-            self.root.after(100, self._finish_diagnostics, result)
-            return
         if "path" in result:
             self._set_notice(f"Diagnostics saved as {result['path'].name} · nothing has been sent anywhere", 10000)
             return
@@ -4387,50 +4572,9 @@ class PlayerWindow:
         popups.tell(self.root, "Diagnostics weren't saved", f"{result['error']}", tone="warn")
 
     def _open_log_folder(self):
-        from . import crash
 
         Popover.close_open()
         crash.open_folder(settings.settings_path().parent)
-
-    # -- Check for updates (updates.py) ----------------------------------------------------------------
-    def _update_tick(self):
-        try:
-            self._check_for_update_if_due()
-        finally:
-            self._update_job = self.root.after(UPDATE_EVERY_MS, self._update_tick)
-
-    def _check_for_update_if_due(self):
-        """Start a check on a thread when one is due (switched on, network allowed, a day since)."""
-        if self._update_checking or not updates.due(self.prefs):
-            return
-        self._update_checking = True
-        self.prefs["update_checked"] = time.time()   # noted now: a failed check also waits a day
-        prefs = {key: self.prefs.get(key) for key in ("check_updates", "allow_network")}
-
-        def work():
-            try:
-                self._update_found = updates.check(prefs)
-            finally:
-                self._update_checking = False
-
-        threading.Thread(target=work, name="update-check", daemon=True).start()
-
-    def _take_update(self):
-        found, self._update_found = self._update_found, None
-        if found is None:
-            return
-        self.update_available = found
-        self._paint_version()
-        self._set_notice(self._update_text(found), UPDATE_NOTE_MS)
-
-    @staticmethod
-    def _update_text(release: updates.Release) -> str:
-        return f"{APP_NAME} {release.version} is available · click here for the download page"
-
-    def open_download_page(self):
-        """Opens the page in the web browser; nothing is downloaded by the player."""
-        release = self.update_available
-        webbrowser.open(release.url if release is not None else updates.DOWNLOAD_PAGE)
 
     def _add_tracks_to_current(self, tracks: list[Track]) -> str:
         """Songs (from the Library's song views) onto the bottom of the tab on show, or a new tab of
@@ -4451,6 +4595,8 @@ class PlayerWindow:
         skips songs it already has. Music playing from the tab carries on uninterrupted."""
         if not tracks:
             return f"Nothing to add to “{tab.title}”"
+        if tab.main:
+            return "The Library tab is every library folder already: add folders in Settings → Library"
         if tab.kind == "playlist":
             self.add_to_playlist(Path(tab.path), tracks)
             count = len(tracks)
@@ -4545,20 +4691,9 @@ class PlayerWindow:
 
     def _apply_theme(self):
         """Switch to the palette the Theme setting asks for now (nothing happens if it's on show)."""
-        choice = self.prefs["theme"]
-        self._windows_light = theme.windows_uses_light() if choice == "system" else None
-        palette = theme.palette_for(choice, self._windows_light)
+        palette = theme.palette_for(self.prefs["theme"])
         if palette is not theme.current:
             theme.use(palette, self.root)
-
-    def _follow_windows(self):
-        """Theme: Follow Windows notices Windows switching light / dark while the player runs — a
-        quick registry read every couple of seconds on Tk's own timer (nothing blocks or waits)."""
-        try:
-            if self.prefs["theme"] == "system" and theme.windows_uses_light() != self._windows_light:
-                self._apply_theme()
-        finally:
-            self._theme_job = self.root.after(THEME_POLL_MS, self._follow_windows)
 
     # -- mini mode (0.19.0) ---------------------------------------------------------------------
     def toggle_mini(self):
@@ -4567,6 +4702,8 @@ class PlayerWindow:
         to this one window) keep working. Each mode returns to where it was last left."""
         grown_from = self._mini_settings_from   # Settings open from the strip: the strip's own place
         Popover.close_open()
+        self._close_settings()
+        self._show_library_view(False)
         here = grown_from or placement.current(self.root)
         if here:   # remember where the mode we're leaving was
             self.prefs["mini_geometry" if self.mini_mode else "geometry"] = here
@@ -4581,7 +4718,6 @@ class PlayerWindow:
                 self.mini.show(**self._mini_state)
         else:
             self.art_size = 0   # size the cover afresh for the full window
-            self._check_layout(force=True)
             self.root.after_idle(self._fit_art)
 
     def _limit_size(self, full: bool):
@@ -4645,362 +4781,48 @@ class PlayerWindow:
         parsed = placement.parse(full) if full else None
         return f"{size}+{parsed[2]}+{parsed[3]}" if parsed else size
 
-    # -- wide windows (layout.py) -------------------------------------------------------------------
+    # -- packing the column ---------------------------------------------------------------------------
     def _pack_column(self):
-        """The narrow window's layout: the one place it's packed (at start, after a wide window, and
-        when a tab opens in an empty window)."""
+        """The window's one layout: the now-playing head, the seek bar, the transport and the track
+        list between the strip and the status line. The one place it's packed (at start, and when a
+        tab opens in an empty window)."""
         self.head.pack(fill="x", before=self.status_row)
         self.seek_row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0), before=self.status_row)
         self.transport.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, theme.GAP), before=self.status_row)
         self.playlist.frame.pack(fill="both", expand=True, after=self.status_row)
         self._place_up_next()
 
-    def _pack_split(self):
-        """A wide window's layout: the two panes between the strip and the status line, the
-        now-playing parts in the left one's stack, the track list in the right one."""
-        self.split.pack(fill="both", expand=True, after=self.status_row)
-        self.head.pack(in_=self.stack, fill="x")
-        self.seek_row.pack(in_=self.stack, fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-        self.transport.pack(in_=self.stack, fill="x", pady=theme.pad(theme.GAP_SMALL, theme.GAP))
-        self.playlist.frame.pack(in_=self.right, fill="both", expand=True)
-        self._place_up_next()
-        # Each above the frame it's packed in (raised in the order they were made, which is also the
-        # order Tab goes through them; the pieces placed over them come after).
-        for widget in (self.head, self.head_icons, self.seek_row, self.seek, self.transport, self.playlist.frame,
-                       self.playlist.scrollbar, self.up_next_label):
-            self.root.tk.call("raise", str(widget))   # (a canvas's own lift() raises its items instead)
-
     def _place_up_next(self):
         """The Up next line (only while songs are queued): above the track list, or with no tab open,
         just above the status line."""
-        if not self.player.queue or self._up_next_docked():
+        if not self.player.queue:
             return
         place = (dict(before=self.playlist.frame) if self.playlist.frame.winfo_manager()
                  else dict(after=self.status_row))
         self.up_next_label.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_SMALL, 0), **place)
 
-    def _choose_tier(self, size: tuple[int, int] | None = None) -> str:
-        width, height = size or (self.root.winfo_width(), self.root.winfo_height())
-        scale = _layout_scale()
-        return layout.choose(width / scale, height / scale, self._tier, self.show_art.get())
-
     def _on_resize(self, event):
-        """The window's size changed: another layout (once, when Tk is next idle), or the same one
-        fitted to the new size."""
-        if event.widget is not self.root:
-            return
-        self._opening_size = None   # (shown: its own size from now on)
-        if self.mini_mode or self._mini_settings_from is not None:
-            return
-        if self._choose_tier() != self._tier:
-            if self._layout_job is None:
-                self._layout_job = self.root.after_idle(self._apply_layout)
+        """The window's size changed: the cover follows it."""
+        if event.widget is not self.root or self.mini_mode or self._mini_settings_from is not None:
             return
         self._fit_art()
-
-    def _check_layout(self, force: bool = False, size: tuple[int, int] | None = None):
-        """Put the window in the layout its size calls for now, rather than at the next resize.
-        force: a wide window staying wide is measured and fitted afresh (the cover switched on or off,
-        back from the mini strip). size: the window's size to go by (real px), before it's shown."""
-        if self.mini_mode or self._mini_settings_from is not None:
-            return
-        if size is not None:
-            self._opening_size = size   # (fitted to it while the window can't be measured yet)
-        tier = self._choose_tier(size)
-        if tier != self._tier:
-            self._apply_layout(tier)
-        elif force and tier != layout.COLUMN:
-            self._heights, self._plan, self.art_size = None, None, 0
-            self._fit_split()
-
-    def _apply_layout(self, tier: str | None = None):
-        """Move into another layout, in one go so Tk lays out and paints once. Nothing is rebuilt —
-        the same widgets are packed into other frames — so the search, the selection, the list's
-        scroll position and the keyboard's place all stay."""
-        if self._layout_job is not None:
-            self.root.after_cancel(self._layout_job)
-            self._layout_job = None
-        if self.mini_mode or self._mini_settings_from is not None:
-            return
-        tier = tier or self._choose_tier()
-        if tier == self._tier:
-            return
-        try:
-            focus = self.root.focus_get()
-        except (KeyError, tk.TclError):   # (a part of Tk's own, e.g. an open drop-down's list)
-            focus = None
-        was, self._tier = self._tier, tier
-        wide = tier != layout.COLUMN
-        if wide != (was != layout.COLUMN):
-            moved = (self.head, self.seek_row, self.transport, self.up_next_label, self.playlist.frame)
-            self.split.pack_forget()
-            for widget in moved:
-                widget.pack_forget()
-            if not wide:
-                self._art_hidden = False
-                if self.show_art.get():
-                    self.art_box.pack(fill="x", before=self.head_text)
-                    self.head_text.pack_configure(pady=theme.pad(theme.GAP_LARGE, 0))
-            if self._empty_shown:
-                self._place_up_next()
-            elif wide:
-                self._pack_split()
-            else:
-                self._pack_column()
-        self._style_for(tier)
-        self._heights, self._plan, self.art_size = None, None, 0
-        self._fits.clear()
-        self._fit_art()
-        self._paint_head()
-        if focus is not None and focus.winfo_exists():
-            focus.focus_set()
-
-    def _style_for(self, tier: str):
-        """A layout's type sizes, caption, list style and columns, and the strip's extras."""
-        wide = tier != layout.COLUMN
-        self.title_label.configure(style=TITLE_STYLES[tier])
-        self.sub_label.configure(style=SUB_STYLES[tier])
-        self.format_label.configure(style=INFO_STYLES[tier])
-        info_row = self.format_label.master
-        if wide:
-            self.kind_label.pack(anchor="w", pady=theme.pad(0, theme.GAP_SMALL), before=self.title_label)
-            info_row.pack_configure(fill="none", anchor="w")   # the dot, lock and ⓘ right after the text
-        else:
-            self.kind_label.pack_forget()
-            info_row.pack_configure(fill="x", anchor="center")
-        self.playlist.set_tier(tier)
-        if self._up_next_view is not None:
-            self._up_next_view.set_tier(tier)
-        self.bar.set_wide(wide, layout.TAB_MAX[tier])
-        self._cover_tip = ""
-        self._show_view()
-
-    def _measure_heights(self) -> layout.Heights:
-        """The heights a wide layout is planned from (logical px), measured with its styles on."""
-        self.root.update_idletasks()
-        scale = _layout_scale()
-        tree = self.playlist.tree
-        row = ttk.Style(self.root).lookup(str(tree.cget("style")) or "Treeview", "rowheight")
-        base = layout.DEFAULT_HEIGHTS[self._tier]
-
-        def logical(real: float) -> int:
-            return math.ceil(real / scale)
-
-        chrome_h = (self.bar.winfo_reqheight() + theme.px(theme.GAP_LARGE) + theme.px(theme.GAP_MEDIUM)
-                    + self.status_row.winfo_reqheight() + theme.px(theme.GAP))
-        return layout.Heights(
-            text=logical(self.head_text.winfo_reqheight()),
-            seek=logical(self.seek_row.winfo_reqheight() + theme.px(theme.GAP_MEDIUM)),
-            transport=logical(self.transport.winfo_reqheight() + theme.px(theme.GAP_SMALL) + theme.px(theme.GAP)),
-            chrome=logical(chrome_h),
-            list_head=logical(self.playlist.header.winfo_reqheight() + theme.px(theme.GAP)
-                              + (self.playlist.search_row.winfo_reqheight() + theme.px(theme.GAP)
-                                 if self.playlist.search_row.winfo_manager() else 0)),
-            heading=base.heading,
-            row=logical(float(row)) if row else base.row)
-
-    def _fit_split(self):
-        """Fit a wide layout to the window: the panes' widths, the margins past CONTENT_MAX, the
-        cover's slot (snapped to whole steps; while resizing, the last cover is scaled quickly as a
-        stand-in until the window settles) and the shortened title. Reads only the window's size and
-        the measured heights — never the panes themselves — so nothing feeds back."""
-        if self.mini_mode or self._tier == layout.COLUMN:
-            return
-        # Until the window has been shown and told its size, Tk calls it 200 px square: go by the
-        # size it opens at instead (or its first paint would be laid out for that).
-        width, height = self._opening_size or (self.root.winfo_width(), self.root.winfo_height())
-        if width < 10 or height < 10:
-            return
-        if self._heights is None:
-            # Measuring makes Tk lay out and paint the window as it is at that moment, so it's first
-            # fitted with the heights this layout had last time (or typical ones): that paint already
-            # shows the panes in place, not a list across the whole window with nothing beside it.
-            self._heights = self._measured.get(self._tier) or layout.DEFAULT_HEIGHTS[self._tier]
-            self._fit_plan(width, height)
-            self._heights = self._measured[self._tier] = self._measure_heights()
-        self._fit_plan(width, height)
-
-    def _fit_plan(self, width: int, height: int):
-        """Fit the panes, the cover's slot and the title to a window `width` × `height` real px, planned
-        from the heights in hand."""
-        scale = _layout_scale()
-        plan = layout.plan(width / scale, height / scale, self._tier, self.show_art.get(), self._heights)
-        old, self._plan = self._plan, plan
-        px = theme.px
-
-        def moved(name: str) -> bool:
-            return old is None or abs(px(getattr(old, name)) - px(getattr(plan, name))) > 2
-
-        if moved("margin"):
-            self.split.pack_configure(padx=px(plan.margin))
-        if moved("left_w"):
-            self.left.configure(width=px(plan.left_w))
-        if moved("stack_w"):
-            self.stack.place(relx=0.5, rely=0.5, anchor="center", width=px(plan.stack_w))
-            self._fits.clear()
-        self._fit_info_row()
-        if self.show_art.get():
-            hide = plan.slot == 0
-            if hide != self._art_hidden:   # too short for a cover: text, seek bar and transport only
-                self._art_hidden = hide
-                if hide:
-                    self.art_box.pack_forget()
-                    self.head_text.pack_configure(pady=0)
-                else:
-                    self.art_box.pack(fill="x", before=self.head_text)
-                    self.head_text.pack_configure(pady=theme.pad(theme.GAP_LARGE, 0))
-            slot = px(plan.slot)
-            if slot and slot != self.art_size:
-                self.art_size = slot
-                self.art_box.configure(height=slot)
-                self._stand_in_art()
-                if self._art_job:
-                    self.root.after_cancel(self._art_job)
-                self._art_job = self.root.after(COVER_SETTLE_MS, self._art_settled)
-        self._paint_head()
-
-    def _fit_info_row(self):
-        """The format line with the status dot, lock and ⓘ right after it — unless it's wider than the
-        stack, when the row takes the stack's width (the icons at its end, the text cut)."""
-        if self._plan is None:
-            return
-        info_row = self.format_label.master
-        fill = "x" if info_row.winfo_reqwidth() > theme.px(self._plan.stack_w) else "none"
-        if str(info_row.pack_info().get("fill")) != fill:
-            info_row.pack_configure(fill=fill)
-
-    def _stand_in_art(self):
-        """The last cover scaled quickly (bilinear, about a millisecond) to the new slot while the
-        window is being resized; the proper one is fetched once it settles. Never past the picture's
-        own size."""
-        image = self._art_image
-        if image is None or not self.art_size:
-            return
-        source = image.info.get("source_size", image.size)
-        side = max(1, min(self.art_size, *source))
-        quick = image if image.width == side else image.resize((side, side), Image.Resampling.BILINEAR)
-        quick.info["source_size"] = source
-        self._show_art(quick, fetched=False)
 
     def _art_settled(self):
         self._art_job = None
         self._request_art(self._art_track, force=True)
 
-    def _set_head(self, caption: str, title: str, sub: str, fmt: str):
-        """The top of the window: the caption (a wide window only), title, artist line and format line.
-        The whole title and artist line are kept — the mini strip and the tooltips show them — and a
-        wide window shortens them with "…" to its stack's width."""
+    def _set_head(self, title: str, sub: str, fmt: str):
+        """The top of the window: the title, the artist line and the format line. The whole title and
+        artist line are kept (the mini strip shows them too)."""
         self._head_full = (title, sub)
-        self._head_texts = (caption, fmt)
+        self._head_fmt = fmt
         self._paint_head()
 
     def _paint_head(self):
-        (title, sub), (caption, fmt) = self._head_full, self._head_texts
-        shown_title, shown_sub = title, sub
-        if self._tier != layout.COLUMN and self._plan is not None:
-            width = theme.px(self._plan.stack_w)
-            shown_title = self._fit_text(title, TITLE_STYLES[self._tier], width)
-            shown_sub = self._fit_text(sub, SUB_STYLES[self._tier], width)
-        self._head_cut = (shown_title != title, shown_sub != sub)
-        for label, text in ((self.kind_label, caption), (self.title_label, shown_title),
-                            (self.sub_label, shown_sub), (self.format_label, fmt)):
+        title, sub = self._head_full
+        for label, text in ((self.title_label, title), (self.sub_label, sub), (self.format_label, self._head_fmt)):
             if str(label.cget("text")) != text:
                 label.configure(text=text)
-
-    def _fit_text(self, text: str, style: str, width: int) -> str:
-        """`text` shortened with "…" to `width` px in a label style's font (remembered)."""
-        key = (text, style, width)
-        shown = self._fits.get(key)
-        if shown is None:
-            if len(self._fits) > 400:
-                self._fits.clear()
-            font = controls._measuring_font(self.root, ttk.Style(self.root).lookup(style, "font"))
-            shown = text
-            if font.measure(text) > width:
-                while shown and font.measure(shown + "…") > width:
-                    shown = shown[:-1]
-                shown = shown.rstrip() + "…" if shown.strip() else text[:1] + "…"
-            self._fits[key] = shown
-        return shown
-
-    def _tab_count(self, tab: Tab) -> str:
-        """A wide window's count over the list, e.g. "Album · 13 songs · 51:57", or for a tab of many
-        albums "Library · 655 songs · 50 albums · 41:22:10"."""
-        if tab.tracks is None:
-            return "Loading…" if tab.loading else ""
-        songs, albums, seconds = tab_numbers(tab)
-        if not songs:
-            return ""
-        parts = [KIND_NAMES.get(tab.kind, ""), plural(songs, "song")]
-        if albums > 1 and tab.kind != "playlist":
-            parts.append(plural(albums, "album"))
-        parts.append(fmt_time(seconds))
-        return " · ".join(p for p in parts if p)
-
-    # -- a wide window's right pane: Tracks · Up next · Lyrics ----------------------------------------------
-    def set_view(self, view: str):
-        """The right pane's view switch: "tracks" (the tab's list, or the whole library's results),
-        "up_next" or "lyrics". Kept for the session: the narrow window always shows the list, and a
-        wide one goes back to this view."""
-        if view not in dict(playlist_view.VIEWS):
-            return
-        self.view = view
-        self.playlist.set_view(view)
-        self._show_view()
-
-    def set_search_scope(self, scope: str):
-        """This tab | Whole library, beside the search box (a wide window)."""
-        if scope in dict(playlist_view.SCOPES):
-            self.search_scope = scope
-            self._show_view()
-
-    def _up_next_docked(self) -> bool:
-        """The docked Up next is on show (with no tabs open the right pane is put away: the Up next
-        line shows the queue instead)."""
-        return self._tier != layout.COLUMN and self.view == "up_next" and not self._empty_shown
-
-    def _show_view(self):
-        """Put the right pane's view on show, and the others away: the tab's list, the whole library's
-        results (under the search box), Up next or the lyrics. The narrow window: the list, always."""
-        playlist = self.playlist
-        wide = self._tier != layout.COLUMN
-        view = self.view if wide else "tracks"
-        library = wide and view == "tracks" and self.search_scope == "library"
-        playlist.set_view(self.view)
-        playlist.set_scope("library" if library else "tab")
-        if wide:
-            playlist.show_search_row(view == "tracks")
-        if wide and view == "up_next" and self._up_next_view is None:
-            self._up_next_view = self._make_up_next_view()
-        if wide and view == "lyrics" and self._lyrics_view is None:
-            self._make_lyrics_view()
-        if library and self._inline is None:
-            self._inline = QuickSearch(self.root, self._index, self.song_actions(), host=playlist.frame,
-                                       query=playlist.query, entry=playlist.entry, scroll_parent=self.body,
-                                       on_close=self._inline_closed)
-        inline = self._inline.panel if self._inline is not None else None
-        shown = {"up_next": self._up_next_view, "lyrics": self._lyrics_view}.get(view) or (
-            inline if library else playlist.table)
-        keys_at = self._keyboard_in()
-        put_away = [widget for widget in (playlist.table, inline, self._up_next_view, self._lyrics_view)
-                    if widget is not None and widget is not shown and widget.winfo_manager()]
-        for widget in put_away:
-            widget.pack_forget()
-        if not shown.winfo_manager():
-            shown.pack(fill="both", expand=True)
-        if self._inline is not None and library != self._inline.is_open:
-            if library:
-                self._inline.open()
-            else:
-                self._inline.close(tell=False)
-        # The keyboard was in what was just put away (a result played, a click on the view switch,
-        # the window made narrow): it goes to what's on show, or keys would act on a hidden list.
-        if any(keys_at == str(w) or keys_at.startswith(f"{w}.") for w in put_away):
-            self._keyboard_to(playlist.tree if shown is playlist.table else playlist.entry if shown is inline
-                              else shown.tree if shown is self._up_next_view else self.root)
-        self._up_next_key = None   # (the Up next line: not while the list itself is docked)
-        self._paint_up_next()
-        self._paint_docks()
 
     def _keyboard_in(self) -> str:
         """The Tk name of the widget in this window that has the keyboard, or gets it back when the
@@ -5022,92 +4844,6 @@ class PlayerWindow:
                 target.focus_set()
         except tk.TclError:
             pass
-
-    def _make_up_next_view(self) -> UpNextView:
-        def play(entry):
-            self.player.play_queued(entry)
-            self._paint_up_next()
-            self._paint_docks()
-
-        def remove(entries):
-            self._unqueue_entries(entries)
-            self._paint_docks()   # (at once: the list selects the song now in their place)
-
-        def sleep_menu(widget):
-            self._sleep_menu(self._menu()).popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
-
-        dock = UpNextView(self.playlist.frame, scroll_parent=self.body, on_play=play,
-                          on_remove=remove, on_clear=self.clear_up_next,
-                          on_stop_after=self.stop_after_current, on_sleep_menu=sleep_menu)
-        dock.set_tier(self._tier)
-        return dock
-
-    def _make_lyrics_view(self):
-        """The lyrics docked: the Lyrics window's own view and follower, the text lined up with the pane."""
-        view = LyricsView(self.playlist.frame)
-        view.text.configure(padx=0, pady=theme.px(theme.GAP_SMALL))
-        self._lyrics_view = view
-        self._lyrics_follower = LyricsFollower(view, self.player, on_song=self._lyrics_shown)
-
-    def _lyrics_shown(self, _title: str, line: str):
-        """The docked lyrics' song changed, or its lyrics came: where they came from, for the count line."""
-        self._lyrics_line = line if line.startswith("From ") else ""
-
-    def _paint_docks(self):
-        """Up next or the lyrics, while docked, as they are now."""
-        if self._tier == layout.COLUMN:
-            return
-        if self.view == "up_next" and self._up_next_view is not None:
-            queue = self.player.queue   # (the player's own list, replaced whole on every change)
-            timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
-            sleep_label = f"Sleep timer: {sleep.choice_label(timer.target).lower()}" if timer else "Sleep timer…"
-            self._up_next_view.show(queue, self._up_next_marks([q.track for q in queue[:200]], shown=200),
-                                    self.player.stop_after == "song", sleep_label)
-        elif self.view == "lyrics" and self._lyrics_follower is not None:
-            self._lyrics_follower.follow(True)
-
-    def _view_count(self, shown: Tab | None) -> str:
-        """The right pane's count line: the tab's ("Album · 13 songs · 51:57"), Up next's, or where the
-        lyrics came from. (The whole library's results say their own count under them.)"""
-        if self.view == "up_next":
-            queue = self.player.queue   # (replaced whole on every change: counted once per change)
-            counted = self._up_next_counted
-            if counted is None or counted[0] is not queue:
-                counted = (queue, up_next_count(len(queue), sum(q.track.duration or 0 for q in queue)))
-                self._up_next_counted = counted
-            return counted[1]
-        if self.view == "lyrics":
-            return self._lyrics_line
-        if self.search_scope == "library":
-            return ""
-        return self._tab_count(shown) if shown is not None else ""
-
-    def _search_whole_library(self, query: str):
-        """The track list's "Search the whole library" row: a wide window's own box searches the library
-        (the results in the list's place); the narrow one opens the search panel."""
-        if self._tier != layout.COLUMN and self.view == "tracks":
-            self.set_search_scope("library")   # (the box keeps the words: they're searched at once)
-            self.playlist.entry.focus_set()
-        else:
-            self.find_in_library(query)
-
-    def _library_key(self, how: str):
-        """A key in the track list's box while it searches the whole library: ↓ into the results, Enter
-        (and Shift / Ctrl / Alt+Enter) on the first one, as in the search panel."""
-        inline = self._inline
-        if inline is None or not inline.is_open:
-            return
-        if how == "down":
-            inline._into_results()
-        else:
-            inline._act(how, first=True)
-
-    def _inline_closed(self):
-        """A song played or an album opened from the docked results: back to the tab's list, the box
-        emptied (the tab asked for is the one on show now)."""
-        self.playlist.query.set("")
-        self.search_scope = "tab"
-        self._show_view()
 
     # -- the status line -----------------------------------------------------------------------------
     def _show_status(self, text: str):
@@ -5149,10 +4885,7 @@ class PlayerWindow:
     # -- cover art -------------------------------------------------------------
     def _fit_art(self):
         """Size the cover square to the window: the full width, but never so tall that the
-        track list drops below a few rows. (A wide window: _fit_split.)"""
-        if self._tier != layout.COLUMN:
-            self._fit_split()
-            return
+        track list drops below a few rows."""
         width = self.art_box.winfo_width()
         if width < 10 or not self.show_art.get() or self.mini_mode:
             return
@@ -5181,25 +4914,19 @@ class PlayerWindow:
             self.art_box.pack(fill="x", before=self.head_text)
             self.head_text.pack_configure(pady=theme.pad(theme.GAP_LARGE, 0))
             self.art_size = 0  # size it afresh; _fit_art then fetches the cover
-            self._art_hidden = False
             self.root.after_idle(self._fit_art)
         else:
             self.art_box.pack_forget()
             self.head_text.pack_configure(pady=0)
-        self._check_layout(force=True)   # (a 780–879 px window splits only with a cover to show)
 
     def _request_art(self, path: Path | None, force: bool = False):
         """Find and shrink the cover off the UI thread; _poll picks the result up."""
         self._art_track = path
         if not self.show_art.get():
             return  # remembered, so switching the cover back on shows the right one
-        # The narrow window enlarges a small cover to fill its square; a wide one never does.
-        upscale = self._tier == layout.COLUMN
-        key = (path, self.art_size, upscale)
+        key = (path, self.art_size)
         if (key == self._art_key and not force) or not self.art_size:
             return
-        if not upscale and self._art_job is not None and not force:
-            return   # being resized: the stand-in shows until it settles (_art_settled)
         self._art_key = key
         if path is None:
             self._show_art(None)
@@ -5208,26 +4935,18 @@ class PlayerWindow:
 
         def work():
             try:
-                image = artwork.cover_for(path, size, upscale=upscale)
+                image = artwork.cover_for(path, size)
             except Exception:   # (a damaged picture: the placeholder instead)
                 log.exception("couldn't read the cover for %s", path)
                 image = None
             if self._art_key == key:   # asked for another since: this one is stale (it may finish last)
                 self._art_result = (key, image)
 
-        threading.Thread(target=work, name="cover-art", daemon=True).start()
+        self.work.run(work, name="cover-art")
 
-    def _show_art(self, image, fetched: bool = True):
+    def _show_art(self, image):
         """Put a cover up with softly rounded corners (0.20.0); no cover: a quiet ♫ placeholder
-        the same size, so nothing shifts. A wide window shows a cover at most at its own size: a
-        smaller one sits on a mat the size of the slot (and the cover's tooltip says so).
-        fetched=False: a quick stand-in while the window is resized."""
-        if fetched:
-            self._art_image = image
-        if self._tier != layout.COLUMN:
-            self._show_wide_art(image)
-            return
-        self._cover_tip = ""
+        the same size, so nothing shifts."""
         size = image.width if image is not None else self.art_size
         if size < 2:
             return
@@ -5235,24 +4954,6 @@ class PlayerWindow:
             image = controls.placeholder(size)
         image = controls.round_corners(image, controls.corner_radius(size), "BG")
         self._art_photo = ImageTk.PhotoImage(image, master=self.root)  # keep a reference or Tk drops it
-        self.art_label.configure(image=self._art_photo, text="")
-
-    def _show_wide_art(self, image):
-        slot = self.art_size
-        if slot < 2:
-            return
-        if image is None:
-            self._cover_tip = ""
-            picture = controls.round_corners(controls.placeholder(slot), controls.corner_radius(slot), "BG")
-        else:
-            width, height = image.info.get("source_size", image.size)
-            if image.width < slot:
-                picture = controls.matted(image, slot)
-                self._cover_tip = f"Cover {width} × {height} px · shown 1:1, not enlarged"
-            else:
-                picture = controls.round_corners(image, controls.corner_radius(image.width), "BG")
-                self._cover_tip = f"Cover {width} × {height} px · shown at {image.width}"
-        self._art_photo = ImageTk.PhotoImage(picture, master=self.root)
         self.art_label.configure(image=self._art_photo, text="")
 
     def _paint_empty_mark(self):
@@ -5264,29 +4965,21 @@ class PlayerWindow:
 
     def _show_empty(self, empty: bool):
         """No tabs open: the empty view in place of the cover, transport and track list (the status
-        line stays), in any layout. A tab opening packs them back for the layout of the moment."""
+        line stays). A tab opening packs them back."""
         if empty == self._empty_shown:
             return
         self._empty_shown = empty
+        if self.settings.is_open or self._library_shown:
+            return   # (the column isn't on show: packed for this when Settings or the Library's views close)
         if empty:
-            for w in (self.split, self.head, self.seek_row, self.transport, self.playlist.frame):
+            for w in (self.head, self.seek_row, self.transport, self.playlist.frame):
                 w.pack_forget()
-            if self.up_next_label.winfo_manager() and str(self.up_next_label.pack_info()["in"]) != str(self.body):
-                self._place_up_next()   # (it was in the wide window's list pane)
             self.empty_view.pack(fill="both", expand=True, after=self.status_row)
         else:
             self.empty_view.pack_forget()
-            if self._tier == layout.COLUMN:
-                self._pack_column()
-            else:
-                self._pack_split()
+            self._pack_column()
             self.art_size = 0   # size the cover afresh
             self.root.after_idle(self._fit_art)
-        if self._tier != layout.COLUMN and self.view == "up_next":
-            # A docked Up next is put away with the pane (and back with it): meanwhile the Up next line
-            # shows the queue.
-            self._up_next_key = None
-            self._paint_up_next()
 
     def _palette_changed(self, _palette):
         """After a palette change (theme.use): redraw what keeps its colours — the cover's
@@ -5295,7 +4988,7 @@ class PlayerWindow:
         self._refresh_tabs()
         self._paint_status_dot(self._status_colour)
         if self._art_track is not None or self.art_size:
-            self.art_size = 0   # (a wide window's mat, too, is drawn again in the new colours)
+            self.art_size = 0   # (the placeholder is drawn again in the new colours)
             self._fit_art()
         self._paint_order_buttons()
         self._paint_lock()
@@ -5309,7 +5002,7 @@ class PlayerWindow:
         track = tab.view_track()
         if track is None:
             if tab.unavailable:
-                return f"Not connected: {tab.path}"
+                return "Needs Local network access (Settings → Library)" if tab.needs_network else f"Not connected: {tab.path}"
             return "Loading…" if tab.loading else ("Empty playlist" if tab.kind == "playlist" else "")
         key = (len(tab.tracks), tab.last_index)
         if tab.summary is not None and tab.summary[0] is tab.tracks and tab.summary[1] == key:
@@ -5351,14 +5044,13 @@ class PlayerWindow:
             if self._index_updated:
                 self._index_updated = False
                 self.checker.kick()   # (a tag edit changed the files: checked again)
-                if self._library is not None and self._library.win.winfo_exists():
+                if self._library is not None:
                     self._guarded(self._library.reload)
             self._guarded(self._watch_reports)
             if not self.favourites.ready:
                 self._guarded(self.favourites.take_loaded)
             self._guarded(self._take_requests)
             self._guarded(self._take_cache_notices)
-            self._guarded(self._take_update)
         finally:
             self._poll_job = self.root.after(POLL_MS, self._poll)
 
@@ -5387,10 +5079,9 @@ class PlayerWindow:
         listening, self._listening = self._listening, None
         if listening is None or not library_db.counts_as_play(listening.heard, listening.duration):
             return None
-        thread = threading.Thread(target=_store_play, args=(self._index(), listening.key, listening.heard,
-                                                            listening.duration), name="library-play", daemon=True)
-        thread.start()
-        return thread
+        index = self._index()
+        return self.work.run(lambda: _store_play(index, listening.key, listening.heard, listening.duration),
+                             name="library-play")
 
     def _hold_playing(self):
         """(The poll.) A list read a page at a time keeps the songs round the one playing read — the
@@ -5412,7 +5103,7 @@ class PlayerWindow:
             return
         self._plays_seen = stored
         self.playlist.plays_changed()
-        if self._library is not None and self._library.win.winfo_exists():
+        if self._library is not None:
             self._library.plays_changed()
 
     def _record_last_play(self):
@@ -5458,7 +5149,7 @@ class PlayerWindow:
         # the song; flick to another album and you see that album (press play to start it).
         if viewing_playing and track:
             self._request_art(track.path)
-            self._set_head(NOW_PLAYING, track.title, track.display_artist_album or track.path.parent.name,
+            self._set_head(track.title, track.display_artist_album or track.path.parent.name,
                            track.format_line)
             text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
                                      track.bits, track.codec, status.levelling, status.fading)
@@ -5482,17 +5173,16 @@ class PlayerWindow:
         elif shown is not None:
             view = shown.view_track()
             self._request_art(view.path if view else shown.first_file)
-            caption = CAPTIONS.get(shown.kind, "")
             if view is not None and shown.last_index >= 0 and shown.resume_at >= 1:
                 # Left paused part-way through a song: show where, ready to carry on.
-                self._set_head(caption, view.title, view.display_artist_album or view.path.parent.name,
+                self._set_head(view.title, view.display_artist_album or view.path.parent.name,
                                f"Paused at {fmt_time(shown.resume_at)} of {fmt_time(view.duration)} · press play "
                                "to carry on")
             elif shown.kind == "library" and shown.last_index < 0:   # (its first album's artist would mislead)
-                self._set_head(caption, shown.title, "Press play to start", self._album_summary(shown))
+                self._set_head(shown.title, "Press play to start", self._album_summary(shown))
             else:
                 artist = (view.artist if view else shown.artist) or ""
-                self._set_head(caption, shown.title, artist or "Press play to start this album",
+                self._set_head(shown.title, artist or "Press play to start this album",
                                self._album_summary(shown))
             text, tone = "", "plain"
             showing_playing = False
@@ -5500,7 +5190,7 @@ class PlayerWindow:
                          if track else "")
         else:
             self._request_art(None)
-            self._set_head("", "Nothing playing", "Open your library: Ctrl+L", "")
+            self._set_head("Nothing playing", "Open your library: Ctrl+L", "")
             text, tone = "", "plain"
             showing_playing = False
             elsewhere = ""
@@ -5555,9 +5245,6 @@ class PlayerWindow:
             self._show_times(position, duration)
         self._paint_undo_link()
         self._show_status(self._notice or status.message or network_text or self._sleep_line(status) or elsewhere)
-        if self._tier != layout.COLUMN:
-            self._paint_docks()
-            self.playlist.set_count(self._view_count(shown))
         # The mini strip shows the same as the top of the full window.
         self._mini_state = dict(title=self._head_full[0], artist=self._head_full[1],
                                 position=position, duration=duration, playing=playing_now,
@@ -5572,7 +5259,7 @@ class PlayerWindow:
                 self.volume_badge.place(relx=1.0, rely=0.5, anchor="e")
         else:
             self.volume_badge.place_forget()
-        if self.settings_pop.is_open:
+        if self.settings.is_open:
             self._update_volume_text()
             if self._netcache is not None and self.netplay_box.winfo_manager():
                 self._paint_cache()   # (the network's speed and the cache's size move on while it's open)
@@ -5603,10 +5290,7 @@ class PlayerWindow:
             repeat=self.player.repeat,
             clip_guard=self.clip_guard.get(),
             show_art=self.show_art.get(),
-            allow_network=self.allow_network.get(),
             media_controls=self.media_controls.get(),
-            watch_music=self.watch_music.get(),
-            check_updates=self.check_updates.get(),
             detailed_logging=self.detailed_logging.get(),
         )
         self.prefs["mini_on_top" if self.mini_mode else "always_on_top"] = self.on_top.get()
@@ -5657,7 +5341,7 @@ class PlayerWindow:
             self.root.after(100, self._close_when_saved, deadline)
             return
         try:
-            for step in (self._save_on_close, self._stop_timers, self._stop_media, self.watcher.stop,
+            for step in (self._save_on_close, self._stop_timers, self._stop_media,
                          self._record_last_play, self._stop_indexing, self._stop_checking, self._store_favourites,
                          self.player.close, self._stop_cache, self._last_tag_tries):
                 try:
@@ -5687,8 +5371,8 @@ class PlayerWindow:
             log.warning("closing: a favourite change wasn't stored in time")
 
     def _stop_timers(self):
-        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job, self._check_job,
-                    self._layout_job, self._art_job):
+        self.work.close()
+        for job in (self._poll_job, self._media_job, self._art_job):
             if job is not None:
                 self.root.after_cancel(job)
 

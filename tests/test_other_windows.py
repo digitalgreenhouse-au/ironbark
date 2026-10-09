@@ -22,8 +22,9 @@ import soundfile as sf
 from ironbark import controls, theme
 
 PACKAGE = Path(theme.__file__).parent
-WINDOW_MODULES = ("details.py", "library_window.py", "meter_window.py", "pcm_window.py", "spectrogram_window.py",
-                  "scope_window.py", "compare_window.py", "abx_window.py", "testsignals_window.py", "tag_window.py")
+WINDOW_MODULES = ("tools/details.py", "tools/meter_window.py", "tools/pcm_window.py",
+                  "tools/spectrogram_window.py", "tools/scope_window.py", "tools/compare_window.py", "tools/abx_window.py",
+                  "tools/testsignals_window.py", "tag_window.py")
 
 
 # -- numbers that hold still (no display needed) ------------------------------------------------------
@@ -43,7 +44,8 @@ def test_pad_figures_keeps_a_number_s_width():
 
 
 def test_tone_of_colours_lines_as_the_main_window_does():
-    from ironbark.details import TONE_STYLE, tone_of
+    from ironbark.tools.details import TONE_STYLE
+    from ironbark.statustext import tone_of
     assert tone_of("✓ Verified") == "good" and TONE_STYLE["good"] == "GoodValue.TLabel"
     assert tone_of("✗ MD5 mismatch") == "warn" and tone_of("⚠ Only 16 of 24 bits") == "warn"
     assert tone_of("DR5") == "plain" and tone_of("") == "plain"
@@ -257,7 +259,7 @@ class ShownPlayer:
 
 def test_now_playing_lines_up_colours_and_fits(root, tmp_path):
     from ironbark.analysis import analyse
-    from ironbark.details import NowPlayingWindow
+    from ironbark.tools.details import NowPlayingWindow
     from ironbark.library import read_track
     from ironbark import placement
 
@@ -299,8 +301,8 @@ def test_now_playing_lines_up_colours_and_fits(root, tmp_path):
 
 def test_now_playing_check_stays_greyed_out_while_it_runs(root, tmp_path, monkeypatch):
     import threading
-    from ironbark import details
-    from ironbark.details import NowPlayingWindow
+    from ironbark.tools import details
+    from ironbark.tools.details import NowPlayingWindow
     from ironbark.library import read_track
 
     track = read_track(_flac(tmp_path))
@@ -318,7 +320,7 @@ def test_now_playing_check_stays_greyed_out_while_it_runs(root, tmp_path, monkey
     win.check_button.invoke()
     _pump(root, 0.3)
     assert win.check_button.instate(["disabled"])
-    win.network_changed()                             # the Check section is rebuilt while it runs
+    win._show_check()                                 # the Check section is rebuilt while it runs
     _pump(root, 0.3)
     assert win.check_button.instate(["disabled"]) and "37%" in win.check_progress.cget("text")
     win.check_button.invoke()
@@ -332,8 +334,8 @@ def test_now_playing_check_stays_greyed_out_while_it_runs(root, tmp_path, monkey
 
 
 def test_now_playing_work_that_fails_gives_its_button_back(root, tmp_path, monkeypatch):
-    from ironbark import details
-    from ironbark.details import NowPlayingWindow
+    from ironbark.tools import details
+    from ironbark.tools.details import NowPlayingWindow
     from ironbark.library import read_track
 
     track = read_track(_flac(tmp_path))
@@ -358,7 +360,7 @@ def test_now_playing_work_that_fails_gives_its_button_back(root, tmp_path, monke
 
 
 def test_now_playing_follows_light(root, tmp_path):
-    from ironbark.details import NowPlayingWindow
+    from ironbark.tools.details import NowPlayingWindow
     from ironbark.library import read_track
 
     track = read_track(_flac(tmp_path))
@@ -388,8 +390,8 @@ class FeedPlayer:
 
 
 def test_meter_readings_use_the_numbers_font_and_minus(root):
-    from ironbark.meter_window import MeterWindow
-    from ironbark.meters import Reading
+    from ironbark.tools.meter_window import MeterWindow
+    from ironbark.tools.meters import Reading
 
     win = MeterWindow(root, FeedPlayer(), {"vu_align": "-18 dBFS (EBU R68)"})
     win.win.geometry("640x700")
@@ -409,9 +411,9 @@ def test_meter_readings_use_the_numbers_font_and_minus(root):
 
 
 def test_analysis_windows_use_choice_rows(root):
-    from ironbark.pcm_window import PcmWindow
-    from ironbark.scope_window import ScopeWindow
-    from ironbark.spectrogram_window import SpectrogramWindow
+    from ironbark.tools.pcm_window import PcmWindow
+    from ironbark.tools.scope_window import ScopeWindow
+    from ironbark.tools.spectrogram_window import SpectrogramWindow
 
     prefs: dict = {}
     pcm = PcmWindow(root, FeedPlayer(), prefs)
@@ -432,24 +434,24 @@ def test_analysis_windows_use_choice_rows(root):
     assert not root.errors
 
 
-def test_library_window_has_the_main_window_finish(root, tmp_path, monkeypatch):
+def test_library_views_have_the_main_window_finish(root, tmp_path, monkeypatch):
     from ironbark import library_index, settings
-    from ironbark.library_window import LibraryWindow
+    from ironbark.library_view import LibraryView
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "settings" / "settings.json")
     monkeypatch.setattr(library_index, "_shared", None)
     music = tmp_path / "Music"
     (music / "Album").mkdir(parents=True)
     _flac(music / "Album")
-    win = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    win = LibraryView(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                         on_load_all=lambda p, s: None)
     _pump(root, 0.3)
     assert isinstance(win.search, controls.SearchBox) and win.search_var is win.search.query
-    assert isinstance(win.views, controls.ChoiceRow) and win.views.bars["albums"].lit
-    win.views.choose("artists")
-    assert win.view == "artists" and win.views.bars["artists"].lit and not win.views.bars["albums"].lit
+    assert isinstance(win.view_button, controls.FlatButton) and win.view_button.cget("text") == "Albums ▾"
+    win.set_view("artists")
+    assert win.view == "artists" and win.view_button.cget("text") == "Artists ▾"
     assert isinstance(win.scrollbar, controls.AutoScrollbar)
-    # Esc in the search box empties it; Esc in an empty box is left to the window (it closes).
+    # Esc in the search box empties it; Esc in an empty box is left to the window (the track list comes back).
     win.search_var.set("x")
     assert win._clear_search() == "break" and win.search_var.get() == ""
     assert win._clear_search() is None

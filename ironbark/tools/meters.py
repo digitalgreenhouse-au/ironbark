@@ -42,9 +42,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import audiofile
-from .analysis import OVERSAMPLE, _TAPS_PER_PHASE, _oversampling_phases
-from .loudness import BLOCK_HOP, MOMENTARY, SHORT_TERM, Loudness, Programme, file_powers, integrated
+from .. import audiofile
+from ..analysis import OVERSAMPLE, TAPS_PER_PHASE, oversampling_phases
+from ..library import album_files
+from ..loudness import BLOCK_HOP, MOMENTARY, SHORT_TERM, Loudness, Programme, file_powers, integrated
 
 STEP = 0.001          # the meters' own clock: one reading per millisecond
 SUBSTEPS = 10         # finer steps inside each millisecond for the PPM circuit (0.1 ms)
@@ -134,7 +135,7 @@ class MeterEngine:
         self.vu_align_dbfs = vu_align_dbfs
         self._channels: list[_Channel] = []
         self._timeline: collections.deque = collections.deque(maxlen=4000)  # (time, Reading parts)
-        self._phases = _oversampling_phases()
+        self._phases = oversampling_phases()
         self._tp_history: collections.deque = collections.deque()  # (time, [tp per ch], [sp per ch])
         self.max_true_peak = 0.0
         self._tail: np.ndarray | None = None  # last samples, so oversampling runs across blocks
@@ -329,7 +330,7 @@ class MeterEngine:
         return clean(m), clean(s), whole, spread, meter.seconds()
 
     def _peaks(self, x: np.ndarray) -> tuple[list[float], list[float]]:
-        overlap = _TAPS_PER_PHASE - 1
+        overlap = TAPS_PER_PHASE - 1
         if self._tail is None or self._tail.shape[1] != x.shape[1]:
             self._tail = np.zeros((overlap, x.shape[1]))
         joined = np.concatenate([self._tail, x])
@@ -420,26 +421,6 @@ def alignment_from_levels(levels: np.ndarray) -> float | None:
         return None
     value = float(np.percentile(levels, AUTO_PERCENTILE))
     return float(min(max(round(value), AUTO_RANGE[0]), AUTO_RANGE[1]))
-
-
-def album_files(track: Path) -> tuple[Path, list[Path]]:
-    """(album folder, its audio files) for a track — the folder plus "Disc 1"-style subfolders,
-    with `track` itself first."""
-    from .library import _DISC_FOLDER, album_folder, is_music_name
-
-    folder = album_folder(track)
-    files = []
-    for entry in sorted(folder.iterdir()):
-        if is_music_name(entry.name) and entry.is_file():
-            files.append(entry)
-        elif entry.is_dir() and _DISC_FOLDER.match(entry.name):
-            files += sorted(p for p in entry.iterdir() if is_music_name(p.name) and p.is_file())
-    if audiofile.cue_of(track) is not None:  # one track of a CUE image: the album is its tracks
-        from .library import expand_cue_paths
-
-        files = expand_cue_paths(files)
-    files = [track] + [f for f in files if f != track]
-    return folder, files
 
 
 def album_alignment(track: Path, on_first=lambda value: None,

@@ -1,6 +1,6 @@
 """The app platform before release: crash logging that can never take the player down with it,
 diagnostics that leave out a mapped network drive's server, a launch made while the player is closing,
-the update feed's download link, the test-signal settings, and the search key on keyboards where
+the test-signal settings, and the search key on keyboards where
 '/' needs Shift."""
 
 from __future__ import annotations
@@ -16,8 +16,10 @@ import tkinter as tk
 
 import pytest
 
-from ironbark import crash, diagnostics, instance, keys, logs, ripcheck, settings, updates
+from ironbark import crash, diagnostics, instance, keys, logs, settings
+from ironbark.tools import ripcheck
 from ironbark import __main__ as start
+from ironbark import places
 from ironbark.netcache import sources
 
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
@@ -137,8 +139,8 @@ def test_a_crash_log_that_cant_be_set_aside_is_still_written_to(crash_log_folder
 def test_diagnostics_leave_out_a_mapped_drives_server_and_its_server_paths(tmp_path, monkeypatch):
     # The library on Z:, which Windows maps to \\SAMS-NAS\Media: the network playback cache writes
     # the server path and the server's name, which the settings never spell out.
-    monkeypatch.setattr(sources, "_connection", lambda letter: "\\\\SAMS-NAS\\Media" if letter == "Z:" else None)
-    monkeypatch.setattr(sources, "_dos_device", lambda letter: None)
+    monkeypatch.setattr(places, "_connection", lambda letter: "\\\\SAMS-NAS\\Media" if letter == "Z:" else None)
+    monkeypatch.setattr(places, "_dos_device", lambda letter: None)
     folder = tmp_path / "Ironbark"
     folder.mkdir()
     (folder / "app.log").write_text(
@@ -157,8 +159,8 @@ def test_diagnostics_leave_out_a_mapped_drives_server_and_its_server_paths(tmp_p
 
 
 def test_a_mapped_drives_root_as_the_library_still_hides_its_server_path(tmp_path, monkeypatch):
-    monkeypatch.setattr(sources, "_connection", lambda letter: "\\\\nas-of-jane\\music" if letter == "Y:" else None)
-    monkeypatch.setattr(sources, "_dos_device", lambda letter: None)
+    monkeypatch.setattr(places, "_connection", lambda letter: "\\\\nas-of-jane\\music" if letter == "Y:" else None)
+    monkeypatch.setattr(places, "_dos_device", lambda letter: None)
     folder = tmp_path / "Ironbark"
     folder.mkdir()
     (folder / "crash.log").write_text("error reading \\\\NAS-of-Jane\\Music\\Kate Bush\\x.flac\n", encoding="utf-8")
@@ -178,8 +180,8 @@ def test_a_failed_look_up_of_a_drive_letter_still_gives_diagnostics(tmp_path):
 
 
 def test_a_drive_letters_server_path_is_looked_up_only_for_network_drives(monkeypatch):
-    monkeypatch.setattr(sources, "_connection", lambda letter: "\\\\server\\share\\" if letter == "Z:" else None)
-    monkeypatch.setattr(sources, "_dos_device",
+    monkeypatch.setattr(places, "_connection", lambda letter: "\\\\server\\share\\" if letter == "Z:" else None)
+    monkeypatch.setattr(places, "_dos_device",
                         lambda letter: {"S:": "\\\\other\\share", "T:": "C:\\Work"}.get(letter))
     assert sources.network_target("Z:") == "\\\\server\\share"   # mapped
     assert sources.network_target("S:") == "\\\\other\\share"    # a subst onto a server path
@@ -270,50 +272,6 @@ def test_the_socket_way_can_tell_the_running_copy_is_closing(tmp_path):
         running.close()
 
 
-# -- the update feed's download link ------------------------------------------------------------------
-def feed(url):
-    return json.dumps({"version": "99.0.0", "url": url}).encode()
-
-
-@pytest.mark.parametrize("url", [
-    "https://evil.example\\@www.digitalgreenhouse.com.au/ironbark",     # a browser reads \ as /
-    "https://evil.example%5C@www.digitalgreenhouse.com.au/ironbark",
-    "https://someone:secret@www.digitalgreenhouse.com.au/ironbark",
-    "https://www.digitalgreenhouse.com.au:8443/ironbark",
-    "https://www.digitalgreenhouse.com.au/iron bark",
-    "https://www.digitalgreenhouse.com.au/iron\tbark",                    # (Python leaves a tab out)
-    "https://www.digitalgreenhouse.com.au/ironbark\n.evil",
-    "https://www.digitalgreenhouse.com.au/ironbark/télécharger",
-])
-def test_a_download_link_a_browser_could_read_another_way_isnt_trusted(url):
-    assert updates.parse(feed(url)).url == updates.DOWNLOAD_PAGE
-
-
-def test_a_plain_download_link_on_the_site_is_kept():
-    for url in ("https://www.digitalgreenhouse.com.au/ironbark/download",
-                "https://digitalgreenhouse.com.au/ironbark?from=app#windows"):
-        assert updates.parse(feed(url)).url == url
-
-
-class Answer(io.BytesIO):
-    def __init__(self, data: bytes, url: str):
-        super().__init__(data)
-        self.url = url
-
-
-def test_the_update_feed_is_never_taken_from_a_plain_http_redirect(monkeypatch):
-    on = {"check_updates": True, "allow_network": True}
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(
-        json.dumps({"version": "99.0.0"}).encode(), "http://www.digitalgreenhouse.com.au/ironbark/version.json"))
-    assert updates.check(on) is None
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(
-        json.dumps({"version": "99.0.0"}).encode(), "https://www.digitalgreenhouse.com.au/ironbark/version.json"))
-    assert updates.check(on).version == "99.0.0"
-    # Rip verification's own plain-http look-ups are unchanged.
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(b"ok", "http://db.cuetools.net/x"))
-    assert ripcheck.fetch("http://db.cuetools.net/x", on) == b"ok"
-
-
 # -- the test-signal settings ------------------------------------------------------------------------------
 def test_test_signal_settings_out_of_range_fall_back_to_their_defaults(tmp_path, monkeypatch):
     path = tmp_path / "Ironbark" / "settings.json"
@@ -332,7 +290,7 @@ def test_test_signal_settings_out_of_range_fall_back_to_their_defaults(tmp_path,
 
 
 def test_every_level_the_test_signals_window_offers_is_a_level_settings_keep():
-    from ironbark import testsignals
+    from ironbark.tools import testsignals
 
     check = settings._CHECKS["testsignals_level"]
     assert all(check(level) == level for level in testsignals.LEVEL_CHOICES)
@@ -340,7 +298,7 @@ def test_every_level_the_test_signals_window_offers_is_a_level_settings_keep():
     for bad in (0.0, -2.0, 20.0, -81.0, True, "-20", float("nan")):
         assert check(bad) is settings._BAD
     kinds = settings._CHECKS["testsignals_kind"]
-    from ironbark.testsignals_window import KINDS
+    from ironbark.tools.testsignals_window import KINDS
 
     assert all(kinds(kind) == kind for kind, _ in KINDS)
 

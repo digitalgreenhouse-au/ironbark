@@ -48,7 +48,6 @@ DEFAULTS = {
     "library_folders": [],       # the folders the Library looks in ([] = Windows' own Music folder)
     "library_folder": "",        # (before library_folders) the one library folder: read into library_folders
     "now_playing_geometry": "",  # where the Now Playing window was last left
-    "library_geometry": "",      # where (and how big) the Library window was last left
     "tabs": None,                # open tabs: [{"kind": "album"|"folder"|"library", "path", "query", "title"}]
     "current_tab": 0,
     "home_geometry": "",         # the favourite spot "Snap to home" returns to
@@ -89,25 +88,21 @@ DEFAULTS = {
     "shuffle": False,
     "repeat": "off",             # "off", "all" (the album / playlist) or "one" (the same song)
     "experiments": None,         # Settings → Experimental switches: {key: bool} (see experiments.py)
-    "allow_network": False,      # Settings → Network: rip verification may look up checksums online
-    "check_updates": False,      # Settings → Network: once a day, ask whether a newer version is out (updates.py)
-    "update_checked": 0.0,       # when that was last asked (seconds since 1970; 0 = never)
+    "local_network": False,      # Settings → Library: music on the home network may be read, and the cache may run
     "media_controls": True,      # Settings → Window: media keys, Windows' media panel, taskbar buttons
     "detailed_logging": False,   # Settings → Window: the player's own notes in app.log too, not just problems
-    "library_view": "albums",    # the Library's view: albums/artists/genres/years/composers/recent, or a song
+    "library_view": "albums",    # the Library tab's views drop-down: albums/artists/genres/years/composers/recent, or a song
                                  # view: songs/most_played/recently_played/favourites/needs_look
-    "library_check": "off",      # the whole-library quality check: "off", "on" (keeps new music checked) or "paused"
+    "library_check": "off",      # the whole-library quality check: "off", "on" (running) or "paused" (read as paused at start)
     "library_song_columns": [],  # the Library's song views' optional columns on show: "plays", "last" (last played)
     "track_columns": [],         # optional track-list columns on show: "artist", "album", "plays"
-    "wide_track_columns": ["artist", "album", "quality"],   # …in a wide window (each shown only when
-                                                            # its value varies between the tab's songs)
+    "search_whole_library": True,   # the search box's Whole library toggle: this tab's matches, then the library's
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window
     "help_geometry": "",         # the Keyboard shortcuts sheet (F1)
     "about_geometry": "",        # the About Ironbark window
-    "watch_music": True,         # Settings → Library: look for new / changed / removed music every few minutes
-    "new_music": None,           # {"since": when watching began, "opened": {album folder: when opened}}
-    "theme": "dark",             # Settings → Window → Theme: "dark", "light" or "system" (follow Windows)
+    "new_music": None,           # {"since": when new music started to count, "opened": {album folder: when opened}}
+    "theme": "dark",             # Settings → Window → Theme: "dark" or "light" (a saved "system" is settled once at start)
     "mini_mode": False,          # the window was last left as the mini strip (it opens that way again)
     "mini_geometry": "",         # where (and how big) the mini strip was last left
     # Network playback (the Experimental "Network playback cache"): songs on network drives play from a copy
@@ -449,8 +444,6 @@ _CHECKS = {
     "vu_auto": _dict_or_none,
     "vu_auto_loudness": _dict_or_none,
     "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
-    "wide_track_columns": lambda value: ([v for v in value if isinstance(v, str)] if isinstance(value, list)
-                                         else _BAD),
     "library_folders": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
                                       else _BAD),
     "net_mode": _one_of("intelligent", "fast", "complete"),

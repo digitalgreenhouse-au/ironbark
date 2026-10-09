@@ -22,28 +22,28 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from . import abx, audition, compare, controls, placement, theme, toolwin
+from .. import controls, placement, theme, toolwin
+from . import abx, audition, compare
 from .compare_window import FileRow, choose_file
-from .engine import State
+from ..engine import State
 
 REFRESH_MS = 100
 RELOAD_AFTER_MS = 350      # wait for the bar to stop moving before decoding
 SLOTS = {"A": 0, "B": 1, "X": 2}
 
 
-class AbxWindow:
+class AbxWindow(toolwin.ToolWindow):
+    TITLE = "ABX blind test"
+    SIZE = (500, 640)
+    MIN_SIZE = (380, 520)
+    GEOMETRY_KEY = "abx_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, path_a=None, start_s: float | None = None,
                  on_close=lambda: None, stream_factory=None):
-        self.player, self.prefs, self.on_close = player, prefs, on_close
+        self.player = player
         self._stream_factory = stream_factory   # tests: a stand-in for the sound device
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("ABX blind test")
-        self.win.geometry(f"{theme.px(500)}x{theme.px(640)}")
-        self.win.minsize(theme.px(380), theme.px(520))
-        placement.restore(self.win, prefs.get("abx_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        super().__init__(parent, prefs, on_close)
 
         outer = ttk.Frame(self.win, padding=theme.px(theme.GAP_WIDE))
         outer.pack(fill="both", expand=True)
@@ -143,13 +143,11 @@ class AbxWindow:
         self._cancel = threading.Event()
         self._reload_job = None
         self._message = ""
-        self._keep_going = toolwin.KeepGoing(self.win)
         if path_a:
             # The path itself: a CUE sheet track's path carries which part of the file it is.
             self._set_file("A", path_a if isinstance(path_a, Path) else Path(path_a), start_s)
         self._refresh()
-        self.win.bind("<Configure>", self._moved, add="+")
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
     # -- files and the excerpt --------------------------------------------------------------
     def _choose(self, letter: str):
@@ -416,14 +414,6 @@ class AbxWindow:
                      "never gives the answer away. Not bit-perfect: it fades and matches levels.")
         self.note.configure(text="\n".join(notes))
 
-    def _tick(self):
-        self._job = None
-        if not self.win.winfo_exists():
-            return
-        with self._keep_going:
-            self._step()
-        self._job = self.win.after(REFRESH_MS, self._tick)
-
     def _step(self):
         if "result" in self._load:
             self._take_loaded()
@@ -440,23 +430,10 @@ class AbxWindow:
             label.configure(wraplength=width)
 
     # -- window -------------------------------------------------------------------------------
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["abx_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
+    def _closing(self):
         self._cancel.set()
-        for job in (self._job, self._reload_job):
-            if job:
-                self.win.after_cancel(job)
+        if self._reload_job:
+            self.win.after_cancel(self._reload_job)
         if self.audition is not None:
             self.audition.stop()
         toolwin.give_back_sound(self)
-        self.win.destroy()
-        self.on_close()

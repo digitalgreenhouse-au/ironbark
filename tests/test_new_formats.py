@@ -16,7 +16,7 @@ from ironbark.tagio.mp4 import PNG as PNG_TYPE
 from ironbark.tagio.mp4 import Cover, MP4File
 from ironbark.tagio.vorbis import Picture
 from ironbark import analysis, artwork, audiofile, library, m4a
-from ironbark.details import describe_analysis
+from ironbark.tools.details import describe_analysis
 
 RNG = np.random.default_rng(9)
 PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"

@@ -13,7 +13,8 @@ import pytest
 import sounddevice as sd
 import soundfile as sf
 
-from ironbark import abx, audition, engine, settings, theme
+from ironbark import engine, settings, theme
+from ironbark.tools import abx, audition
 from ironbark.engine import Player, State
 from ironbark.library import Track
 
@@ -347,7 +348,7 @@ class WindowPlayer:
 
 
 def test_abx_window_runs_a_whole_test_without_sound(root, tmp_path, monkeypatch, no_device):
-    from ironbark.abx_window import AbxWindow
+    from ironbark.tools.abx_window import AbxWindow
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     x = music(15)
     a, b = tmp_path / "a.wav", tmp_path / "b.wav"
@@ -398,7 +399,7 @@ def wait_loaded(win, seconds=20):
 
 
 def test_abx_keys_play_nothing_old_while_a_new_excerpt_loads_or_after_it_fails(root, tmp_path, no_device):
-    from ironbark.abx_window import AbxWindow
+    from ironbark.tools.abx_window import AbxWindow
     x = music(15)
     a, b, six = tmp_path / "a.wav", tmp_path / "b.wav", tmp_path / "six.wav"
     sf.write(a, x, RATE, subtype="FLOAT")
@@ -425,7 +426,7 @@ def test_abx_keys_play_nothing_old_while_a_new_excerpt_loads_or_after_it_fails(r
 
 
 def test_abx_starts_from_a_cue_track_not_its_whole_file(root, tmp_path, no_device):
-    from ironbark.abx_window import AbxWindow
+    from ironbark.tools.abx_window import AbxWindow
     from ironbark.audiofile import CuePath, CueRange
     image = tmp_path / "image.wav"
     sf.write(image, music(60), RATE, subtype="FLOAT")

@@ -12,7 +12,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import spectrum, theme
+from ironbark import theme
+from ironbark.tools import spectrum
 from ironbark.analysis import wall_verdict
 
 RATE = 44100
@@ -211,7 +212,7 @@ def int32(x):
 
 
 def test_spectrogram_window_live_and_whole_track(root, tmp_path):
-    from ironbark.spectrogram_window import SpectrogramWindow
+    from ironbark.tools.spectrogram_window import SpectrogramWindow
     path = tmp_path / "wall.flac"
     sf.write(path, lowpass(noise(8), RATE, 16000), RATE, format="FLAC", subtype="PCM_16")
     player = FakePlayer(path)
@@ -242,7 +243,7 @@ def test_spectrogram_window_live_and_whole_track(root, tmp_path):
 
 
 def test_pcm_window_bitscope_strip(root):
-    from ironbark.pcm_window import PcmWindow
+    from ironbark.tools.pcm_window import PcmWindow
     player = FakePlayer()
     win = PcmWindow(root, player, {})
     win.win.update()
@@ -277,7 +278,7 @@ def heard_now(data, track, path, frame=0, rate=RATE, bits=16):
 
 
 def test_pcm_window_takes_a_mono_track_then_a_stereo_one(root):
-    from ironbark.pcm_window import PcmWindow
+    from ironbark.tools.pcm_window import PcmWindow
     errors = []
     root.report_callback_exception = lambda *info: errors.append(info)
     player = FakePlayer()
@@ -296,7 +297,7 @@ def test_pcm_window_takes_a_mono_track_then_a_stereo_one(root):
 
 
 def test_pcm_window_leaves_a_still_stack_alone(root, monkeypatch):
-    from ironbark.pcm_window import PcmWindow
+    from ironbark.tools.pcm_window import PcmWindow
     player = FakePlayer()
     win = PcmWindow(root, player, {})
     win.win.update()
@@ -320,7 +321,7 @@ def test_pcm_window_leaves_a_still_stack_alone(root, monkeypatch):
 
 def test_pcm_window_counts_bits_off_the_window_thread(root, monkeypatch):
     import threading
-    from ironbark.pcm_window import PcmWindow
+    from ironbark.tools.pcm_window import PcmWindow
     threads = []
     real_add = spectrum.BitScope.add
     monkeypatch.setattr(spectrum.BitScope, "add",
@@ -340,7 +341,7 @@ def test_pcm_window_counts_bits_off_the_window_thread(root, monkeypatch):
 
 
 def test_spectrogram_colours_nothing_in_whole_track_view(root, monkeypatch):
-    from ironbark.spectrogram_window import SpectrogramWindow
+    from ironbark.tools.spectrogram_window import SpectrogramWindow
     win = SpectrogramWindow(root, FakePlayer(), {"spectrogram_view": "track"})
     win.win.geometry("700x400")
     win.win.update()
@@ -357,7 +358,7 @@ def test_spectrogram_colours_nothing_in_whole_track_view(root, monkeypatch):
 
 
 def test_spectrogram_resize_recolours_only_what_shows_once_the_size_settles(root, monkeypatch):
-    from ironbark.spectrogram_window import COLUMN_PX, SpectrogramWindow
+    from ironbark.tools.spectrogram_window import COLUMN_PX, SpectrogramWindow
     win = SpectrogramWindow(root, FakePlayer(), {"spectrogram_view": "live"})
     win.win.geometry("700x400")
     win.win.update()
@@ -381,7 +382,7 @@ def test_spectrogram_resize_recolours_only_what_shows_once_the_size_settles(root
 
 
 def test_spectrogram_leaves_a_still_picture_alone(root):
-    from ironbark.spectrogram_window import SpectrogramWindow
+    from ironbark.tools.spectrogram_window import SpectrogramWindow
     player = FakePlayer()
     win = SpectrogramWindow(root, player, {"spectrogram_view": "live"})
     win.win.geometry("700x400")

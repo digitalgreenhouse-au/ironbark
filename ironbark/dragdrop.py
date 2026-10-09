@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .artwork import first_audio_file
+from .cuesheet import read
 from .library import is_music_name
 from .playlists import EXTENSIONS as PLAYLIST_EXTENSIONS
 
@@ -33,9 +35,6 @@ def cue_folder(cue: Path) -> Path:
     """The album folder a dropped .cue belongs to: the folder of the music it names, which is
     usually its own; rippers' leftovers often sit in an "Archive" subfolder with no music beside
     them (and stale file names), so then the folder above, if that holds music."""
-    from .artwork import first_audio_file
-    from .cuesheet import read
-
     folder = cue.parent
     try:
         names = read(cue).files
@@ -94,8 +93,6 @@ def plan_drop(paths: list[Path | str], has_music: Callable[[Path], bool] | None 
     one). Touches the disk (a dropped .cue is read here to find its album), so call it off the
     window's thread; `actions_for` then needs nothing more from the disk."""
     if has_music is None:
-        from .artwork import first_audio_file
-
         has_music = lambda folder: first_audio_file(folder) is not None  # noqa: E731
     plan = DropPlan()
     seen: set[str] = set()

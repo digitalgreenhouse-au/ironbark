@@ -27,17 +27,6 @@ headings, or a song, to switch them (`set_columns`, saved by the window). Plays 
 has been played, from the library database's count) is read for the rows on show only, on the list's
 own thread.
 
-In a wide window (layout.py's split tiers, `set_tier`) the list has the window's full height and
-its own column setting (`set_wide_columns`): Artist, Album and Format show by themselves wherever
-the tier has room — except a column whose value is the same on every row of the tab (`varies`,
-worked out once per list), so one album shows # · Title · Time and a playlist everything. A header
-row above the list holds the view switch — Tracks · Up next · Lyrics (`view_switch`; the window
-shows Up next or the lyrics in the list's place: `on_view`) — and the tab's song count (`set_count`);
-under it the search box, with a choice beside it: This tab | Whole library (`scope_choice`). With
-Whole library the words typed search every song, album and artist instead of the tab, and the
-window shows those results in the list's place (`on_scope`; the keys typed in the box that act on
-results go to `on_library_key`). The rows are roomier, and from 1920 logical px the text is larger.
-
 The list's keys (Enter plays, Ctrl+Enter / Ctrl+Shift+Enter queue, Delete removes, Alt+↑ / ↓
 move a song, Ctrl+A selects every song) are in the keyboard table (keys.py); the window binds them,
 using `activate`, `selected_rows`, `selected_track` and `select_all`.
@@ -73,17 +62,30 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import audiofile, controls, layout, searchfold, theme
+from . import audiofile, controls, searchfold, theme
 from .library import Track, album_folder, group_by_album
+from .tabbar import Toggle, Tooltip
+
+
+def _keys_held(tracks, keys: list[str]) -> set[str]:
+    """Which of these song keys (audiofile.key) the list holds."""
+    held = getattr(tracks, "keys_in", None)
+    if held is not None:
+        return held(keys)
+    wanted = set(keys)
+    return {audiofile.key(t.path) for t in tracks if audiofile.key(t.path) in wanted}
 from .virtual_list import CELL_ROOM, ELLIPSIS, VirtualTree
 
 SEARCH_DELAY_MS = 150
 SEARCH_THREAD_AT = 20_000   # songs: a list this long is searched on the list's own thread, off Tk's
 POLL_MS = 40                # how often the list looks for what its thread (or the database) has brought
 PLAYS_KEPT = 20_000         # play counts remembered (the rows shown lately)
-OPTIONAL_COLUMNS = ("artist", "album", "plays")  # columns that can be switched on in the narrow window
-WIDE_COLUMNS = layout.OPTIONAL           # …and in a wide one (where Format is one too)
-COLUMNS = ("no", "title", "artist", "album", "quality", "plays", "cache", "time")
+OPTIONAL_COLUMNS = ("artist", "album", "plays")  # columns that can be switched on
+COLUMNS = ("no", "title", "artist", "album", "quality", "plays", "cache", "open", "time")
+OPEN_W = 28          # px at 100%: the open-album column (the Library tab)
+OPEN_MARK = "⧉"      # the open-album mark on a Library tab row
+ADD_MARK = "＋"      # a library song's mark in a playlist tab: one click adds it
+LIBRARY_HEADER = "From your library"
 QUALITY_W = 72      # px at 100%: the Format column ("24/96", "FLAC", "Opus")
 PLAYS_W = 52        # px at 100%: the Plays column
 CACHE_W = 60        # px at 100%: the Cached column ("◐ 72%")
@@ -91,25 +93,15 @@ TIME_W = 52         # px at 100%: the Time column
 # The widest value each of those columns shows (Time: an album row's format, when there's no Format column).
 WIDEST = {"cache": "◐ 99%", "plays": "9,999", "time": "24/352.8"}
 VISIBLE_MOST = 200  # visible_tracks never hands back more rows than this
-SEARCH_MAX = 520    # px at 100%: the search box's widest, in a wide window's header row
-# How a wide window shares the list's width: by weight, Artist and Album never past their caps (px at
-# 100%), whatever is left to the title. The narrow window shares 2 / 1 / 1 with no caps.
-NARROW_WEIGHTS = {"title": 2, "artist": 1, "album": 1}
-WIDE_WEIGHTS = {"title": 3, "artist": 2, "album": 2}
-WIDE_CAPS = {"artist": 320, "album": 360}
-TREE_STYLES = {layout.COLUMN: "", layout.SPLIT: "", layout.SPLIT_M: theme.ROOMY_TREE,   # ("": Treeview's own)
-               layout.SPLIT_L: theme.ROOMY_LARGE_TREE}
+# How the list shares its width: by weight, 2 / 1 / 1 with no caps.
+WEIGHTS = {"title": 2, "artist": 1, "album": 1}
 DRAG_START = 6  # px at 100%: move this far with the button down and a press becomes a drag
 PLAYING_MARK = "♪"   # (0.20.0) in the # column of the playing song
 FAVOURITE_MARK = "♥"
 SEARCH_LIBRARY = "Search the whole library (Ctrl+Shift+F)"
-# A wide window's view switch and search choice: (value, words).
-VIEWS = (("tracks", "Tracks"), ("up_next", "Up next"), ("lyrics", "Lyrics"))
-SCOPES = (("tab", "This tab"), ("library", "Whole library"))
-SEARCH_HINTS = {"tab": "Search songs, artists, albums", "library": "Search every song, album and artist"}
 
 
-def _clock(seconds: float) -> str:
+def clock_text(seconds: float) -> str:
     seconds = int(round(seconds))
     return f"{seconds // 60}:{seconds % 60:02d}"
 
@@ -134,7 +126,7 @@ def album_heading(tracks: list[Track], folder) -> str:
     return f"{name}  ·  {artist}" if artist and _fold(artist) != _fold(name) else name
 
 
-def _quality(track: Track) -> str:
+def quality_text(track: Track) -> str:
     if track.lossy:
         return track.codec
     return f"{track.bits}/{track.sample_rate / 1000:g}" if track.sample_rate else ""
@@ -375,22 +367,32 @@ class PlaylistView:
                  on_drag: Callable[[list[int], int, int, str], None] = lambda rows, x, y, phase: None,
                  on_heading_menu: Callable[[tk.Event], None] = lambda event: None,
                  on_search_library: Callable[[str], None] | None = None,
+                 on_views: Callable[[], None] | None = None,
                  is_favourite: Callable[[Track], bool] = lambda track: False,
                  plays_db: Callable[[], object | None] = lambda: None,
-                 on_view: Callable[[str], None] = lambda view: None,
-                 on_scope: Callable[[str], None] = lambda scope: None,
-                 on_library_key: Callable[[str], None] = lambda how: None):
+                 on_library_search: Callable[[list[str]], None] | None = None,
+                 on_library_hit: Callable[[object, str], None] = lambda hit, how: None,
+                 on_open_album: Callable[[int], None] = lambda index: None,
+                 on_scope: Callable[[bool], None] = lambda on: None):
         self.on_play = on_play
-        self.on_view, self.on_scope, self.on_library_key = on_view, on_scope, on_library_key
-        self.scope = "tab"                  # what the box searches: "tab", or "library" (a wide window only)
+        # The Whole library toggle beside the box (0.40.0): this tab's matches, then the library's.
+        self.on_library_search, self.on_library_hit, self.on_open_album, self.on_scope = (
+            on_library_search, on_library_hit, on_open_album, on_scope)
+        self.whole_library = True            # the toggle (set_whole_library)
+        self.open_column = False             # the Library tab: an open-album mark on every song row
+        self.adds = False                    # a playlist tab: library rows carry a "+" that adds the song
+        self._hits: list = []                # the library's matches for the words typed (SongHits), as listed
+        self._hits_for: list[str] = []       # the words they were found for
         self.on_heading_menu = on_heading_menu
         self.on_search_library = on_search_library
+        self.on_views = on_views                # the Library tab's "Songs ▾" button: the views drop-down
+        self.views_button = None
+        self.picking: str | None = None         # picking songs for this playlist (its title): the bar at the foot
+        self._pick_bar = None
+        self._pick_add = self._pick_cancel = None
         self.is_favourite = is_favourite
         self.plays_db = plays_db                # the library database the Plays column counts from (None: none)
-        self.columns: tuple[str, ...] = ()  # the narrow window's optional columns (see set_columns)
-        self.wide_columns: tuple[str, ...] = tuple(c for c in WIDE_COLUMNS if c != "plays")   # a wide window's
-        self.tier = layout.COLUMN           # the window's layout (set_tier)
-        self.varies: frozenset[str] = frozenset()   # optional columns whose value isn't the same on every row
+        self.columns: tuple[str, ...] = ()  # the optional columns (see set_columns)
         self.shown: tuple[str, ...] = ()    # the optional columns on show now
         self.on_menu = on_menu
         self.flat = False
@@ -424,41 +426,27 @@ class PlaylistView:
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
         self.frame = frame
-        # A wide window's header row: the view switch on the left and the tab's count on the right;
-        # under it the search row, the search box (moved in) with This tab | Whole library beside
-        # it. Made before the search box: a widget packed into a frame other than its parent must be
-        # above that frame in Tk's stacking order. Neither is packed in the narrow window.
-        self.header = ttk.Frame(frame)
-        self.view_var = tk.StringVar(frame, value="tracks")
-        self.view_switch = controls.ChoiceRow(self.header, VIEWS, self.view_var,
-                                              command=lambda: self.on_view(self.view_var.get()))
-        self.view_switch.pack(side="left")
-        self.count_label = ttk.Label(self.header, text="", style="Sub.TLabel", anchor="e")
-        self.count_label.pack(side="right", padx=theme.pad(theme.GAP_WIDE, 0))
-        self.header.bind("<Configure>", lambda e: self._fit_search(), add="+")
-        self.search_row = ttk.Frame(frame)
-        self._search_pad = 0
-
         # (0.20.0) A magnifier inside the box on the left, and a × on the right while there's
         # something typed; (0.22.0) the box itself is controls.SearchBox, shared with the Library.
-        self.search = controls.SearchBox(frame, "Search songs, artists, albums", on_clear=self.clear_search,
+        self.search_row = ttk.Frame(frame)
+        self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP))
+        self.search = controls.SearchBox(self.search_row, "Search songs, artists, albums", on_clear=self.clear_search,
                                          keys="Ctrl+F")
-        self.search.pack(fill="x", pady=theme.pad(0, theme.GAP))
+        self.search.pack(side="left", fill="x", expand=True)
+        if on_views is not None:   # (made now, packed only on the Library tab: set_views_button)
+            self.views_button = controls.FlatButton(self.search_row, "Songs ▾", on_views, fit="Songs ▾",
+                                                    label="The Library's views: albums, artists, genres, years, "
+                                                          "composers, recently added, most played… (Ctrl+L)")
+        # (0.40.0) Whole library: on, the box searches every song as well as this tab's.
+        self.scope_var = tk.BooleanVar(frame, value=True)
+        self.scope_switch = Toggle(self.search_row, frame._root(), self.scope_var, command=self._scope_toggled, bg="BG")
+        self.scope_switch.pack(side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
+        Tooltip(self.scope_switch, "Whole library: search every song, not just this tab")
         self.query, self.entry = self.search.query, self.search.entry
         self.magnifier, self.clear_button, self.hint = self.search.magnifier, self.search.clear_button, self.search.hint
         self.query.trace_add("write", lambda *_: self._query_changed())
         self.entry.bind("<Down>", lambda e: self._focus_results())
         self.entry.bind("<Return>", lambda e: self._play_first_result())
-        # Searching the whole library: Enter's other meanings act on its first result, as in the
-        # search panel (play next, add to Up next, open the album). Searching the tab, they're Enter.
-        for key, how in (("<Shift-Return>", "next"), ("<Control-Return>", "queue"), ("<Alt-Return>", "album")):
-            self.entry.bind(key, lambda e, h=how: self._library_key(h) or self._play_first_result())
-        # This tab | Whole library, beside the box in a wide window (made after the box: Tab reaches
-        # the box first).
-        self.scope_var = tk.StringVar(frame, value="tab")
-        self.scope_choice = controls.ChoiceRow(frame, SCOPES, self.scope_var,
-                                               command=lambda: self.on_scope(self.scope_var.get()))
-
         # The album and playing rows' semibold: one font, made larger in place from 1920 logical px.
         self._bold = tkfont.Font(root=frame._root(), font=theme.font(theme.SIZE_BODY, "semibold"))
         # (0.20.0) The slim scrollbar, only there when the list is longer than its window — in the
@@ -478,6 +466,8 @@ class PlaylistView:
         self.tree.heading("album", text="Album", anchor="w")
         self.tree.heading("quality", text="Format", anchor="w")
         self.tree.heading("plays", text="Plays", anchor="e")
+        self.tree.heading("open", text="", anchor="center")
+        self.tree.column("open", width=theme.px(OPEN_W), minwidth=theme.px(OPEN_W), stretch=False, anchor="center")
         self.tree.heading("cache", text="Cached", anchor="w")
         self.tree.heading("time", text="Time", anchor="e")
         self.tree.column("no", width=theme.px(38), stretch=False, anchor="e")
@@ -488,9 +478,7 @@ class PlaylistView:
         self.tree.column("plays", width=theme.px(PLAYS_W), stretch=False, anchor="e")
         self.tree.column("cache", width=theme.px(CACHE_W), stretch=False, anchor="w")
         self.tree.column("time", width=theme.px(TIME_W), stretch=False, anchor="e")
-        self._weights = dict(NARROW_WEIGHTS)   # changed in place by set_tier (the fitter reads them)
-        self._caps: dict[str, int] = {}
-        self._fit = fit_columns(self.tree, self._weights, minimum=theme.px(50), caps=self._caps)
+        self._fit = fit_columns(self.tree, dict(WEIGHTS), minimum=theme.px(50))
         self._colour_tags()
         theme.on_change(self._palette_changed)
         self.tree.bind("<ButtonRelease-1>", self._released, add="+")
@@ -549,92 +537,19 @@ class PlaylistView:
 
     # -- columns and layout ------------------------------------------------------
     def set_columns(self, columns):
-        """The narrow window's optional columns (OPTIONAL_COLUMNS), e.g. ("artist",)."""
+        """The optional columns (OPTIONAL_COLUMNS), e.g. ("artist",)."""
         self.columns = tuple(c for c in OPTIONAL_COLUMNS if c in columns)
-        if self.tier == layout.COLUMN:
-            self._show_columns()
-
-    def set_wide_columns(self, columns):
-        """A wide window's optional columns (WIDE_COLUMNS): each shows where the tier has room and
-        its value varies between rows."""
-        self.wide_columns = tuple(c for c in WIDE_COLUMNS if c in columns)
-        if self.tier != layout.COLUMN:
-            self._update_shown()
-
-    def wanted(self) -> tuple[str, ...]:
-        """The column setting in use: the narrow window's, or a wide one's."""
-        return self.columns if self.tier == layout.COLUMN else self.wide_columns
-
-    def set_tier(self, tier: str):
-        """The window's layout changed (layout.py): the list's style, columns, column sharing and
-        header row follow."""
-        if tier == self.tier:
-            return
-        wide, was_wide = tier != layout.COLUMN, self.tier != layout.COLUMN
-        self.tier = tier
-        self.tree.configure(style=TREE_STYLES[tier])
-        self._weights.clear()
-        self._weights.update(WIDE_WEIGHTS if wide else NARROW_WEIGHTS)
-        self._caps.clear()
-        if wide:
-            self._caps.update({c: theme.px(v) for c, v in WIDE_CAPS.items()})
-        self._bold.configure(size=theme.SIZE_LARGE if tier == layout.SPLIT_L else theme.SIZE_BODY)
-        if wide != was_wide:
-            self._pack_header(wide)
-        self._show_columns(draw=False)
-        self.list.fonts_changed()   # (the rows' font and height go with the style: drawn again once Tk is idle)
-
-    def set_view(self, view: str):
-        """The view switch shows this view chosen (the window shows the view itself)."""
-        if self.view_var.get() != view:
-            self.view_var.set(view)
-
-    def show_search_row(self, on: bool):
-        """The search row under the header: shown with the Tracks view, put away with the others."""
-        if on and not self.search_row.winfo_manager():
-            self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP), after=self.header)
-            self._search_pad = -1
-            self._fit_search()
-        elif not on and self.search_row.winfo_manager():
-            self.search_row.pack_forget()
-
-    def set_scope(self, scope: str):
-        """What the box searches: "tab" (this tab's songs, filtered in place) or "library" (the
-        window shows the whole library's results instead of the list). Back to the tab, the tab is
-        filtered by what's in the box."""
-        if scope == self.scope:
-            return
-        self.scope = scope
-        if self.scope_var.get() != scope:
-            self.scope_var.set(scope)
-        self.hint.configure(text=SEARCH_HINTS[scope])
-        if scope == "tab":
-            self._render()
-            return
-        if self._search_job:
-            self.tree.after_cancel(self._search_job)
-            self._search_job = None
-        self._worker.forget("search")   # (one on its way from the list's thread isn't wanted now)
-        self._asked["search"] = None
-
-    def _library_key(self, how: str):
-        if self.scope != "library":
-            return None
-        self.on_library_key(how)
-        return "break"
-
-    def _update_shown(self):
-        """Show the optional columns the setting, the tier and the rows call for."""
         self._show_columns()
 
+    def wanted(self) -> tuple[str, ...]:
+        """The column setting in use."""
+        return self.columns
+
     def _show_columns(self, draw: bool = True):
-        if self.tier == layout.COLUMN:
-            shown = self.columns
-        else:
-            shown = layout.columns_for(self.tier, self.wide_columns, self.varies)
-        self.shown = tuple(shown)
+        self.shown = tuple(self.columns)
         cache = ("cache",) if self.cache_column else ()
-        self.tree.configure(displaycolumns=("no", "title", *self.shown, *cache, "time"))
+        opens = ("open",) if self.open_column else ()
+        self.tree.configure(displaycolumns=("no", "title", *self.shown, *cache, *opens, "time"))
         self._size_columns()
         self._fit()
         if draw:
@@ -654,42 +569,6 @@ class PlaylistView:
         for column, usual in sized:
             need = max(self.list.text_width(WIDEST[column], font) for font in fonts) + theme.px(CELL_ROOM)
             self.tree.column(column, width=max(theme.px(usual), need))
-
-    def _pack_header(self, wide: bool):
-        """The header row and the search row (a wide window), or the search box on its own above the
-        list."""
-        self.search.pack_forget()
-        self.scope_choice.pack_forget()
-        if wide:
-            self.header.pack(fill="x", pady=theme.pad(0, theme.GAP), before=self.search_row
-                             if self.search_row.winfo_manager() else self.table)
-            if not self.search_row.winfo_manager():
-                self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP), after=self.header)
-            self.search.pack(in_=self.search_row, side="left", fill="x", expand=True)
-            self.scope_choice.pack(in_=self.search_row, side="left", padx=theme.pad(theme.GAP_LARGE, 0))
-            # Just above the row they're packed in, not above everything: Tab follows the stacking
-            # order, so raising them past the list would put the list first.
-            self.search.lift(self.search_row)
-            self.scope_choice.lift(self.search)
-            self._search_pad = -1
-            self._fit_search()
-        else:
-            self.header.pack_forget()
-            self.search_row.pack_forget()
-            if not self.table.winfo_manager():   # (a wide window was showing something else in its place)
-                self.table.pack(fill="both", expand=True)
-            self.search.pack(in_=self.frame, fill="x", pady=theme.pad(0, theme.GAP), before=self.table)
-
-    def _fit_search(self):
-        """In the search row the box grows with the list up to SEARCH_MAX, This tab | Whole library
-        right beside it."""
-        if self.tier == layout.COLUMN or not self.search_row.winfo_manager():
-            return
-        room = self.header.winfo_width() - self.scope_choice.winfo_reqwidth() - theme.px(theme.GAP_LARGE)
-        pad = max(0, room - theme.px(SEARCH_MAX))
-        if abs(pad - self._search_pad) > 2:
-            self._search_pad = pad
-            self.search_row.pack_configure(padx=(0, pad))
 
     def set_cache_column(self, on: bool):
         """Show the Cached column (the tab has songs on a network drive), or hide it."""
@@ -724,36 +603,7 @@ class PlaylistView:
                 found.append((entry, track))
         return found
 
-    def set_count(self, text: str):
-        """The tab's count in a wide window's header row, e.g. "Album · 13 songs · 51:57"."""
-        if self.count_label.cget("text") != text:
-            self.count_label.configure(text=text)
-            self._fit_search()
-
     # -- contents --------------------------------------------------------------
-    @staticmethod
-    def _varies(tracks: Sequence[Track]) -> frozenset[str]:
-        """The optional columns whose value isn't the same on every song (one pass over the list; a
-        list from the library database says itself). Plays always may."""
-        if not len(tracks):
-            return frozenset()
-        known = getattr(tracks, "varies", None)
-        if known is not None:
-            return frozenset(known) | {"plays"}
-        first = tracks[0]
-        artist, album, quality = first.artist, first.album or album_folder(first.path).name, _quality(first)
-        varies = {"plays"}
-        for track in tracks[1:]:
-            if "artist" not in varies and track.artist != artist:
-                varies.add("artist")
-            if "album" not in varies and (track.album or album_folder(track.path).name) != album:
-                varies.add("album")
-            if "quality" not in varies and _quality(track) != quality:
-                varies.add("quality")
-            if len(varies) == len(WIDE_COLUMNS):
-                break
-        return frozenset(varies)
-
     def set_tracks(self, tracks: Sequence[Track], flat: bool = False):
         """flat: a playlist, shown in its own order without album headers. (The playing mark is
         dropped: the window marks the playing song again if this list has it.) `tracks` may be a
@@ -776,16 +626,12 @@ class PlaylistView:
             self._groups = list(groups) if groups is not None else group_by_album(self._tracks)
         self._starts = [start for _folder, start, _end in self._groups]
         self._grouped = len(self._groups) > 1
-        self.varies = self._varies(self._tracks)
         self._haystacks = None
         self._last_search = None
         self._marks = {}
         self._list_serial += 1
-        if self.tier != layout.COLUMN:
-            self._show_columns(draw=False)
-        else:   # (album rows or none: the Time column's width may change)
-            self._size_columns()
-            self._fit()
+        self._size_columns()   # (album rows or none: the Time column's width may change)
+        self._fit()
         words = self._typed()
         if words and count >= SEARCH_THREAD_AT:
             self._list(words=[], found=None, keep=False)   # (every song, until the search comes back)
@@ -841,7 +687,9 @@ class PlaylistView:
             else:
                 entries, listed = found, ()
             if not found:
-                tail = ["none"] + (["library"] if self.on_search_library is not None else [])
+                tail = ["none"] + (["library"] if self.on_search_library is not None and not self._hits else [])
+        if words and self.whole_library and self._hits and self._hits_for == words:
+            tail = [k for k in tail if k != "library"] + ["libhead"] + [f"lib{n}" for n in range(len(self._hits))]
         new_words = words != self._words
         self._words, self._found, self._listed_groups = words, found, listed
         self._listing = _Listing(self, entries, tail)
@@ -882,11 +730,12 @@ class PlaylistView:
     def _song_row(self, i: int) -> tuple:
         track = self._track(i)
         if track is None:
-            return (str(i), ("", ELLIPSIS, "", "", "", "", "", ""), ("loading",))
+            return (str(i), ("", ELLIPSIS, "", "", "", "", "", "", ""), ("loading",))
         number = (i - self._start_of(i) + 1) if self._grouped else (i + 1)
         plays = self._plays_text(track) if "plays" in self.shown else ""
         return (str(i), (number, self._title(i, bool(self._words), track), track.artist, track.album,
-                         _quality(track), plays, self._marks.get(i, ""), _clock(track.duration)), ())
+                         quality_text(track), plays, self._marks.get(i, ""), OPEN_MARK if self.open_column else "",
+                         clock_text(track.duration)), ())
 
     def _header_row(self, g: int) -> tuple:
         folder, start, _end = self._groups[g]
@@ -894,15 +743,19 @@ class PlaylistView:
         if track is None:
             text, quality = getattr(folder, "name", "") or ELLIPSIS, ""
         else:
-            text, quality = album_heading([track], folder), _quality(track)
-        return (f"a{g}", ("", text, "", "", quality, "", "", "" if "quality" in self.shown else quality),
+            text, quality = album_heading([track], folder), quality_text(track)
+        return (f"a{g}", ("", text, "", "", quality, "", "", "", "" if "quality" in self.shown else quality),
                 ("album",))
 
-    @staticmethod
-    def _note_row(key: str) -> tuple:
+    def _note_row(self, key: str) -> tuple:
         if key == "none":
-            return ("none", ("", "No matches", "", "", "", "", "", ""), ("note",))
-        return ("library", ("", SEARCH_LIBRARY, "", "", "", "", "", ""), ("link",))
+            return ("none", ("", "No matches", "", "", "", "", "", "", ""), ("note",))
+        if key == "libhead":
+            note = " · click + to add to this playlist" if self.adds else ""
+            return ("libhead", ("", LIBRARY_HEADER + note, "", "", "", "", "", "", ""), ("album",))
+        if key.startswith("lib") and key[3:].isdigit():
+            return self._library_row(int(key[3:]))
+        return ("library", ("", SEARCH_LIBRARY, "", "", "", "", "", "", ""), ("link",))
 
     def _title(self, i: int, searching: bool, track: Track | None = None) -> str:
         """Song i's title cell: with its artist while searching and in a playlist (unless the
@@ -1043,18 +896,121 @@ class PlaylistView:
         self.entry.focus_set()
         self.entry.select_range(0, "end")
 
+    # -- the whole library (0.40.0) ---------------------------------------------------------------
+    def set_whole_library(self, on: bool):
+        """The toggle beside the box, as saved: on, every search lists the library's matches too."""
+        self.whole_library = bool(on)
+        if self.scope_var.get() != self.whole_library:
+            self.scope_var.set(self.whole_library)
+        if not self.whole_library:
+            self.set_library_hits([], [])
+        elif self._typed():
+            self._ask_library()
+
+    def _scope_toggled(self):
+        self.set_whole_library(self.scope_var.get())
+        self.on_scope(self.whole_library)
+
+    def set_views_button(self, on: bool):
+        """The Library tab: the "Songs ▾" button before the search box, the way to the Library's views."""
+        button = self.views_button
+        if button is None:
+            return
+        if on and not button.winfo_manager():
+            button.pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM), before=self.search)
+        elif not on and button.winfo_manager():
+            button.pack_forget()
+
+    # -- picking songs for a playlist ("Add songs from the Library…") ----------------------------------
+    def set_picking(self, target: str | None, on_add: Callable[[], None] | None = None,
+                    on_cancel: Callable[[], None] | None = None):
+        """Picking mode on the Library tab: a bar at the foot — "Pick songs for “Road trip”", Add
+        (how many are selected) and Cancel. The songs are picked as any selection is (a click,
+        Ctrl+click, Shift+click, Ctrl+A; an album header picks its album). `target` None ends it."""
+        self.picking = target
+        self._pick_add, self._pick_cancel = on_add, on_cancel
+        if self._pick_bar is not None:
+            self._pick_bar.destroy()
+            self._pick_bar = None
+        self.list.on_select = None
+        if target is None:
+            return
+        bar = ttk.Frame(self.frame)
+        bar.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP, 0), before=self.table)
+        self._pick_bar = bar
+        short = target if len(target) <= 24 else target[:23] + "…"
+        self.pick_button = controls.FlatButton(bar, "Add", lambda: on_add() if on_add else None, kind="primary",
+                                               fit="Add 999 songs")
+        self.pick_button.pack(side="right")
+        controls.FlatButton(bar, "Cancel", lambda: on_cancel() if on_cancel else None).pack(
+            side="right", padx=theme.pad(0, theme.GAP))
+        self.pick_label = ttk.Label(bar, text=f"Pick songs for “{short}”", style="Muted.TLabel", anchor="w")
+        self.pick_label.pack(side="left", fill="x", expand=True)
+        self.list.on_select = lambda index: self._picking_changed()
+        self._picking_changed()
+
+    def _picking_changed(self):
+        """The selection moved while picking: the Add button says how many songs it would add."""
+        if self.picking is None:
+            return
+        count = len(self.selected_rows()) if self._tracks else 0
+        self.pick_button.set_text(f"Add {count:,} song{'' if count == 1 else 's'}" if count else "Add")
+        self.pick_button.set_enabled(bool(count))
+
+    def set_open_column(self, on: bool):
+        """The Library tab: an open-album mark at the right of every song row."""
+        if on != self.open_column:
+            self.open_column = on
+            self._show_columns()
+
+    def set_adds(self, on: bool):
+        """A playlist tab: the library rows found carry a "+" (one click adds the song to it)."""
+        self.adds = on
+
+    def _ask_library(self):
+        """Ask the window for the library's matches (on its worker; set_library_hits brings them)."""
+        words = self._typed()
+        if self.on_library_search is not None and self.whole_library and words:
+            self.on_library_search(words)
+
+    def set_library_hits(self, words: list[str], hits: list):
+        """The library's matches for `words` (library_db.SongHit rows), listed under this tab's own
+        — only those not already in the tab. Stale answers (other words) are dropped."""
+        if words and words != self._typed():
+            return
+        here = _keys_held(self._tracks, [audiofile.key(h.track.path) for h in hits]) if hits else set()
+        self._hits = [h for h in hits if audiofile.key(h.track.path) not in here]
+        self._hits_for = list(words)
+        self._relist()
+
+    def _relist(self):
+        """List again as things stand (the library's rows changed)."""
+        self._list(self._words, self._found)
+
+    def library_hit(self, iid: str):
+        """The library row an iid names (None for any other row)."""
+        if iid.startswith("lib") and iid[3:].isdigit():
+            n = int(iid[3:])
+            return self._hits[n] if n < len(self._hits) else None
+        return None
+
+    def _library_row(self, n: int) -> tuple:
+        hit = self._hits[n]
+        track = hit.track
+        title = f"{track.title}  ·  {track.artist}" if track.artist else track.title
+        mark = ADD_MARK if self.adds else ""
+        return (f"lib{n}", (mark, title, track.artist, track.album, quality_text(track), "", "", "",
+                            clock_text(track.duration)), ("library_song",))
+
     def clear_search(self):
         self.query.set("")
-        if self.scope == "library":   # (the list isn't on show: the keyboard stays in the box)
-            self.entry.focus_set()
-        else:
-            self.tree.focus_set()
+        self.tree.focus_set()
 
     def _query_changed(self):
-        if self.scope == "library":   # (the window's results follow the box; the tab stays as it is)
-            return
         if self._search_job:
             self.tree.after_cancel(self._search_job)
+        if self._typed() != self._hits_for:
+            self._hits, self._hits_for = [], []   # (the old words' library rows go; the new ones come)
         self._search_job = self.tree.after(SEARCH_DELAY_MS, self._search_now)  # wait for a pause in typing
 
     def _search_now(self):
@@ -1068,6 +1024,7 @@ class PlaylistView:
                 self._ask_search(words)
         else:
             self._render()
+        self._ask_library()
 
     def _ask_search(self, words: list[str]):
         serial = self._list_serial
@@ -1092,8 +1049,6 @@ class PlaylistView:
             self._render()
 
     def _focus_results(self):
-        if self._library_key("down"):
-            return
         self._flush_search()
         first = self._first_song()
         if first is not None:
@@ -1101,8 +1056,6 @@ class PlaylistView:
             self.list.select(self._row_of(first))
 
     def _play_first_result(self):
-        if self._library_key("play"):
-            return
         self._flush_search()
         first = self._first_song()
         if first is not None:
@@ -1116,8 +1069,41 @@ class PlaylistView:
             self.on_search_library(self.query.get().strip())
 
     def _released(self, event):
-        if self.tree.identify_row(event.y) == "library" and "library" in self._listing.tail:
+        iid = self.tree.identify_row(event.y)
+        if iid == "library" and "library" in self._listing.tail:
             self.search_library()
+            return
+        column = self._column_at(event.x)
+        if iid.isdigit() and column == "open" and self.open_column:
+            self.on_open_album(int(iid))
+        elif self.library_hit(iid) is not None and self.adds and column == "no":
+            self.on_library_hit(self.library_hit(iid), "add")
+
+    def _column_at(self, x: int) -> str | None:
+        """The column name under x (the Treeview names them "#1"… in display order)."""
+        number = self.tree.identify_column(x)
+        shown = self.tree.cget("displaycolumns")
+        if shown == "#all":
+            shown = COLUMNS
+        try:
+            return shown[int(number[1:]) - 1]
+        except (ValueError, IndexError):
+            return None
+
+    def open_selected_album(self):
+        """Ctrl+Shift+O: the selected song's album in a new tab (the Library tab's mark, by key)."""
+        found = self.selected_track()
+        if found is not None and self.open_column:
+            self.on_open_album(found)
+
+    def add_selected_library_song(self):
+        """Ctrl+Shift+A: the selected library row's song into this playlist."""
+        row = self.list.selected
+        if row is None or row >= len(self._listing):
+            return
+        hit = self.library_hit(str(self._listing.entry(row)))
+        if hit is not None and self.adds:
+            self.on_library_hit(hit, "add")
 
     def refresh_titles(self):
         """Song rows' titles again (a favourite's ♥ came or went): only the rows on show are drawn."""
@@ -1130,7 +1116,7 @@ class PlaylistView:
             return [int(iid)]
         if iid.startswith("a") and iid[1:].isdigit() and self._header_row_of(int(iid[1:])) is not None:
             return list(self._group_songs(int(iid[1:])))
-        return []
+        return []   # (a library row found by the search isn't one of the tab's songs)
 
     def _carried(self, iid: str) -> list[int]:
         """What a dragged row carries: every song selected when it's one of several selected, else
@@ -1281,8 +1267,8 @@ class PlaylistView:
                                    and self.list.is_selected(self.list.playing))
         self._mark_playing(index)
         row = self._row_of(index)
-        if row is not None and following:   # (a song the search hides keeps its mark, unselected)
-            self.list.select(row)
+        if row is not None and following and self.picking is None:   # (a song the search hides keeps its mark, unselected)
+            self.list.select(row)   # (while picking songs for a playlist, nothing is picked unasked)
 
     def _mark_playing(self, index: int | None):
         """Move the playing mark (the row keeps it however the selection moves)."""
@@ -1302,10 +1288,13 @@ class PlaylistView:
         if row is None or row >= len(self._listing):
             return False
         found = self._listing.entry(row)
-        if found == "none":
+        if found == "none" or found == "libhead":
             return False
         if found == "library":
             self.search_library()
+            return True
+        if isinstance(found, str) and self.library_hit(found) is not None:
+            self.on_library_hit(self.library_hit(found), "add" if self.adds else "play")
             return True
         if found < 0:
             songs = self._group_songs(-1 - found)

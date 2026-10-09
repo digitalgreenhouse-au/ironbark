@@ -1,5 +1,5 @@
 """0.24.0: inter-sample overs — finding them (clipping.py), the clipping guard at 8x
-with "My DAC has headroom", hearing them (Experimental clip_audition), and the Clipping window
+with "My DAC has headroom", hearing them (Hear it), and the Clipping window
 (smoke tests skip without a display)."""
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import analysis, audition, clipping, experiments, settings, theme
+from ironbark import analysis, experiments, settings, theme
+from ironbark.tools import audition, clipping
 from ironbark.analysis import guard_trim, headroom_index, headroom_label, max_under_read, true_peak
 from ironbark.audiofile import CuePath, CueRange
 from ironbark.engine import State
@@ -193,7 +194,8 @@ def test_guard_true_peak_is_8x(tmp_path):
 
 
 def test_guard_wins_over_bit_perfect_and_says_so():
-    from ironbark.details import describe_proof, output_line
+    from ironbark.tools.details import describe_proof
+    from ironbark.statustext import output_line
     from ironbark.engine import OutputInfo
     out = OutputInfo("DAC", 44100, 44100, exclusive=True, hardware_volume=True)
     text, tone = output_line(out, 1.0, trim=10 ** (-1.1 / 20))
@@ -326,7 +328,7 @@ def wait_for(win, condition, seconds=20):
 
 
 def test_clip_window_live_view_and_whole_song_strip(root, tmp_path, no_device):
-    from ironbark.clip_window import ClipWindow
+    from ironbark.tools.clip_window import ClipWindow
     path, x, places = bursts_file(tmp_path)
     player = WindowPlayer(path)
     prefs = {}
@@ -359,21 +361,17 @@ def test_clip_window_live_view_and_whole_song_strip(root, tmp_path, no_device):
     win._strip_click(SimpleNamespace(x=mark))
     assert win.chosen is second and player.seeks == [pytest.approx(second.at - 1.0)]
     assert "Chosen: 0:02.5" in win.chosen_label.cget("text")
-    # Experimental switch off (the default): nothing to hear, and nothing ever played.
-    assert win.listen_frame is None and win.audition is None
-    win.hear("A")
-    assert player.suspended == 0 and FakeStream.made == []
+    assert win.listen_frame is not None                       # Hear it is simply there (0.37.0)
     win.close()
     assert player.unmonitored
 
 
-def test_clip_audition_experiment_plays_a_and_b_and_goes_away_when_switched_off(root, tmp_path, no_device):
-    from ironbark.clip_window import ClipWindow
-    assert "clip_audition" in experiments.known()
+def test_hear_it_plays_a_and_b_and_the_difference(root, tmp_path, no_device):
+    from ironbark.tools.clip_window import ClipWindow
+    assert "clip_audition" not in experiments.known()           # rolled in at 0.37.0: simply there
     path, x, places = bursts_file(tmp_path)
     player = WindowPlayer(path)
-    prefs = {}
-    experiments.set_enabled(prefs, "clip_audition", True)
+    prefs = {"experiments": {"clip_audition": False}}            # an old settings file: ignored
     win = ClipWindow(root, player, prefs, stream_factory=FakeStream)
     win.win.update()
     assert win.listen_frame is not None
@@ -393,21 +391,17 @@ def test_clip_audition_experiment_plays_a_and_b_and_goes_away_when_switched_off(
     out = np.zeros((2048, 2), np.float32)
     stream.callback(out, 2048, None, None)                        # it renders (silently: volume 0)
     assert "Hearing just the difference" in win.hearing.cget("text")
-    # Switching the experiment off takes the controls away and stops the sound.
-    experiments.set_enabled(prefs, "clip_audition", False)
-    win._tick()
-    assert win.listen_frame is None and win.audition is None and stream.closed
     win.close()
+    assert stream.closed
 
 
 def test_clip_audition_lets_go_of_the_last_song_s_loop(root, tmp_path, no_device):
-    from ironbark.clip_window import ClipWindow
+    from ironbark.tools.clip_window import ClipWindow
     path, x, places = bursts_file(tmp_path)
     clean = tmp_path / "clean.wav"
     sf.write(clean, np.zeros((3 * RATE, 2), np.float32), RATE, subtype="FLOAT")
     player = WindowPlayer(path)
     prefs = {}
-    experiments.set_enabled(prefs, "clip_audition", True)
     win = ClipWindow(root, player, prefs, stream_factory=FakeStream)
     win.win.update()
     wait_for(win, lambda: win.audition is not None)
@@ -424,7 +418,7 @@ def test_clip_audition_lets_go_of_the_last_song_s_loop(root, tmp_path, no_device
 
 
 def test_clip_window_says_so_when_its_work_fails(root, tmp_path, no_device, monkeypatch):
-    from ironbark.clip_window import ClipWindow
+    from ironbark.tools.clip_window import ClipWindow
     path, x, places = bursts_file(tmp_path)
 
     def out_of_memory(*args, **kwargs):
@@ -442,7 +436,6 @@ def test_clip_window_says_so_when_its_work_fails(root, tmp_path, no_device, monk
     monkeypatch.setattr(clipping, "scan", real_scan)
     monkeypatch.setattr(clipping, "listening_versions", out_of_memory)
     prefs = {}
-    experiments.set_enabled(prefs, "clip_audition", True)
     win = ClipWindow(root, player, prefs, stream_factory=FakeStream)
     win.win.update()
     wait_for(win, lambda: win._loading is None and "Couldn't" in win.hearing.cget("text"))

@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
+from fakework import FakeWork
 from tagging import write_vorbis
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
@@ -622,62 +623,6 @@ class GrowingIndex:
         return Diff(waiting=[self.file])
 
 
-def test_a_file_that_keeps_growing_gets_quick_looks_at_its_folder_that_slow_down(tmp_path):
-    index = GrowingIndex(tmp_path)
-    look = watcher.Watcher(lambda: index, every_s=1000, recheck_s=0.02)
-    look.start()
-    deadline = time.monotonic() + 20
-    while len(index.calls) < watcher.QUICK_LOOKS + 5 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    look.stop()
-    calls = list(index.calls)
-    assert calls[0][1] is None                                       # the first look: the whole library
-    assert all(folders == [str(index.file.parent)] for _when, folders in calls[1:])   # then just its folder
-    gaps = [b[0] - a[0] for a, b in zip(calls[1:], calls[2:])]
-    assert gaps[-1] > 4 * min(gaps[:watcher.QUICK_LOOKS - 1])        # and the looks slow down
-
-
-class SlowIndex:
-    def __init__(self, root: Path):
-        self.roots = [root]
-        self.root = root
-        self.built = 1.0
-        self.entered = threading.Event()
-        self.gate = threading.Event()
-        self.looking = 0
-        self.most = 0
-
-    def refresh(self, hold=None, folders=None):
-        self.looking += 1
-        self.most = max(self.most, self.looking)
-        self.entered.set()
-        self.gate.wait(10)
-        self.looking -= 1
-        return Diff()
-
-
-def test_turning_watching_off_and_on_mid_look_never_leaves_two_threads(tmp_path):
-    index = SlowIndex(tmp_path)
-    look = watcher.Watcher(lambda: index, every_s=0.01, recheck_s=0.01)
-    look.start()
-    assert index.entered.wait(10)
-    first = look._thread
-    look.stop()
-    assert not look.running
-    look.start()                                       # on again while the first is still mid-look
-    second = look._thread
-    assert second is not first
-    time.sleep(0.1)
-    assert index.most == 1                             # the second waits for the first to finish
-    index.gate.set()
-    first.join(5)
-    assert not first.is_alive() and second.is_alive()
-    time.sleep(0.2)
-    look.stop()
-    second.join(5)
-    assert index.most == 1 and len([t for t in threading.enumerate() if t.name == "new-music"]) == 0
-
-
 def test_reports_carry_the_new_albums_and_a_quiet_look_works_nothing_out(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     root = tmp_path / "Music"
@@ -707,7 +652,7 @@ def test_a_song_heard_long_enough_is_counted_as_a_play_from_a_worker(tmp_path, m
         Track(path=tmp_path / "Music" / "2.flac", title="Two", duration=100.0)
     statuses = []
     player = SimpleNamespace(status=lambda: statuses.pop(0))
-    w = SimpleNamespace(player=player, _listening=None, _index=lambda: index)
+    w = SimpleNamespace(player=player, _listening=None, _index=lambda: index, work=FakeWork())
     for name in ("_count_listening", "_record_play"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
 
@@ -786,12 +731,12 @@ def test_the_thread_rule_catches_a_tk_call_off_tks_thread(tk_thread_rule):
     tk_thread_rule.clear()
 
 
-def test_no_tk_call_off_tks_thread_while_the_library_is_built_and_watched(tk_thread_rule, tmp_path, monkeypatch):
+def test_no_tk_call_off_tks_thread_while_the_library_is_built_and_rescanned(tk_thread_rule, tmp_path, monkeypatch):
     import gc
     import tkinter as tk
 
     from ironbark import theme
-    from ironbark.library_window import LibraryWindow
+    from ironbark.library_view import LibraryView
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     music = tmp_path / "Music"
@@ -805,20 +750,17 @@ def test_no_tk_call_off_tks_thread_while_the_library_is_built_and_watched(tk_thr
     root.withdraw()
     theme.apply(root)
     try:
-        window = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
-        look = watcher.Watcher(lambda: library_index.shared(music), every_s=0.05, recheck_s=0.05, settle_s=0)
-        look.since = time.time()
-        look.start()
+        window = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
         deadline = time.monotonic() + 30
         while (window._refresh is not None or window._loading or len(window.albums) < 6) \
                 and time.monotonic() < deadline:
             root.update()
             time.sleep(0.02)
         flac(music / "New" / "01.flac", title="New", album="New")
-        while len(window.albums) < 7 and time.monotonic() < deadline:   # the watcher finds it; the window follows
+        window.rescan()                                                   # (0.38.0: one look, when asked)
+        while len(window.albums) < 7 and time.monotonic() < deadline:
             root.update()
             time.sleep(0.02)
-        look.stop()
         assert len(window.albums) == 7
         window.close()
         root.update()

@@ -228,7 +228,7 @@ def test_a_warning_title_wraps_beside_its_sign(root):
 
 def test_the_tag_editor_and_test_signal_questions_are_in_app(root):
     from ironbark.tag_window import ask
-    from ironbark.testsignals_window import confirm_play
+    from ironbark.tools.testsignals_window import confirm_play
 
     seen = answer_later(root, lambda p: p.press_default())
     assert ask(root, "Save")("Save changes to 12 files?", "Changing: Album.") is True
@@ -368,7 +368,7 @@ def test_track_and_tab_menus(make_window, shown_menus, tmp_path, monkeypatch):
     window._track_menu([0], event)
     menu = shown_menus[-1]
     assert menu.labels() == ["Play", "Play next", "Add to Up next", "Add to playlist", "Add to favourites",
-                             "Stop after the current song", "Sleep timer", "Columns"]
+                             "Edit tags…", "Tag history (undo)…", "Stop after the current song", "Sleep timer", "Columns"]
     menu.invoke("Columns")
     menu.invoke("Artist")                                    # a tick item: switches the column on
     assert "artist" in window.playlist.columns and window.prefs["track_columns"] == ["artist"]
@@ -396,7 +396,7 @@ def test_track_and_tab_menus(make_window, shown_menus, tmp_path, monkeypatch):
     assert not rows["Move up"].enabled and rows["Move down"].enabled and rows["Remove from playlist"].enabled
     tabbar.Popover.close_open()
     window._tab_menu(window.current, event)
-    assert shown_menus[-1].labels() == ["Rename playlist…", "Delete playlist…", "Move left", "Move right",
+    assert shown_menus[-1].labels() == ["Add songs from the Library…", "Rename playlist…", "Delete playlist…", "Move left", "Move right",
                                         "Close tab"]
     assert not {r.text: r for r in shown_menus[-1].rows()}["Move right"].enabled   # it's the last tab
     tabbar.Popover.close_open()
@@ -487,17 +487,23 @@ def test_settings_scroll_to_the_bottom_in_a_short_window(make_window):
     window, root, player, errors = make_window(geometry="420x460+120+120")
     window._open_settings()
     _pump(root, 0.3)
-    pop, area = window.settings_pop, window.settings_area
-    assert pop.is_open
+    view, area = window.settings, window.settings_area
+    pop = view.frame
+    assert view.is_open
     assert pop.winfo_y() + pop.winfo_height() <= root.winfo_height()       # never past the window's bottom
     assert area.needed() and area.scrollbar.winfo_ismapped()               # …so it scrolls, scrollbar shown
     assert not area.visible(window.version_label)
-    # Every section can be brought into view, the last line (the version) included.
-    captions = [w for w in _all(pop.body) if getattr(w, "cget", None) and _text(w).isupper() and len(_text(w)) > 3]
-    assert {_text(c) for c in captions} >= {"SOUND", "WINDOW", "LIBRARY", "NETWORK", "EXPERIMENTAL"}
-    for widget in captions + [window.version_label]:
-        area.see(widget)
-        assert area.visible(widget), _text(widget)
+    # Every section of both pages can be brought into view, the version line included.
+    found = set()
+    for page, body in (("advanced", view.advanced), ("simple", view.simple)):
+        view.show_page(page)
+        _pump(root, 0.1)
+        captions = [w for w in _all(body) if getattr(w, "cget", None) and _text(w).isupper() and len(_text(w)) > 3]
+        found |= {_text(c) for c in captions}
+        for widget in captions + ([window.version_label] if page == "simple" else []):
+            area.see(widget)
+            assert area.visible(widget), _text(widget)
+    assert found >= {"SOUND", "WINDOW", "LIBRARY", "EXPERIMENTAL", "HELP"}
     # The mouse wheel over a setting scrolls the panel (and stops there: the Output box doesn't change).
     area.scroll_to(0)
     _pump(root, 0.05)

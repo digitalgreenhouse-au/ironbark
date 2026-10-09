@@ -76,21 +76,24 @@ so Windows SmartScreen warns about an unknown publisher.
   classical works) whenever they share a sample rate.
 - **Tabs** for albums, folders, playlists and the Library. Each tab remembers where it was; opening a
   new tab never interrupts what's playing. Drag tabs to reorder them.
-- **Library** (Ctrl+L): browse by album, artist, genre, year, composer or recently added; sort by any
-  column; search. **Songs** lists every song in the library (with optional Plays and Last played
-  columns), and **Most played**, **Recently played** and **Favourites** (♥ — right-click any song) keep
-  your listening close. **Play next / Add to Up next** from any song or album.
+- **The Library tab** is always there: every song of every library folder, grouped by album, with
+  the search box searching the whole library. Its **views** (Ctrl+L, or the Songs ▾ button) show inside
+  the tab: browse by album, artist, genre, year, composer or recently added; sort by any column;
+  search. **Most played**, **Recently played** and **Favourites** (♥ — right-click any song) keep your
+  listening close, with optional Plays and Last played columns. **Play next / Add to Up next** from any
+  song or album; a playlist's *Add songs from the Library…* picks songs there.
 - **Select several songs** (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A) in the track list, the
   Library's song views and the search results: play them next, queue them, add
   them to a playlist or your favourites, edit their tags, drag them onto a tab, or take them out of a
   playlist — one Ctrl+Z puts them all back.
-- **Search the whole library** (Ctrl+K): songs, albums and artists as you type, from any window;
-  Enter plays the song in its album, Shift+Enter plays it next, Ctrl+Enter adds it to Up next.
+- **Search the whole library** (Ctrl+K): the Library tab's search box finds songs as you type, from
+  any window; in any other tab the box lists that tab's matches first, then "From your library", and a
+  playlist tab adds a library song with one click on its "+".
 - **Built for big collections:** the Library keeps a database of your music, read once in the
   background (at low priority; in several processes for a big library) and then only what changed,
   so the player never freezes. Use **several music folders** (Settings → Library). An unplugged
-  drive or a sleeping network share never empties the Library. A tab of the whole library (Library →
-  *Open all albums in a tab*) opens, scrolls and searches as quickly as an album, even with 200,000
+  drive or a sleeping network share never empties the Library. The Library tab (the whole library)
+  opens, scrolls and searches as quickly as an album, even with 200,000
   songs, and an optional **Plays** column shows how often each song has been played.
 - **Search** ignores accents and special letters ("lodz" finds Łódź, "strasse" finds Straße) and
   looks at title, artist, album, album artist, composer, genre, year and file name.
@@ -154,8 +157,6 @@ so Windows SmartScreen warns about an unknown publisher.
   with where they stop.
 - **Rip-log check** (offline): compares each track with the checksums your EAC or XLD log recorded
   when the CD was ripped.
-- **Rip verification** (optional, online): compares a CD rip with the **AccurateRip** and
-  **CUETools** databases. Off unless you switch on Settings → Network → *Allow network access*.
 - **The whole library at once** (Library → *Needs a look*, when you choose to start it): every song
   gets the same check in the background, at low priority, and the view lists what needs a look —
   damaged files, MD5 mismatches, lossy-source, upsampling and padded-bit-depth clues, clipping,
@@ -187,9 +188,6 @@ so Windows SmartScreen warns about an unknown publisher.
   can still show. It is never sent anywhere.
 - Settings → Help → **About Ironbark**: the version, every bundled component's licence, and a *Copy
   version info* button.
-- Settings → Help → **Check for updates** (off by default, and only while network access is
-  allowed) mentions a newer version in the status line. The request names the Ironbark version,
-  and the website sees your computer's internet address. It never downloads or installs anything.
 
 ### Experimental (Settings → Experimental, off until you switch them on)
 
@@ -249,13 +247,15 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+1 – Ctrl+8 | Go to tab 1 – 8 |
 | Ctrl+9 | Go to the last tab |
 | Ctrl+O | Open a folder |
-| Ctrl+Shift+O | Open a playlist file |
+| Ctrl+Alt+O | Open a playlist file |
 | Ctrl+N | New playlist |
 | Ctrl+F · / | Search this tab |
 | Enter | Track list: play the song (an album row: the album) |
 | Ctrl+Enter | Track list: add to Up next |
 | Ctrl+Shift+Enter | Track list: play next |
 | Ctrl+A | Track list: select every song |
+| Ctrl+Shift+O | Track list: open the song's album in a new tab |
+| Ctrl+Shift+A | Track list: add the library song found to this playlist |
 | Menu key · Shift+F10 | The selected row's right-click menu |
 | Shift+click · Ctrl+click · Shift+↑ / ↓ | Track list, the Library's songs, the library search's results: select several songs |
 
@@ -288,15 +288,15 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 
 | Key | Action |
 |---|---|
-| Ctrl+L | Library (brings it to the front when it's open) |
-| Ctrl+K · Ctrl+Shift+F | Search the library |
-| Ctrl+F · / | Library: search box |
-| Ctrl+A | Library: select every song (the song views) |
-| Enter | Library: open the album in a new tab |
-| Ctrl+Enter | Library: add the album to Up next |
-| Ctrl+Shift+Enter | Library: play the album next |
-| Ctrl+Tab / Ctrl+Shift+Tab | Library: next / previous view (Albums, Artists, …) |
-| F5 | Library: look for added or changed music |
+| Ctrl+L | The Library's views (Albums, Artists, …) in the Library tab; again: back |
+| Ctrl+K · Ctrl+Shift+F | Search the whole library (the Library tab's search box) |
+| Ctrl+F · / | Library views: search box |
+| Ctrl+A | Library views: select every song (the song views) |
+| Enter | Library views: open the album in a new tab (a song: play it) |
+| Ctrl+Enter | Library views: add the album to Up next |
+| Ctrl+Shift+Enter | Library views: play the album next |
+| Ctrl+Tab / Ctrl+Shift+Tab | Library views: next / previous view (Albums, Artists, …) |
+| F5 | Library views: look for added or changed music |
 | ↓ · Enter | Search box: go to the list · play (open) the first result |
 | Enter · Shift+Enter · Ctrl+Enter · Alt+Enter | Library search (Ctrl+K): play · play next · add to Up next · open the album |
 | A – Z · 0 – 9 | Library list: jump to the first name starting with what you type |
@@ -308,30 +308,20 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Delete | Remove the song from the playlist |
 | Alt+↑ / Alt+↓ | Move the song up / down the playlist |
 | Ctrl+Z | Undo: songs removed or moved, or taken out of Up next |
-| F2 | Rename the playlist |
+| F2 | Rename the tab (a playlist: its file) |
 | E | Edit tags of the selected song (Experimental) |
 | Ctrl+S | Edit tags: save |
 
 ## Privacy
 
-Ironbark doesn't collect anything about you or your music. Nothing uses the internet until you
-switch on Settings → Network → *Allow network access*. Then only two features can:
+Ironbark doesn't collect anything about you or your music, and **it never uses the internet**: no
+update check, no look-ups, no usage tracking. Lyrics, the rip-log check and the library's song search
+all work from files on your computer.
 
-- **Rip verification**: when you press *Verify rip online*, it sends only the disc's IDs and track
-  layout to AccurateRip and CUETools DB. As with any request, those websites see your computer's
-  internet address and the Ironbark version. The CUETools DB look-up isn't encrypted, so others on
-  your network can see which disc is looked up.
-- **Check for updates** (Settings → Help, its own switch, also off by default): once a day it asks
-  digitalgreenhouse.com.au for one small file saying what the latest version is. The request names
-  the Ironbark version, and the website sees your computer's internet address, as any website you
-  visit does; nothing else goes with it. Nothing is downloaded or installed: a newer version is only
-  mentioned in the status line.
-
-Lyrics, the rip-log check and the library's song search all work offline, from files on your
-computer. Music on network drives (`\\server\share`, or a mapped drive like Z:) and OneDrive plays
-without network access: Windows fetches those files, as it does for any program. The network
-playback cache (Experimental) only talks to the network drives your music is already on; it never
-uses the internet.
+Music on your home network (a NAS, a shared folder, a mapped drive like Z:) and OneDrive plays as
+any program reads a file. With Settings → Library → **Local network access** on,
+the network playback cache keeps copies of those songs on this computer; it only ever talks to the
+drives your music is already on.
 
 Settings, playlists and the logs are kept on your computer (on Windows, in `%APPDATA%\Ironbark`);
 the library database (with your play counts and favourites) and the network playback cache's copies

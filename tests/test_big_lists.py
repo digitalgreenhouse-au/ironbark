@@ -226,10 +226,10 @@ def test_slash_goes_to_the_search_box(make_window):
 # -- the Library's song views --------------------------------------------------------------------------
 def test_library_song_views_select_several_and_act_on_them_all(root, tmp_path, monkeypatch, tk_thread_rule):
     from ironbark import library_index, settings
-    from ironbark.library_window import LibraryWindow
+    from ironbark.library_view import LibraryView
     from ironbark.quick_search import Actions
 
-    from test_library_window import flac, wait_for_index
+    from test_library_view import flac, wait_for_index
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     music = tmp_path / "Music"
@@ -238,7 +238,7 @@ def test_library_song_views_select_several_and_act_on_them_all(root, tmp_path, m
             flac(music / a / f"0{n}.flac", title=f"{a}{n}", artist="X", album=a, tracknumber=str(n))
     queued, added = [], []
     actions = Actions(queue_tracks=lambda tracks, front: queued.append(([t.title for t in tracks], front)))
-    w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None, view="songs",
+    w = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: None, view="songs",
                       actions=actions, on_add_tracks=lambda tracks: added.append([t.title for t in tracks]) or "",
                       song_columns=("plays", "last"))
     wait_for_index(w, root)
@@ -369,7 +369,7 @@ def test_the_track_list_shows_a_light_tab_and_searches_it_in_the_database(root, 
         root.update()
         assert _wait(root, lambda: all(not view.tree.set(iid, "title").startswith("…")
                                        for iid in view.tree.get_children()))
-        assert view.tree.get_children()[0] == "a0" and "artist" in view.varies
+        assert view.tree.get_children()[0] == "a0"
         view.query.set("love")
         view._render()
         everything = list(tracks)
@@ -383,7 +383,7 @@ def test_the_track_list_shows_a_light_tab_and_searches_it_in_the_database(root, 
 def test_open_all_albums_makes_a_light_tab_the_window_plays_and_counts(make_window, tmp_path):
     from ironbark import library_index, library_tracks
 
-    from test_library_window import flac
+    from test_library_view import flac
 
     window, root, player, errors = make_window()
     music = tmp_path / "Music"
@@ -421,18 +421,18 @@ def library_tracks_count_text(window, tab) -> str:
 # -- the album list shared with the search panel, searched off Tk's thread when big ------------------------
 def test_library_albums_are_the_search_panels_and_a_big_list_is_searched_off_tk(root, tmp_path, monkeypatch,
                                                                                  tk_thread_rule):
-    from ironbark import library_index, library_window, quick_search, settings
-    from ironbark.library_window import LibraryWindow
+    from ironbark import library_index, library_view, quick_search, settings
+    from ironbark.library_view import LibraryView
 
-    from test_library_window import flac, wait_for_index
+    from test_library_view import flac, wait_for_index
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
-    monkeypatch.setattr(library_window, "ALBUM_THREAD_AT", 1)      # (as a library of 25,000 albums would)
+    monkeypatch.setattr(library_view, "ALBUM_THREAD_AT", 1)      # (as a library of 25,000 albums would)
     music = tmp_path / "Music"
     for name, artist in (("Tommy", "The Who"), ("21", "Adele"), ("25", "Adele")):
         flac(music / name / "01.flac", title=f"{name} one", artist=artist, album=name)
     chosen = []
-    w = LibraryWindow(root, music, None, on_choose=chosen.append, on_root_changed=lambda p: None,
+    w = LibraryView(root, music, None, on_choose=chosen.append, on_root_changed=lambda p: None,
                       on_load_all=lambda r, q: None)
     wait_for_index(w, root)
     assert _wait(root, lambda: len(w._items) == 3 and w._album_rows_asked is None)
@@ -455,7 +455,7 @@ def test_a_big_selection_of_a_library_tab_is_read_off_tks_thread(make_window, tm
 
     from ironbark import library_index, library_tracks, popups, ui
 
-    from test_library_window import flac
+    from test_library_view import flac
 
     monkeypatch.setattr(ui, "READ_HERE_MOST", 2)          # (as a Ctrl+A over 200,000 songs would be)
     reads = []
@@ -572,22 +572,22 @@ def test_no_matches_doesnt_light_up_and_a_new_list_lets_go_of_the_lit_row(root):
 
 
 def test_plays_read_before_a_play_was_counted_are_not_shown(root):
-    from ironbark.library_window import LibraryWindow
+    from ironbark.library_view import LibraryView
 
     refreshed = []
     w = SimpleNamespace(_counts={"k": (1, 5.0)}, _counts_wanted={"k": None}, _counts_asked=7, view="songs",
-                        song_columns=("plays",), win=SimpleNamespace(winfo_exists=lambda: True),
+                        song_columns=("plays",), frame=SimpleNamespace(winfo_exists=lambda: True),
                         list=SimpleNamespace(refresh=lambda: refreshed.append(1)))
-    LibraryWindow.plays_changed(w)                        # a play was counted while a read was on its way
+    LibraryView.plays_changed(w)                        # a play was counted while a read was on its way
     assert w._counts == {} and w._counts_wanted == {} and w._counts_asked is None and refreshed
     old = SimpleNamespace(ask=7, error=None, value=({"k": 1}, {"k": 5.0}))
-    assert not LibraryWindow._take_counts(w, old) and w._counts == {}     # the old counts aren't taken
+    assert not LibraryView._take_counts(w, old) and w._counts == {}     # the old counts aren't taken
     w._counts_asked = 8
     w._counts_wanted = {"k": None}
-    assert LibraryWindow._take_counts(w, SimpleNamespace(ask=8, error=None, value=({"k": 2}, {"k": 9.0})))
+    assert LibraryView._take_counts(w, SimpleNamespace(ask=8, error=None, value=({"k": 2}, {"k": 9.0})))
     assert w._counts == {"k": (2, 9.0)} and w._counts_wanted == {}
     w._counts_asked, w._counts_wanted = 9, {"j": None}
-    assert not LibraryWindow._take_counts(w, SimpleNamespace(ask=9, error=OSError("busy"), value=None))
+    assert not LibraryView._take_counts(w, SimpleNamespace(ask=9, error=OSError("busy"), value=None))
     assert w._counts_wanted == {}                         # (asked again when next drawn)
 
 

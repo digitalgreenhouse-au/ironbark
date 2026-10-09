@@ -1,7 +1,16 @@
-"""The Library window: every album in the library folders, from the library database
-(library_index.py over library_db.py), so it opens at once and only changed files are read again.
-The album list is fetched on the library's query thread (indexer.Queries), never on Tk's: the
-window's own `after` loop picks it up, with the indexer's progress and news of changed albums.
+"""The Library's views, shown inside the main Library tab in place of the track list (a frame the
+player packs and unpacks; until 0.40.0 a window of its own): every album in the library folders, from
+the library database (library_index.py over library_db.py), so it opens at once and only changed files
+are read again. The album list is fetched on the library's query thread (indexer.Queries), never on
+Tk's: the view's own `after` loop picks it up, with the indexer's progress and news of changed albums.
+
+The views sit in one drop-down at the left of the search box (eleven words don't fit a 300 px window):
+Songs (the tab's own list, grouped by album), Albums, Artists, Genres, Years, Composers, Recently added,
+Most played, Recently played, Favourites, Needs a look. The ⋯ button beside the box holds Rescan, "Open
+all albums in a tab" and "Add folder…". Narrower than NARROW the lists show fewer columns: album views
+"Artist – Album" and Year (grouped views just the album), song views Title and Time with the artist
+riding in the title; the rest come back when the window is wider. Esc, an album opened or a song played
+put the track list back (`on_close`); "Songs" in the drop-down does the same (`on_songs`).
 
 Browse by Albums · Artists · Genres · Years · Composers · Recently added (the grouping rules are in
 browse.py); click a column heading to sort by it (again to reverse). Search matches album, artist,
@@ -63,13 +72,14 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import (audiofile, browse, controls, indexer, keys, library_check, library_db, library_index, placement,
-               popups, searchfold, theme)
+from . import (audiofile, browse, controls, indexer, keys, library_check, library_db, library_index, popups,
+               searchfold, theme)
 from .browse import album_label
 from .favourites import HEART
 from .library import Album, Track, sort_name
 from .library_db import SongHit
-from .playlist_view import TreeDrag, _fold, fit_columns
+from .playlist_view import TreeDrag, fit_columns
+from .searchfold import fold
 from .quick_search import Actions, add_song_items, album_text, count_text, shared_catalogue, song_name, song_values
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
 
@@ -78,6 +88,7 @@ SEARCH_DELAY_MS = 150   # the list follows the search box after a pause in typin
 TICK_MS = 100           # how often the window picks up the album list and the indexer's news
 SONG_VIEWS = ("songs", "most_played", "recently_played", "favourites", "needs_look")
 VIEWS = browse.VIEWS + SONG_VIEWS
+NARROW = 480             # px at 100%: narrower than this the lists show fewer columns (NARROW_DISPLAYED)
 VIEW_TITLES = {**browse.VIEW_TITLES, "songs": "Songs", "most_played": "Most played",
                "recently_played": "Recently played", "favourites": "Favourites", "needs_look": "Needs a look"}
 # Every column the list can show; each view shows some of them (DISPLAYED).
@@ -91,7 +102,10 @@ DISPLAYED = {"songs": ("title", "artist", "album", "year", "quality", "time"),
              "recently_played": ("title", "artist", "album", "added", "time"),
              "favourites": ("title", "artist", "album", "year", "quality", "time"),
              "needs_look": ("title", "artist", "album", "found")}
+NARROW_DISPLAYED = {"songs": ("title", "time"), "most_played": ("title", "plays"), "recently_played": ("title", "added"),
+                    "favourites": ("title", "time"), "needs_look": ("title", "found")}
 ALBUM_COLUMNS = browse.COLUMNS
+NARROW_ALBUM_COLUMNS = ("album", "year")   # (the artist rides in the album's name: "Artist – Album")
 # The sort each song view starts with ("": the order the list came in — newest favourite first).
 SONG_SORT = {"songs": ("title", False), "most_played": ("plays", True), "recently_played": ("added", True),
              "favourites": ("", False), "needs_look": ("found", False)}
@@ -136,7 +150,7 @@ def added_text(seconds: float) -> str:
 
 def _jump_text(text) -> str:
     """A name as type-to-jump compares it: folded, "The " left off (as names sort)."""
-    folded = _fold(str(text)).strip()
+    folded = fold(str(text)).strip()
     return folded[4:] if folded.startswith("the ") else folded
 
 
@@ -237,15 +251,17 @@ class AlbumRows:
     searched: bool
 
 
-def _album_values(album: Album, new) -> tuple:
+def _album_values(album: Album, new, with_artist: bool = False) -> tuple:
     name = album_label(album)
+    if with_artist and album.artist:   # (the narrow list: no Artist column)
+        name = f"{album.artist} – {name}"
     name = NEW_DOT + name if album.path in new else name
     return (name, album.artist, album.year or "", album.quality, album.track_count, added_text(album.added),
             "", "", "", "", "")
 
 
 def _album_rows(albums: list[Album], texts: dict[int, str], view: str, words: list[str], column: str,
-                reverse: bool, closed: frozenset[str], new: frozenset) -> AlbumRows:
+                reverse: bool, closed: frozenset[str], new: frozenset, with_artist: bool = False) -> AlbumRows:
     """(The query thread for a big library, else Tk's.) A browse view's rows: its groups (artists,
     genres, …) with their albums, those the search words find (an album by its folded text; a whole
     group when its own name holds them), sorted; a folded group shows just its heading. Nothing here
@@ -258,7 +274,7 @@ def _album_rows(albums: list[Album], texts: dict[int, str], view: str, words: li
     rows_map: dict[str, Album] = {}
     groups: dict[str, str] = {}
     for group in browse.group_albums(albums, view):
-        if words and grouped and all(w in _fold(group.name) for w in words):
+        if words and grouped and all(w in fold(group.name) for w in words):
             listed = group.albums  # the artist / genre / year itself matches: all of it
         elif words:
             listed = [a for a in group.albums if all(w in (texts.get(id(a)) or album_text(a)) for w in words)]
@@ -282,7 +298,7 @@ def _album_rows(albums: list[Album], texts: dict[int, str], view: str, words: li
                 continue
         for album in listed:
             iid = f"{parent}|{os.path.normcase(str(album.path))}"
-            rows.append((iid, _album_values(album, new), ("new",) if album.path in new else ()))
+            rows.append((iid, _album_values(album, new, with_artist), ("new",) if album.path in new else ()))
             items.append(("album", album))
             rows_map[iid] = album
     return AlbumRows(rows, items, list(shown.values()), rows_map, groups, bool(words))
@@ -406,27 +422,29 @@ class SongPages:
             self.pages.popitem(last=False)
 
 
-class LibraryWindow:
+class LibraryView:
     _sorts: dict[str, tuple[str, bool]] = {}      # per view: (column, reversed), kept for the session
     _closed: dict[str, set[str]] = {}             # per view: groups folded shut
 
     def __init__(self, parent: tk.Misc, root_folder: Path | list[Path], current: Path | None,
                  on_choose: Callable[[Path], None], on_root_changed: Callable[[list[Path]], None],
-                 on_load_all: Callable[[Path, str], None], geometry: str = "",
-                 on_moved: Callable[[str], None] = lambda geometry: None,
+                 on_load_all: Callable[[Path, str], None],
                  on_add: Callable[[Path, Callable[[str], None]], None] | None = None,
                  add_target: Callable[[], str | None] = lambda: None,
                  on_drag: Callable[[Path, int, int, str], None] | None = None,
                  on_queue: Callable[[Path, bool], None] | None = None,
                  view: str = "albums", on_view: Callable[[str], None] = lambda view: None,
                  on_edit_tags: Callable[[Path], None] | None = None,
-                 can_edit_tags: Callable[[], bool] = lambda: False,
                  new_albums: Callable[[], list[Path]] = lambda: [],
                  actions: Actions | None = None,
                  on_add_tracks: Callable[[list[Track]], str] | None = None,
                  checker: library_check.Checker | None = None,
                  song_columns: tuple[str, ...] = (),
-                 on_song_columns: Callable[[list[str]], None] = lambda columns: None):
+                 on_song_columns: Callable[[list[str]], None] = lambda columns: None,
+                 on_close: Callable[[], None] | None = None, on_songs: Callable[[], None] | None = None):
+        # `parent`: the frame the view is packed into (the player's body; a test's root). `on_close`:
+        # what closing means — the player puts its track list back (None: the frame is destroyed).
+        # `on_songs`: the drop-down's "Songs", the tab's own list (None: the Songs view is offered instead).
         # The library folders (one, or several); on_root_changed(folders) when "Add folder…" adds one.
         self.roots: list[Path] = library_db.outermost([root_folder] if isinstance(root_folder, (str, Path))
                                                       else root_folder)
@@ -438,8 +456,7 @@ class LibraryWindow:
         self.on_add = on_add
         self.on_queue = on_queue
         self.on_view = on_view
-        self.on_edit_tags = on_edit_tags    # (0.16.0) Experimental tag editing: offered only while
-        self.can_edit_tags = can_edit_tags  # its switch is on (read fresh at every right-click)
+        self.on_edit_tags = on_edit_tags    # the window's tag editor (None: not offered here)
         self.add_target = add_target  # the title of the player's tab on show, read fresh each time
         self.new_albums = new_albums  # the new albums' folders (0.17.0), read fresh at every fill
         self.actions = actions or Actions()   # what a song's Play / Add to Up next / … do (the player's)
@@ -455,7 +472,11 @@ class LibraryWindow:
         self._selection_asked: int | None = None   # a selection being read on the query thread…
         self._selection_then: Callable | None = None   # …and what's done with it once it's here
         self._new: set[Path] = set()
-        self.on_moved = on_moved
+        self.on_close, self.on_songs = on_close, on_songs
+        self.shown = True                      # on show (the player's `hidden` / `opened`): the tick runs only then
+        self._narrow = False                   # narrower than NARROW: fewer columns
+        self._view_text = ""
+        self._load_all_text, self._load_all_ok = "Open all albums in a tab", False
         self.view = view if view in VIEWS else "albums"
         self.albums: list[Album] = []
         self._shown: list[Album] = []          # albums listed now (each once, folded groups' too)
@@ -499,46 +520,36 @@ class LibraryWindow:
         self._check_look: tuple | None = None
         self._estimate_asked: int | None = None
 
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Library")
-        self.win.geometry(f"{theme.px(680)}x{theme.px(540)}")
-        self.win.minsize(theme.px(380), theme.px(300))
-        placement.restore(self.win, geometry)
-        self.win.bind("<Configure>", self._moved)
-        theme.dark_title_bar(self.win)
-        self.win.bind("<Escape>", lambda e: self.close())
-
-        frame = ttk.Frame(self.win, padding=theme.px(theme.GAP_WIDE))
-        frame.pack(fill="both", expand=True)
+        # The view is a frame in `parent` (packed; the player unpacks it until it's wanted). Pop-overs
+        # and prompts open over the window it's in.
+        self.top = parent.winfo_toplevel()
+        self.frame = ttk.Frame(parent)
+        self.frame.pack(fill="both", expand=True)
+        frame = self.frame
 
         top = ttk.Frame(frame)
         top.pack(fill="x")
-        # (0.22.0) The track list's search box (controls.SearchBox); Esc empties it, or closes the
-        # window when it's already empty.
+        # The views, in one drop-down at the left; then the search box (controls.SearchBox: Esc empties
+        # it — empty already, Esc goes on to the window, which puts the track list back); then the ⋯
+        # menu (Rescan, Open all albums in a tab, Add folder…).
+        self.view_button = controls.FlatButton(top, "", self._view_menu, fit="Recently played ● ▾",
+                                               label="Which view: albums, artists, genres, years, composers, recently "
+                                                     "added; most played, recently played, favourites, needs a look "
+                                                     "(Ctrl+Tab steps through them)")
+        self.view_button.pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM))
         self.search = controls.SearchBox(top, "Search albums, artists, years, genres", on_clear=self._clear_search)
         self.search_var = self.search.query
         self._search_trace = self.search_var.trace_add("write", lambda *_: self._search_changed())
-        controls.FlatButton(top, "Rescan", self.rescan, label="Look for added or changed music now").pack(
-            side="right", padx=theme.pad(theme.GAP, 0))
-        controls.FlatButton(top, "Add folder…", self._add_folder,
-                            label="Add another folder of music to the Library (Settings → Library lists them)").pack(
-            side="right", padx=theme.pad(theme.GAP_MEDIUM, 0))
+        self.more_button = controls.FlatButton(top, "⋯", self._more_menu,
+                                               label="Rescan · Open all albums in a tab · Add folder…")
+        self.more_button.pack(side="right", padx=theme.pad(theme.GAP, 0))
         self.search.pack(side="left", fill="x", expand=True)
         search = self.search.entry
         search.bind("<Down>", lambda e: self._focus_list())
         search.bind("<Return>", lambda e: self._choose_first())
-
-        # The browse views: a row of words, the one on show in green with a short green pill under it;
-        # the song views on a second row (the two rows share one choice).
         self.view_var = tk.StringVar(value=self.view)
-        self.views = controls.ChoiceRow(frame, [(key, VIEW_TITLES[key]) for key in browse.VIEWS],
-                                        self.view_var, command=lambda: self.set_view(self.view_var.get()))
-        self.views.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-        self.song_views = controls.ChoiceRow(frame, [(key, VIEW_TITLES[key]) for key in SONG_VIEWS],
-                                             self.view_var, command=lambda: self.set_view(self.view_var.get()))
-        self.song_views.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
-        self._view_labels: dict[str, tk.Label] = {**self.views.labels, **self.song_views.labels}
         self._paint_views()
+        frame.bind("<Configure>", self._resized)
 
         # Album, group and playing rows are semibold (a named font: the list measures its words with it).
         bold = tkfont.Font(root=frame._root(), font=theme.font(theme.SIZE_BODY, "semibold"))
@@ -547,7 +558,7 @@ class LibraryWindow:
         # search box.
         self.list = VirtualTree(frame, COLUMNS, show="headings", on_select=lambda index: self._paint_buttons(),
                                 on_activate=self._activated, on_toggle=self._toggle, fonts={"group": bold},
-                                margin=True)
+                                margin=True, scroll_parent=parent)
         self.list.frame.pack(fill="both", expand=True, pady=theme.pad(theme.GAP, 0))
         self.tree = self.list.tree
         self.scrollbar = self.list.scrollbar
@@ -582,15 +593,12 @@ class LibraryWindow:
         self.add_button = controls.FlatButton(selected, "Add to tab", self._add_selected, state="disabled")
         if on_add is not None:
             self.add_button.pack(side="left", padx=theme.pad(theme.GAP, 0))
-            self.win.bind("<FocusIn>", lambda e: self._paint_buttons(), add="+")  # tabs may have changed
 
         bottom = ttk.Frame(frame)
         bottom.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0), before=self.list.frame)
         selected.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0), before=self.list.frame)
         # (The buttons are packed first, so a long status line wraps beside them rather than pushing them
         # out of sight or running under them.)
-        self.load_all_button = controls.FlatButton(bottom, "Open all albums in a tab", self._load_all)
-        self.load_all_button.pack(side="right")
         # Needs a look's own: start the quality check (or resume it), and pause / stop it.
         self.check_button = controls.FlatButton(bottom, "Check the whole library…", self._ask_check, kind="primary",
                                                 label="Read every song once, in the background, for what needs a look")
@@ -599,10 +607,33 @@ class LibraryWindow:
         self.status.pack(side="left", fill="x", expand=True)
         self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(1, e.width)), add="+")
 
-        self.win.bind("<Destroy>", self._destroyed, add="+")
-        search.focus_set()
+        frame.bind("<Destroy>", self._destroyed, add="+")
         self._load()
-        self._tick_job = self.win.after(TICK_MS, self._tick)
+        self._tick_job = frame.after(TICK_MS, self._tick)
+
+    # -- on show, or not ------------------------------------------------------------------------------
+    def opened(self):
+        """The player put the view on show: the tick runs (it stopped while hidden), the buttons
+        follow the tabs as they are now."""
+        self.shown = True
+        if self._tick_job is None and self.frame.winfo_exists():
+            self._tick_job = self.frame.after(TICK_MS, self._tick)
+        self._paint_buttons()
+
+    def hidden(self):
+        """The player took the view off show: the tick stops at its next turn (what the library and
+        the query thread send waits in their queues until the view is next opened)."""
+        self.shown = False
+
+    def _resized(self, event):
+        """The frame's width decides the columns: fewer when narrower than NARROW."""
+        if event.widget is not self.frame or event.width <= 1:
+            return
+        narrow = event.width < theme.px(NARROW)
+        if narrow != self._narrow:
+            self._narrow = narrow
+            if not self._loading:
+                self._fill(keep=True)
 
     def _destroyed(self, event):
         """Closed (Esc, a choice, or the window's ×): let go of what would keep this window alive or
@@ -610,11 +641,11 @@ class LibraryWindow:
         trace, which Tk would hold for good; the window's own Tk variable and font are dropped
         here, not left to Python's cycle collector, which may run on any thread (a Tk object
         freed there fails)."""
-        if event.widget is not self.win:
+        if event.widget is not self.frame:
             return
         for job in (self._fill_job, self._tick_job, self._counts_job):
             if job is not None:
-                self.win.after_cancel(job)
+                self.frame.after_cancel(job)
         self._fill_job = self._tick_job = self._counts_job = None
         self._selection_then = None
         self.index.unlisten(self._events)
@@ -638,7 +669,6 @@ class LibraryWindow:
         The first time ever, every file is read once."""
         self.index = library_index.shared(self.roots)
         self._ask_albums()
-        self.win.title(f"Library — {self._place()}")
         self._fill()
         if not self.index.refreshed:  # not yet checked this session
             self._start_refresh()
@@ -666,7 +696,7 @@ class LibraryWindow:
         """Every TICK_MS: take in the album list, the song lists and what the indexer says. Tk is
         only touched when something came in."""
         self._tick_job = None
-        if not self.win.winfo_exists():
+        if not self.frame.winfo_exists():
             return
         news = False
         while True:
@@ -728,7 +758,7 @@ class LibraryWindow:
         news = self._follow_check() or news
         if news or job is not None:
             self._paint_status()
-        self._tick_job = self.win.after(TICK_MS, self._tick)
+        self._tick_job = self.frame.after(TICK_MS, self._tick) if self.shown else None
 
     def _start_refresh(self):
         if self._refresh is not None:
@@ -754,7 +784,7 @@ class LibraryWindow:
     def reload(self):
         """Show the library again (after a tag edit updated it), keeping the view, sort and
         search: the album list (and a song view's songs) is asked for afresh."""
-        if self.win.winfo_exists() and self._refresh is None:
+        if self.frame.winfo_exists() and self._refresh is None:
             self._want_albums()
             if self.view in SONG_VIEWS:
                 self._songs_have = None
@@ -763,13 +793,13 @@ class LibraryWindow:
     def refill(self):
         """List the albums again as they are (e.g. one is no longer new), without asking for them.
         The list stays where it was, its selection kept (adding a few albums in a row)."""
-        if self.win.winfo_exists():
+        if self.frame.winfo_exists():
             self._fill(keep=True)
 
     def favourites_changed(self):
         """A song's ♥ came or went (here, in a tab or in the search panel): Favourites lists them
         again; the other song views redraw their marks."""
-        if not self.win.winfo_exists() or self.view not in SONG_VIEWS:
+        if not self.frame.winfo_exists() or self.view not in SONG_VIEWS:
             return
         if self.view == "favourites":
             self._want_songs()
@@ -807,17 +837,33 @@ class LibraryWindow:
         self.tree.tag_configure("information", foreground=theme.MUTED)   # Needs a look: nothing wrong, just said
 
     def _palette_changed(self, _palette):
-        """Treeview row colours and the view words keep their colours: redo them."""
-        if self.win.winfo_exists():
+        """Treeview row colours keep their colours: redo them."""
+        if self.frame.winfo_exists():
             self._colour_tags()
-            self._paint_views()
 
     def _paint_views(self):
-        new = bool(self._new)   # a green dot by Recently added: there's something new to see there
-        self.views.marks = {"recent"} if new else set()
-        self.views.set_text("recent", browse.VIEW_TITLES["recent"] + (" ●" if new else ""))
-        self.views.paint()
-        self.song_views.paint()
+        """The drop-down's button: the view on show (Recently added carries a dot while there's new music)."""
+        new = bool(self._new)
+        text = VIEW_TITLES[self.view] + (" ●" if new and self.view == "recent" else "") + " ▾"
+        if text != self._view_text:
+            self._view_text = text
+            self.view_button.set_text(text)
+
+    def _view_menu(self):
+        """The drop-down: every view, the one on show ticked; "Songs" (the tab's own list) first when
+        the player gave one."""
+        x, y = self.view_button.winfo_rootx(), self.view_button.winfo_rooty() + self.view_button.winfo_height()
+        view_menu(self.top, self.view, self.set_view, self.on_songs, (x, y + theme.px(2)), new=bool(self._new))
+
+    def _more_menu(self):
+        """The ⋯ button: Rescan, Open all (or these) albums in a tab, Add folder…"""
+        menu = popups.PopupMenu(self.top)
+        menu.add("Rescan: look for added or changed music", self.rescan, keys.hint("library_rescan"))
+        menu.add(self._load_all_text, self._load_all, enabled=self._load_all_ok and self.view not in SONG_VIEWS)
+        menu.add_separator()
+        menu.add("Add folder…", self._add_folder)
+        x, y = self.more_button.winfo_rootx(), self.more_button.winfo_rooty() + self.more_button.winfo_height()
+        menu.popup(x, y + theme.px(2))
 
     # -- hover -------------------------------------------------------------------------------
     @property
@@ -830,8 +876,8 @@ class LibraryWindow:
 
     def _search_changed(self):
         if self._fill_job is not None:
-            self.win.after_cancel(self._fill_job)
-        self._fill_job = self.win.after(SEARCH_DELAY_MS, self._search_now)   # wait for a pause in typing
+            self.frame.after_cancel(self._fill_job)
+        self._fill_job = self.frame.after(SEARCH_DELAY_MS, self._search_now)   # wait for a pause in typing
 
     def _search_now(self):
         self._fill_job = None
@@ -891,24 +937,22 @@ class LibraryWindow:
         """List the view on show. `keep`: the same albums read again (or listed again as they are):
         the album list stays where it was and keeps its selection."""
         if self._fill_job is not None:   # (this shows the search as it stands: a pending one would only repeat it)
-            self.win.after_cancel(self._fill_job)
+            self.frame.after_cancel(self._fill_job)
             self._fill_job = None
         self._new = set(self.new_albums())
         self._paint_views()
         self._paint_headings()
         songs = self.view in SONG_VIEWS
         self.list.multiple = songs   # (several songs can be picked; albums one at a time)
-        self.tree.configure(displaycolumns=self._song_display() if songs else ALBUM_COLUMNS)
+        self.tree.configure(displaycolumns=self._song_display() if songs
+                            else NARROW_ALBUM_COLUMNS if self._narrow else ALBUM_COLUMNS)
         self.search.hint.configure(text="Search every song: title, artist, album, composer…" if songs
                                    else "Search albums, artists, years, genres")
         self._paint_check()
         if songs:
-            self.load_all_button.pack_forget()
             self.open_button.configure(text="Play")
             self._fill_songs()
             return
-        if not self.load_all_button.winfo_manager():
-            self.load_all_button.pack(side="right", before=self.status)
         self.open_button.configure(text="Open in new tab")
         self._fill_albums(keep=keep, now=now)
 
@@ -918,13 +962,14 @@ class LibraryWindow:
         staying until the new one is here — unless `now` (Enter or ↓ straight after typing, Show in
         Library: they act on the list at once)."""
         self._songs_listed = None   # (the list holds albums now)
-        words = [_fold(w) for w in self.search_var.get().split()]
+        words = [fold(w) for w in self.search_var.get().split()]
         column, reverse = self.sort
         grouped = self.view not in ("albums", "recent")
         self.tree.configure(show="tree headings" if grouped else "headings")
         self._fit()
         args = (self.albums, self._album_texts, self.view, words, column, reverse,
-                frozenset(self._closed.setdefault(self.view, set())), frozenset(self._new))
+                frozenset(self._closed.setdefault(self.view, set())), frozenset(self._new),
+                self._narrow and self.view in ("albums", "recent"))
         if len(self.albums) >= ALBUM_THREAD_AT and not now:
             self._album_rows_asked = self._queries.ask("album_rows", _album_rows, *args)
             self._album_rows_keep = keep if self._album_rows_keep is None else self._album_rows_keep and keep
@@ -942,9 +987,8 @@ class LibraryWindow:
         self.list.on_jump = self._jump
         self.list.set_source(ListSource(listed.rows), keep=keep, select=select)
         count = len(self._shown)
-        self.load_all_button.configure(
-            text=f"Open {'these' if listed.searched else 'all'} {count:,} album{'' if count == 1 else 's'} in a tab",
-            state="normal" if count else "disabled")
+        self._load_all_text = f"Open {'these' if listed.searched else 'all'} {count:,} album{'' if count == 1 else 's'} in a tab"
+        self._load_all_ok = bool(count)
         self._paint_status()
         self._paint_buttons()
 
@@ -1102,7 +1146,10 @@ class LibraryWindow:
         self.list.set_source(SongRows(pairs, self._song_row), keep=keep)
 
     def _song_display(self) -> tuple[str, ...]:
-        """The columns a song view shows: its own, and the optional ones ticked (before Time)."""
+        """The columns a song view shows: its own, and the optional ones ticked (before Time); narrow,
+        just the two that fit (NARROW_DISPLAYED)."""
+        if self._narrow:
+            return NARROW_DISPLAYED[self.view]
         base = DISPLAYED[self.view]
         if self.view == "needs_look":
             return base
@@ -1115,7 +1162,8 @@ class LibraryWindow:
 
     def _song_row(self, hit: SongHit, extra) -> tuple:
         favourites = self.actions.favourites
-        title, artist, album, year, quality, clock = song_values(hit, favourite=favourites is not None
+        title, artist, album, year, quality, clock = song_values(hit, inline_artist=self._narrow,
+                                                                 favourite=favourites is not None
                                                                  and hit.track in favourites)
         added = added_text(extra) if self.view == "recently_played" and extra else ""
         plays = extra if self.view == "most_played" and extra else ""
@@ -1143,7 +1191,7 @@ class LibraryWindow:
         if key not in self._counts_wanted:
             self._counts_wanted[key] = None
             if self._counts_job is None:
-                self._counts_job = self.win.after_idle(self._ask_counts)
+                self._counts_job = self.frame.after_idle(self._ask_counts)
         return None
 
     def _ask_counts(self):
@@ -1175,7 +1223,7 @@ class LibraryWindow:
         self._counts.clear()
         self._counts_wanted.clear()
         self._counts_asked = None   # (one on its way has the counts from before)
-        if self.win.winfo_exists() and self.view in SONG_VIEWS and self.song_columns:
+        if self.frame.winfo_exists() and self.view in SONG_VIEWS and self.song_columns:
             self.list.refresh()
 
     def set_song_columns(self, columns):
@@ -1189,7 +1237,7 @@ class LibraryWindow:
 
     def _heading_menu(self, event):
         """Right-click a song view's headings: its optional columns."""
-        menu = popups.PopupMenu(self.win)
+        menu = popups.PopupMenu(self.top)
         for column, label in SONG_EXTRAS:
             on = column in self.song_columns
             menu.add_check(label, on, lambda c=column, on=on: self.set_song_columns(
@@ -1358,10 +1406,10 @@ class LibraryWindow:
         if answer.error is not None:
             self._say(f"Couldn't read the library: {answer.error}")
             return
-        self.win.after_idle(self._confirm_check, answer.value)   # (asked outside the tick)
+        self.frame.after_idle(self._confirm_check, answer.value)   # (asked outside the tick)
 
     def _confirm_check(self, plan: library_check.Plan):
-        if not self.win.winfo_exists() or self.checker is None or self.checker.state != "off":
+        if not self.frame.winfo_exists() or self.checker is None or self.checker.state != "off":
             return
         count = plan.count
         if count:
@@ -1369,7 +1417,7 @@ class LibraryWindow:
                        if plan.done else "")
             seconds = library_check.estimate(plan.work, self.checker.workers)
             if not popups.confirm(
-                    self.win, "Check every song in the library?",
+                    self.top, "Check every song in the library?",
                     f"{count_text(count, 'song')} ({library_check.music_text(plan.music_s)} of music) "
                     f"{'is' if count == 1 else 'are'} read once each, to find damaged files, clues to a lossy or "
                     f"upsampled source or a padded bit depth, and clipping.{already}",
@@ -1429,7 +1477,7 @@ class LibraryWindow:
 
     # -- status ---------------------------------------------------------------------------------------
     def _paint_status(self):
-        if not self.win.winfo_exists():
+        if not self.frame.winfo_exists():
             return
         total = len(self.albums)
         job = self._refresh
@@ -1546,7 +1594,7 @@ class LibraryWindow:
         then, self._selection_then, self._selection_asked = self._selection_then, None, None
         if answer.error is not None:
             self._say(f"Couldn't read the songs: {answer.error}")
-        elif then is not None and self.win.winfo_exists():
+        elif then is not None and self.frame.winfo_exists():
             self._paint_status()
             then(answer.value)
 
@@ -1555,7 +1603,7 @@ class LibraryWindow:
         return self.view in SONG_VIEWS and self.list.select_all()
 
     def _paint_buttons(self):
-        if not self.win.winfo_exists():
+        if not self.frame.winfo_exists():
             return
         chosen = self._selected_song() if self.view in SONG_VIEWS else self._selected_album()
         state = "normal" if chosen is not None else "disabled"
@@ -1578,7 +1626,7 @@ class LibraryWindow:
             self.on_add(album.path, self._added)
 
     def _added(self, message: str):
-        if self.win.winfo_exists():
+        if self.frame.winfo_exists():
             self._say(message)
             self._paint_buttons()
 
@@ -1615,7 +1663,7 @@ class LibraryWindow:
         album = self._selected_album()
         if album is None:
             return
-        menu = popups.PopupMenu(self.win)   # (0.21.0) in the app's colours, arrow keys work
+        menu = popups.PopupMenu(self.top)   # (0.21.0) in the app's colours, arrow keys work
         menu.add("Open in new tab", lambda: self._choose(album), keys.hint("library_open"))
         target = self.add_target()
         if self.on_add is not None and target is not None:
@@ -1625,7 +1673,7 @@ class LibraryWindow:
             menu.add_separator()
             menu.add("Play next", lambda: self._queue(album, True), keys.hint("library_play_next"))
             menu.add("Add to Up next", lambda: self._queue(album, False), keys.hint("library_queue"))
-        if self.on_edit_tags is not None and self.can_edit_tags():
+        if self.on_edit_tags is not None:
             menu.add_separator()
             menu.add("Edit tags…", lambda: self.on_edit_tags(album.path))
         menu.add_separator()
@@ -1633,9 +1681,9 @@ class LibraryWindow:
         menu.popup(event.x_root, event.y_root)
 
     def _song_menu(self, hits: list[SongHit], x_root: int, y_root: int):
-        if not hits or not self.win.winfo_exists():
+        if not hits or not self.frame.winfo_exists():
             return
-        menu = popups.PopupMenu(self.win)
+        menu = popups.PopupMenu(self.top)
         add_song_items(menu, self.actions, hits, {"play": keys.hint("library_open"),
                                                   "next": keys.hint("library_play_next"),
                                                   "queue": keys.hint("library_queue")}, show_in_library=False)
@@ -1664,12 +1712,13 @@ class LibraryWindow:
 
     def _load_all(self):
         """Every album shown (all of them, or just the search results), in this order, in one tab.
-        A very big one asks first: it takes a few seconds, and the search (Ctrl+K) finds any song without it."""
+        A very big one asks first: it takes a few seconds, and the Library tab's search finds any song without it."""
         songs = sum(album.track_count for album in self._shown)
         if songs > LOAD_ALL_WARN and not popups.confirm(
-                self.win, f"Open {count_text(songs, 'song')} in one tab?",
+                self.top, f"Open {count_text(songs, 'song')} in one tab?",
                 "A tab that big can take a few seconds to open.",
-                detail="To find a song, the search (Ctrl+K) looks through the whole library without opening it.",
+                detail="To find a song, the Library tab's search box (Ctrl+K) looks through the whole library "
+                       "without opening it.",
                 ok="Open them all", tone="warn"):
             return
         self.on_load_all(self.root_folder, self.search_var.get().strip())
@@ -1749,15 +1798,11 @@ class LibraryWindow:
         return True
 
     def cycle_view(self, step: int):
-        """Ctrl+Tab / Ctrl+Shift+Tab: the next (or previous) view, round the ends."""
-        views = list(VIEWS)
-        self.set_view(views[(views.index(self.view) + step) % len(views)])
-
-    def lift(self):
-        """Ctrl+L with the Library already open: bring it to the front, search and all as they were."""
-        self.win.deiconify()
-        self.win.lift()
-        self.win.focus_force()
+        """Ctrl+Tab / Ctrl+Shift+Tab: the next (or previous) view, round the ends (the Songs view
+        skipped when the tab's own list stands for it)."""
+        views = [v for v in VIEWS if v != "songs" or self.on_songs is None]
+        at = views.index(self.view) if self.view in views else -1
+        self.set_view(views[(at + step) % len(views)])
 
     def show(self, album: Path | None = None, search: str | None = None):
         """Show an album (selected, scrolled to: "Show in Library") or search for something (an
@@ -1816,7 +1861,7 @@ class LibraryWindow:
         self.close()
 
     def _add_folder(self):
-        folder = filedialog.askdirectory(parent=self.win, title="Add a folder of music to the Library",
+        folder = filedialog.askdirectory(parent=self.top, title="Add a folder of music to the Library",
                                          initialdir=str(self.root_folder), mustexist=True)
         if not folder:
             return
@@ -1840,11 +1885,35 @@ class LibraryWindow:
         self._songs_have = None
         self._load()
 
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.on_moved(geometry)
-
     def close(self):
-        self.win.destroy()
+        """Back to the player (Esc, an album opened, a song played): the player puts its track list
+        back (`on_close`); on its own, the frame is destroyed."""
+        if self.on_close is not None:
+            self.on_close()
+        else:
+            self.destroy()
+
+    def destroy(self):
+        if self.frame.winfo_exists():
+            self.frame.destroy()
+
+
+def view_menu(top: tk.Misc, current: str | None, on_pick: Callable[[str], None], on_songs: Callable[[], None] | None,
+              at: tuple[int, int], new: bool = False):
+    """The views drop-down (the view's button, and the Library tab's "Songs ▾" over its own list):
+    "Songs" first when `on_songs` is given (the tab's list; `current` "songs" ticks it), then the album
+    views, then the song views; `on_pick(view)` for any other. `new`: a dot by Recently added."""
+    menu = popups.PopupMenu(top)
+    if on_songs is not None:
+        menu.add_check("Songs", current == "songs", on_songs)
+        menu.add_separator()
+    for key in browse.VIEWS:
+        label = VIEW_TITLES[key] + (" ●" if new and key == "recent" else "")
+        menu.add_check(label, current == key, lambda k=key: on_pick(k))
+    menu.add_separator()
+    for key in SONG_VIEWS:
+        if key == "songs" and on_songs is not None:
+            continue
+        menu.add_check(VIEW_TITLES[key], current == key, lambda k=key: on_pick(k))
+    menu.popup(*at)
+    return menu

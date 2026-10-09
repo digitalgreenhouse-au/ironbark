@@ -37,8 +37,8 @@ tracks only; leadout = end of the whole disc.
 **CUETools DB** (CUEToolsDB.cs, CDRepair.cs, AccurateRip.cs `CTDBCRC`):
 - Lookup: http://db.cuetools.net/lookup2.php?version=3&ctdb=1&fuzzy=1&metadata=none&toc=…, the
   TOC as the start sector of every track (data tracks prefixed "-") then the leadout, joined
-  with ":". (CUETools itself uses plain http for this address, so this one request is
-  unencrypted: anyone on the network path can see which disc is looked up. The window says so.
+  with ":". (0.38.0: Ironbark no longer asks the databases — it never uses the internet — but the
+  IDs are still shown, and the rip-log check below proves a disc against the checksums its log holds.)
   The certificate of the https address db.cuetools.net doesn't carry that name, so it can't
   simply be switched over.)
 - Answer: XML `<ctdb><entry id crc32 confidence toc trackcrcs …/></ctdb>`; total = the sum of
@@ -73,13 +73,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
-import ssl
 import threading
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,7 +81,10 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import APP_NAME, __version__, audiofile, cuesheet
+from .. import audiofile, cuesheet
+from ..library import is_music_name, read_in_play_order
+from ..tagio import TagError
+from ..tagio.flac import FLACFile
 
 SECTOR = 588                 # samples per CD sector (1/75 s at 44.1 kHz)
 AR_SKIP = 5 * SECTOR         # AccurateRip: 2940 samples skipped at the disc's two ends
@@ -95,31 +92,11 @@ CTDB_SKIP = 10 * SECTOR      # CUETools DB: 5880 (+ N mod 5880 at the end)
 DATA_GAP = 152 * 75          # 11 400 sectors between the audio and an enhanced CD's data track
 LEAD_IN = 150                # the 2 s every CD starts with; CDTOC tags and CDDB count from it
 
-AR_URL = ("https://www.accuraterip.com/accuraterip/{a:x}/{b:x}/{c:x}/"
-          "dBAR-{n:03d}-{id1:08x}-{id2:08x}-{cddb:08x}.bin")
-CTDB_URL = "http://db.cuetools.net/lookup2.php?version=3&ctdb=1&fuzzy=1&metadata=none&toc={toc}"
-TIMEOUT = 20                 # seconds the server may stay silent (connecting, or between data)
-DEADLINE = 30                # seconds for a whole answer, however slowly it trickles in
-MAX_BYTES = 4 << 20          # an answer bigger than this isn't what we asked for
-CHUNK = 64 << 10             # bytes read at a time, so a slow answer can be given up on
-MAX_CONFIDENCE = 1_000_000   # a CTDB confidence above this (or below 0) isn't a real count of rips
 BLOCK = 1 << 18              # samples read at a time
 CD_MAX_TRACKS = 99           # the most tracks a CD can hold (the Red Book CD standard)
 CD_MAX_SECTORS = 80 * 60 * 75   # 80 minutes: past the Red Book's longest disc (79:59.74)
 LOG_MAX = 4 << 20            # a .log bigger than this isn't a rip log (those are a few KB) …
 LOG_READ = 1 << 20           # … and only its first megabyte is read
-
-_urlopen = urllib.request.urlopen   # tests replace this; nothing else in the player goes online
-
-
-class NetworkOff(RuntimeError):
-    """Raised if anything tries to go online while Settings → Allow network access is off."""
-
-
-def network_allowed(prefs: dict | None) -> bool:
-    """The one switch: Settings → Network → Allow network access (off unless turned on)."""
-    return bool(prefs and prefs.get("allow_network"))
-
 
 # -- the disc's layout ---------------------------------------------------------------
 @dataclass
@@ -182,16 +159,8 @@ class Toc:
         id1, id2, cddb = self.accuraterip_ids()
         return f"{self.audio_count:03d}-{id1:08x}-{id2:08x}-{cddb:08x}"
 
-    def accuraterip_url(self) -> str:
-        id1, id2, cddb = self.accuraterip_ids()
-        return AR_URL.format(a=id1 & 0xF, b=id1 >> 4 & 0xF, c=id1 >> 8 & 0xF, n=self.audio_count,
-                             id1=id1, id2=id2, cddb=cddb)
-
     def ctdb_toc(self) -> str:
         return ":".join(("" if a else "-") + str(s) for s, a in zip(self.starts, self.audio)) + f":{self.leadout}"
-
-    def ctdb_url(self) -> str:
-        return CTDB_URL.format(toc=urllib.parse.quote(self.ctdb_toc(), safe=":-"))
 
     def ctdb_tocid(self) -> str:
         """CUETools' TOC ID (CDImage.cs `TOCID`), as EAC's CTDB plug-in logs it: SHA-1 of the
@@ -433,13 +402,12 @@ def _discs(tracks: list) -> list[list]:
 def _disc_and_others(track: Path) -> tuple[list[Path], list[Path]]:
     """(the audio files of the track's disc, the folder's other audio files), real files in
     play order (a CUE image once)."""
-    from .library import _in_play_order, is_music_name
     real_track = audiofile.real_path(track)
     folder = real_track.parent
     paths = [p for p in folder.iterdir() if is_music_name(p.name) and p.is_file()]
     ours: list[Path] = []
     others: list[Path] = []
-    for group in _discs(_in_play_order(folder, paths)):
+    for group in _discs(read_in_play_order(folder, paths)):
         files: list[Path] = []
         for t in group:   # a CUE image is listed as its tracks: check the file
             real = audiofile.real_path(t.path)
@@ -629,8 +597,6 @@ def _not_cd_audio(path: Path, info) -> str:
 def _cdtoc_tag(path: Path) -> str:
     if path.suffix.lower() != ".flac":
         return ""
-    from .tagio import TagError
-    from .tagio.flac import FLACFile
     try:
         tags = FLACFile(path).tags
     except (TagError, OSError):
@@ -752,343 +718,9 @@ def checksums(rip: Rip, cancel: threading.Event | None = None, progress=lambda p
     return sums
 
 
-# -- the databases -------------------------------------------------------------------
-class Cancelled(Exception):
-    """The check was cancelled (its window closed) while waiting for an answer."""
-
-
-def fetch(url: str, prefs: dict | None, cancel: threading.Event | None = None,
-          https_only: bool = False) -> bytes | None:
-    """GET one address. None = not found (404). Refuses unless network access is allowed —
-    checked here, at the one place this program goes online, not just in the window. Gives up
-    after DEADLINE seconds (TimeoutError) and stops when `cancel` is set (Cancelled), checked
-    between pieces of the answer. `https_only`: an answer that a redirect brought from a plain
-    http:// address is refused (URLError)."""
-    if not network_allowed(prefs):
-        raise NetworkOff("network access is off (Settings → Network)")
-    if cancel is not None and cancel.is_set():
-        raise Cancelled()
-    request = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME.replace(' ', '-')}/{__version__}"})
-    deadline = time.monotonic() + DEADLINE
-    try:
-        with _urlopen(request, timeout=TIMEOUT) as response:
-            answered_from = str(getattr(response, "url", None) or url)   # (where any redirects ended)
-            if https_only and not answered_from.lower().startswith("https://"):
-                raise urllib.error.URLError(f"the answer came from a plain http address: {answered_from}")
-            read = getattr(response, "read1", response.read)   # read1: whatever has arrived
-            data = bytearray()
-            while len(data) < MAX_BYTES:
-                if cancel is not None and cancel.is_set():
-                    raise Cancelled()
-                if time.monotonic() > deadline:
-                    raise TimeoutError(f"no complete answer in {DEADLINE} s")
-                piece = read(min(CHUNK, MAX_BYTES - len(data)))
-                if not piece:
-                    break
-                data += piece
-            return bytes(data)
-    except urllib.error.HTTPError as error:
-        error.close()   # its connection, now rather than whenever it's garbage-collected
-        if error.code == 404:
-            return None
-        raise
-
-
-@dataclass
-class ArPressing:
-    id1: int
-    id2: int
-    cddb: int
-    tracks: list[tuple[int, int, int]]   # per track: (confidence, CRC, frame-450 CRC)
-
-
-def parse_accuraterip(data: bytes) -> list[ArPressing]:
-    """The .bin file: one chunk per pressing (AccurateRip.cs `ContactAccurateRip`)."""
-    pressings, at = [], 0
-    while at + 13 <= len(data):
-        count = data[at]
-        id1, id2, cddb = (int.from_bytes(data[at + 1 + 4 * i:at + 5 + 4 * i], "little") for i in range(3))
-        at += 13
-        tracks = []
-        for _ in range(count):
-            if at + 9 > len(data):
-                raise ValueError("AccurateRip's answer was cut short")
-            tracks.append((data[at], int.from_bytes(data[at + 1:at + 5], "little"),
-                           int.from_bytes(data[at + 5:at + 9], "little")))
-            at += 9
-        pressings.append(ArPressing(id1, id2, cddb, tracks))
-    if at != len(data):
-        raise ValueError("AccurateRip's answer was cut short")
-    return pressings
-
-
-@dataclass
-class CtdbEntry:
-    id: str
-    crc32: int
-    confidence: int
-    toc: str
-    trackcrcs: list[int] | None
-
-
-def parse_ctdb(data: bytes) -> list[CtdbEntry]:
-    """lookup2.php's XML: `<ctdb><entry …/></ctdb>` (namespace ignored)."""
-    root = ET.fromstring(data)
-    entries = []
-    for element in root.iter():
-        if element.tag.rsplit("}", 1)[-1] != "entry" or not element.get("toc"):
-            continue
-        try:
-            crcs = element.get("trackcrcs")
-            confidence = int(element.get("confidence", "0"))
-            if not 0 <= confidence <= MAX_CONFIDENCE:   # not a count of rips: a broken or forged answer
-                continue
-            entries.append(CtdbEntry(
-                id=element.get("id", ""), crc32=int(element.get("crc32", "0"), 16),
-                confidence=confidence, toc=element.get("toc", ""),
-                trackcrcs=[int(c, 16) for c in crcs.split()] if crcs else None))
-        except ValueError:
-            continue
-    return entries
-
-
-@dataclass
-class TrackCheck:
-    number: int
-    ar_v1: int = 0              # submissions agreeing by the v1 checksum
-    ar_v2: int = 0              # … and by the v2 checksum
-    ar_total: int = 0           # every confidence on file for this track, all chunks
-    ctdb_confidence: int = 0
-
-    # AccurateRip keeps v1 and v2 results in separate chunks of its file, so the same rips can
-    # be counted under both (Brothers in Arms, 04/10/2026: one chunk of v2 checksums at 200, one
-    # of v1 at 200). Adding them would double-count; like EAC, show the larger.
-    @property
-    def ar_confidence(self) -> int:
-        return max(self.ar_v1, self.ar_v2)
-
-    @property
-    def ar_version(self) -> int:
-        return 2 if self.ar_v2 >= self.ar_v1 and self.ar_v2 else 1 if self.ar_v1 else 0
-
-
-@dataclass
-class Verification:
-    rip: Rip | None = None
-    sums: Checksums | None = None
-    problem: str = ""                       # set when the disc couldn't be checked at all
-    ar_status: str = "not asked"            # "found", "not found", "error", "not asked"
-    ar_error: str = ""
-    ar_pressings: int = 0
-    ctdb_status: str = "not asked"
-    ctdb_error: str = ""
-    ctdb_total: int = 0
-    ctdb_disc: int = 0                      # confidence of entries whose whole-disc CRC matches
-    tracks: list[TrackCheck] = field(default_factory=list)
-
-
-def compare_accuraterip(sums: Checksums, pressings: list[ArPressing], tracks: list[TrackCheck]) -> None:
-    for k, track in enumerate(tracks):
-        for pressing in pressings:
-            if k >= len(pressing.tracks):
-                continue
-            confidence, crc, _ = pressing.tracks[k]
-            track.ar_total += confidence
-            if crc and crc == sums.ar_v2[k]:
-                track.ar_v2 += confidence
-            elif crc and crc == sums.ar_v1[k]:
-                track.ar_v1 += confidence
-
-
-def compare_ctdb(sums: Checksums, entries: list[CtdbEntry], toc: Toc, tracks: list[TrackCheck]) -> tuple[int, int]:
-    """(total confidence, confidence of entries matching the whole disc). Fills per-track
-    confidence: an entry counts for a track if its whole-disc CRC matches, or its own CRC for
-    that track does."""
-    ours = toc.ctdb_toc()
-    total = sum(e.confidence for e in entries)
-    disc = 0
-    for entry in entries:
-        whole = entry.crc32 == sums.ctdb_disc and entry.toc == ours
-        if whole:
-            disc += entry.confidence
-        for k, track in enumerate(tracks):
-            if whole or (entry.trackcrcs and len(entry.trackcrcs) == len(tracks)
-                         and entry.trackcrcs[k] == sums.ctdb_tracks[k]):
-                track.ctdb_confidence += entry.confidence
-    return total, disc
-
-
-def _reason(error: Exception) -> str:
-    if isinstance(error, urllib.error.HTTPError):
-        return f"the server answered {error.code}"
-    if isinstance(error, ssl.SSLCertVerificationError) or isinstance(
-            getattr(error, "reason", None), ssl.SSLCertVerificationError):
-        return ("couldn't confirm the server is the real one: its certificate couldn't be checked on "
-                "this computer (Windows may be missing the root certificate it needs, or something on "
-                "the network is intercepting secure connections)")
-    if isinstance(error, urllib.error.URLError):
-        return f"couldn't connect ({error.reason})"
-    if isinstance(error, TimeoutError):
-        return "no answer in time"
-    if isinstance(error, (ValueError, ET.ParseError)):
-        return f"unexpected answer ({error})"
-    return str(error) or type(error).__name__
-
-
-def _pressings_for(toc: Toc, data: bytes) -> list[ArPressing]:
-    """The AccurateRip answer's chunks for this disc. Every chunk of a real answer repeats the
-    disc's IDs and track count; an answer with none of those (a proxy's or portal's page that
-    happened to parse) is refused rather than read as "no track matches"."""
-    wanted = toc.accuraterip_ids()
-    pressings = [p for p in parse_accuraterip(data)
-                 if (p.id1, p.id2, p.cddb) == wanted and len(p.tracks) == toc.audio_count]
-    if not pressings:
-        raise ValueError("the answer isn't about this disc")
-    return pressings
-
-
-def look_up(rip: Rip, sums: Checksums, prefs: dict | None,
-            cancel: threading.Event | None = None) -> Verification:
-    """Ask both databases (two requests: the AccurateRip .bin and one CTDB lookup) and compare.
-    Raises Cancelled if `cancel` is set on the way."""
-    result = Verification(rip=rip, sums=sums,
-                          tracks=[TrackCheck(number=k + 1) for k in range(rip.toc.audio_count)])
-    try:
-        data = fetch(rip.toc.accuraterip_url(), prefs, cancel)
-        if data is None:
-            result.ar_status = "not found"
-        else:
-            pressings = _pressings_for(rip.toc, data)
-            result.ar_status, result.ar_pressings = "found", len(pressings)
-            compare_accuraterip(sums, pressings, result.tracks)
-    except (NetworkOff, Cancelled):
-        raise
-    except Exception as error:  # noqa: BLE001 — any failure is reported, never a crash
-        result.ar_status, result.ar_error = "error", _reason(error)
-    try:
-        data = fetch(rip.toc.ctdb_url(), prefs, cancel)
-        entries = parse_ctdb(data) if data else []
-        if not entries:
-            result.ctdb_status = "not found"
-        else:
-            result.ctdb_status = "found"
-            result.ctdb_total, result.ctdb_disc = compare_ctdb(sums, entries, rip.toc, result.tracks)
-    except (NetworkOff, Cancelled):
-        raise
-    except Exception as error:  # noqa: BLE001
-        result.ctdb_status, result.ctdb_error = "error", _reason(error)
-    return result
-
-
-def verify(track: Path, prefs: dict | None, cancel: threading.Event | None = None,
-           progress=lambda p: None) -> Verification | None:
-    """The whole check for the disc `track` is on. None if cancelled. Never raises for a disc
-    that can't be checked: `problem` says why."""
-    if not network_allowed(prefs):
-        return Verification(problem="network access is off (Settings → Network → Allow network access)")
-    try:
-        rip = find_rip(track)
-        sums = checksums(rip, cancel, progress)
-    except NotARip as error:
-        return Verification(problem=str(error))
-    except (sf.LibsndfileError, OSError, RuntimeError) as error:
-        return Verification(problem=f"couldn't read the files ({error})")
-    if sums is None:
-        return None
-    try:
-        return look_up(rip, sums, prefs, cancel)
-    except Cancelled:
-        return None
-
-
 # -- wording ---------------------------------------------------------------------------
 def _list(numbers: list[int]) -> str:
     return ", ".join(str(n) for n in numbers)
-
-
-def describe(v: Verification) -> list[tuple[str, str, str]]:
-    """(label, text, tone) rows for the Check section; tone "good" / "warn" / "plain" / "muted"."""
-    if v.problem:
-        return [("Rip check", f"Can't check this disc: {v.problem}", "warn")]
-    rows: list[tuple[str, str, str]] = []
-    toc = v.rip.toc
-    layout = f"{toc.audio_count} tracks, " + (toc.source if not toc.certain else f"from {toc.source}")
-    if toc.has_data:
-        layout += " (an enhanced CD: music plus a data track)"
-    if not toc.certain:
-        rows.append(("Layout", f"{layout} — less certain: a hidden gap before track 1 or a data track "
-                     "would change the disc's ID, and then it may not be found", "warn"))
-    else:
-        rows.append(("Layout", layout, "plain"))
-    for note in v.rip.notes:
-        rows.append(("", f"Note: {note}", "plain"))
-    tracks = v.tracks
-    count = len(tracks)
-    # AccurateRip
-    if v.ar_status == "found":
-        matched = [t for t in tracks if t.ar_confidence]
-        missed = [t.number for t in tracks if not t.ar_confidence]
-        version = "v2" if any(t.ar_version == 2 for t in matched) else "v1"
-        if not missed:
-            low = min(t.ar_confidence for t in matched)
-            rows.append(("AccurateRip", f"✓ Accurately ripped: all {count} tracks match (confidence "
-                         f"{low}{'+' if any(t.ar_confidence > low for t in matched) else ''}, {version} checksum)",
-                         "good"))
-        elif matched:
-            rows.append(("AccurateRip", f"⚠ {len(matched)} of {count} tracks match; no match for track"
-                         f"{'s' if len(missed) > 1 else ''} {_list(missed)}", "warn"))
-        else:
-            rows.append(("AccurateRip", f"✗ No track matches the {v.ar_pressings} entr"
-                         f"{'ies' if v.ar_pressings != 1 else 'y'} on file: a different pressing, a drive "
-                         "offset that wasn't corrected, or a damaged rip", "warn"))
-    elif v.ar_status == "not found":
-        rows.append(("AccurateRip", "Not in the AccurateRip database (nothing to compare with)", "plain"))
-    elif v.ar_status == "error":
-        rows.append(("AccurateRip", f"Couldn't check: {v.ar_error}", "warn"))
-    # CUETools DB
-    if v.ctdb_status == "found":
-        missed = [t.number for t in tracks if not t.ctdb_confidence]
-        if v.ctdb_disc:
-            sure = v.ctdb_disc >= 2
-            rows.append(("CUETools DB", f"{'✓' if sure else '⚠'} Accurately ripped: the whole disc matches "
-                         f"(confidence {v.ctdb_disc} of {v.ctdb_total})"
-                         + ("" if sure else " — one other rip agrees; 2 or more is the database's "
-                            "\"probably undamaged\""), "good" if sure else "warn"))
-        elif not missed:
-            low = min(t.ctdb_confidence for t in tracks)
-            rows.append(("CUETools DB", f"✓ Every track matches (confidence {low}+ of {v.ctdb_total}), "
-                         "though not as one whole disc", "good"))
-        elif len(missed) < count:
-            rows.append(("CUETools DB", f"⚠ {count - len(missed)} of {count} tracks match "
-                         f"(of {v.ctdb_total}); no match for track{'s' if len(missed) > 1 else ''} "
-                         f"{_list(missed)}", "warn"))
-        else:
-            rows.append(("CUETools DB", f"✗ No match among {v.ctdb_total} rips on file: a different "
-                         "pressing, an uncorrected drive offset, or a damaged rip", "warn"))
-    elif v.ctdb_status == "not found":
-        rows.append(("CUETools DB", "Not in the CUETools database (nothing to compare with)", "plain"))
-    elif v.ctdb_status == "error":
-        rows.append(("CUETools DB", f"Couldn't check: {v.ctdb_error}", "warn"))
-    if not toc.certain and "not found" in (v.ar_status, v.ctdb_status):
-        rows.append(("", "Note: the layout was rebuilt from the files' lengths. If it isn't the disc's "
-                     "real one (a hidden gap before track 1, a data track, or files from more than one "
-                     "disc), the disc is looked up under the wrong ID and isn't found", "plain"))
-    # Per track, only when something didn't match everywhere it could
-    found_ar, found_ct = v.ar_status == "found", v.ctdb_status == "found"
-    if (found_ar and any(not t.ar_confidence for t in tracks)) or (found_ct and any(not t.ctdb_confidence for t in tracks)):
-        parts = []
-        for t in tracks:
-            bits = []
-            if found_ar:
-                bits.append(f"AR {t.ar_confidence}" if t.ar_confidence else "AR ✗")
-            if found_ct:
-                bits.append(f"CTDB {t.ctdb_confidence}" if t.ctdb_confidence else "CTDB ✗")
-            parts.append(f"{t.number}: {' '.join(bits)}")
-        rows.append(("Per track", " · ".join(parts), "plain"))
-    rows.append(("Disc ID", f"AccurateRip {toc.accuraterip_id()} · CTDB {toc.ctdb_tocid()}", "plain"))
-    rows.append(("", "Compared at this rip's own offset; only the disc's IDs and track layout were sent "
-                 "(to the CUETools DB unencrypted, as CUETools itself sends them)", "muted"))
-    return rows
 
 
 # -- the rip log's own checksums: an offline check --------------------------------------

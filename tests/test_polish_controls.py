@@ -207,22 +207,31 @@ def test_settings_takes_the_keyboard_tabs_round_it_and_gives_it_back(make_window
     _pump(root, 0.1)
     window._open_settings()
     _pump(root, 0.3)
-    pop = window.settings_pop
-    assert root.focus_lastfor() is pop                                    # the panel has the keyboard
+    pop = window.settings.frame                                           # (0.39.0: a view, not a pop-over)
+    assert root.focus_lastfor() is pop                                    # the view has the keyboard
     widgets = keyfocus.focusable_in(pop)
     assert widgets[0] is window.mini_button                               # top to bottom
-    tops = [w.winfo_rooty() for w in widgets]
+    tops = [(w.winfo_rooty(), w.winfo_rootx()) for w in widgets]
     assert tops == sorted(tops)
-    assert window.preamp_box not in widgets                               # greyed out: passed by
+    assert window.preamp_box not in widgets                               # the Advanced page: not on show
     assert {window.output_box, window.theme_box, window.volume_slider} <= set(widgets)
     keyfocus._step(SimpleNamespace(widget=pop), 1)                        # Tab
     assert root.focus_lastfor() is widgets[0]
+    _pump(root, 0.2)
+    widgets = keyfocus.focusable_in(pop)                                  # (the Done bar laid out by now)
     keyfocus._step(SimpleNamespace(widget=widgets[0]), -1)                # Shift+Tab: round to the last
     assert root.focus_lastfor() is widgets[-1]
     _pump(root, 0.2)
     assert window.settings_area.visible(widgets[-1])                      # scrolled into view
-    keyfocus._step(SimpleNamespace(widget=widgets[-1]), 1)                # Tab: round to the first
-    assert root.focus_lastfor() is widgets[0]
+    # The order follows the controls' places on screen, so it changes as the page scrolls: from here
+    # Tab goes to whatever is next now, and Tab from the last of all rounds to the first.
+    last = widgets[-1]
+    order = keyfocus.focusable_in(pop)
+    keyfocus._step(SimpleNamespace(widget=last), 1)
+    assert root.focus_lastfor() is order[(order.index(last) + 1) % len(order)]
+    order = keyfocus.focusable_in(pop)
+    keyfocus._step(SimpleNamespace(widget=order[-1]), 1)                   # Tab from the last: the first
+    assert root.focus_lastfor() is order[0]
     root.event_generate("<Escape>")                                       # Esc closes it…
     _pump(root, 0.1)
     from ironbark.tabbar import Popover
@@ -249,10 +258,10 @@ def test_a_click_that_closes_a_panel_keeps_the_keyboard_where_it_clicked(make_wi
     entry.focus_set()
     window._open_settings()
     _pump(root, 0.2)
-    assert root.focus_lastfor() is window.settings_pop
-    _click(tree, 40, 40)
+    assert root.focus_lastfor() is window.settings.frame
+    window.select_tab(0)                                                  # a tab clicked: back to the player
     _pump(root, 0.2)
-    assert not window.settings_pop.is_open and root.focus_lastfor() is tree
+    assert not window.settings.is_open and root.focus_lastfor() is entry
     window._track_menu([0], SimpleNamespace(x_root=tree.winfo_rootx() + 40, y_root=tree.winfo_rooty() + 40))
     _pump(root, 0.2)
     assert Popover.open_one is not None and root.focus_lastfor() is Popover.open_one
@@ -267,19 +276,26 @@ def test_a_click_that_closes_a_panel_keeps_the_keyboard_where_it_clicked(make_wi
     assert errors == []
 
 
-def test_settings_sits_below_the_strip_at_the_windows_edge(make_window):
+def test_settings_fills_the_window_under_the_strip_with_two_pages(make_window):
     window, root, _player, errors = make_window()
     _pump(root, 0.3)
     window._open_settings()
     _pump(root, 0.3)
-    pop = window.settings_pop
-    assert pop.winfo_y() == window.bar.height + theme.px(4)
-    right = root.winfo_width() - (pop.winfo_x() + pop.winfo_width())
-    assert right == theme.px(pop.MARGIN)
-    assert pop.cget("highlightbackground") == theme.EDGE
+    view = window.settings
+    assert view.is_open and view.page == "simple"
+    assert view.frame.winfo_ismapped() and not window.playlist.frame.winfo_ismapped()
+    assert view.frame.winfo_width() == window.body.winfo_width() - 2 * theme.px(theme.GAP_WIDE)   # the column's width
+    assert view.frame.winfo_y() >= window.bar.height
+    assert view.page_button.text_value == "Advanced settings…" and view.done_button.text_value == "Done"
+    view.toggle_page()
+    _pump(root, 0.2)
+    assert view.page == "advanced" and view.page_button.text_value == "Back"
     # The drop-downs beside their names share one width, so their left edges line up.
-    lefts = {box.winfo_rootx() for box in (window.headroom_box, window.levelling_box, window.theme_box)}
+    lefts = {box.winfo_rootx() for box in (window.headroom_box, window.levelling_box, window.preamp_box)}
     assert len(lefts) == 1
+    view.done_button.command()
+    _pump(root, 0.2)
+    assert not view.is_open and window.playlist.frame.winfo_ismapped()
     assert window.mini_button.winfo_reqheight() == theme.px(theme.CONTROL_H_SMALL)
     assert errors == []
 
@@ -352,7 +368,7 @@ def test_the_track_list_scrollbar_sits_in_the_margin(make_window):
     tree, bar = window.playlist.tree, window.playlist.scrollbar
     assert bar.needed and bar.winfo_manager() == "place"
     assert bar.winfo_rootx() >= tree.winfo_rootx() + tree.winfo_width()  # outside the list: in the margin
-    search = window.playlist.search.entry
+    search = window.playlist.search_row   # the box and the Whole library switch share the row
     assert tree.winfo_rootx() + tree.winfo_width() == search.winfo_rootx() + search.winfo_width()
     assert errors == []
 

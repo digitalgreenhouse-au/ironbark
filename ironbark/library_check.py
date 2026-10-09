@@ -15,7 +15,8 @@ Playing's); clipping at mastering; a file named as another format. And, for info
 HDCD, MQA and pre-emphasis. `needs_look` lists them for the Library's view.
 
 **The work** is opt-in (the Library's "Check the whole library…") and kept in the settings as the
-checker's `state`: "off", "on" (new and changed music is checked as it arrives) or "paused". One
+checker's `state`: "off", "on" (running, while you leave it on) or "paused" (0.38.0: the player reads a
+saved "on" as "paused" at start — nothing runs until you press Resume). One
 "library-check" thread hands songs to WORKERS worker processes at below-normal priority — numpy
 keeps the GIL, so threads wouldn't run side by side, and processes never take the processor from
 the player — one song each at a time, and stores each result as it comes. A pause, a `hold` (a

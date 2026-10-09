@@ -5,7 +5,7 @@ import numpy as np
 import soundfile as sf
 
 from ironbark.analysis import true_peak
-from ironbark.details import output_line
+from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo, Player
 from ironbark.library import Track
 

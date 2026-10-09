@@ -18,7 +18,8 @@ from types import SimpleNamespace
 import pytest
 
 from ironbark import audiofile, experiments, netcache, settings
-from ironbark.details import (COPY_FAILED, describe_proof, network_hover, network_line, source_rows)
+from ironbark.tools.details import describe_proof, source_rows
+from ironbark.statustext import COPY_FAILED, network_hover, network_line
 from ironbark.engine import NetworkView, State, Status
 from ironbark.library import Track
 from ironbark.proof import Proof
@@ -137,17 +138,17 @@ class StubCache:
         return done
 
 
-def test_the_settings_section_comes_with_its_switch_and_saves_its_choices(make_window, monkeypatch):
+def test_the_settings_section_comes_with_local_network_access_and_saves_its_choices(make_window, monkeypatch):
     stub = StubCache()
     installed = []
     monkeypatch.setattr(netcache, "install", lambda prefs, player: installed.append(prefs) or stub)
     window, root, player, errors = make_window()
-    assert window._netcache is None and not installed           # off: nothing starts
+    assert window._netcache is None and not installed           # Local network access off: nothing starts
     assert window.netplay_box.winfo_manager() == ""
-    window.experiment_vars["network_cache"].set(True)
-    window._toggle_experiment("network_cache")
+    window.local_network.set(True)
+    window._local_network_changed()
     assert window.netplay_box.winfo_manager() == "pack"
-    assert experiments.enabled(window.prefs, "network_cache") and "next starts" in window._notice
+    assert window.prefs["local_network"] and "next starts" in window._notice
     assert window.cache_text.cget("text") == "Cache: starts when Ironbark next starts"
     window.net_mode_box.current(1)
     window.net_mode_box.event_generate("<<ComboboxSelected>>")
@@ -179,8 +180,8 @@ def test_the_settings_section_comes_with_its_switch_and_saves_its_choices(make_w
     monkeypatch.setattr("ironbark.popups.confirm", lambda *a, **k: True)
     window._empty_cache()
     assert stub.emptied == 1
-    window.experiment_vars["network_cache"].set(False)
-    window._toggle_experiment("network_cache")
+    window.local_network.set(False)
+    window._local_network_changed()
     assert window.netplay_box.winfo_manager() == ""
     assert errors == []
 
@@ -189,7 +190,7 @@ def test_copies_left_on_this_computer_while_the_cache_isnt_running_are_shown_and
         make_window, monkeypatch):
     from ironbark.netcache.store import OwnerLock
     monkeypatch.setattr(netcache, "install", lambda prefs, player: None)   # (it didn't start this time)
-    window, root, player, errors = make_window(experiments={"network_cache": True})
+    window, root, player, errors = make_window(local_network=True)
     _pump(root, 0.2)
     folder = netcache.folder()
     (folder / "Tracks").mkdir(parents=True)
@@ -231,7 +232,7 @@ def test_switched_on_the_cache_starts_once_the_window_is_up_and_stops_with_it(ma
     monkeypatch.setattr(netcache, "install", lambda prefs, player: real_install(
         prefs, player, where=tmp_path / "NetCache", classifier=FakeClassifier(), fetcher=share.fetcher,
         probe_host=lambda name: True))
-    window, root, player, errors = make_window(experiments={"network_cache": True})
+    window, root, player, errors = make_window(local_network=True)
     assert wait_until(lambda: (root.update(), window._netcache is not None)[1], 5)
     assert netcache.manager() is window._netcache and player._preparer is window._netcache
     assert audiofile._resolver is not None
@@ -331,31 +332,31 @@ def test_a_network_album_is_never_measured_from_part_of_it(monkeypatch, tmp_path
 # proof open the LocalTrack the cache pinned; the cache's own probe and check open its copies; frame
 # indexes are built from audiofile.local_copy. A new call shows up here, to be reviewed the same way.
 REVIEWED = {
-    ("ironbark.abx", "prepare", "audiofile.open"): 2,
+    ("ironbark.tools.abx", "prepare", "audiofile.open"): 2,
     ("ironbark.analysis", "album_measure", "audiofile.open"): 1,
     ("ironbark.analysis", "analyse", "audiofile.open"): 1,
     ("ironbark.analysis", "true_peak", "audiofile.open"): 1,
     ("ironbark.audiofile", "mp3_shortfall", "mp3frames.build_index"): 1,
-    ("ironbark.clipping", "listening_versions", "audiofile.open"): 1,
-    ("ironbark.clipping", "scan", "audiofile.open"): 1,
-    ("ironbark.compare", "compare_files", "audiofile.open"): 2,
-    ("ironbark.compare", "info", "audiofile.open"): 1,
-    ("ironbark.details", "NowPlayingWindow._on_track_change", "flacframes.build_index"): 1,
-    ("ironbark.details", "NowPlayingWindow._on_track_change", "mp3frames.build_index"): 1,
+    ("ironbark.tools.clipping", "listening_versions", "audiofile.open"): 1,
+    ("ironbark.tools.clipping", "scan", "audiofile.open"): 1,
+    ("ironbark.tools.compare", "compare_files", "audiofile.open"): 2,
+    ("ironbark.tools.compare", "info", "audiofile.open"): 1,
+    ("ironbark.tools.details", "NowPlayingWindow._on_track_change", "flacframes.build_index"): 1,
+    ("ironbark.tools.details", "NowPlayingWindow._on_track_change", "mp3frames.build_index"): 1,
     ("ironbark.engine", "_Session._reopen", "audiofile.open"): 1,
     ("ironbark.engine", "_Source.__init__", "audiofile.open"): 1,
     ("ironbark.formats", "scan", "audiofile.open"): 1,
     ("ironbark.levelling", "measure", "audiofile.open"): 1,
     ("ironbark.library", "find_albums", "audiofile.info"): 1,
     ("ironbark.loudness", "file_powers", "audiofile.open"): 1,
-    ("ironbark.meters", "album_alignment_loudness", "audiofile.info"): 1,
-    ("ironbark.meters", "vu_levels", "audiofile.open"): 1,
+    ("ironbark.tools.meters", "album_alignment_loudness", "audiofile.info"): 1,
+    ("ironbark.tools.meters", "vu_levels", "audiofile.open"): 1,
     ("ironbark.netcache.manager", "Manager._probe", "audiofile.open"): 1,
     ("ironbark.netcache.verify", "check", "audiofile.open"): 1,
     ("ironbark.proof", "SentRecord._check_loop", "audiofile.open"): 1,
-    ("ironbark.ripcheck", "_read_info", "audiofile.info"): 1,
-    ("ironbark.ripcheck", "checksums", "audiofile.open"): 1,
-    ("ironbark.spectrum", "track_picture", "audiofile.open"): 1,
+    ("ironbark.tools.ripcheck", "_read_info", "audiofile.info"): 1,
+    ("ironbark.tools.ripcheck", "checksums", "audiofile.open"): 1,
+    ("ironbark.tools.spectrum", "track_picture", "audiofile.open"): 1,
     ("ironbark.tag_editor", "same_audio", "audiofile.open"): 2,
 }
 WATCHED = {("audiofile", "open"), ("audiofile", "info"), ("flacframes", "build_index"), ("mp3frames", "build_index")}
@@ -410,7 +411,7 @@ def test_every_decode_and_index_call_is_in_the_reviewed_register():
 
 # -- what's downloaded, the network's quality, Up next's marks (v2a) ---------------------------------------
 def test_the_network_now_line_up_next_marks_and_the_quality_row():
-    from ironbark.details import cache_mark, network_now_line
+    from ironbark.statustext import cache_mark, network_now_line
     from ironbark.netcache import NetworkNow, Progress
     assert network_now_line(None) == "Network now: nothing fetched yet"
     assert network_now_line(NetworkNow("192.168.80.173", "up", "good", 12.8e6, 0.4e6)) == (
@@ -458,7 +459,7 @@ class NetStub(StubCache):
 def test_settings_offers_every_pre_download_keep_and_size_choice(make_window, monkeypatch):
     stub = NetStub({})
     monkeypatch.setattr(netcache, "install", lambda prefs, player: stub)
-    window, root, player, errors = make_window(experiments={"network_cache": True})
+    window, root, player, errors = make_window(local_network=True)
     window._start_cache()
     assert [*window.net_predownload_box.cget("values")] == ["Off", "Next track", "Next 2 tracks", "Up to 200 songs ahead"]
     assert [*window.net_keep_box.cget("values")] == ["Don't keep", "Until playback finishes", "For 1 day",

@@ -11,7 +11,7 @@ action if the window (or the widget with the keyboard) is in its scope:
 
 - "app": every Ironbark window (play / pause, next, the measuring windows, …);
 - "main": the player window and its mini strip (tabs, playlists, undo);
-- "list": the main window's track list; "library": the Library window; "tags": Edit tags.
+- "list": the main window's track list; "library": the Library's views (in the Library tab); "tags": Edit tags.
 
 While a text box has the keyboard (a search box, a tag field), single keys, Enter, Delete and
 the arrows are the box's: only Ctrl / Alt shortcuts and the function keys act — and not the
@@ -97,7 +97,7 @@ ACTIONS: tuple[Action, ...] = (
            arg=True, shown="Ctrl+1 – Ctrl+8"),
     Action("last_tab", _keys("Ctrl+9",), "main", "Go to the last tab", "Tabs & lists"),
     Action("open_folder", _keys("Ctrl+O",), "main", "Open a folder", "Tabs & lists"),
-    Action("open_playlist", _keys("Ctrl+Shift+O",), "main", "Open a playlist file", "Tabs & lists"),
+    Action("open_playlist", _keys("Ctrl+Alt+O",), "main", "Open a playlist file", "Tabs & lists"),
     Action("new_playlist", _keys("Ctrl+N",), "main", "New playlist", "Tabs & lists"),
     # (shift: '/' is Shift+7 on German, Nordic and Spanish keyboards; on a US one Shift+/ is "?")
     Action("search_tab", _keys("Ctrl+F", "/"), "main", "Search this tab", "Tabs & lists", shift=True),
@@ -126,26 +126,34 @@ ACTIONS: tuple[Action, ...] = (
     Action("help", _keys("F1", "?"), "app", "Keyboard shortcuts (this list)", "Windows & tools", shift=True),
     Action("quit", _keys("Ctrl+Q",), "app", "Quit Ironbark", "Windows & tools"),
     # -- Library & search -------------------------------------------------------------------------
-    Action("library", _keys("Ctrl+L",), "app", "Library (brings it to the front when it's open)",
+    Action("library", _keys("Ctrl+L",), "app", "The Library's views (Albums, Artists, …) in the Library tab; again: back",
            "Library & search"),
-    Action("find", _keys("Ctrl+K", "Ctrl+Shift+F"), "app", "Search the library", "Library & search"),
-    Action("library_search", _keys("Ctrl+F", "/"), "library", "Library: search box", "Library & search",
+    Action("find", _keys("Ctrl+K", "Ctrl+Shift+F"), "app", "Search the whole library (the Library tab's search box)",
+           "Library & search"),
+    Action("library_search", _keys("Ctrl+F", "/"), "library", "Library views: search box", "Library & search",
            shift=True),
-    Action("library_select_all", _keys("Ctrl+A",), "library", "Library: select every song (the song views)",
+    Action("library_select_all", _keys("Ctrl+A",), "library", "Library views: select every song (the song views)",
            "Library & search"),
-    Action("library_open", _keys("Enter",), "library", "Library: open the album in a new tab", "Library & search"),
-    Action("library_queue", _keys("Ctrl+Enter",), "library", "Library: add the album to Up next", "Library & search"),
-    Action("library_play_next", _keys("Ctrl+Shift+Enter",), "library", "Library: play the album next",
+    Action("library_open", _keys("Enter",), "library", "Library views: open the album in a new tab (a song: play it)",
+           "Library & search"),
+    Action("library_queue", _keys("Ctrl+Enter",), "library", "Library views: add the album to Up next",
+           "Library & search"),
+    Action("library_play_next", _keys("Ctrl+Shift+Enter",), "library", "Library views: play the album next",
            "Library & search"),
     Action("library_view", _keys("Ctrl+Tab", "Ctrl+Shift+Tab"), "library",
-           "Library: next / previous view (Albums, Artists, …)", "Library & search", arg=True),
-    Action("library_rescan", _keys("F5",), "library", "Library: look for added or changed music", "Library & search"),
+           "Library views: next / previous view (Albums, Artists, …)", "Library & search", arg=True),
+    Action("library_rescan", _keys("F5",), "library", "Library views: look for added or changed music",
+           "Library & search"),
     # -- Editing --------------------------------------------------------------------------------
     Action("remove", _keys("Delete",), "list", "Remove the song from the playlist", "Editing"),
     Action("move_song", _keys("Alt+Up", "Alt+Down"), "list", "Move the song up / down the playlist", "Editing",
            arg=True),
     Action("undo", _keys("Ctrl+Z",), "main", "Undo: songs removed or moved, or taken out of Up next", "Editing"),
-    Action("rename", _keys("F2",), "main", "Rename the playlist", "Editing"),
+    Action("rename", _keys("F2",), "main", "Rename the tab (a playlist: its file)", "Editing"),
+    Action("open_album_tab", _keys("Ctrl+Shift+O",), "list", "Track list: open the song's album in a new tab",
+           "Tabs & lists"),
+    Action("add_to_this_playlist", _keys("Ctrl+Shift+A",), "list",
+           "Track list: add the library song found to this playlist", "Tabs & lists"),
     Action("edit_tags", _keys("E",), "main", "Edit tags of the selected song (Experimental)", "Editing", shift=True),
     Action("save_tags", _keys("Ctrl+S",), "tags", "Edit tags: save", "Editing"),
 )
@@ -373,6 +381,12 @@ class Keys:
         self._tag(str(widget), top)
         if isinstance(widget, ttk.Treeview):
             self._claim_list_keys(widget)
+
+    def add_handlers(self, window: tk.Misc, handlers: dict[str, Callable]):
+        """More handlers for an attached window (the Library's views live inside the main window:
+        their keys answer there, on the widgets `mark`ed "library")."""
+        scopes, local = self._windows[str(window)]
+        local.update(handlers)
 
     def attached(self, window: tk.Misc) -> bool:
         return str(window) in self._windows

@@ -341,7 +341,7 @@ def test_header_seek_bar_and_transport_line_up(make_window):
     _pump(root, 0.3)
     seek = window.seek
     inset = round(seek.track_inset())
-    search = window.playlist.search.entry
+    search = window.playlist.search_row   # (0.40.0: the box and the Whole library switch share the row)
     left = seek.winfo_rootx() + inset
     right = seek.winfo_rootx() + seek.winfo_width() - inset
     assert abs(left - search.winfo_rootx()) <= 1

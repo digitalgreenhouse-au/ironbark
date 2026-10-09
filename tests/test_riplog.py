@@ -12,8 +12,9 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import ripcheck, theme
-from ironbark.ripcheck import SECTOR, check_log, checksums, describe_log, find_rip, parse_log
+from ironbark import theme
+from ironbark.tools import ripcheck
+from ironbark.tools.ripcheck import SECTOR, check_log, checksums, describe_log, find_rip, parse_log
 
 RNG = np.random.default_rng(41)
 SECTORS = (20, 23, 21)
@@ -23,7 +24,6 @@ SECTORS = (20, 23, 21)
 def no_internet(monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("a test tried to go online")
-    monkeypatch.setattr(ripcheck, "_urlopen", refuse)
     monkeypatch.setattr(socket.socket, "connect", refuse)
 
 
@@ -290,15 +290,13 @@ class FakePlayer:
 
 
 def test_now_playing_checks_against_the_log_with_the_network_off(root, disc, tmp_path):
-    from ironbark.details import NowPlayingWindow
+    from ironbark.tools.details import NowPlayingWindow
     from ironbark.library import read_track
     tracks, files, sums = disc
     write_log(tmp_path, eac_log(tracks, sums))
-    prefs = {"allow_network": False}
-    win = NowPlayingWindow(root, FakePlayer(read_track(files[0])), prefs=prefs)
+    win = NowPlayingWindow(root, FakePlayer(read_track(files[0])), prefs={})
     win.win.update()
     assert str(win.log_button.cget("state")) == "normal"          # no network needed
-    assert str(win.rip_button.cget("state")) == "disabled"        # (the online check still is)
     win.log_button.invoke()
     deadline = time.time() + 20
     while files[0] not in NowPlayingWindow._log_cache and time.time() < deadline:

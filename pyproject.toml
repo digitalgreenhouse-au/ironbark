@@ -36,3 +36,13 @@ path = "ironbark/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ironbark"]
+
+[tool.pytest.ini_options]
+# Two tiers. The quick tier is every test that makes no window: `uv run pytest -q -m "not ui"`
+# (a few minutes). The whole suite, windows and all, is `uv run pytest -q` (see tests/conftest.py,
+# which marks the window tests `ui` itself). Benchmarks (`perf`) run only with --perf.
+addopts = "-p no:cacheprovider"
+markers = [
+    "ui: makes a window (tkinter): the slow tier; `-m \"not ui\"` is the quick one",
+    "perf: a performance benchmark (slow); runs only with --perf",
+]

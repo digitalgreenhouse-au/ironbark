@@ -27,8 +27,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import audiofile
-from .proof import QUIET, PathCheck, compare_paths
+from .. import audiofile
+from ..proof import QUIET, PathCheck, compare_paths
 
 BITS = {"PCM_S8": 8, "PCM_U8": 8, "PCM_16": 16, "PCM_24": 24, "PCM_32": 32}
 BLOCK = 1 << 16          # frames read at a time

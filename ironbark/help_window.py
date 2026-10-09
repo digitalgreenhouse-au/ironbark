@@ -24,7 +24,8 @@ from tkinter import ttk
 from typing import Callable
 
 from . import APP_NAME, __version__, controls, experiments, keys, placement, theme
-from .playlist_view import _fold, fit_columns
+from .playlist_view import fit_columns
+from .searchfold import fold
 from .virtual_list import CELL_ROOM, ELLIPSIS
 
 WEBSITE = "https://www.digitalgreenhouse.com.au"
@@ -58,24 +59,14 @@ SOFTWARE.
 """
 
 # The README's Privacy section, word for word (a test keeps the two the same).
-PRIVACY = ("Ironbark doesn't collect anything about you or your music. Nothing uses the internet until you "
-           "switch on Settings → Network → Allow network access. Then only two features can:\n"
+PRIVACY = ("Ironbark doesn't collect anything about you or your music, and it never uses the internet: no "
+           "update check, no look-ups, no usage tracking. Lyrics, the rip-log check and the library's song search "
+           "all work from files on your computer.\n"
            "\n"
-           "• Rip verification: when you press Verify rip online, it sends only the disc's IDs and track "
-           "layout to AccurateRip and CUETools DB. As with any request, those websites see your computer's "
-           "internet address and the Ironbark version. The CUETools DB look-up isn't encrypted, so others on "
-           "your network can see which disc is looked up.\n"
-           "• Check for updates (Settings → Help, its own switch, also off by default): once a day it asks "
-           "digitalgreenhouse.com.au for one small file saying what the latest version is. The request names "
-           "the Ironbark version, and the website sees your computer's internet address, as any website you "
-           "visit does; nothing else goes with it. Nothing is downloaded or installed: a newer version is only "
-           "mentioned in the status line.\n"
-           "\n"
-           "Lyrics, the rip-log check and the library's song search all work offline, from files on your "
-           "computer. Music on network drives (\\\\server\\share, or a mapped drive like Z:) and OneDrive plays "
-           "without network access: Windows fetches those files, as it does for any program. The network "
-           "playback cache (Experimental) only talks to the network drives your music is already on; it never "
-           "uses the internet.\n"
+           "Music on your home network (a NAS, a shared folder, a mapped drive like Z:) and OneDrive plays as "
+           "any program reads a file. With Settings → Library → Local network access on, the network playback "
+           "cache keeps copies of those songs on this computer; it only ever talks to the drives your music is "
+           "already on.\n"
            "\n"
            "Settings, playlists and the logs are kept on your computer (on Windows, in %APPDATA%\\Ironbark); "
            "the library database (with your play counts and favourites) and the network playback cache's "
@@ -275,12 +266,12 @@ class HelpWindow:
     def fill(self):
         """List the rows the filter finds (every word typed, in the key, the words or the group),
         each under its group's heading."""
-        words = [_fold(w) for w in (self.query.get() if self.query is not None else "").split()]
+        words = [fold(w) for w in (self.query.get() if self.query is not None else "").split()]
         self.tree.delete(*self.tree.get_children())
         self.rows.clear()
         shown_group = None
         for n, (group, keys_text, what) in enumerate(keys.sheet_rows()):
-            haystack = _fold(f"{keys_text} {what} {group}")
+            haystack = fold(f"{keys_text} {what} {group}")
             if words and not all(w in haystack for w in words):
                 continue
             if group != shown_group:

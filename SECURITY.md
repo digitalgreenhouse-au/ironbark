@@ -15,12 +15,11 @@ like.
 
 - Ironbark reads music files, cue sheets, playlists and images from your computer — a file crafted
   to crash or misuse those readers is in scope.
-- Nothing uses the internet unless you allow network access. Then rip verification talks to
-  AccurateRip and CUETools DB, and the update check (its own switch, also off by default) reads one
-  small file from digitalgreenhouse.com.au. A crafted or tampered reply to either is in scope.
-- The network playback cache (Experimental, off by default) copies songs from the network drives
-  your music is already on to this computer, and plays them from there.
-- Ironbark changes your files only when you ask: tag edits in the Experimental tag editor, which
+- Ironbark never uses the internet (since 0.38.0): no update check, no look-ups.
+- The network playback cache (behind Settings → Library → Local network access, off by default)
+  copies songs from the network drives your music is already on to this computer, and plays them
+  from there. A crafted file on such a drive is in scope.
+- Ironbark changes your files only when you ask: tag edits in the tag editor, which
   proves the audio is untouched before replacing a file, and playlists you edit, rename or delete
   (a deleted one goes to the Recycle Bin when its drive has one).
 

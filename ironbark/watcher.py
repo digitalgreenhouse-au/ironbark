@@ -1,21 +1,18 @@
-"""Spotting new music (0.17.0), no UI: at start-up and every few minutes, compare the library
-folders with the library database (indexer.py, through library_index.py) — a walk of names, sizes
-and modified times, so it's cheap; tags are read only for what changed — and say what's new,
-changed or gone.
+"""Spotting new music (0.17.0), no UI: one look at the library folders — at start-up, after the
+library folders change, and when you press Rescan — compares them with the library database
+(indexer.py, through library_index.py): a walk of names, sizes and modified times, so it's cheap;
+tags are read only for what changed. The report says what's new, changed or gone. (0.38.0: there is
+no thread looking every few minutes any more — nothing runs in the background.)
 
-- **Polling**, on a thread of its own (never the Tk thread). It works the same on Windows and Mac;
-  Windows' change notifications (ReadDirectoryChangesW) could replace it later for a huge library.
-  Results go into `results` (a queue); the player's own `after` loop picks them up (nothing
-  here touches Tk). Each report already carries the new albums (worked out on this thread from
-  the database), so the player's thread only has to show them.
+- **One look, on a worker thread** (never the Tk thread): the player runs `check()` on its worker and
+  leaves the report in `results`; its own `after` loop picks it up (nothing here touches Tk). Each
+  report already carries the new albums (worked out from the database), so the player's thread only
+  has to show them.
 - **Files still being copied wait.** A new or changed file is left for the next look while its
   modified time is within `SETTLE_S` of now, or while it differs from how it looked last time
-  (its size still growing). While anything is waiting, the next look comes after `RECHECK_S` —
-  a quick one, at just the folders with copies in progress (the whole library is still walked
-  every `EVERY_S`) — and slows down (`QUICK_LOOKS`) for a file that keeps growing for minutes, a
-  download or a recording into the library. (Explorer gives a copied file its original modified
-  time once the copy finishes, so a finished copy usually looks old straight away; a file that
-  can't be read yet is simply tried again on the next look.)
+  (its size still growing). (Explorer gives a copied file its original modified time once the copy
+  finishes, so a finished copy usually looks old straight away; a file that can't be read yet is
+  simply tried again on the next look.)
 - **New albums** are worked out from the database, not remembered separately: an album is new when
   one of its files was first seen after watching began (`since`, saved in the settings) and after
   its library folder's first look (the whole library isn't "new" on a first run), and it hasn't
@@ -27,7 +24,6 @@ from __future__ import annotations
 
 import os
 import queue
-import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,10 +33,7 @@ from .indexer import Diff
 from .library import album_folder
 from .library_index import LibraryIndex
 
-EVERY_S = 180.0    # "every few minutes": how often the folders are looked at while the player is open
-RECHECK_S = 10.0   # the next (quick) look, while a file is still being copied
 SETTLE_S = 10.0    # a file modified more recently than this is taken to be still being written
-QUICK_LOOKS = 6    # quick looks every RECHECK_S for a copy in progress; after that each waits twice as long
 
 
 @dataclass
@@ -97,26 +90,18 @@ class Settling:
 
 
 class Watcher:
-    """Looks at the library folders now and then, on a thread of its own.
+    """One look at the library folders, when asked (on a worker thread, never Tk's).
 
     `index_for()` gives the index to bring up to date (read fresh each look, so a change of
-    library folders is followed). `check()` is one look, run by the thread or straight from a
-    test. Set `since` (when watching began) and each report carries the new albums."""
+    library folders is followed). `check()` is one look. Set `since` (when new music started to
+    count) and each report carries the new albums."""
 
-    def __init__(self, index_for: Callable[[], LibraryIndex], every_s: float = EVERY_S,
-                 recheck_s: float = RECHECK_S, settle_s: float = SETTLE_S, clock: Callable[[], float] = time.time):
+    def __init__(self, index_for: Callable[[], LibraryIndex], settle_s: float = SETTLE_S,
+                 clock: Callable[[], float] = time.time):
         self.index_for = index_for
-        self.every_s = every_s
-        self.recheck_s = recheck_s
         self.settling = Settling(settle_s, clock)
         self.since: float | None = None
         self.results: queue.SimpleQueue[Report] = queue.SimpleQueue()
-        # Each start() gets its own stop and wake-up: a thread told to stop never misses it because
-        # a new one has started meanwhile, and the new one waits for it to finish its look.
-        self._stop = threading.Event()
-        self._wake = threading.Event()
-        self._whole = threading.Event()   # look_now: the next look is at the whole library
-        self._thread: threading.Thread | None = None
         self._roots: list[Path] | None = None
 
     def check(self, folders: list[str] | None = None, new_albums: bool = False) -> Report:
@@ -147,62 +132,6 @@ class Watcher:
             return report
         except Exception as error:  # noqa: BLE001 — the index is only a speed-up; never fatal
             return Report(error=str(error))
-
-    # -- the thread ----------------------------------------------------------------------------
-    def start(self, delay_s: float = 0.0):
-        """Begin watching: the first look after `delay_s`, then every `every_s`."""
-        if self.running:
-            return
-        previous = self._thread
-        self._stop, self._wake = threading.Event(), threading.Event()
-        self._thread = threading.Thread(target=self._run, args=(delay_s, self._stop, self._wake, previous),
-                                        name="new-music", daemon=True)
-        self._thread.start()
-
-    @property
-    def running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive() and not self._stop.is_set()
-
-    def stop(self):
-        """Stop watching (a look under way finishes; its result isn't reported)."""
-        self._stop.set()
-        self._wake.set()
-
-    def look_now(self):
-        """Look again at the whole library straight away (e.g. after the library folders changed)."""
-        self._whole.set()
-        self._wake.set()
-
-    def _run(self, delay_s: float, stop: threading.Event, wake: threading.Event,
-             previous: threading.Thread | None):
-        if previous is not None:
-            previous.join()   # (a thread stopped mid-look finishes it first: never two at once)
-        wait, waiting, quick_looks, last_whole = delay_s, [], 0, None
-        while True:
-            wake.wait(wait)
-            wake.clear()
-            if stop.is_set():
-                return
-            now = time.monotonic()
-            whole = (not waiting or last_whole is None or self._whole.is_set()
-                     or now - last_whole >= self.every_s)
-            if whole:
-                self._whole.clear()
-            report = self.check(None if whole else waiting, new_albums=last_whole is None)
-            if stop.is_set():
-                return
-            self.results.put(report)
-            if whole:
-                last_whole = now
-            # Folders with copies in progress get a quick look soon; a whole look stays on time.
-            waiting = sorted({str(Path(path).parent) for path in report.diff.waiting})
-            next_whole = max(0.0, last_whole + self.every_s - time.monotonic())
-            if waiting:
-                quick_looks += 1
-                wait = min(next_whole, self.recheck_s * 2 ** max(0, quick_looks - QUICK_LOOKS))
-            else:
-                quick_looks = 0
-                wait = next_whole
 
     def drain(self) -> list[Report]:
         """The looks finished since last asked (called from the Tk thread's own loop)."""
