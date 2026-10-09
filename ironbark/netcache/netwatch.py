@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import atexit
 import logging
-import sys
+
+from .. import platforms
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class Watch:
 def start(on_change) -> Watch | None:
     """Call `on_change()` (from another thread) whenever a network interface changes; None where
     that can't be heard."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return None
     try:
         return Watch(on_change)

@@ -36,13 +36,12 @@ import os
 import re
 import shutil
 import sqlite3
-import sys
 import threading
 import time
 from pathlib import Path
 from typing import IO
 
-from .. import audiofile
+from .. import audiofile, platforms
 from ..library_db import is_damage
 from .growing import GrowingFile, open_shared
 
@@ -373,12 +372,12 @@ class OwnerLock:
         f = open(self.path, "a+b")
         try:
             f.seek(0)
-            if sys.platform == "win32":
+            if platforms.IS_WINDOWS:
                 import msvcrt
                 msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)   # type: ignore[attr-defined]  # fcntl has these off Windows only; mypy here runs on Windows
         except OSError:
             f.close()
             return False
@@ -391,7 +390,7 @@ class OwnerLock:
             return
         try:
             f.seek(0)
-            if sys.platform == "win32":
+            if platforms.IS_WINDOWS:
                 import msvcrt
                 msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
         except OSError:

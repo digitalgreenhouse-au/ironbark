@@ -19,12 +19,13 @@ as the VU faces and slider switches, Treeview tags, and colours a window keeps b
 from __future__ import annotations
 
 import dataclasses
-import sys
 import tkinter as tk
 import weakref
 from collections.abc import Callable
 from tkinter import font as tkfont
 from tkinter import ttk
+
+from . import platforms
 
 
 # -- colours -------------------------------------------------------------------------------
@@ -279,7 +280,7 @@ def windows_uses_light() -> bool | None:
     document this value as an API (it documents UISettings' foreground colour for Win32 apps);
     checked on Windows 11 on 05/10/2026 that the two agree (dark: AppsUseLightTheme 0, UISettings
     foreground white)."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return None
     try:
         import winreg
@@ -305,13 +306,13 @@ def settled_choice(choice: str) -> str:
 
 
 # -- text ----------------------------------------------------------------------------------
-FONT = "Segoe UI" if sys.platform == "win32" else "TkDefaultFont"
+FONT = "Segoe UI" if platforms.IS_WINDOWS else "TkDefaultFont"
 # The fixed-width font (sample numbers; live numbers too where FONT's digits aren't all one width).
 # Consolas ships with Windows since Vista (Microsoft Learn's Consolas page, checked 05/10/2026:
 # "Fixed pitch: True", supplied by Windows 7 / 8 / 8.1 / 10 / 11). (0.22.0) For the Mac build: Menlo
 # ships with macOS (Apple's "Fonts included with macOS Sequoia" lists Menlo Regular / Bold / Italic /
 # Bold Italic, checked 05/10/2026); SF Mono isn't on that list. Not yet tried on a Mac.
-MONO = "Consolas" if sys.platform == "win32" else "Menlo" if sys.platform == "darwin" else "TkFixedFont"
+MONO = "Consolas" if platforms.IS_WINDOWS else "Menlo" if platforms.IS_MAC else "TkFixedFont"
 # (0.22.0) The family live numbers are drawn in, so they don't jiggle as their digits change: FONT
 # when its digits are all one width, else MONO. Tk can't ask a font for tabular figures (Tk 8.6's
 # `font` command has only -family -size -weight -slant -underline -overstrike: no OpenType
@@ -328,7 +329,7 @@ FIGURE_SPACE = "\u2007"   # a space as wide as a digit (measured: 10 px, as a di
 # The semibold face, for titles: Windows ships Segoe UI in a true semibold, which Tk can use as a
 # family of its own (Tk 8.6's -weight knows only normal and bold). `apply` checks Tk really has it
 # (semibold_family); where it doesn't (a Mac, so far), "semibold" falls back to bold.
-FONT_SEMIBOLD = "Segoe UI Semibold" if sys.platform == "win32" else ""
+FONT_SEMIBOLD = "Segoe UI Semibold" if platforms.IS_WINDOWS else ""
 SEMIBOLD = ""         # set by apply: FONT_SEMIBOLD when Tk has it, else "" (bold stands in)
 
 # The type scale, in points (Tk scales points with the display itself, so no px() here).
@@ -736,7 +737,7 @@ def apply(root: tk.Tk) -> None:
 def dark_title_bar(window: tk.Misc) -> None:
     """Ask Windows 10/11 for a title bar that matches the palette (dark for a dark palette).
     Harmless no-op elsewhere."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return
     import ctypes
 

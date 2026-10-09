@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import threading
 import time
 import weakref
@@ -29,7 +28,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import library_db, searchfold
+from . import library_db, platforms, searchfold
 from .browse import album_label
 from .favourites import HEART
 from .library import Album, Track, sort_name
@@ -54,9 +53,9 @@ def show_in_explorer(path) -> None:
     """The file's folder in Explorer, the file selected (Finder on a Mac). A CUE track: its whole file."""
     path = os.fspath(path)
     try:
-        if sys.platform == "win32":
+        if platforms.IS_WINDOWS:
             subprocess.Popen(f'explorer /select,"{path}"')   # noqa: S603 — a path of the user's own library
-        elif sys.platform == "darwin":
+        elif platforms.IS_MAC:
             subprocess.Popen(["open", "-R", path])   # noqa: S603, S607
         else:
             subprocess.Popen(["xdg-open", os.path.dirname(path)])   # noqa: S603, S607

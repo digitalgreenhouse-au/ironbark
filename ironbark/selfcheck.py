@@ -39,7 +39,7 @@ import threading
 import traceback
 from pathlib import Path
 
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, platforms
 
 HIDDEN_DESKTOP = "IronbarkSelfCheck"
 _hidden = False   # this run's windows are on the hidden desktop
@@ -83,7 +83,7 @@ def _use_hidden_desktop() -> bool:
     """Move this thread to a desktop of its own, so the windows the checks open never appear on
     screen. Windows only; False (carry on on the normal desktop) when it can't be done — the
     thread already owns a window, or this session may not make desktops."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return False
     import ctypes
     from ctypes import wintypes
@@ -133,7 +133,7 @@ def _check_portaudio() -> str:
             raise RuntimeError(f"PortAudio was loaded from outside the program: {sd._libname}")
         where = "; the program's own copy"
     apis = [api["name"] for api in sd.query_hostapis()]
-    if sys.platform == "win32" and "Windows WASAPI" not in apis:
+    if platforms.IS_WINDOWS and "Windows WASAPI" not in apis:
         raise RuntimeError(f"no WASAPI among {apis}")
     outputs = sum(1 for device in sd.query_devices() if device["max_output_channels"] > 0)
     return f"{sd.get_portaudio_version()[1]}{where}; {', '.join(apis)}; {outputs} outputs"
@@ -142,7 +142,7 @@ def _check_portaudio() -> str:
 def _check_windows_audio() -> str:
     """pycaw / comtypes: Windows' own output list (device names, hardware volume and the Windows
     check's recording all go through them). Asked on a thread of its own, as the player does."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return "not used on this system"
     from importlib import metadata
 
@@ -173,7 +173,7 @@ def _check_windows_audio() -> str:
 def _check_media_controls() -> str:
     """Windows' media controls (SMTC) and the taskbar's thumbnail buttons can be reached. Only
     the starting points are made: nothing is attached to a window, so nothing appears."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return "not used on this system"
     import comtypes
     from comtypes import CLSCTX_INPROC_SERVER, GUID, CoCreateInstance
@@ -356,7 +356,7 @@ def _check_single_instance() -> str:
             running.close()
     finally:
         shutil.rmtree(folder, ignore_errors=True)
-    return "named mutex + pipe" if sys.platform == "win32" else "lock file + local socket"
+    return "named mutex + pipe" if platforms.IS_WINDOWS else "lock file + local socket"
 
 
 def _check_window() -> str:

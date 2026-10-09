@@ -28,14 +28,13 @@ import queue
 import secrets
 import socket
 import struct
-import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import APP_NAME
+from . import APP_NAME, platforms
 
 log = logging.getLogger(__name__)
 
@@ -165,7 +164,7 @@ def claim(key: str | None = None, folder: Path | None = None) -> Instance:
     second player than none."""
     key = key or default_key()
     try:
-        if sys.platform == "win32":
+        if platforms.IS_WINDOWS:
             return _claim_windows(key)
         if folder is None:
             from . import settings
@@ -258,7 +257,7 @@ def _invalid(handle) -> bool:
 
 def _session() -> int:
     """The Windows session this program runs in (0 elsewhere)."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return 0
     import ctypes
     from ctypes import wintypes
@@ -488,7 +487,7 @@ def _lock(file) -> bool:
     """Take the lock file for this program (False: another program holds it). Released when the
     file is closed, or when the program ends however it ends."""
     try:
-        if sys.platform == "win32":
+        if platforms.IS_WINDOWS:
             import msvcrt
 
             file.seek(0)
@@ -504,7 +503,7 @@ def _lock(file) -> bool:
 
 def _unlock(file) -> None:
     try:
-        if sys.platform == "win32":
+        if platforms.IS_WINDOWS:
             import msvcrt
 
             file.seek(0)

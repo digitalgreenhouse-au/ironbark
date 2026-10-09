@@ -41,7 +41,6 @@ import re
 import shutil
 import stat as stat_module
 import struct
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -52,7 +51,7 @@ import numpy as np
 import soundfile as sf
 from PIL import Image
 
-from . import audiofile, settings, tagio
+from . import audiofile, platforms, settings, tagio
 from .analysis import pcm_bytes
 from .library import mp4_genres
 from .tagio import TagError
@@ -664,14 +663,14 @@ def _read_only(st) -> bool:
 
 
 def _created_ns(st) -> int | None:
-    return getattr(st, "st_birthtime_ns", None) or (st.st_ctime_ns if sys.platform == "win32" else None)
+    return getattr(st, "st_birthtime_ns", None) or (st.st_ctime_ns if platforms.IS_WINDOWS else None)
 
 
 def _keep_created(st, temp: Path) -> None:
     """Give the copy the original's creation time (Windows), so a library index rebuilt from
     scratch still dates the album by when it arrived, not by the tag edit. Best effort."""
     created = _created_ns(st)
-    if sys.platform != "win32" or not created:
+    if not platforms.IS_WINDOWS or not created:
         return
     import ctypes
     from ctypes import wintypes

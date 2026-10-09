@@ -16,14 +16,13 @@ double-clicking it calls `on_double` (snap home).
 
 from __future__ import annotations
 
-import sys
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import font as tkfont
 
 from PIL import Image, ImageDraw, ImageTk
 
-from . import chrome, keyfocus, shapes, theme
+from . import chrome, keyfocus, platforms, shapes, theme
 from .keyfocus import Focusable
 
 # Colours are theme.py roles, read when drawn (so they follow a palette change): the strip is
@@ -88,7 +87,7 @@ def round_corners(window: tk.Misc, rim: str) -> bool:
     """Ask Windows 11 to round a small pop-up window's corners and draw its 1 px rim in `rim` (a
     colour). True when it did; Windows 10 (and anything else) says no, and the window keeps the rim
     Tk draws."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return False
     try:
         import ctypes

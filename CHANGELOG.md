@@ -4,6 +4,15 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.45.0 — 10/10/2026
+
+- **The platform's differences are named in one place**, `platforms.py`: which platform this is,
+  and what it provides (the custom title bar, media controls, exclusive output, the device's own
+  volume, loopback recording, the single-instance pipe, the bin's name), each flag naming the
+  module that implements it. Every platform check in the program goes through it now (62 of them,
+  across 28 modules, used to test `sys.platform` on their own). Groundwork for the Mac build: a
+  port reads one file. Nothing about how the player behaves on Windows changed.
+
 ## 0.44.0 — 10/10/2026
 
 - **Two big modules split along the seams they already had**, with nothing moved but the lines:
