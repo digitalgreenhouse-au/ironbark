@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
-from ironbark import diagnostics, help_window, keys, library_view, quick_search, statustext, ui
+from ironbark import diagnostics, help_window, keys, library_view, quick_search, settings_view, statustext, ui
 from ironbark.library import Track
 from ironbark.tools import details
 
@@ -30,7 +30,7 @@ def test_the_diagnostics_wording_says_names_in_the_logs_can_still_show():
 
 # -- the names of things ------------------------------------------------------------------------------
 def test_each_thing_is_called_one_name():
-    assert dict(ui.NET_PREDOWNLOADS)["queue"] == "Up to 200 songs ahead"   # "queue" is Up next elsewhere
+    assert dict(settings_view.NET_PREDOWNLOADS)["queue"] == "Up to 200 songs ahead"   # "queue" is Up next elsewhere
     assert library_view.HEADINGS["quality"] == quick_search.HEADINGS["quality"] == "Format"
     assert "Undo" in keys.BY_ID["undo"].label and "Up next" in keys.BY_ID["undo"].label
 

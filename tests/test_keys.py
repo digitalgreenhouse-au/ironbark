@@ -15,7 +15,7 @@ from tkinter import ttk
 import pytest
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
-from ironbark import help_window, keys
+from ironbark import help_window, keys, settings_view
 from ironbark.keys import ALT, CONTROL, SHIFT
 from ironbark.library import Track
 
@@ -113,7 +113,7 @@ def test_menu_hints_come_from_the_table():
     assert keys.keys_text(keys.BY_ID["next"]) == "N · Ctrl+→"
     source = (REPO / "ironbark" / "ui.py").read_text(encoding="utf-8")
     assert '"Ctrl+Up"' not in source and '"Ctrl+Down"' not in source   # (reordering moved to Alt+↑ / ↓)
-    assert "def _add_help_buttons(self" in source                       # the hook for more Help buttons
+    assert "def add_help_buttons(win" in Path(settings_view.__file__).read_text(encoding="utf-8")                       # the hook for more Help buttons
 
 
 def test_readme_keyboard_section_is_the_table():
@@ -495,7 +495,7 @@ def test_settings_has_help_and_about(make_window):
     everywhere = labels(window.settings.simple) + labels(window.settings.advanced)
     for title in ("Detailed logging",):
         assert title in in_help and everywhere.count(title) == 1, title
-    window._from_settings(window.show_help)
+    settings_view.from_settings(window, window.show_help)
     _pump(root, 0.2)
     assert not window.settings.is_open and window._help.win.winfo_exists()
     assert not errors
