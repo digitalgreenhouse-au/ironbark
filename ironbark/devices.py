@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import ctypes
 import logging
-import sys
 import threading
 import weakref
 from collections.abc import Callable
@@ -26,9 +25,11 @@ from typing import TypeVar
 
 import sounddevice as sd
 
+from . import platforms
+
 log = logging.getLogger(__name__)
 
-IS_WINDOWS = sys.platform == "win32"
+IS_WINDOWS = platforms.IS_WINDOWS
 T = TypeVar("T")
 
 _FRIENDLY_NAME = ("{A45C254E-DF1C-4EFD-8020-67D146A850E0}", 14)   # PKEY_Device_FriendlyName

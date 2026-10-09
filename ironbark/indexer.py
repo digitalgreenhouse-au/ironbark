@@ -65,7 +65,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wai
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import audiofile, library_db
+from . import audiofile, library_db, platforms
 from .library import Track, is_music_name, skip_folder
 from .library_db import (
     FileState,
@@ -219,7 +219,7 @@ def _worker_start() -> None:
 def lower_priority() -> None:
     """This process at below-normal priority (a worker process: the library check's too)."""
     try:
-        if sys.platform == "win32":
+        if platforms.IS_WINDOWS:
             import ctypes
             from ctypes import wintypes
 

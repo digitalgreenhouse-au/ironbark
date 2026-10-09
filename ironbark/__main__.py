@@ -16,7 +16,7 @@ import time
 import tkinter as tk
 import traceback
 
-from . import APP_NAME, __version__, appicon, crash, experiments, instance, logs, settings
+from . import APP_NAME, __version__, appicon, crash, experiments, instance, logs, platforms, settings
 
 log = logging.getLogger("ironbark.main")
 
@@ -277,7 +277,7 @@ def _log_uncaught(exc_type, value, tb):
 
 def _enable_crisp_text_on_windows() -> None:
     """Without this, Windows stretches the window on high-DPI screens and it looks blurry."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return
     import ctypes
 

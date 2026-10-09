@@ -7,13 +7,12 @@ tests all use these.
 from __future__ import annotations
 
 import math
-import sys
 
-from . import levelling
+from . import levelling, platforms
 from .engine import OutputInfo
 from .library import format_rate
 
-MIXER = "Windows" if sys.platform == "win32" else "system"
+MIXER = "Windows" if platforms.IS_WINDOWS else "system"
 
 
 def levelling_text(level, trim: float = 1.0) -> str:

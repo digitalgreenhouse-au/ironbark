@@ -32,12 +32,13 @@ key never does both. Plain ↑ ↓ PgUp PgDn Home End stay the list's.
 
 from __future__ import annotations
 
-import sys
 import textwrap
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
 from tkinter import ttk
+
+from . import platforms
 
 TAG = "IronbarkKeys"
 
@@ -45,7 +46,7 @@ TAG = "IronbarkKeys"
 # (checked on Tk 8.6.12), a Mac's as Mod2 (Option), X11's as Mod1. Caps Lock (0x2), Num Lock and
 # the mouse buttons are ignored.
 SHIFT, CONTROL = 0x1, 0x4
-ALT = 0x20000 if sys.platform == "win32" else 0x10 if sys.platform == "darwin" else 0x8
+ALT = 0x20000 if platforms.IS_WINDOWS else 0x10 if platforms.IS_MAC else 0x8
 
 GROUPS = ("Playback", "Tabs & lists", "Windows & tools", "Library & search", "Editing")
 SCOPES = ("app", "main", "list", "library", "tags")

@@ -15,7 +15,6 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
-import sys
 import time
 from ctypes import HRESULT, POINTER, c_uint32, c_uint64
 from ctypes.wintypes import BYTE, DWORD, WORD
@@ -23,9 +22,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .. import platforms
+
 log = logging.getLogger(__name__)
 
-AVAILABLE = sys.platform == "win32"
+AVAILABLE = platforms.LOOPBACK_RECORDING
 
 AUDCLNT_SHAREMODE_SHARED = 0
 AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000

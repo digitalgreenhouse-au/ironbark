@@ -35,7 +35,6 @@ import ctypes
 import io
 import logging
 import queue
-import sys
 import threading
 import types
 import uuid
@@ -43,11 +42,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import artwork, theme
+from . import artwork, platforms, theme
 
 log = logging.getLogger(__name__)
 
-AVAILABLE = sys.platform == "win32"
+AVAILABLE = platforms.MEDIA_CONTROLS
 
 # What a button or key asks for (the words that travel through the queue).
 PLAY, PAUSE, TOGGLE, NEXT, PREVIOUS, STOP = "play", "pause", "toggle", "next", "previous", "stop"

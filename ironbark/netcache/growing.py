@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import io
 import os
-import sys
 import time
 
+from .. import platforms
 from ..audiofile import Gate
 
 __all__ = ["Gate", "GrowingFile", "open_shared"]
@@ -36,7 +36,7 @@ WAIT_SLICE_S = 0.02   # a waiting read looks at cancel at least this often
 
 def open_shared(path) -> io.RawIOBase:
     """Open a file for reading so that others may still write, rename and delete it."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return open(os.fspath(path), "rb", buffering=0)
     import ctypes
     import msvcrt

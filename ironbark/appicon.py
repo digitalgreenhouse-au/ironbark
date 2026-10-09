@@ -31,14 +31,13 @@ from __future__ import annotations
 import io
 import logging
 import math
-import sys
 import tkinter as tk
 from importlib import resources
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageTk
 
-from . import theme
+from . import platforms, theme
 
 log = logging.getLogger(__name__)
 
@@ -211,7 +210,7 @@ _class_icons: dict[int, int] = {}     # size → HICON, loaded once per process 
 
 
 def _sharp_on_windows(root: tk.Tk) -> None:
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return
     import ctypes
 
@@ -248,7 +247,7 @@ def set_app_id(app_id: str = APP_ID) -> bool:
     """Windows only: give the process its own AppUserModelID, before any window is shown, so the
     taskbar groups the player as itself (with its own icon) rather than as python.exe. Windows'
     media controls (SMTC) take the same ID, so they and the taskbar agree. True when set."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return False
     import ctypes
 
@@ -265,7 +264,7 @@ def set_app_id(app_id: str = APP_ID) -> bool:
 
 def app_id() -> str | None:
     """The process's AppUserModelID as Windows has it now (None: none set, or not Windows)."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return None
     import ctypes
 
