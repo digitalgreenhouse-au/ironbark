@@ -28,10 +28,10 @@ from typing import Callable
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
-from . import audiofile
+from .. import audiofile
 from .abx import level_of
-from .analysis import FILE_OVERSAMPLE, TAPS_PER_PHASE, oversampling_phases, guard_trim
-from .audiofile import read_blocks
+from ..analysis import FILE_OVERSAMPLE, TAPS_PER_PHASE, oversampling_phases, guard_trim
+from ..audiofile import read_blocks
 from .audition import level_gains
 
 FACTOR = FILE_OVERSAMPLE      # 8 rebuilt points per sample

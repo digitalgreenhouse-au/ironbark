@@ -26,8 +26,9 @@ from tkinter import ttk
 
 import numpy as np
 
-from . import audition, controls, devices, loopback, placement, popups, testsignals, theme, toolwin
-from .engine import State
+from .. import controls, devices, placement, popups, theme, toolwin
+from . import audition, loopback, testsignals
+from ..engine import State
 
 REFRESH_MS = 100
 LOOPBACK = "Windows loopback (what the output plays)"

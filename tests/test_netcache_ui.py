@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from ironbark import audiofile, experiments, netcache, settings
-from ironbark.details import describe_proof, source_rows
+from ironbark.tools.details import describe_proof, source_rows
 from ironbark.statustext import COPY_FAILED, network_hover, network_line
 from ironbark.engine import NetworkView, State, Status
 from ironbark.library import Track
@@ -332,31 +332,31 @@ def test_a_network_album_is_never_measured_from_part_of_it(monkeypatch, tmp_path
 # proof open the LocalTrack the cache pinned; the cache's own probe and check open its copies; frame
 # indexes are built from audiofile.local_copy. A new call shows up here, to be reviewed the same way.
 REVIEWED = {
-    ("ironbark.abx", "prepare", "audiofile.open"): 2,
+    ("ironbark.tools.abx", "prepare", "audiofile.open"): 2,
     ("ironbark.analysis", "album_measure", "audiofile.open"): 1,
     ("ironbark.analysis", "analyse", "audiofile.open"): 1,
     ("ironbark.analysis", "true_peak", "audiofile.open"): 1,
     ("ironbark.audiofile", "mp3_shortfall", "mp3frames.build_index"): 1,
-    ("ironbark.clipping", "listening_versions", "audiofile.open"): 1,
-    ("ironbark.clipping", "scan", "audiofile.open"): 1,
-    ("ironbark.compare", "compare_files", "audiofile.open"): 2,
-    ("ironbark.compare", "info", "audiofile.open"): 1,
-    ("ironbark.details", "NowPlayingWindow._on_track_change", "flacframes.build_index"): 1,
-    ("ironbark.details", "NowPlayingWindow._on_track_change", "mp3frames.build_index"): 1,
+    ("ironbark.tools.clipping", "listening_versions", "audiofile.open"): 1,
+    ("ironbark.tools.clipping", "scan", "audiofile.open"): 1,
+    ("ironbark.tools.compare", "compare_files", "audiofile.open"): 2,
+    ("ironbark.tools.compare", "info", "audiofile.open"): 1,
+    ("ironbark.tools.details", "NowPlayingWindow._on_track_change", "flacframes.build_index"): 1,
+    ("ironbark.tools.details", "NowPlayingWindow._on_track_change", "mp3frames.build_index"): 1,
     ("ironbark.engine", "_Session._reopen", "audiofile.open"): 1,
     ("ironbark.engine", "_Source.__init__", "audiofile.open"): 1,
     ("ironbark.formats", "scan", "audiofile.open"): 1,
     ("ironbark.levelling", "measure", "audiofile.open"): 1,
     ("ironbark.library", "find_albums", "audiofile.info"): 1,
     ("ironbark.loudness", "file_powers", "audiofile.open"): 1,
-    ("ironbark.meters", "album_alignment_loudness", "audiofile.info"): 1,
-    ("ironbark.meters", "vu_levels", "audiofile.open"): 1,
+    ("ironbark.tools.meters", "album_alignment_loudness", "audiofile.info"): 1,
+    ("ironbark.tools.meters", "vu_levels", "audiofile.open"): 1,
     ("ironbark.netcache.manager", "Manager._probe", "audiofile.open"): 1,
     ("ironbark.netcache.verify", "check", "audiofile.open"): 1,
     ("ironbark.proof", "SentRecord._check_loop", "audiofile.open"): 1,
-    ("ironbark.ripcheck", "_read_info", "audiofile.info"): 1,
-    ("ironbark.ripcheck", "checksums", "audiofile.open"): 1,
-    ("ironbark.spectrum", "track_picture", "audiofile.open"): 1,
+    ("ironbark.tools.ripcheck", "_read_info", "audiofile.info"): 1,
+    ("ironbark.tools.ripcheck", "checksums", "audiofile.open"): 1,
+    ("ironbark.tools.spectrum", "track_picture", "audiofile.open"): 1,
     ("ironbark.tag_editor", "same_audio", "audiofile.open"): 2,
 }
 WATCHED = {("audiofile", "open"), ("audiofile", "info"), ("flacframes", "build_index"), ("mp3frames", "build_index")}
@@ -411,7 +411,7 @@ def test_every_decode_and_index_call_is_in_the_reviewed_register():
 
 # -- what's downloaded, the network's quality, Up next's marks (v2a) ---------------------------------------
 def test_the_network_now_line_up_next_marks_and_the_quality_row():
-    from ironbark.details import cache_mark, network_now_line
+    from ironbark.statustext import cache_mark, network_now_line
     from ironbark.netcache import NetworkNow, Progress
     assert network_now_line(None) == "Network now: nothing fetched yet"
     assert network_now_line(NetworkNow("192.168.80.173", "up", "good", 12.8e6, 0.4e6)) == (

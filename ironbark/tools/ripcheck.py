@@ -85,11 +85,11 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import audiofile, cuesheet
-from .library import is_music_name, read_in_play_order
-from .network import Cancelled, NetworkOff, fetch, network_allowed   # noqa: F401  (the player's one way online)
-from .tagio import TagError
-from .tagio.flac import FLACFile
+from .. import audiofile, cuesheet
+from ..library import is_music_name, read_in_play_order
+from ..network import Cancelled, NetworkOff, fetch, network_allowed   # noqa: F401  (the player's one way online)
+from ..tagio import TagError
+from ..tagio.flac import FLACFile
 
 SECTOR = 588                 # samples per CD sector (1/75 s at 44.1 kHz)
 AR_SKIP = 5 * SECTOR         # AccurateRip: 2940 samples skipped at the disc's two ends

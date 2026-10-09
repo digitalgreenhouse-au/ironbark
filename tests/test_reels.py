@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ironbark import experiments, keys, reels, theme
+from ironbark import experiments, keys, theme
+from ironbark.tools import reels
 from ironbark.engine import State
 
 TEN = reels.REELS["10.5"]
@@ -175,7 +176,7 @@ def _pump(root, seconds=0.1):
 
 
 def test_window_follows_the_song_and_remembers_its_choices(root):
-    from ironbark.reels_window import ReelsWindow
+    from ironbark.tools.reels_window import ReelsWindow
 
     player = AlbumPlayer([song(1, 240), song(2, 300), song(3, 200)])
     prefs: dict = {}
@@ -203,7 +204,7 @@ def test_window_follows_the_song_and_remembers_its_choices(root):
 
 
 def test_window_blurs_a_reel_too_fast_to_follow(root):
-    from ironbark.reels_window import ReelsWindow
+    from ironbark.tools.reels_window import ReelsWindow
 
     player = AlbumPlayer([song(1, 1800)])
     win = ReelsWindow(root, player, {})

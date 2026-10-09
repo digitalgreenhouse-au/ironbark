@@ -21,6 +21,7 @@ from ironbark import analysis, artwork, audiofile, library, placement, playlists
 from ironbark.engine import State, Status
 from ironbark.library import Track
 from ironbark.ui import SAFE_VOLUME, PlayerWindow, Tab
+from fakework import FakeWork
 from test_cue_playback import make_image
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
@@ -238,7 +239,7 @@ def test_tab_info_is_published_even_when_the_file_cant_be_read(tmp_path, monkeyp
         raise OSError("gone")
     monkeypatch.setattr(ui, "read_track", unreadable)
     tab = Tab("album", str(folder))
-    PlayerWindow._load_tab_info(SimpleNamespace(root=Root(), _finish_tab_info=lambda tab: None), tab)
+    PlayerWindow._load_tab_info(SimpleNamespace(root=Root(), _finish_tab_info=lambda tab: None, work=FakeWork()), tab)
     assert wait_for(lambda: tab.info is not None)
     assert tab.info[0] == "" and tab.info[3] == ""
 
@@ -483,8 +484,12 @@ def test_a_slow_cover_never_replaces_a_newer_one(monkeypatch):
         time.sleep(0.3 if path.name == "a.flac" else 0.0)
         return path.name
     monkeypatch.setattr(artwork, "cover_for", cover_for)
+    def run(work, then=None, name="work"):   # (offthread.Background.run, without Tk)
+        thread = threading.Thread(target=work, name=name, daemon=True)
+        thread.start()
+        return thread
     w = SimpleNamespace(show_art=SimpleNamespace(get=lambda: True), art_size=100, _art_key=None, _art_result=None,
-                        _art_track=None, _show_art=lambda image: None, _art_job=None)
+                        _art_track=None, _show_art=lambda image: None, _art_job=None, work=SimpleNamespace(run=run))
     PlayerWindow._request_art(w, Path("a.flac"))
     PlayerWindow._request_art(w, Path("b.flac"))
     for thread in [t for t in threading.enumerate() if t.name == "cover-art"]:
@@ -546,7 +551,7 @@ def test_after_a_tag_edit_big_tabs_are_not_compared_field_by_field(monkeypatch):
     monkeypatch.setattr(Track, "__eq__", lambda self, other: compared.append(1) or self is other)
     w = SimpleNamespace(tabs=[big, album], player=SimpleNamespace(up_next=lambda: []), _art_track=None,
                         _show_current_tab=lambda: None, _index=lambda: SimpleNamespace(update=lambda paths: None),
-                        _index_updated=False, TAG_FIELDS=PlayerWindow.TAG_FIELDS)
+                        _index_updated=False, TAG_FIELDS=PlayerWindow.TAG_FIELDS, work=FakeWork())
     big.info_requested = album.info_requested = True
     PlayerWindow._apply_new_tags(w, [Path("C:/Edited/01.flac")])
     assert edited.title == "New" and album.info_requested is False and big.info_requested is True

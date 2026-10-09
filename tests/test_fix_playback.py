@@ -21,7 +21,8 @@ import sounddevice as sd
 import soundfile as sf
 
 import mp4_maker
-from ironbark import analysis, audiofile, audition, devices, engine, m4a, mp3frames
+from ironbark import analysis, audiofile, devices, engine, m4a, mp3frames
+from ironbark.tools import audition
 from ironbark.engine import BLOCK_FRAMES, Player, State, _Session
 from ironbark.library import Track
 from ironbark.proof import SentRecord, apply_gain

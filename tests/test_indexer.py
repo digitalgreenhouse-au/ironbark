@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
+from fakework import FakeWork
 from tagging import write_vorbis
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
@@ -707,7 +708,7 @@ def test_a_song_heard_long_enough_is_counted_as_a_play_from_a_worker(tmp_path, m
         Track(path=tmp_path / "Music" / "2.flac", title="Two", duration=100.0)
     statuses = []
     player = SimpleNamespace(status=lambda: statuses.pop(0))
-    w = SimpleNamespace(player=player, _listening=None, _index=lambda: index)
+    w = SimpleNamespace(player=player, _listening=None, _index=lambda: index, work=FakeWork())
     for name in ("_count_listening", "_record_play"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
 

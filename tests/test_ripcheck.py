@@ -17,8 +17,9 @@ import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
 
-from ironbark import network, ripcheck, settings, theme
-from ironbark.ripcheck import (AR_SKIP, CTDB_SKIP, SECTOR, Checksums, NetworkOff, NotARip, Toc, checksums,
+from ironbark import network, settings, theme
+from ironbark.tools import ripcheck
+from ironbark.tools.ripcheck import (AR_SKIP, CTDB_SKIP, SECTOR, Checksums, NetworkOff, NotARip, Toc, checksums,
                                  find_rip, toc_from_cdtoc, toc_from_lengths, tocs_from_log)
 
 RNG = np.random.default_rng(6)
@@ -537,7 +538,7 @@ class Trickle:
 def test_a_trickling_answer_is_given_up_on(monkeypatch):
     answer = Trickle()
     monkeypatch.setattr(network, "_urlopen", lambda request, timeout: answer)
-    monkeypatch.setattr(ripcheck, "DEADLINE", 0.2)
+    monkeypatch.setattr(network, "DEADLINE", 0.2)
     started = time.monotonic()
     with pytest.raises(TimeoutError):
         ripcheck.fetch("https://www.accuraterip.com/x.bin", ON)
@@ -596,7 +597,7 @@ class FakePlayer:
 
 
 def test_now_playing_button_follows_the_setting(root, tmp_path, monkeypatch):
-    from ironbark.details import NETWORK_HINT, NowPlayingWindow
+    from ironbark.tools.details import NETWORK_HINT, NowPlayingWindow
     from ironbark.library import read_track
     files = [write(tmp_path / f"{k + 1:02d}.flac", t) for k, t in enumerate(disc_audio())]
     prefs = {"allow_network": False}

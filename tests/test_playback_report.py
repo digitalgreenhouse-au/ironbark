@@ -2,7 +2,7 @@ import collections
 from types import SimpleNamespace
 from unittest import mock
 
-from ironbark.details import describe_events, describe_health, describe_proof
+from ironbark.tools.details import describe_events, describe_health, describe_proof
 from ironbark.engine import Health, OutputInfo, _Session
 from ironbark.proof import Proof
 

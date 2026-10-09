@@ -32,7 +32,8 @@ from tkinter import ttk
 
 import numpy as np
 
-from . import controls, placement, spectrum, theme, toolwin
+from .. import controls, placement, theme, toolwin
+from . import spectrum
 from .details import describe_bits
 
 REFRESH_MS = 120

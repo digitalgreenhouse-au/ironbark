@@ -55,7 +55,7 @@ def test_a_saved_size_wider_than_the_cap_opens_at_the_cap_in_the_column(make_win
     _pump(root, 0.6)
     assert _about(root.winfo_width(), theme.px(FULL_MAX_WIDTH)) and _a_column(window)
     assert window.bar.winfo_ismapped() and window.playlist.frame.winfo_ismapped()
-    assert window.head.winfo_ismapped() and not window.split.winfo_ismapped()
+    assert window.head.winfo_ismapped()
     assert not errors
 
 

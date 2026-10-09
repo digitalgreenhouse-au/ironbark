@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
+from fakework import FakeWork
 
 from ironbark import library, library_index, playlists, settings, watcher
 from ironbark.library_index import LibraryIndex
@@ -287,7 +288,8 @@ def player_side(index, look, prefs):
     from types import SimpleNamespace
     notices = []
     w = SimpleNamespace(prefs=prefs, watcher=look, _new_albums=[], _library=None, _notice="",
-                        _index=lambda: index, notices=notices, checker=SimpleNamespace(kick=lambda: None))
+                        _index=lambda: index, notices=notices, checker=SimpleNamespace(kick=lambda: None),
+                        work=FakeWork())
     w._set_notice = lambda text, ms=0: (notices.append(text), setattr(w, "_notice", text))
     for name in ("_new_music_state", "_update_new_albums", "_watch_reports", "_mark_opened"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))

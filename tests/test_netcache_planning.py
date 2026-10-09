@@ -404,7 +404,7 @@ def test_seconds_in_an_island_and_how_much_of_what_is_needed_is_here():
 
 
 def test_a_wait_while_the_server_is_just_slow_says_so(tmp_path, managers):
-    from ironbark.details import network_line
+    from ironbark.statustext import network_line
     from ironbark.engine import NetworkView
     clock = Clock()
     m = make_manager(tmp_path / "NetCache", FakeShare(), clock=clock)

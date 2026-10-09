@@ -228,7 +228,7 @@ def test_a_warning_title_wraps_beside_its_sign(root):
 
 def test_the_tag_editor_and_test_signal_questions_are_in_app(root):
     from ironbark.tag_window import ask
-    from ironbark.testsignals_window import confirm_play
+    from ironbark.tools.testsignals_window import confirm_play
 
     seen = answer_later(root, lambda p: p.press_default())
     assert ask(root, "Save")("Save changes to 12 files?", "Changing: Album.") is True

@@ -817,7 +817,7 @@ def test_timeouts_and_errors_are_quiet():
 
 
 def test_nothing_is_fetched_unless_both_switches_are_on(monkeypatch):
-    from ironbark import ripcheck
+    from ironbark.tools import ripcheck
 
     monkeypatch.setattr(network, "_urlopen", lambda *a, **k: pytest.fail("went online"))
     for prefs in ({"check_updates": True, "allow_network": False}, {"check_updates": False, "allow_network": True}):

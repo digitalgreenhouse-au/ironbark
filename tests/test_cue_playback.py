@@ -15,9 +15,10 @@ from ironbark.tagio.flac import CueSheet as FlacCueSheet
 from ironbark.tagio.flac import CueSheetIndex as CueSheetTrackIndex
 from ironbark.tagio.flac import CueSheetTrack, FLACFile
 
-from ironbark import analysis, audiofile, dragdrop, engine, formats, library, playlists, ripcheck
+from ironbark import analysis, audiofile, dragdrop, engine, formats, library, playlists
+from ironbark.tools import ripcheck
 from ironbark.audiofile import CuePath, CueRange
-from ironbark.details import describe_analysis
+from ironbark.tools.details import describe_analysis
 from ironbark.engine import BLOCK_FRAMES, Player, _Session
 
 RNG = np.random.default_rng(11)
@@ -201,7 +202,7 @@ def test_check_and_album_figures_per_cue_track(tmp_path):
     assert describe_analysis(result, "FLAC", cue=True)[0][1].startswith("Not per track")
     peak = np.abs(data[STARTS[2]:STARTS[3]].astype(np.float64)).max() / 32768
     assert result.peak_dbfs == pytest.approx(20 * np.log10(peak), abs=1e-6)
-    from ironbark.meters import album_files
+    from ironbark.tools.meters import album_files
     _, files = album_files(tracks[1].path)
     assert files[0] == tracks[1].path and set(files) == {t.path for t in tracks}  # no whole-file double count
 

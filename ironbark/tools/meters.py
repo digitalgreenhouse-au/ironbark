@@ -42,10 +42,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import audiofile
-from .analysis import OVERSAMPLE, TAPS_PER_PHASE, oversampling_phases
-from .library import album_files
-from .loudness import BLOCK_HOP, MOMENTARY, SHORT_TERM, Loudness, Programme, file_powers, integrated
+from .. import audiofile
+from ..analysis import OVERSAMPLE, TAPS_PER_PHASE, oversampling_phases
+from ..library import album_files
+from ..loudness import BLOCK_HOP, MOMENTARY, SHORT_TERM, Loudness, Programme, file_powers, integrated
 
 STEP = 0.001          # the meters' own clock: one reading per millisecond
 SUBSTEPS = 10         # finer steps inside each millisecond for the PPM circuit (0.1 ms)

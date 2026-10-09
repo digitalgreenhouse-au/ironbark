@@ -22,7 +22,8 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from . import controls, placement, stereo, theme, toolwin
+from .. import controls, placement, theme, toolwin
+from . import stereo
 
 REFRESH_MS = 33          # ~30 frames a second
 FADE = 0.7               # how much of the glow is left after each frame (gone in ~1/3 s)

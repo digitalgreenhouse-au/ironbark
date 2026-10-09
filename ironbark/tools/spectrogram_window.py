@@ -23,7 +23,8 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from . import controls, placement, spectrum, theme, toolwin
+from .. import controls, placement, theme, toolwin
+from . import spectrum
 
 log = logging.getLogger(__name__)
 

@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from ironbark import audiofile, engine
-from ironbark.details import describe_proof, source_rows
+from ironbark.tools.details import describe_proof, source_rows
 from ironbark.statustext import COPY_FAILED, COPY_SKIPPED, copy_failed_text, network_hover
 from ironbark.engine import NetworkView, Player, WaitInfo, _Stall
 from ironbark.library import Track
@@ -430,7 +430,7 @@ def test_one_more_song_is_fetched_only_within_the_budget(tmp_path, managers, mon
 
 # -- VU Auto on a network album: measured again once its songs have downloaded --------------------------
 def test_vu_auto_measures_a_network_album_once_its_songs_have_downloaded(root, tmp_path, monkeypatch):
-    from ironbark import meter_window
+    from ironbark.tools import meter_window
     album = tmp_path / "album"
     album.mkdir()
     songs = [album / "01.flac", album / "02.flac"]
@@ -473,7 +473,7 @@ def test_vu_auto_measures_a_network_album_once_its_songs_have_downloaded(root, t
 def test_now_playings_frame_index_is_built_once_the_copy_completes_mid_song(monkeypatch):
     import threading
     from types import SimpleNamespace
-    from ironbark import details
+    from ironbark.tools import details
     song, other = Path("//nas/s/song.flac"), Path("//nas/s/other.flac")
     complete: set = set()
     asked = []
@@ -682,7 +682,7 @@ def test_a_lost_copy_while_paused_by_hand_waits_for_play(tmp_path, fake_card):
 # -- VU Auto's wait copes with an album folder it can't list for a moment -----------------------------------
 def test_vu_autos_wait_lists_the_album_once_and_again_only_if_it_couldnt(monkeypatch, tmp_path):
     import threading
-    from ironbark import meter_window
+    from ironbark.tools import meter_window
     track = tmp_path / "01.flac"
     listed, here = [], []
 

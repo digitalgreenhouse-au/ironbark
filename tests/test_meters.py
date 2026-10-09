@@ -5,7 +5,7 @@ import queue
 import numpy as np
 import pytest
 
-from ironbark.meters import MeterEngine
+from ironbark.tools.meters import MeterEngine
 
 RATE = 48000
 

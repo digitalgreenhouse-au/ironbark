@@ -11,8 +11,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from . import audiofile, compare, controls, placement, theme, toolwin
-from .library import AUDIO_EXTENSIONS
+from .. import audiofile, controls, placement, theme, toolwin
+from . import compare
+from ..library import AUDIO_EXTENSIONS
 
 # Every kind of file the player plays (AIFF, Apple Lossless, Ogg… as well as FLAC, WAV, MP3).
 AUDIO_TYPES = [("Audio files", " ".join(f"*{suffix}" for suffix in sorted(AUDIO_EXTENSIONS))), ("All files", "*.*")]

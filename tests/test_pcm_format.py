@@ -1,6 +1,6 @@
 import numpy as np
 
-from ironbark.pcm_window import fmt_float, fmt_int, to_file_value
+from ironbark.tools.pcm_window import fmt_float, fmt_int, to_file_value
 
 
 def test_file_values_from_bit_perfect_int32_words():

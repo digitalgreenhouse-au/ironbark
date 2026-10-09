@@ -12,8 +12,9 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import stereo, theme
-from ironbark.meters import (AUTO_RANGE, MeterEngine, album_alignment, album_alignment_loudness,
+from ironbark import theme
+from ironbark.tools import stereo
+from ironbark.tools.meters import (AUTO_RANGE, MeterEngine, album_alignment, album_alignment_loudness,
                                alignment_from_loudness, tone_offset)
 
 RATE = 48000
@@ -246,7 +247,7 @@ def root():
 
 @pytest.mark.parametrize("view", ["lissajous", "polar"])
 def test_scope_window_draws_and_closes(root, view):
-    from ironbark.scope_window import ScopeWindow
+    from ironbark.tools.scope_window import ScopeWindow
     player = FakePlayer()
     prefs = {"scope_view": view}
     win = ScopeWindow(root, player, prefs)
@@ -275,7 +276,7 @@ def test_scope_window_draws_and_closes(root, view):
 
 
 def test_meter_window_offers_auto_loudness_and_shows_psr(root):
-    from ironbark import meter_window
+    from ironbark.tools import meter_window
     assert meter_window.AUTO_LOUDNESS in meter_window.ALIGNMENTS
     player = FakePlayer()
     prefs = {"vu_align": meter_window.AUTO_LOUDNESS}
@@ -303,7 +304,7 @@ def count_pictures(monkeypatch, module):
 
 
 def test_scope_glow_fades_to_exactly_nothing_and_then_nothing_is_drawn(root, monkeypatch):
-    from ironbark import scope_window
+    from ironbark.tools import scope_window
     win = scope_window.ScopeWindow(root, FakePlayer(), {})
     win.win.update()
     win.engine.process(np.zeros((8192, 2), np.int32), RATE, time.perf_counter() - 0.2, "t.flac")
@@ -319,7 +320,7 @@ def test_scope_glow_fades_to_exactly_nothing_and_then_nothing_is_drawn(root, mon
 
 
 def test_scope_takes_a_new_theme_s_colours(root):
-    from ironbark import scope_window
+    from ironbark.tools import scope_window
     win = scope_window.ScopeWindow(root, FakePlayer(), {})
     win.win.update()
     try:
@@ -331,7 +332,7 @@ def test_scope_takes_a_new_theme_s_colours(root):
 
 
 def test_scope_draws_nothing_while_minimised(root, monkeypatch):
-    from ironbark import scope_window
+    from ironbark.tools import scope_window
     win = scope_window.ScopeWindow(root, FakePlayer(), {})
     win.win.update()
     made = count_pictures(monkeypatch, scope_window)
@@ -351,7 +352,7 @@ def test_scope_draws_nothing_while_minimised(root, monkeypatch):
 
 def test_meter_auto_finds_the_album_without_listing_its_folder_every_tick(root, tmp_path, monkeypatch):
     from pathlib import Path
-    from ironbark import meter_window
+    from ironbark.tools import meter_window
     album = tmp_path / "album"
     album.mkdir()
     song = album / "01.flac"
@@ -374,7 +375,7 @@ def test_meter_auto_finds_the_album_without_listing_its_folder_every_tick(root, 
 
 
 def test_meter_auto_that_fails_says_so(root, tmp_path, monkeypatch):
-    from ironbark import meter_window
+    from ironbark.tools import meter_window
 
     def broken(track, on_first, cancel):
         raise MemoryError("too big")

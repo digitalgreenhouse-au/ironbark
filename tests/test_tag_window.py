@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
+from fakework import FakeWork
 
 from ironbark import experiments, library, settings, tag_editor, theme
 from ironbark.engine import State
@@ -198,7 +199,7 @@ def test_new_tags_show_in_open_tabs_straight_away(tmp_path, music, monkeypatch):
     index = SimpleNamespace(update=lambda paths: updated.append(paths))
     w = SimpleNamespace(tabs=[tab], player=SimpleNamespace(up_next=lambda: []), _art_track=None,
                         _show_current_tab=lambda: shown.append(True), _index=lambda: index, _index_updated=False,
-                        TAG_FIELDS=PlayerWindow.TAG_FIELDS)
+                        TAG_FIELDS=PlayerWindow.TAG_FIELDS, work=FakeWork())
     audio = FLACFile(tracks[0].path)
     audio["title"], audio["album"] = "Renamed", "New album"
     audio.save()

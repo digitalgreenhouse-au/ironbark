@@ -21,9 +21,9 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from . import audiofile, controls, placement, theme, toolwin
-from .library import album_folder
-from .loudness import LRA_SETTLING
+from .. import audiofile, controls, placement, theme, toolwin
+from ..library import album_folder
+from ..loudness import LRA_SETTLING
 from .meters import PPM_TYPES, MeterEngine, Reading, album_alignment, album_alignment_loudness, album_files
 
 log = logging.getLogger(__name__)

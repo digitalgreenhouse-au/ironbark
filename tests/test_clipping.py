@@ -15,7 +15,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import analysis, audition, clipping, experiments, settings, theme
+from ironbark import analysis, experiments, settings, theme
+from ironbark.tools import audition, clipping
 from ironbark.analysis import guard_trim, headroom_index, headroom_label, max_under_read, true_peak
 from ironbark.audiofile import CuePath, CueRange
 from ironbark.engine import State
@@ -193,7 +194,8 @@ def test_guard_true_peak_is_8x(tmp_path):
 
 
 def test_guard_wins_over_bit_perfect_and_says_so():
-    from ironbark.details import describe_proof, output_line
+    from ironbark.tools.details import describe_proof
+    from ironbark.statustext import output_line
     from ironbark.engine import OutputInfo
     out = OutputInfo("DAC", 44100, 44100, exclusive=True, hardware_volume=True)
     text, tone = output_line(out, 1.0, trim=10 ** (-1.1 / 20))
@@ -326,7 +328,7 @@ def wait_for(win, condition, seconds=20):
 
 
 def test_clip_window_live_view_and_whole_song_strip(root, tmp_path, no_device):
-    from ironbark.clip_window import ClipWindow
+    from ironbark.tools.clip_window import ClipWindow
     path, x, places = bursts_file(tmp_path)
     player = WindowPlayer(path)
     prefs = {}
@@ -368,7 +370,7 @@ def test_clip_window_live_view_and_whole_song_strip(root, tmp_path, no_device):
 
 
 def test_clip_audition_experiment_plays_a_and_b_and_goes_away_when_switched_off(root, tmp_path, no_device):
-    from ironbark.clip_window import ClipWindow
+    from ironbark.tools.clip_window import ClipWindow
     assert "clip_audition" in experiments.known()
     path, x, places = bursts_file(tmp_path)
     player = WindowPlayer(path)
@@ -401,7 +403,7 @@ def test_clip_audition_experiment_plays_a_and_b_and_goes_away_when_switched_off(
 
 
 def test_clip_audition_lets_go_of_the_last_song_s_loop(root, tmp_path, no_device):
-    from ironbark.clip_window import ClipWindow
+    from ironbark.tools.clip_window import ClipWindow
     path, x, places = bursts_file(tmp_path)
     clean = tmp_path / "clean.wav"
     sf.write(clean, np.zeros((3 * RATE, 2), np.float32), RATE, subtype="FLOAT")
@@ -424,7 +426,7 @@ def test_clip_audition_lets_go_of_the_last_song_s_loop(root, tmp_path, no_device
 
 
 def test_clip_window_says_so_when_its_work_fails(root, tmp_path, no_device, monkeypatch):
-    from ironbark.clip_window import ClipWindow
+    from ironbark.tools.clip_window import ClipWindow
     path, x, places = bursts_file(tmp_path)
 
     def out_of_memory(*args, **kwargs):

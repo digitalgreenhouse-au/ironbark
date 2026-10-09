@@ -92,14 +92,14 @@ from typing import Callable
 from PIL import Image, ImageTk
 
 from . import (APP_NAME, __version__, analysis, appicon, artwork, audiofile, browse, chrome, controls, crash, devices, diagnostics,
-               dragdrop, experiments, keys, levelling, library_check, library_db, library_index,
+               dragdrop, experiments, keys, levelling, offthread, library_check, library_db, library_index,
                library_tracks, logs, loudness, mediakeys, placement, playlists, popups,
                quick_search, recycle, settings, shapes, sleep, tag_editor, theme, tkgc, updates, watcher)
-from .abx_window import AbxWindow
+from .tools.abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
-from .compare_window import CompareWindow
-from .testsignals_window import TestSignalsWindow
-from .details import NowPlayingWindow
+from .tools.compare_window import CompareWindow
+from .tools.testsignals_window import TestSignalsWindow
+from .tools.details import NowPlayingWindow
 from .statustext import (cache_mark, copy_failed_text, copy_note, network_hover, network_line, network_now_line,
                          output_line)
 from .help_window import AboutWindow, HelpWindow
@@ -109,14 +109,14 @@ from .library import (Track, album_folder, cue_track_path, find_albums, read_tra
                       title_from_filename)
 from .library_window import LibraryWindow, adding_folder
 from .lyrics_window import LyricsWindow
-from .meter_window import MeterWindow
-from .meters import album_files
+from .tools.meter_window import MeterWindow
+from .tools.meters import album_files
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
-from .pcm_window import PcmWindow
-from .clip_window import ClipWindow
-from .reels_window import EXPERIMENT as TAPE_REELS, ReelsWindow
-from .scope_window import ScopeWindow
-from .spectrogram_window import SpectrogramWindow
+from .tools.pcm_window import PcmWindow
+from .tools.clip_window import ClipWindow
+from .tools.reels_window import EXPERIMENT as TAPE_REELS, ReelsWindow
+from .tools.scope_window import ScopeWindow
+from .tools.spectrogram_window import SpectrogramWindow
 from .tag_window import TagHistoryWindow, TagWindow
 from .playlist_view import PlaylistView
 from .searchfold import fold
@@ -603,6 +603,9 @@ class PlayerWindow:
         self._album_wanted: Path | None = None
         self._album_later: dict[Path, float] = {}   # network albums to measure again after this (monotonic)
         self._album_cancel = threading.Event()
+        # Everything read for the window off Tk's thread goes through here (offthread.py): one queue
+        # of answers, taken onto Tk's thread by one timer.
+        self.work = offthread.Background(root)
         threading.Thread(target=self._measure_peaks, name="true-peak", daemon=True).start()
         threading.Thread(target=self._measure_albums, name="album-loudness", daemon=True).start()
         # Stop after this song and the sleep timer: for this session only.
@@ -1215,17 +1218,11 @@ class PlayerWindow:
                               "The copies of network songs on this computer are deleted (the songs on the "
                               "network drive aren't touched).", ok="Empty", danger=True):
             return
-        done: list = []
-        threading.Thread(target=lambda: done.append(netcache.clear_folder()), name="cache-clear",
-                         daemon=True).start()
+        self.work.run(netcache.clear_folder, self._idle_cache_emptied, name="cache-clear")
         self._set_notice("Emptying the cache…", 3000)
-        self.root.after(200, lambda: self._idle_cache_emptied(done))
 
-    def _idle_cache_emptied(self, done: list):
-        if not done:
-            self.root.after(200, lambda: self._idle_cache_emptied(done))
-            return
-        if not done[0]:
+    def _idle_cache_emptied(self, cleared):
+        if not cleared or isinstance(cleared, offthread.Error):
             self._set_notice("Another copy of Ironbark is using the cache: close it, then try again", 6000)
         self._paint_cache()
 
@@ -1640,10 +1637,7 @@ class PlayerWindow:
             finally:
                 tracks.db.release()   # (this thread's connection)
 
-        def finish():
-            if "tracks" not in result:
-                self.root.after(50, finish)
-                return
+        def finish(_done):
             if self._notice == reading:
                 self._set_notice("")
             if result["tracks"] is None:
@@ -1652,8 +1646,7 @@ class PlayerWindow:
                 then(result["tracks"])
 
         self._set_notice(reading, 0)
-        threading.Thread(target=work, name="read-songs", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="read-songs")
 
     def _remove_selected(self):
         """Delete in a playlist's track list: the selected songs out of it, all undone at once (other
@@ -1932,6 +1925,7 @@ class PlayerWindow:
                         words = [fold(w) for w in tab.query.split()]
                         albums = [a for a in albums if browse.matches(a, words, _fold)]
                     progress["total"] = len(albums)
+                    self.work.post(self._say_loading, tab, progress)
                     tracks = self._library_tracks(albums)
                     progress["done"] = len(albums)
                 elif tab.kind == "files":
@@ -1966,10 +1960,14 @@ class PlayerWindow:
             if tab.kind == "playlist" and Path(tab.path) in self._writing_playlists:
                 self.root.after(50, start)   # songs are being added to it: read it once they're in
                 return
-            threading.Thread(target=work, name="tab-load", daemon=True).start()
-            self.root.after(50, self._finish_load, tab, progress)
+            self.work.run(work, lambda _done: self._finish_load(tab, progress), name="tab-load")
 
         start()
+
+    def _say_loading(self, tab: Tab, progress: dict):
+        """A library tab's worker says how far it has got (on Tk's thread, through the queue)."""
+        if tab.load_progress is progress and progress["tracks"] is None and tab.kind == "library":
+            self._set_notice(f"Loading library… {progress['done']} of {progress['total'] or '?'} albums", 0)
 
     def _extra_tracks(self, extra: str) -> list[Track]:
         """The songs an extra stands for: an album folder's, a file, or one track of a CUE image
@@ -1997,11 +1995,6 @@ class PlayerWindow:
         if tab.load_progress is not progress:
             return  # closed while loading (it's read afresh if reopened)
         index = self._tab_index(tab)
-        if progress["tracks"] is None:
-            if tab.kind == "library":
-                self._set_notice(f"Loading library… {progress['done']} of {progress['total'] or '?'} albums", 0)
-            self.root.after(100, self._finish_load, tab, progress)
-            return
         tab.loading, tab.load_progress = False, None
         play, tab.play_when_loaded = tab.play_when_loaded, False
         tab.unavailable = progress["unavailable"]
@@ -2107,15 +2100,11 @@ class PlayerWindow:
             finally:   # always published: the tab's label waits for it
                 tab.info = (name, artist, first, found.album if found is not None else "")
 
-        threading.Thread(target=work, name="tab-info", daemon=True).start()
-        self.root.after(80, self._finish_tab_info, tab)
+        self.work.run(work, lambda _done: self._finish_tab_info(tab), name="tab-info")
 
     def _finish_tab_info(self, tab: Tab):
-        if self._tab_index(tab) < 0:
+        if self._tab_index(tab) < 0 or tab.info is None:
             return  # closed meanwhile
-        if tab.info is None:
-            self.root.after(80, self._finish_tab_info, tab)
-            return
         tab.album_name, tab.artist, tab.first_file, tab.first_album = tab.info
         self._refresh_tabs()
 
@@ -2628,10 +2617,7 @@ class PlayerWindow:
             finally:
                 result["done"] = True
 
-        def finish():
-            if "done" not in result:
-                self.root.after(50, finish)
-                return
+        def finish(_done):
             self._writing_playlists.discard(path)
             if "error" in result:
                 self._for_prompt()
@@ -2639,8 +2625,7 @@ class PlayerWindow:
             else:
                 self._set_notice(added)
 
-        threading.Thread(target=work, name="playlist-add", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="playlist-add")
 
     def _may_rewrite(self, path: Path) -> bool:
         """A playlist another program saved in an older encoding (a Windows code page) is written back
@@ -2876,18 +2861,15 @@ class PlayerWindow:
             finally:
                 result["done"] = True
 
-        def finish():
-            if "done" not in result:
-                self.root.after(50, finish)
-            elif "error" in result:
+        def finish(_done):
+            if "error" in result:
                 self._set_notice(f"Couldn't move the playlist to the {recycle.BIN_NAME} ({result['error']}): "
                                  "it's still where it was", 10000)
             else:
                 self._set_notice(f"Moved the playlist “{name}” to the {recycle.BIN_NAME}: restore it from there "
                                  "to have it back", 10000)
 
-        threading.Thread(target=work, name="playlist-delete", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="playlist-delete")
 
     # -- opening things ------------------------------------------------------
     def choose_folder(self):
@@ -2922,13 +2904,12 @@ class PlayerWindow:
         def work():
             result["tracks"] = self._scan_or_nothing(album)
 
-        threading.Thread(target=work, name="add-album", daemon=True).start()
-        self.root.after(50, self._finish_add_album, tab, album, result, on_done)
+        self.work.run(work, lambda _done: self._finish_add_album(tab, album, result, on_done), name="add-album")
 
     def _finish_add_album(self, tab: Tab, album: Path, result: dict, on_done):
         if self._tab_index(tab) < 0:
             return  # the tab was closed meanwhile
-        if "tracks" not in result or tab.loading:  # (a tab still loading gets it once it's loaded)
+        if tab.loading:  # (a tab still loading gets it once it's loaded)
             self.root.after(50, self._finish_add_album, tab, album, result, on_done)
             return
         tracks = result["tracks"]
@@ -3007,7 +2988,7 @@ class PlayerWindow:
         index = self._index()
         if index.refreshed:
             return
-        threading.Thread(target=_refresh_library, args=(index,), name="library-start", daemon=True).start()
+        self.work.run(lambda: _refresh_library(index), name="library-start")
 
     def _library_albums(self, root: Path) -> list:
         """Every album in the library, from the database, when `root` is one of the library
@@ -3094,16 +3075,13 @@ class PlayerWindow:
         def work():
             result["tracks"] = self._scan_or_nothing(album)
 
-        def finish():
-            if "tracks" not in result:
-                self.root.after(50, finish)
-            elif result["tracks"]:
+        def finish(_done):
+            if result["tracks"]:
                 self.edit_tags(result["tracks"])
             else:
                 self._set_notice(f"No music found in “{album.name}”")
 
-        threading.Thread(target=work, name="tag-album", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="tag-album")
 
     def show_tag_history(self):
         if not self._tag_editing():
@@ -3200,7 +3178,7 @@ class PlayerWindow:
             finally:
                 self._index_updated = True
 
-        threading.Thread(target=work, name="library-index", daemon=True).start()
+        self.work.run(work, name="library-index")
 
     # -- Up next ----------------------------------------------------------------------------------
     def queue_album(self, album: Path, front: bool):
@@ -3211,17 +3189,13 @@ class PlayerWindow:
         def work():
             result["tracks"] = self._scan_or_nothing(album)
 
-        def finish():
-            if "tracks" not in result:
-                self.root.after(50, finish)
-                return
+        def finish(_done):
             if result["tracks"]:
                 self._queue_tracks(result["tracks"], front)
             else:
                 self._set_notice(f"No music found in “{album.name}”")
 
-        threading.Thread(target=work, name="queue-album", daemon=True).start()
-        self.root.after(50, finish)
+        self.work.run(work, finish, name="queue-album")
 
     def _queue_tracks(self, tracks: list[Track], front: bool):
         added = self.player.play_next(tracks) if front else self.player.add_to_queue(tracks)
@@ -3413,7 +3387,7 @@ class PlayerWindow:
         if self.watcher.running:
             self.watcher.look_now()
         elif not (self._library is not None and self._library.win.winfo_exists()):
-            threading.Thread(target=_refresh_library, args=(index,), name="library-folders", daemon=True).start()
+            self.work.run(lambda: _refresh_library(index), name="library-folders")
         self._update_new_albums()
 
     # -- spotting new music (watcher.py) -----------------------------------------------------------
@@ -3447,8 +3421,8 @@ class PlayerWindow:
         if not isinstance(since, (int, float)):
             self._new_albums = []
             return
-        threading.Thread(target=_find_new_albums, args=(self._index(), since, self.watcher.results),
-                         name="new-albums", daemon=True).start()
+        index, results = self._index(), self.watcher.results
+        self.work.run(lambda: _find_new_albums(index, since, results), name="new-albums")
 
     def _watch_reports(self):
         """Take in what the watcher found, and new albums worked out on a worker (called from
@@ -4068,8 +4042,7 @@ class PlayerWindow:
                 result["plan"] = dragdrop.DropPlan(missing=paths)
 
         self._set_notice("Opening what was dropped…", 0)
-        threading.Thread(target=work, name="drop", daemon=True).start()
-        self.root.after(50, self._finish_drop, tab, result)
+        self.work.run(work, lambda _done: self._finish_drop(tab, result), name="drop")
         return "copy"
 
     def _read_dropped(self, plan: dragdrop.DropPlan) -> tuple[list[Track], list[str]]:
@@ -4095,8 +4068,8 @@ class PlayerWindow:
         return tracks, extras
 
     def _finish_drop(self, tab: Tab | None, result: dict):
-        if "plan" not in result or (tab is not None and tab.loading and self._tab_index(tab) >= 0):
-            self.root.after(50, self._finish_drop, tab, result)
+        if tab is not None and tab.loading and self._tab_index(tab) >= 0:
+            self.root.after(50, self._finish_drop, tab, result)   # (once the tab has loaded)
             return
         plan = result["plan"]
         note = plan.note()
@@ -4186,14 +4159,10 @@ class PlayerWindow:
                 result["plan"] = dragdrop.DropPlan(missing=named)
 
         self._set_notice("Opening…", 0)
-        threading.Thread(target=work, name="open-paths", daemon=True).start()
-        self.root.after(50, self._finish_open_paths, result)
+        self.work.run(work, lambda _done: self._finish_open_paths(result), name="open-paths")
 
     def _finish_open_paths(self, result: dict):
         if self._closing:   # (sorted out only after closing began: nothing to open it in)
-            return
-        if "plan" not in result:
-            self.root.after(50, self._finish_open_paths, result)
             return
         plan = result["plan"]
         note = plan.note()
@@ -4269,8 +4238,7 @@ class PlayerWindow:
                 result["error"] = error
 
         self._set_notice("Saving diagnostics…", 0)
-        threading.Thread(target=work, name="diagnostics", daemon=True).start()
-        self.root.after(100, self._finish_diagnostics, result)
+        self.work.run(work, lambda _done: self._finish_diagnostics(result), name="diagnostics")
 
     def _private_names(self) -> dict[str, list[str]]:
         """Names the diagnostics leave out besides paths: the open tabs' titles (album and folder
@@ -4280,9 +4248,6 @@ class PlayerWindow:
                 "search": [tab.query for tab in self.tabs if tab.query]}
 
     def _finish_diagnostics(self, result: dict):
-        if not result:
-            self.root.after(100, self._finish_diagnostics, result)
-            return
         if "path" in result:
             self._set_notice(f"Diagnostics saved as {result['path'].name} · nothing has been sent anywhere", 10000)
             return
@@ -4316,7 +4281,7 @@ class PlayerWindow:
             finally:
                 self._update_checking = False
 
-        threading.Thread(target=work, name="update-check", daemon=True).start()
+        self.work.run(work, name="update-check")
 
     def _take_update(self):
         found, self._update_found = self._update_found, None
@@ -4708,7 +4673,7 @@ class PlayerWindow:
             if self._art_key == key:   # asked for another since: this one is stale (it may finish last)
                 self._art_result = (key, image)
 
-        threading.Thread(target=work, name="cover-art", daemon=True).start()
+        self.work.run(work, name="cover-art")
 
     def _show_art(self, image):
         """Put a cover up with softly rounded corners (0.20.0); no cover: a quiet ♫ placeholder
@@ -4844,10 +4809,9 @@ class PlayerWindow:
         listening, self._listening = self._listening, None
         if listening is None or not library_db.counts_as_play(listening.heard, listening.duration):
             return None
-        thread = threading.Thread(target=_store_play, args=(self._index(), listening.key, listening.heard,
-                                                            listening.duration), name="library-play", daemon=True)
-        thread.start()
-        return thread
+        index = self._index()
+        return self.work.run(lambda: _store_play(index, listening.key, listening.heard, listening.duration),
+                             name="library-play")
 
     def _hold_playing(self):
         """(The poll.) A list read a page at a time keeps the songs round the one playing read — the
@@ -5140,6 +5104,7 @@ class PlayerWindow:
             log.warning("closing: a favourite change wasn't stored in time")
 
     def _stop_timers(self):
+        self.work.close()
         for job in (self._poll_job, self._media_job, self._theme_job, self._update_job, self._check_job,
                     self._art_job):
             if job is not None:

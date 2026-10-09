@@ -4,7 +4,7 @@ import numpy as np
 import soundfile as sf
 from tagging import text, write_id3
 from ironbark.analysis import analyse
-from ironbark.details import describe_analysis
+from ironbark.tools.details import describe_analysis
 from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo
 from ironbark.library import find_albums, read_track, scan_album
