@@ -1,10 +1,12 @@
 """Our own title bar (tabs live there) while Windows keeps doing the window work.
 
 On Windows we take away the standard caption but keep the resizable frame, so
-the window still resizes from its edges, snaps to screen edges, minimises and
-maximises like any other. Pressing on our tab bar hands the drag to Windows
-itself (as if the caption were clicked), so Aero Snap and Snap Layouts behave
-natively. Elsewhere the system title bar stays and our bar sits under it.
+the window still resizes from its edges, snaps to screen edges and minimises
+like any other. It can't be maximised: the player is a tall side strip whose
+width is capped (ui.FULL_MAX_WIDTH), so the maximise box goes too and Windows+Up
+does nothing. Pressing on our tab bar hands the drag to Windows itself (as if
+the caption were clicked), so Aero Snap behaves natively within that cap.
+Elsewhere the system title bar stays and our bar sits under it.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ def _hwnd(window: tk.Misc) -> int:
 
 
 def remove_caption(window: tk.Misc) -> None:
-    """Drop the standard title bar but keep the resizable frame and min/max behaviour."""
+    """Drop the standard title bar (and the maximise box) but keep the resizable frame and minimise."""
     if not CUSTOM:
         return
     import ctypes
@@ -41,7 +43,7 @@ def remove_caption(window: tk.Misc) -> None:
     user32 = ctypes.windll.user32
     hwnd = _hwnd(window)
     style = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
-    style = (style & ~WS_CAPTION) | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
+    style = (style & ~WS_CAPTION & ~WS_MAXIMIZEBOX) | WS_THICKFRAME | WS_MINIMIZEBOX | WS_SYSMENU
     user32.SetWindowLongPtrW(hwnd, GWL_STYLE, style)
     user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS)
 
@@ -67,10 +69,6 @@ def start_move(window: tk.Misc) -> None:
     user32.PostMessageW(_hwnd(window), WM_NCLBUTTONDOWN, HTCAPTION, where)
 
 
-def toggle_maximise(window: tk.Misc) -> None:
-    window.state("normal" if window.state() == "zoomed" else "zoomed")
-
-
 def work_area(window: tk.Misc) -> tuple[int, int, int, int]:
     """(0.25.0) The usable part (no taskbar) of the monitor the window is on: left, top, right,
     bottom in px. The whole primary screen where Windows can't be asked."""
@@ -91,35 +89,3 @@ def work_area(window: tk.Misc) -> tuple[int, int, int, int]:
         except (AttributeError, OSError, tk.TclError):
             pass
     return 0, 0, window.winfo_screenwidth(), window.winfo_screenheight()
-
-
-def keep_maximise_in_work_area(window: tk.Misc) -> None:
-    """Without a caption, Windows maximises over the taskbar. Pull it back to the work area."""
-    if not CUSTOM:
-        return
-    import ctypes
-    import ctypes.wintypes as wt
-
-    class MonitorInfo(ctypes.Structure):
-        _fields_ = [("cb", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
-
-    user32 = ctypes.windll.user32
-
-    def fit(event):
-        if event.widget is not window or window.state() != "zoomed":
-            return
-        hwnd = _hwnd(window)
-        info = MonitorInfo()
-        info.cb = ctypes.sizeof(MonitorInfo)
-        user32.GetMonitorInfoW(user32.MonitorFromWindow(hwnd, 2), ctypes.byref(info))
-        work, screen = info.rcWork, info.rcMonitor
-        rect = wt.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(rect))
-        # A maximised window keeps its invisible resize border just outside the screen.
-        border = max(0, (rect.right - rect.left - (screen.right - screen.left)) // 2)
-        want = (work.left - border, work.top - border,
-                work.right - work.left + 2 * border, work.bottom - work.top + 2 * border)
-        if (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top) != want:
-            user32.SetWindowPos(hwnd, 0, *want, 0x0004 | 0x0010)  # NOZORDER | NOACTIVATE
-
-    window.bind("<Configure>", fit, add="+")

@@ -3,6 +3,7 @@ measurement maths reads known answers from synthetic signals — THD+N of a tone
 harmonic and known noise, J-test sidebands from a known amount of jitter, the frequency response
 of a known filter. The seamless loop (audition.Switcher) and the window run through stand-ins:
 no sound device is opened anywhere here."""
+import gc
 import math
 import time
 import tkinter as tk
@@ -256,6 +257,8 @@ def root():
     theme.apply(r)
     yield r
     r.destroy()
+    del r
+    gc.collect()   # here, on the main thread (Tk objects freed on another thread abort Python)
 
 
 class FakeStream:
@@ -372,4 +375,67 @@ def test_window_never_plays_on_a_device_that_isnt_there(root, fake_devices):
     win.level.set("-20 dBFS")
     win._options_changed()
     assert "-21.07 dBFS" in win.signal_line.cget("text")
+    win.close()
+
+
+def test_stop_works_while_measuring_and_drops_that_measurement(root, fake_devices):
+    import threading
+    from ironbark.testsignals_window import TestSignalsWindow
+    release = threading.Event()
+
+    def slow_recorder(source, output, rate, seconds):
+        release.wait(10)
+        return np.zeros((int(seconds * rate), 2)), rate, []
+
+    win = TestSignalsWindow(root, FakePlayer(), {"testsignals_level": -80.0}, stream_factory=FakeStream,
+                            recorder=slow_recorder, confirm=lambda *a: True)
+    win.measure()
+    assert win.playing and win.measuring
+    assert win.stop_button.instate(["!disabled"])                       # the tone can always be stopped
+    assert "<Key-space>" in win.win.bind()                               # space stops it too
+    win.stop()
+    assert not win.playing and not win.measuring and FakeStream.made[-1].closed
+    assert "no measurement" in win.status.cget("text")
+    release.set()
+    for thread in threading.enumerate():
+        if thread.name == "test-signals":
+            thread.join(5)
+    win._tick()
+    assert win.measurement is None                                       # the late recording is dropped
+    win.close()
+
+
+def test_a_dac_plugged_in_after_start_up_is_found(root, fake_devices, monkeypatch):
+    from ironbark import testsignals_window as tw
+    events = []
+
+    def find_device(name, rescan_ok=True):
+        if name == "New DAC" and rescan_ok and name not in fake_devices:
+            events.append("rescan")                                      # PortAudio looks again and finds it
+            fake_devices[name] = 4
+        return fake_devices.get(name)
+
+    monkeypatch.setattr(tw.devices, "find_device", find_device)
+    monkeypatch.setattr(audition.devices, "find_device", find_device)
+    monkeypatch.setattr(tw.devices, "output_names", lambda: ["Test out", "New DAC"])   # Windows lists it already
+    player = FakePlayer()
+    player.suspend = lambda: events.append("suspend") or True
+    win = tw.TestSignalsWindow(root, player, {"testsignals_output": "New DAC"}, stream_factory=FakeStream,
+                               confirm=lambda *a: True)
+    assert win.output_box.cget("postcommand")                            # the list is read again when opened
+    win.play_only()
+    assert win.playing and FakeStream.made[-1].kwargs["device"] == 4
+    assert events.index("suspend") < events.index("rescan")             # the player let go of the device first
+    win.close()
+
+
+def test_a_dac_windows_doesn_t_know_still_plays_nothing(root, fake_devices, monkeypatch):
+    from ironbark import testsignals_window as tw
+    rescans = []
+    monkeypatch.setattr(tw.devices, "find_device",
+                        lambda name, rescan_ok=True: rescans.append(name) if rescan_ok else fake_devices.get(name))
+    win = tw.TestSignalsWindow(root, FakePlayer(), {"testsignals_output": "Gone"}, stream_factory=FakeStream,
+                               confirm=lambda *a: True)
+    win.play_only()
+    assert rescans == [] and not FakeStream.made and "nothing was played" in win.status.cget("text")
     win.close()

@@ -32,7 +32,7 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ._files import TagError, file_size, read_at, replace_region
+from ._files import TagError, file_size, read_at, reading, replace_region
 from .vorbis import Picture, VComment
 
 STREAMINFO, PADDING, APPLICATION, SEEKTABLE, VORBIS_COMMENT, CUESHEET, PICTURE = range(7)
@@ -143,6 +143,7 @@ class FLACFile:
     """A FLAC file's metadata. `tags` (VComment or None), `pictures`, `cuesheet` and `info`
     (StreamInfo) as read; change `tags` / `pictures`, then `save()`."""
 
+    @reading
     def __init__(self, path):
         self.path = Path(path)
         self.blocks: list[tuple[int, bytes]] = []   # every block except PADDING, as stored

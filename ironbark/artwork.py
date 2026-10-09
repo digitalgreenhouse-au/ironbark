@@ -8,10 +8,12 @@ well-known cover names first, obvious non-covers never.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import struct
-from functools import lru_cache
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -68,41 +70,72 @@ def folder_art(folder: Path) -> Path | None:
     return min(candidates, key=rank)
 
 
-@lru_cache(maxsize=48)
-def _thumbnail(key: tuple, size: int) -> Image.Image | None:
-    source = key[1]
+THUMBNAILS = 48   # thumbnails kept, newest used last
+# (album folder, picture's SHA-1, size) or ("file", picture's path, size) → thumbnail. Keyed by a
+# digest, not the picture itself, so the cache never holds a copy of each embedded image.
+_thumbnail_cache: OrderedDict[tuple, Image.Image | None] = OrderedDict()
+_thumbnail_lock = threading.Lock()
+
+
+def _make_thumbnail(source, size: int, upscale: bool = True) -> Image.Image | None:
+    """A square cover `size` px across, centred and cropped. upscale=False: a picture smaller than
+    that is cropped to a square at its own shorter side instead, never enlarged. The picture's own
+    size is kept in its info["source_size"]."""
     try:
         image = Image.open(io.BytesIO(source) if isinstance(source, bytes) else source)
         image = ImageOps.exif_transpose(image).convert("RGB")
-        return ImageOps.fit(image, (size, size), Image.Resampling.LANCZOS)  # square, centred
+        source_size = image.size
+        side = size if upscale else min(size, *source_size)
+        thumb = ImageOps.fit(image, (side, side), Image.Resampling.LANCZOS)  # square, centred
+        thumb.info["source_size"] = source_size
+        return thumb
     except (OSError, ValueError, Image.DecompressionBombError):
         return None
 
 
+def _thumbnail(key: tuple, source, size: int, upscale: bool = True) -> Image.Image | None:
+    """A size×size thumbnail of `source` (image bytes, or a picture file's path), cached by `key`."""
+    key = (*key, size, upscale)
+    with _thumbnail_lock:
+        if key in _thumbnail_cache:
+            _thumbnail_cache.move_to_end(key)
+            return _thumbnail_cache[key]
+    image = _make_thumbnail(source, size, upscale)
+    with _thumbnail_lock:
+        _thumbnail_cache[key] = image
+        _thumbnail_cache.move_to_end(key)
+        while len(_thumbnail_cache) > THUMBNAILS:
+            _thumbnail_cache.popitem(last=False)
+    return image
+
+
 def first_audio_file(folder: Path) -> Path | None:
     """The first audio file in a folder (or its CD1/Disc 1 subfolder), without a full scan."""
-    from .library import AUDIO_EXTENSIONS, natural_key
+    from .library import is_music_name, natural_key, skip_folder
 
     try:
         entries = sorted(folder.iterdir(), key=lambda p: natural_key(p.name))
     except OSError:
         return None
-    files = [p for p in entries if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
+    files = [p for p in entries if is_music_name(p.name) and p.is_file()]
     if files:
         return files[0]
-    for sub in (p for p in entries if p.is_dir()):
+    for sub in (p for p in entries if not skip_folder(p.name) and p.is_dir()):
         found = first_audio_file(sub)
         if found:
             return found
     return None
 
 
-def cover_for(track_path: Path, size: int) -> Image.Image | None:
-    """A size×size cover for the track's album, or None. Safe to call off the UI thread."""
+def cover_for(track_path: Path, size: int, upscale: bool = True) -> Image.Image | None:
+    """A size×size cover for the track's album, or None. Safe to call off the UI thread.
+    upscale=False: never enlarged — a smaller picture comes back at its own size (a square of its
+    shorter side). Either way info["source_size"] is the picture's own (width, height)."""
     data = embedded_art(track_path)
     if data:
-        return _thumbnail((str(album_folder(track_path)), data), size)
+        digest = hashlib.sha1(data, usedforsecurity=False).hexdigest()
+        return _thumbnail((str(album_folder(track_path)), digest), data, size, upscale)
     image = folder_art(album_folder(track_path))
     if image is None and album_folder(track_path) != track_path.parent:
         image = folder_art(track_path.parent)  # a "CD1" folder with its own picture
-    return _thumbnail(("file", image), size) if image else None
+    return _thumbnail(("file", str(image)), image, size, upscale) if image else None

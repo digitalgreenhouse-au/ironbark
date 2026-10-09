@@ -1,5 +1,6 @@
 """Compare two files (compare.py): identical, shifted, altered, level-shifted, resampled — and the
 Compare window (skipped without a display)."""
+import gc
 import tkinter as tk
 
 import numpy as np
@@ -151,6 +152,8 @@ def root():
     theme.apply(r)
     yield r
     r.destroy()
+    del r
+    gc.collect()   # here, on the main thread (Tk objects freed on another thread abort Python)
 
 
 def test_compare_window_shows_the_result(root, tmp_path):
@@ -170,3 +173,31 @@ def test_compare_window_shows_the_result(root, tmp_path):
     texts = [w.cget("text") for w in win.results.grid_slaves(column=1)]
     assert any("lined up differently" in t for t in texts)
     win.close()
+
+
+def test_compare_window_keeps_a_cue_track(root, tmp_path):
+    import time
+    from ironbark.audiofile import CuePath, CueRange
+    from ironbark.compare_window import CompareWindow
+    x = as16(music(seconds=4))
+    image = write16(tmp_path / "image.flac", np.concatenate([np.zeros((RATE, 2)), x]))
+    single = write16(tmp_path / "02.flac", x)
+    second = CuePath(str(image), cue=CueRange(sheet=str(tmp_path / "image.cue"), number=2, start=RATE, end=None))
+    win = CompareWindow(root, {}, path_a=second, path_b=single)
+    assert win.rows["A"].path == second and "image.flac · track 2" in win.rows["A"].label.cget("text")
+    win.start()
+    deadline = time.time() + 20
+    while win.result is None and time.time() < deadline:
+        win.win.update()
+        time.sleep(0.05)
+    assert win.result is not None and win.result.verdict == "identical"   # the track itself, not the whole file
+    win.close()
+
+
+def test_file_chooser_lists_every_kind_of_file_the_player_plays():
+    from ironbark.compare_window import AUDIO_TYPES
+    from ironbark.library import AUDIO_EXTENSIONS
+    patterns = AUDIO_TYPES[0][1].split()
+    assert AUDIO_TYPES[0][0] == "Audio files"
+    assert {p.removeprefix("*") for p in patterns} == set(AUDIO_EXTENSIONS)   # AIFF, ALAC, Ogg… too
+    assert AUDIO_TYPES[-1] == ("All files", "*.*")

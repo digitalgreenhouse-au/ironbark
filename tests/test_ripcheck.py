@@ -1,9 +1,13 @@
 """Rip verification: TOC maths, checksums, finding the layout, the two lookups (all mocked: no
 test ever goes online), the wording, and the Now Playing button."""
 
+import gc
 import io
 import socket
+import ssl
 import struct
+import threading
+import time
 import tkinter as tk
 import urllib.error
 import zlib
@@ -395,6 +399,178 @@ def test_a_disc_that_cant_be_checked_says_why(tmp_path):
     assert ripcheck.describe(result) == [("Rip check", f"Can't check this disc: {result.problem}", "warn")]
 
 
+# -- folders that hold more than one disc, or more than the rip ------------------------
+def tag(path, **values):
+    tags = FLACFile(str(path))
+    for key, value in values.items():
+        tags[key.upper()] = value
+    tags.save()
+
+
+@pytest.mark.parametrize("tagged", [True, False])
+def test_a_folder_with_two_discs_checks_only_the_tracks_own_disc(tmp_path, tagged):
+    one, two = disc_audio((20, 23, 21)), disc_audio((22, 24))
+    discs = [[write(tmp_path / f"{d}-{k + 1:02d}.flac", t) for k, t in enumerate(audio)]
+             for d, audio in ((1, one), (2, two))]
+    if tagged:   # DISCNUMBER tags, and names that don't say the disc
+        for d, files in enumerate(discs, start=1):
+            for k, path in enumerate(files):
+                tag(path, discnumber=str(d), tracknumber=str(k + 1))
+                path.rename(path.with_name(f"{'ab'[d - 1]}{k + 1:02d}.flac"))
+        discs = [[p.with_name(f"{'ab'[d]}{k + 1:02d}.flac") for k, p in enumerate(files)]
+                 for d, files in enumerate(discs)]
+    rip = find_rip(discs[1][1])
+    assert rip.files == discs[1] and rip.toc.audio_count == 2
+    assert any("more than one disc" in note for note in rip.notes)
+    assert checksums(rip) == reference(two)
+    assert ripcheck.disc_files(discs[0][0]) == discs[0]
+
+
+def test_a_cue_sheet_for_the_other_disc_isnt_used(tmp_path):
+    one, two = disc_audio((20, 23, 21)), disc_audio((22, 24, 19))
+    for d, audio in ((1, one), (2, two)):
+        files = [write(tmp_path / f"{d}-{k + 1:02d}.flac", t) for k, t in enumerate(audio)]
+        (tmp_path / f"Disc {d}.cue").write_text("".join(
+            f'FILE "{f.name}" WAVE\n  TRACK {k + 1:02d} AUDIO\n    INDEX 01 00:00:00\n' for k, f in enumerate(files)))
+    rip = find_rip(tmp_path / "2-02.flac")
+    assert rip.toc.source == "the cue sheet (Disc 2.cue)"
+    assert [f.name for f in rip.files] == ["2-01.flac", "2-02.flac", "2-03.flac"]
+    assert any("Disc 1.cue" in note and "other files" in note for note in rip.notes)
+
+
+def test_more_files_than_a_cd_can_hold_are_refused(tmp_path, monkeypatch):
+    for k in range(ripcheck.CD_MAX_TRACKS + 1):
+        write(tmp_path / f"{k + 1:03d}.flac", np.zeros((SECTOR, 2), np.int16))
+    with pytest.raises(NotARip, match="more than the 99 tracks"):
+        find_rip(tmp_path / "001.flac")
+
+
+def test_a_rebuilt_layout_longer_than_a_cd_is_refused(tmp_path, monkeypatch):
+    files = [write(tmp_path / f"{k + 1:02d}.flac", t) for k, t in enumerate(disc_audio((20, 23)))]
+    monkeypatch.setattr(ripcheck, "CD_MAX_SECTORS", 40)    # (a real one would need 80 minutes of files)
+    with pytest.raises(NotARip, match="more than a CD can hold"):
+        find_rip(files[0])
+
+
+def test_mp3_copies_and_a_hires_bonus_beside_the_rip_are_left_out(tmp_path):
+    tracks = disc_audio((20, 23))
+    files = [write(tmp_path / f"{k + 1:02d} t.flac", t) for k, t in enumerate(tracks)]
+    sf.write(str(tmp_path / "01 t.mp3"), tracks[0].astype(np.float32) / 32768, 44100, format="MP3")
+    sf.write(str(tmp_path / "99 Bonus 24-96.flac"), np.zeros((SECTOR * 20, 2)), 96000, format="FLAC",
+             subtype="PCM_24")
+    rip = find_rip(files[1])
+    assert rip.files == files and checksums(rip) == reference(tracks)
+    assert any("left out" in note and "01 t.mp3" in note and "99 Bonus 24-96.flac" in note for note in rip.notes)
+    with pytest.raises(NotARip, match="MP3 files can't be checked"):
+        find_rip(tmp_path / "01 t.mp3")     # the chosen track itself still has to be CD audio
+
+
+def test_a_huge_log_isnt_read(tmp_path, monkeypatch):
+    files = [write(tmp_path / f"{k + 1:02d}.flac", t) for k, t in enumerate(disc_audio((20, 23)))]
+    (tmp_path / "rip.log").write_text(
+        "        1  |  0:00.00 |  0:00.20 |         0    |       19\n"
+        "        2  |  0:00.20 |  0:00.23 |        20    |       42\n" + "x" * 500)
+    monkeypatch.setattr(ripcheck, "LOG_MAX", 400)    # (bigger than any rip log: not one)
+    assert find_rip(files[0]).toc.source == "rebuilt from the track lengths"
+    monkeypatch.setattr(ripcheck, "LOG_MAX", 4 << 20)
+    assert find_rip(files[0]).toc.source == "the rip log (rip.log)"
+
+
+# -- answers that aren't what they seem ------------------------------------------------
+def test_an_accuraterip_answer_for_another_disc_is_refused(monkeypatch, disc):
+    files, rip, sums = disc
+    id1, id2, cddb = rip.toc.accuraterip_ids()
+    server(monkeypatch, ar_bin([((id1 ^ 1, id2, cddb), [(9, 1), (9, 2), (9, 3)])]), None)
+    result = ripcheck.verify(files[0], ON)
+    assert result.ar_status == "error" and "isn't about this disc" in result.ar_error
+    assert not any("No track matches" in text for _, text, _ in ripcheck.describe(result))
+
+
+def test_impossible_cuetools_confidences_are_ignored(monkeypatch, disc):
+    files, rip, sums = disc
+    toc = rip.toc.ctdb_toc()
+    server(monkeypatch, None, ctdb_xml([(sums.ctdb_disc, -500, toc, sums.ctdb_tracks),
+                                        (sums.ctdb_disc, 99999999999, toc, sums.ctdb_tracks),
+                                        (sums.ctdb_disc, 3, toc, sums.ctdb_tracks)]))
+    result = ripcheck.verify(files[0], ON)
+    assert result.ctdb_total == 3 and result.ctdb_disc == 3
+    rows = ripcheck.describe(result)
+    assert "unencrypted" in rows[-1][1]    # said plainly: the CUETools DB request isn't encrypted
+
+
+def test_not_found_with_a_rebuilt_layout_says_the_layout_may_be_why(monkeypatch, disc):
+    files, rip, sums = disc
+    server(monkeypatch, ar=None, ctdb=ctdb_xml([]))
+    texts = [text for _, text, _ in ripcheck.describe(ripcheck.verify(files[0], ON))]
+    assert any("rebuilt from the files' lengths" in t and "wrong ID" in t for t in texts)
+
+
+def test_a_certificate_that_cant_be_checked_is_explained(monkeypatch, disc):
+    files, rip, sums = disc
+    error = urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed: unable to get "
+                                                                  "local issuer certificate"))
+    server(monkeypatch, ar_error=error)
+    result = ripcheck.verify(files[0], ON)
+    assert result.ar_status == "error" and "root certificate" in result.ar_error
+
+
+class Trickle:
+    """An answer that never finishes: a byte at a time."""
+
+    def __init__(self):
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed = True
+        return False
+
+    def read1(self, size=-1):
+        time.sleep(0.01)
+        return b"x"
+
+    read = read1
+
+
+def test_a_trickling_answer_is_given_up_on(monkeypatch):
+    answer = Trickle()
+    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: answer)
+    monkeypatch.setattr(ripcheck, "DEADLINE", 0.2)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        ripcheck.fetch("https://www.accuraterip.com/x.bin", ON)
+    assert time.monotonic() - started < 3 and answer.closed
+
+
+def test_closing_the_window_stops_the_lookups(monkeypatch, disc):
+    files, rip, sums = disc
+    cancel = threading.Event()
+    asked = []
+
+    def urlopen(request, timeout):
+        asked.append(request.full_url)
+        cancel.set()   # Now Playing closes while the first answer is arriving
+        return Trickle()
+
+    monkeypatch.setattr(ripcheck, "_urlopen", urlopen)
+    assert ripcheck.verify(files[0], ON, cancel) is None
+    assert asked == [rip.toc.accuraterip_url()]   # the second lookup was never sent
+
+
+def test_a_server_error_lets_go_of_its_connection(monkeypatch):
+    body = io.BytesIO(b"<html>oops</html>")
+
+    def urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 500, "Server Error", {}, body)
+
+    monkeypatch.setattr(ripcheck, "_urlopen", urlopen)
+    with pytest.raises(urllib.error.HTTPError):
+        ripcheck.fetch("https://www.accuraterip.com/x.bin", ON)
+    assert body.closed
+
+
 # -- the Now Playing button -------------------------------------------------------------
 @pytest.fixture
 def root():
@@ -406,6 +582,8 @@ def root():
     theme.apply(r)
     yield r
     r.destroy()
+    del r
+    gc.collect()   # here, on the main thread: a Tk interpreter freed by another thread's collection aborts
 
 
 class FakePlayer:
@@ -434,7 +612,7 @@ def test_now_playing_button_follows_the_setting(root, tmp_path, monkeypatch):
     win.rip_button.invoke()
     import time
     deadline = time.time() + 20
-    while tmp_path not in NowPlayingWindow._rip_cache and time.time() < deadline:
+    while files[0] not in NowPlayingWindow._rip_cache and time.time() < deadline:
         win.win.update()
         time.sleep(0.05)
     win.win.update()
@@ -443,5 +621,7 @@ def test_now_playing_button_follows_the_setting(root, tmp_path, monkeypatch):
     texts = [w.cget("text") for w in win.check_frame.grid_slaves(column=1) if isinstance(w, tk.Widget)
              and "text" in w.keys()]
     assert any("whole disc matches (confidence 7 of 7)" in t for t in texts)
-    NowPlayingWindow._rip_cache.pop(tmp_path, None)
+    assert all(NowPlayingWindow._rip_cache.get(f) is NowPlayingWindow._rip_cache[files[0]] for f in files)
+    for f in files:
+        NowPlayingWindow._rip_cache.pop(f, None)
     win.close()

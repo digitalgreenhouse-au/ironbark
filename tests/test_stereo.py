@@ -1,6 +1,7 @@
 """0.8.0: the stereo scope (stereo.py + scope_window.py), PSR in the Meters, and VU
 "Auto (loudness)"."""
 
+import gc
 import math
 import queue
 import time
@@ -239,6 +240,8 @@ def root():
     theme.apply(r)
     yield r
     r.destroy()
+    del r
+    gc.collect()   # here, on the main thread (Tk objects freed on another thread abort Python)
 
 
 @pytest.mark.parametrize("view", ["lissajous", "polar"])
@@ -281,4 +284,107 @@ def test_meter_window_offers_auto_loudness_and_shows_psr(root):
     assert "Auto (loudness): waiting for music" in win.align_text.cget("text")
     assert meter_window.describe_psr(SimpleNamespace(psr=9.34)) == "PSR 9.3 dB"
     assert meter_window.describe_psr(None) == "PSR —"
+    win.close()
+
+
+def tick(win, times=1):
+    """One refresh by hand, then cancel the next one the window lines up (the test does the ticking)."""
+    for _ in range(times):
+        win._tick()
+        win.win.after_cancel(win._job)
+
+
+def count_pictures(monkeypatch, module):
+    """Count the pictures a window makes (each frame of the scope is one)."""
+    made = []
+    real = module.Image.fromarray
+    monkeypatch.setattr(module.Image, "fromarray", lambda *a, **k: made.append(1) or real(*a, **k))
+    return made
+
+
+def test_scope_glow_fades_to_exactly_nothing_and_then_nothing_is_drawn(root, monkeypatch):
+    from ironbark import scope_window
+    win = scope_window.ScopeWindow(root, FakePlayer(), {})
+    win.win.update()
+    win.engine.process(np.zeros((8192, 2), np.int32), RATE, time.perf_counter() - 0.2, "t.flac")
+    win._last = time.perf_counter() - 1
+    tick(win)
+    assert win._glow.max() > 1000            # silence heaps every sample on one spot: very bright
+    tick(win, 300)                           # ten seconds of frames with nothing more heard
+    assert win._glow.max() == 0              # gone to exactly 0 (not left as a tiny value that slows every frame)
+    made = count_pictures(monkeypatch, scope_window)
+    tick(win, 5)
+    assert made == []                        # nothing heard and nothing fading: the picture is left alone
+    win.close()
+
+
+def test_scope_takes_a_new_theme_s_colours(root):
+    from ironbark import scope_window
+    win = scope_window.ScopeWindow(root, FakePlayer(), {})
+    win.win.update()
+    try:
+        theme.use(theme.LIGHT, root)
+        assert win._colours[:3] == list(theme.rgb(theme.LIGHT.BG))   # the picture's background follows
+    finally:
+        theme.use(theme.DARK, root)
+    win.close()
+
+
+def test_scope_draws_nothing_while_minimised(root, monkeypatch):
+    from ironbark import scope_window
+    win = scope_window.ScopeWindow(root, FakePlayer(), {})
+    win.win.update()
+    made = count_pictures(monkeypatch, scope_window)
+    win.win.iconify()
+    win.win.update()
+    a = noise(0.5)
+    data = (np.hstack([a, a]) * 2**31 * 0.5).astype(np.int32)
+    win.engine.process(data, RATE, time.perf_counter() - 0.3, "t.flac")
+    tick(win, 3)
+    assert made == []                        # minimised: no frames made
+    win.win.deiconify()
+    win.win.update()
+    tick(win)
+    assert made                              # shown again: drawn at once
+    win.close()
+
+
+def test_meter_auto_finds_the_album_without_listing_its_folder_every_tick(root, tmp_path, monkeypatch):
+    from pathlib import Path
+    from ironbark import meter_window
+    album = tmp_path / "album"
+    album.mkdir()
+    song = album / "01.flac"
+    song.write_bytes(b"")                                  # never read: the measuring is a stand-in
+    monkeypatch.setattr(meter_window, "album_alignment", lambda track, on_first, cancel: -15.0)
+    listed = []
+    real_iterdir = Path.iterdir
+    monkeypatch.setattr(Path, "iterdir", lambda self: listed.append(self) or real_iterdir(self))
+    win = meter_window.MeterWindow(root, FakePlayer(), {"vu_align": meter_window.AUTO})
+    win.win.update()
+    win.engine.current_path = song
+    tick(win, 5)
+    assert listed == []                                    # 30 times a second: no folder listing on the window's thread
+    deadline = time.time() + 5
+    while "measured for this album" not in win.align_text.cget("text") and time.time() < deadline:
+        time.sleep(0.05)
+        tick(win)
+    assert "0 VU = -15 dBFS · Auto, measured for this album (album)" in win.align_text.cget("text")
+    win.close()
+
+
+def test_meter_auto_that_fails_says_so(root, tmp_path, monkeypatch):
+    from ironbark import meter_window
+
+    def broken(track, on_first, cancel):
+        raise MemoryError("too big")
+    monkeypatch.setattr(meter_window, "album_alignment", broken)
+    win = meter_window.MeterWindow(root, FakePlayer(), {"vu_align": meter_window.AUTO})
+    win.win.update()
+    win.engine.current_path = tmp_path / "album" / "01.flac"
+    deadline = time.time() + 5
+    while "couldn't" not in win.align_text.cget("text") and time.time() < deadline:
+        time.sleep(0.05)
+        tick(win)
+    assert "Auto: couldn't measure this album" in win.align_text.cget("text")   # not "measuring…" for ever
     win.close()

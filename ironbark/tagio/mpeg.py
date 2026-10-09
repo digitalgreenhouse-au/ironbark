@@ -34,7 +34,7 @@ import struct
 from pathlib import Path
 
 from . import id3
-from ._files import TagError, file_size, read_at, replace_region
+from ._files import TagError, file_size, read_at, reading, replace_region
 
 SEARCH = 1 << 20      # how far past the ID3 tag to look for the first audio frame
 NEW_PADDING = 1024    # ID3 padding left when the tag outgrows its space
@@ -216,6 +216,7 @@ class MP3File:
     """An MP3's audio facts (`info`) and ID3 tag (`tags`: id3.ID3Tag or None — from the ID3v1
     tag when there's no ID3v2 one)."""
 
+    @reading
     def __init__(self, path):
         self.path = Path(path)
         with open(self.path, "rb") as f:
@@ -223,12 +224,15 @@ class MP3File:
             head = read_at(f, 0, min(size, 10))
             self.v2_size = id3.tag_size(head)
             self.tags: id3.ID3Tag | None = None
-            self.damaged_tag = False      # an ID3 tag that won't parse: read as none, never rewritten
+            # An ID3 tag that won't parse (read as none), or one whose frames couldn't all be
+            # followed (read as far as they go): never rewritten, so nothing in it is lost.
+            self.damaged_tag = False
             if self.v2_size:
                 if self.v2_size > size:
                     raise TagError("the ID3 tag runs past the end of the file")
                 try:
                     self.tags = id3.ID3Tag.parse(read_at(f, 0, self.v2_size))
+                    self.damaged_tag = bool(self.tags.problem)
                 except TagError:
                     self.tags, self.damaged_tag = None, True
             start = self.v2_size
@@ -255,7 +259,7 @@ class MP3File:
         """Write the ID3v2 tag as v2.`major` (in the old tag's space when it fits); an existing
         ID3v1 tag is brought up to date too."""
         if self.damaged_tag:
-            raise TagError("its ID3 tag is damaged, so it isn't rewritten (nothing in it is lost)")
+            raise TagError(id3.damaged_reason(self.tags))
         tag = self.add_tags()
         body = tag.render(major)
         padding = self.v2_size - len(body) if len(body) <= self.v2_size else NEW_PADDING
@@ -269,7 +273,7 @@ class MP3File:
     def delete(self) -> None:
         """Remove the ID3v2 and ID3v1 tags."""
         if self.damaged_tag:
-            raise TagError("its ID3 tag is damaged, so it isn't rewritten (nothing in it is lost)")
+            raise TagError(id3.damaged_reason(self.tags))
         if self.v1:
             with open(self.path, "r+b") as f:
                 f.seek(0, 2)

@@ -1,5 +1,6 @@
 """0.23.0: the app icon (drawn in code, saved in the package, on every window, the
-taskbar's AppUserModelID) and the tab strip that repaints its tabs instead of rebuilding them."""
+taskbar's AppUserModelID) and the tab strip that repaints its tabs instead of rebuilding them
+(one canvas since the polish pass: a browser-style selected tab, hover plates, the level mark)."""
 
 from __future__ import annotations
 
@@ -224,7 +225,7 @@ def test_the_player_sets_its_app_id_before_making_any_window(monkeypatch):
     assert order == ["app id", "window"]
 
 
-# -- the tab strip: repainted, not rebuilt ----------------------------------------------------------
+# -- the tab strip: one canvas, repainted, not rebuilt ----------------------------------------------
 def _bar(root, **calls):
     from ironbark.tabbar import TabBar
 
@@ -244,32 +245,54 @@ def _widgets(widget) -> set[str]:
     return out
 
 
-def test_switching_tabs_makes_and_destroys_no_widgets(root):
+def _shown(bar, item) -> bool:
+    return bar.canvas.itemcget(item, "state") != "hidden"
+
+
+def _names(bar) -> list[str]:
+    return [bar.canvas.itemcget(slot["name"], "text") for slot in bar._slots]
+
+
+def _pictures(root) -> int:
+    return len(root.tk.splitlist(root.tk.call("image", "names")))
+
+
+def test_switching_tabs_makes_and_destroys_nothing(root):
+    """A tab switch re-configures the strip's canvas items: no widget, no canvas item and (once each
+    picture has been drawn) no new picture is made."""
     bar = _bar(root)
-    bar.set_tabs(["Tapestry", "Kind of Blue", "Rumours"], 0, 2)
+    titles = ["Tapestry", "Kind of Blue", "Rumours"]
+    bar.set_tabs(titles, 0, 2)
     root.update()
-    before, slots = _widgets(bar), list(bar._tab_widgets)
+    for current in (1, 2, 0):          # warm-up: each tab selected once
+        bar.set_tabs(titles, current, 2)
+    root.update()
+    widgets, items, pictures = _widgets(bar), bar.canvas.find_all(), _pictures(root)
     for current in (1, 2, 0, 1):
-        bar.set_tabs(["Tapestry", "Kind of Blue", "Rumours"], current, 2)
+        bar.set_tabs(titles, current, 2)
         root.update()
-        assert _widgets(bar) == before and bar._tab_widgets == slots
-        for i, tab in enumerate(bar._tab_widgets):
-            assert tab.cget("bg") == (theme.BG if i == current else theme.STRIP)
-            assert tab.label.cget("fg") == (theme.TEXT if i == current else theme.MUTED)
-            assert tab.line.cget("bg") == (theme.ACCENT if i == 2 else tab.cget("bg"))   # playing line
+        assert _widgets(bar) == widgets and bar.canvas.find_all() == items and _pictures(root) == pictures
+        for i, slot in enumerate(bar._slots):
+            assert bar.canvas.itemcget(slot["name"], "fill") == (theme.TEXT if i == current else theme.MUTED)
+            assert _shown(bar, slot["mark"]) == (i == 2)          # the level mark: only on the playing tab
+        assert all(_shown(bar, item) for item in bar._sel_ends)    # the selected tab's shape...
+        assert bar.canvas.coords(bar._sel_ends[0])[0] < bar.slot_x(current)   # ...at the selected slot
+        assert bar.canvas.coords(bar._sel_ends[1])[0] > bar.slot_x(current)
 
 
 def test_slots_follow_the_number_of_tabs(root):
     bar = _bar(root)
     bar.set_tabs(["a", "b", "c"], 0, None)
-    first = bar._tab_widgets[0]
+    first = bar._slots[0]
     bar.set_tabs(["a", "b", "c", "d", "e"], 4, None)
-    assert len(bar._tab_widgets) == 5 and bar._tab_widgets[0] is first
+    assert len(bar._slots) == 5 and bar._slots[0] is first
     bar.set_tabs(["a", "b"], 1, None)
     root.update()
-    assert len(bar._tab_widgets) == 2 and len(bar.tabs_frame.winfo_children()) == 2
+    assert len(bar._slots) == 2
+    names = [item for item in bar.canvas.find_all() if bar.canvas.type(item) == "text"]
+    assert len(names) == 2 + 1                     # two names and the close glyph
     bar.set_tabs([], -1, None)
-    assert bar._tab_widgets == [] and bar.tabs_frame.winfo_children() == []
+    assert bar._slots == [] and not any(_shown(bar, item) for item in bar._sel_ends)
 
 
 def test_names_and_tooltips_follow_the_tabs(root):
@@ -277,26 +300,40 @@ def test_names_and_tooltips_follow_the_tabs(root):
     long = "A very long album name that can't possibly fit in one tab of a narrow window"
     bar.set_tabs(["Short", long], 0, None)
     root.update()
-    assert bar._tab_widgets[0].label.cget("text") == "Short" and bar._full_name(0) == ""
-    assert bar._tab_widgets[1].label.cget("text").endswith("…") and bar._full_name(1) == long
+    assert _names(bar)[0] == "Short" and bar._full_name(0) == ""
+    assert _names(bar)[1].endswith("…") and bar._full_name(1) == long
     bar.set_tabs([long, "Short"], 1, None)      # moved: the slots swap names, the tips follow
     root.update()
-    assert bar._full_name(0) == long and bar._tab_widgets[1].label.cget("text") == "Short"
+    assert bar._full_name(0) == long and _names(bar)[1] == "Short"
+    bar._pointer(bar.slot_x(0) + 5, theme.px(theme.ROW_Y))
+    assert bar._tip_text() == long and bar._tip_x() == bar.canvas.winfo_rootx() + bar.slot_x(0)
 
 
-def test_a_slim_tab_hides_its_name_and_tips_on_the_tab_itself(root):
+def test_a_shortened_name_drops_the_space_before_the_ellipsis(root):
+    bar = _bar(root)
+    width = bar.text_font.measure("Amyl And …")
+    assert bar._fit("Amyl And The Sniffers", width) == "Amyl And…"
+
+
+def test_slim_tabs_are_centred_or_show_only_the_mark(root):
     root.geometry("200x300")
     bar = _bar(root)
-    bar.set_tabs([f"Album {i}" for i in range(12)], 0, None)
+    bar.set_tabs([f"Album {i}" for i in range(12)], 0, 5)
     root.update()
-    slim = bar._tab_widgets[3]
-    assert not slim.label.winfo_manager() and slim.shown == ""
-    assert bar._full_name(3) == "Album 3"
+    assert bar._slim()
+    slim, playing = bar._slots[3], bar._slots[5]
+    assert bar.canvas.itemcget(slim["name"], "anchor") == "center"
+    assert bar.canvas.coords(slim["name"])[0] == bar.slot_x(3) + bar._per // 2
+    assert bar._shown[3] == "" and bar._full_name(3) == "Album 3"          # too slim for a name: tooltip only
+    assert _shown(bar, playing["mark"]) and bar.canvas.itemcget(playing["name"], "text") == ""
+    bar._pointer(bar.slot_x(3) + 1, theme.px(theme.ROW_Y))
+    bar._reveal_x()
+    assert not _shown(bar, bar._x_glyph)                                    # never a close glyph on a slim tab
 
 
 def test_dragging_a_tab_still_moves_it_along(root):
-    """The drag state lives on the bar; the tab pressed keeps its widget now, and the names move
-    along the slots as the tabs swap (ui.move_tab → set_tabs)."""
+    """The drag state lives on the bar; the names move along the slots as the tabs swap
+    (ui.move_tab -> set_tabs)."""
     titles = ["One", "Two", "Three", "Four"]
     moves = []
 
@@ -308,14 +345,138 @@ def test_dragging_a_tab_still_moves_it_along(root):
     bar = _bar(root, on_move=on_move, on_select=lambda i: bar.set_tabs(list(titles), i, None))
     bar.set_tabs(list(titles), 0, None)
     root.update()
-    x0 = bar._tab_widgets[0].winfo_rootx() + 5
+    x0 = bar.canvas.winfo_rootx() + bar.slot_x(0) + 5
     bar._press(0, SimpleNamespace(x_root=x0))
     for step in range(1, 4):
         bar._drag_motion(SimpleNamespace(x_root=x0 + step * bar._slot))
     bar._drag_end()
     assert moves == [(0, 1), (1, 2), (2, 3)]
     assert titles == ["Two", "Three", "Four", "One"]
-    assert [t.label.cget("text") for t in bar._tab_widgets] == titles
+    assert _names(bar) == titles
+
+
+def test_the_close_button_makes_room_and_goes_with_the_pointer(root):
+    """After a moment on a tab its close glyph shows: the name re-fits to end before the glyph's
+    slot; the glyph is MUTED, lit on a disc under the pointer; leaving the strip hides it. A press and
+    release on it closes that tab; sliding off before letting go doesn't."""
+    closed = []
+    bar = _bar(root, on_close=closed.append)
+    bar.set_tabs(["Kind of Blue", "Amyl And The Sniffers", "Fetch the Bolt Cutters", "Metamodern Sounds"], 0, 2)
+    root.update()
+    cy = theme.px(theme.ROW_Y)
+    bar._pointer(bar.slot_x(1) + 5, cy)
+    assert not _shown(bar, bar._x_glyph) and bar._x_job is not None
+    before = bar._shown[1]
+    bar._reveal_x()
+    assert _shown(bar, bar._x_glyph) and not _shown(bar, bar._x_disc)
+    assert bar.canvas.itemcget(bar._x_glyph, "fill") == theme.MUTED
+    name_end = bar.canvas.bbox(bar._slots[1]["name"])[2]
+    room_end = bar.slot_x(1) + bar._per - theme.px(theme.CLOSE_SLOT)
+    assert name_end <= room_end + 1 and len(bar._shown[1]) <= len(before)
+    cx, _ = bar._x_centre(1)
+    bar._pointer(cx, cy)                                                  # onto the glyph
+    assert _shown(bar, bar._x_disc) and bar.canvas.itemcget(bar._x_glyph, "fill") == theme.TEXT
+    bar._pressed(SimpleNamespace(x=cx, y=cy, x_root=0))
+    bar._released(SimpleNamespace(x=cx + 200, y=cy))                    # let go elsewhere: nothing
+    assert closed == []
+    bar._pressed(SimpleNamespace(x=cx, y=cy, x_root=0))
+    bar._released(SimpleNamespace(x=cx, y=cy))
+    assert closed == [1]
+    bar._pointer(None, None)                                              # left the strip
+    assert not _shown(bar, bar._x_glyph) and not _shown(bar, bar._x_disc)
+
+
+def test_the_hover_plate_shows_only_on_a_tab_that_isnt_selected(root):
+    bar = _bar(root)
+    bar.set_tabs(["One", "Two", "Three"], 1, None)
+    root.update()
+    cy = theme.px(theme.ROW_Y)
+    bar._pointer(bar.slot_x(0) + 5, cy)
+    assert all(_shown(bar, item) for item in bar._plate)
+    assert bar.canvas.coords(bar._plate[0])[0] == bar.slot_x(0) + theme.px(theme.PLATE_INSET)
+    assert bar.canvas.itemcget(bar._slots[0]["name"], "fill") == theme.TEXT      # the hovered name lights
+    bar._pointer(bar.slot_x(1) + 5, cy)                                         # the selected tab: no plate
+    assert not any(_shown(bar, item) for item in bar._plate)
+    bar._pointer(bar.slot_x(0) + 5, theme.px(theme.TAB_TOP) - 1)                # above the tabs: none
+    assert bar._hover is None and not any(_shown(bar, item) for item in bar._plate)
+
+
+def test_lines_between_tabs_hide_next_to_the_selected_hovered_or_target_tab(root):
+    root.geometry("900x300")
+    bar = _bar(root)
+    bar.set_tabs(["A", "B", "C", "D", "E", "F"], 0, None)
+    root.update()
+
+    def lines():   # the line after each tab
+        return [_shown(bar, slot["divider"]) for slot in bar._slots]
+
+    assert lines() == [False, True, True, True, True, False]    # not beside the selected tab, none after the last
+    bar._pointer(bar.slot_x(3) + 5, theme.px(theme.ROW_Y))
+    assert lines() == [False, True, False, False, True, False]  # hovered D: none either side of it
+    bar._pointer(None, None)
+    bar.highlight(4)
+    assert lines() == [False, True, True, False, False, False]  # a drop target E: the same
+    bar.highlight(None)
+    assert lines() == [False, True, True, True, True, False]
+
+
+def test_everything_on_the_strip_shares_one_centre_line(root):
+    bar = _bar(root)
+    bar.set_tabs(["One", "Two"], 0, 1)
+    root.update()
+    cy = theme.px(theme.ROW_Y)
+    for slot in bar._slots:
+        top, bottom = bar.canvas.bbox(slot["name"])[1::2]
+        assert abs((top + bottom) / 2 - cy) <= 1
+    mark = bar.canvas.bbox(bar._slots[1]["mark"])
+    assert abs((mark[1] + mark[3]) / 2 - cy) <= 1
+    for button in (bar.add_btn, bar.settings_btn):
+        assert abs(button.winfo_y() + button.winfo_height() / 2 - cy) <= 1, button
+    if bar.min_btn is not None:   # full-height plates: the glyph's box ends at the plate's foot, centred on the line
+        for button in (bar.min_btn, bar.close_btn):
+            assert button.winfo_y() == 0
+            assert button.winfo_height() == theme.px(theme.STRIP_H) - bar.line_width()
+
+
+def test_a_tab_switch_is_quick(root):
+    """A tab switch's own work and Tk's handling of it (repaint, don't rebuild): the median of many
+    switches stays well under 10 ms."""
+    import statistics
+    import time
+
+    root.geometry("1000x300")
+    bar = _bar(root)
+    titles = [f"Album number {i}" for i in range(10)]
+    bar.set_tabs(titles, 0, 3)
+    root.update()
+    for i in range(10):
+        bar.set_tabs(titles, i, 3)
+    root.update()
+    times = []
+    for k in range(40):
+        start = time.perf_counter()
+        bar.set_tabs(titles, k % 10, 3)
+        root.update_idletasks()
+        times.append(time.perf_counter() - start)
+    assert statistics.median(times) < 0.010, statistics.median(times)
+
+
+def test_the_strip_repaints_itself_in_a_new_palette(root):
+    bar = _bar(root)
+    bar.set_tabs(["One", "Two"], 0, 1)
+    root.update()
+    items = bar.canvas.find_all()
+    picture = bar.canvas.itemcget(bar._sel_ends[0], "image")
+    try:
+        theme.use(theme.LIGHT, root)
+        root.update()
+        assert bar.canvas.find_all() == items                        # repainted, not rebuilt
+        assert bar.canvas.cget("bg") == theme.LIGHT.STRIP
+        assert bar.canvas.itemcget(bar._line, "fill") == theme.LIGHT.TAB_EDGE
+        assert bar.canvas.itemcget(bar._slots[1]["name"], "fill") == theme.LIGHT.MUTED
+        assert bar.canvas.itemcget(bar._sel_ends[0], "image") != picture
+    finally:
+        theme.use(theme.DARK, root)
 
 
 def test_the_font_list_is_asked_for_once(root, monkeypatch):

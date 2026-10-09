@@ -54,6 +54,30 @@ def test_pairs_name_real_roles_and_cover_every_text_colour():
     assert {"TEXT", "MUTED", "ACCENT_TEXT", "ON_ACCENT", "GOOD", "WARN", "DANGER"} <= text_colours
 
 
+def test_the_rounded_looks_pairs_are_checked():
+    for pair in (("TEXT", "STRIP_HI"), ("MUTED", "STRIP_HI"), ("TEXT", "HOVER"), ("MUTED", "HOVER")):
+        assert pair in theme.TEXT_PAIRS
+    for pair in (("ACCENT_TEXT", "STRIP"), ("ACCENT_TEXT", "STRIP_HI"), ("ACCENT_TEXT", "HOVER"),
+                 ("THUMB", "BG"), ("THUMB", "SURFACE")):
+        assert pair in theme.GRAPHIC_PAIRS
+    assert ("ACCENT_TEXT", "SURFACE_HI") not in theme.GRAPHIC_PAIRS     # the menu tick moved to HOVER
+
+
+def test_dg_green_is_never_drawn_on_the_hover_greys():
+    """In Light, DG green on STRIP_HI or HOVER is under 3:1, so what sits on them in green — the
+    playing tab's mark, the lit gear, a menu tick, an "on" glyph — is ACCENT_TEXT instead."""
+    for background in ("STRIP_HI", "HOVER"):
+        assert theme.contrast_ratio(theme.LIGHT.ACCENT, getattr(theme.LIGHT, background)) < theme.AA_GRAPHICS
+        assert ("ACCENT", background) not in theme.GRAPHIC_PAIRS
+    import inspect
+
+    from ironbark import tabbar
+
+    assert '"ACCENT_TEXT" if self.active' in inspect.getsource(tabbar.IconButton._paint)        # lit gear
+    assert 'level_mark_photo(self, "ACCENT_TEXT")' in inspect.getsource(tabbar.TabBar._paint_slot)
+    assert '"ACCENT_TEXT" if on' in inspect.getsource(tabbar.RoundIconButton.set_on)
+
+
 @pytest.mark.parametrize("palette", [theme.DARK, theme.LIGHT], ids=["dark", "light"])
 def test_each_palette_has_every_role_once(palette):
     values = [v.lower() for v in palette.roles().values()]
@@ -196,8 +220,10 @@ def make_window(tmp_path, monkeypatch):
     song = music / "01 Song.flac"
     sf.write(song, np.zeros((44100, 2), dtype=np.int16), 44100, subtype="PCM_16")
     made = []
+    scale_before = theme._scale   # (theme.px's scaling: put back at the end, like Tk's own)
 
-    def make(**prefs):
+    def make(*, scaling: float | None = None, **prefs):
+        """scaling: lay the window out as at that display scaling (1.0 = 100%, 1.5 = 150%)."""
         base = dict(media_controls=False, watch_music=False, clip_guard=False, exclusive=False,
                     library_folder=str(tmp_path / "Music"), geometry="420x640+120+120", always_on_top=False)
         settings.save({**settings.DEFAULTS, **base, **prefs})
@@ -205,6 +231,10 @@ def make_window(tmp_path, monkeypatch):
             root = tk.Tk()
         except tk.TclError as error:
             pytest.skip(f"no display: {error}")
+        native = root.tk.call("tk", "scaling")
+        if scaling:
+            root.tk.call("tk", "scaling", scaling * 96 / 72)
+        theme._scale = theme.scale(root)   # this root's (an earlier test's root may have had another)
         errors = []
         root.report_callback_exception = lambda *info: errors.append(info)
         track = Track(path=song, title="Song One", artist="Artist", album="Album", duration=200.0,
@@ -214,17 +244,23 @@ def make_window(tmp_path, monkeypatch):
         window.tabs = [Tab("album", str(music), tracks=[track])]
         window.current = window.playing_tab = 0
         window._refresh_tabs()
-        made.append((window, root))
+        made.append((window, root, native))
         _pump(root, 0.6)
         return window, root, player, errors
 
     yield make
-    for window, root in made:
+    for window, root, native in made:
         try:
+            # Tk's next root starts from the last scaling set in the process (its default fonts too):
+            # put it back, or every later test would be laid out as at this one's.
+            root.tk.call("tk", "scaling", native)
             window.quit()
         except tk.TclError:
             pass
     theme.use(theme.DARK)
+    # theme.px goes by the scaling of the last window styled: a window laid out as at 150% would
+    # otherwise leave every later test's sizes half as big again (a tab strip on a plain root, say).
+    theme._scale = scale_before
     del made[:]
     gc.collect()   # on this thread (Tk objects freed on another thread abort Python)
 
@@ -328,7 +364,8 @@ def test_mini_and_full_keep_their_own_places_and_the_music_plays_on(make_window)
     window, root, player, errors = make_window(mini_geometry="640x140+300+60")
     full_before = _where(root)
     assert full_before[2:] == (120, 120)
-    assert root.bind("z")                            # key Z is bound
+    found = window.keys.resolve(root, "z", 0)        # key Z is bound (through the keyboard table, keys.py)
+    assert found is not None and found[0].id == "mini"
 
     window.toggle_mini()
     _pump(root, 0.5)

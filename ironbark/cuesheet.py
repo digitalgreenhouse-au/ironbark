@@ -41,6 +41,7 @@ twice — or at the end of the file (FLAC: the lead-out) for the last track in a
 
 from __future__ import annotations
 
+import locale
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
@@ -275,16 +276,36 @@ def parse(text: str, source: Path | None = None) -> CueSheet:
 
 
 def decode(data: bytes) -> str:
-    """A .cue file's bytes as text: UTF-8 (with or without a byte-order mark), else Windows-1252
-    (what older Windows rippers wrote), which can decode any byte."""
-    for encoding in ("utf-8-sig", "utf-16"):
-        if encoding == "utf-16" and not data.startswith((b"\xff\xfe", b"\xfe\xff")):
-            continue
+    """A text file's bytes as text (decode_with, without saying how)."""
+    return decode_with(data)[0]
+
+
+def decode_with(data: bytes) -> tuple[str, str]:
+    """A text file's bytes as text, and the encoding that read them: a .cue sheet, or a playlist
+    (playlists.py). Tried in turn:
+    - a byte-order mark says which (UTF-8, or UTF-16 as Windows Notepad saves "Unicode");
+    - UTF-16 without one: plain text never holds zero bytes, UTF-16 has one beside every letter;
+    - UTF-8 (a file name that isn't valid Unicode, as playlists.write saves it, comes back as it was);
+    - this PC's Windows code page — what older Windows software wrote: Shift-JIS on a Japanese PC,
+      Windows-1252 on a Western one;
+    - Windows-1252, where the few bytes it doesn't define become replacement marks."""
+    if data.startswith(b"\xef\xbb\xbf"):
+        attempts = [("utf-8", data[3:])]
+    elif data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        attempts = [("utf-16", data)]
+    elif b"\x00" in data:
+        sample = data[:4096]
+        odd_zeros = sample[1::2].count(0) >= sample[0::2].count(0)   # "C\0:\0" is little-endian
+        attempts = [("utf-16-le" if odd_zeros else "utf-16-be", data)]
+    else:
+        attempts = []
+    attempts += [("utf-8", data), (locale.getencoding(), data)]
+    for encoding, body in attempts:
         try:
-            return data.decode(encoding)
-        except UnicodeDecodeError:
+            return body.decode(encoding, errors="surrogatepass" if encoding == "utf-8" else "strict"), encoding
+        except (UnicodeDecodeError, LookupError):
             pass
-    return data.decode("cp1252", errors="replace")
+    return data.decode("cp1252", errors="replace"), "cp1252"
 
 
 def read(path: str | Path) -> CueSheet:
@@ -327,8 +348,10 @@ def from_flac_block(block, rate: int, path: str | Path) -> CueSheet | None:
 
 
 def cue_files(folder: str | Path) -> list[Path]:
-    """The .cue files in a folder (not its subfolders), in name order. [] if it can't be read."""
+    """The .cue files in a folder (not its subfolders), in name order. [] if it can't be read.
+    (Not macOS's "._" companions, which share the name but hold Finder data.)"""
     try:
-        return sorted(p for p in Path(folder).iterdir() if p.suffix.lower() == ".cue" and p.is_file())
+        return sorted(p for p in Path(folder).iterdir()
+                      if p.suffix.lower() == ".cue" and not p.name.startswith("._") and p.is_file())
     except OSError:
         return []

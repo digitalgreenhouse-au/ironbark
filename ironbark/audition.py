@@ -203,12 +203,16 @@ class Switcher:
 
 class Audition:
     """Plays a Switcher on a sound device until `stop`. `stream_factory` stands in for
-    sounddevice.OutputStream in tests (no sound device is ever opened there)."""
+    sounddevice.OutputStream in tests (no sound device is ever opened there). `default_check`:
+    for bit-perfect on the system default (device None), asked for the device just before it's
+    opened — the player's check_default, which raises devices.DefaultChanged when Windows' default
+    is no longer the device whose volume control was checked."""
 
     def __init__(self, switcher: Switcher, device: str | None = None, exclusive: bool = False,
-                 stream_factory=None):
+                 stream_factory=None, default_check=None):
         self.switcher = switcher
         self.device, self.want_exclusive = device, exclusive
+        self._default_check = default_check
         self._factory = stream_factory or sd.OutputStream
         self._stream = None
         self.exclusive = False
@@ -229,10 +233,17 @@ class Audition:
         self._stream = self._open()
 
     def _open(self):
-        index = devices.find_device(self.device)
+        device = self.device
+        if self.want_exclusive and device is None and self._default_check is not None:
+            device = self._default_check()   # (raises devices.DefaultChanged: nothing is opened)
+        index = devices.find_device(device)
         self.note = ""
-        if index is None and self.device is not None:
-            self.note = f"{self.device} isn't connected — playing on the system default"
+        if index is None and device is not None:
+            if self.want_exclusive:
+                # As the player: bit-perfect mode never moves to another device by itself (it could
+                # have no volume control of its own).
+                raise devices.DeviceMissing(f"{device} isn't connected")
+            self.note = f"{device} isn't connected — playing on the system default"
             index = devices.find_device(None)
         kwargs = dict(samplerate=self.switcher.rate, channels=self.switcher.channels, blocksize=BLOCK_FRAMES,
                       latency="low", callback=self._callback)
@@ -242,6 +253,7 @@ class Audition:
                 stream = self._factory(device=index, dtype="int32", extra_settings=sd.WasapiSettings(exclusive=True),
                                        dither_off=True, clip_off=True, **kwargs)
                 stream.start()
+                devices.holding(stream)
                 self.exclusive = True
                 self.device_name = self._name(stream)
                 return stream
@@ -253,6 +265,7 @@ class Audition:
         extra = sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS and index is not None else None
         stream = self._factory(device=index, dtype="float32", extra_settings=extra, **kwargs)
         stream.start()
+        devices.holding(stream)
         self.exclusive = False
         self.device_name = self._name(stream)
         return stream
@@ -280,6 +293,8 @@ class Audition:
                 stream.close()
             except sd.PortAudioError:
                 log.exception("closing the audition stream")
+            finally:
+                devices.released(stream)
 
     close = stop
 

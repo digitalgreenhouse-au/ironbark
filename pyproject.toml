@@ -8,6 +8,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Digital Greenhouse", email = "info@digitalgreenhouse.com.au" }]
 requires-python = ">=3.11"
 dependencies = [
+    "comtypes>=1.4.8; sys_platform == 'win32'",   # used directly (media controls, devices), not only via pycaw
     "numpy>=1.26",
     "pillow>=10",
     "pycaw>=20260927; sys_platform == 'win32'",
