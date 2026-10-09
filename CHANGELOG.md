@@ -4,6 +4,20 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.39.0 — 09/10/2026
+
+**Settings fills the window.** Press the gear (or Ctrl+,) and Settings takes the place of the cover,
+transport and track list under the tab strip, the full width of the player, with a small **Done**
+button at the bottom. Done, Esc, the gear again or a click on a tab bring the player back; the music
+isn't touched.
+
+- Two pages. **Simple**, what you see first: Output, Bit-perfect, Volume · Theme, Album art, Keep on
+  top · the library folders and Local network access · Keyboard shortcuts, About, the version.
+  **Advanced settings…**, a button at the bottom: Clipping guard and headroom, Volume levelling and
+  pre-amp · Media keys, Home · Network playback · Experimental · Help (Save diagnostics…, Open log
+  folder, Detailed logging). Back returns to the simple page.
+- From the mini player the gear still grows the strip downwards to hold Settings, as before.
+
 ## 0.38.0 — 09/10/2026
 
 **Ironbark never uses the internet, and nothing runs in the background.**

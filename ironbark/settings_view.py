@@ -37,10 +37,22 @@ class SettingsView:
         self.head = ttk.Frame(self.frame, style="Pop.TFrame",
                               padding=theme.pad(theme.GAP_WIDE, theme.GAP_LARGE, theme.GAP_WIDE, 0))
         self.head.pack(fill="x")
-        # The bottom bar, outside the scrolling part: Advanced settings… / Back, and Done.
+        # The pages, in one scrolling area; one of them packed at a time.
+        self.area = controls.ScrollArea(self.frame, bg="SURFACE")
+        self.area.pack(fill="both", expand=True)
+        self.simple = tk.Frame(self.area.inner, bg=theme.SURFACE)
+        self.advanced = tk.Frame(self.area.inner, bg=theme.SURFACE)
+        self.frame.bind("<Escape>", lambda e: self.close() or "break")
+        self.bar = self.done_button = self.page_button = None   # (made by finish, after the window's controls)
+
+    def finish(self):
+        """The bottom bar, made last so the keyboard's Tab order starts at the top of the page:
+        Advanced settings… / Back on the left, Done on the right, outside the scrolling part."""
         self.bar = tk.Frame(self.frame, bg=theme.SURFACE)
-        self.bar.pack(side="bottom", fill="x", padx=theme.px(theme.GAP_WIDE), pady=theme.px(theme.GAP_LARGE))
-        tk.Frame(self.frame, bg=theme.BORDER, height=1).pack(side="bottom", fill="x")
+        # (before the area in the pack order, or the area's expand would leave the bar no room)
+        self.bar.pack(side="bottom", fill="x", padx=theme.px(theme.GAP_WIDE), pady=theme.px(theme.GAP_LARGE),
+                      before=self.area)
+        tk.Frame(self.frame, bg=theme.BORDER, height=1).pack(side="bottom", fill="x", before=self.area)
         self.done_button = controls.PillButton(self.bar, "Done", self.close, kind="plain", small=True, bg="SURFACE",
                                                label="Back to the player (also Esc, or the gear)")
         self.done_button.pack(side="right")
@@ -49,13 +61,7 @@ class SettingsView:
                                                label="The rest: clipping guard, levelling, media keys, home, the "
                                                      "library check, network playback, Experimental, Help")
         self.page_button.pack(side="left")
-        # The pages, in one scrolling area; one of them packed at a time.
-        self.area = controls.ScrollArea(self.frame, bg="SURFACE")
-        self.area.pack(fill="both", expand=True)
-        self.simple = tk.Frame(self.area.inner, bg=theme.SURFACE)
-        self.advanced = tk.Frame(self.area.inner, bg=theme.SURFACE)
         self._pack_page()
-        self.frame.bind("<Escape>", lambda e: self.close() or "break")
 
     # -- pages ----------------------------------------------------------------------------------
     def _pack_page(self):
@@ -66,7 +72,8 @@ class SettingsView:
                     page.pack(fill="both", expand=True, padx=pad[0], pady=(pad[1], pad[3]))
             elif page.winfo_manager():
                 page.pack_forget()
-        self.page_button.set_text("Back" if self.page == "advanced" else "Advanced settings…")
+        if self.page_button is not None:
+            self.page_button.set_text("Back" if self.page == "advanced" else "Advanced settings…")
 
     def show_page(self, page: str):
         if page not in PAGES or page == self.page:
@@ -106,7 +113,7 @@ class SettingsView:
         before, self._focus_before = self._focus_before, None
         if before is not None:
             try:
-                if before.winfo_exists() and before.winfo_viewable():
+                if before.winfo_exists():
                     before.focus_set()
             except (tk.TclError, KeyError):
                 pass
@@ -116,7 +123,8 @@ class SettingsView:
     def natural_height(self) -> int:
         """How tall the view wants to be with the page on show (the mini strip grows the window by it)."""
         self.frame.update_idletasks()
-        return (self.head.winfo_reqheight() + self.area.inner.winfo_reqheight() + self.bar.winfo_reqheight()
+        bar = self.bar.winfo_reqheight() if self.bar is not None else 0
+        return (self.head.winfo_reqheight() + self.area.inner.winfo_reqheight() + bar
                 + 2 * theme.px(theme.GAP_LARGE) + 1)
 
     def visible(self, widget: tk.Misc) -> bool:

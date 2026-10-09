@@ -464,7 +464,15 @@ def test_settings_has_help_and_about(make_window):
         stack.extend(w.winfo_children())
         if hasattr(w, "text_value"):
             texts.append(w.text_value)
-    assert set(texts) == {"Keyboard shortcuts (F1)", "About Ironbark", "Save diagnostics…", "Open log folder"}
+    assert set(texts) == {"Keyboard shortcuts (F1)", "About Ironbark"}
+    more = []
+    stack = [window.help_more]
+    while stack:
+        w = stack.pop()
+        stack.extend(w.winfo_children())
+        if hasattr(w, "text_value"):
+            more.append(w.text_value)
+    assert set(more) == {"Save diagnostics…", "Open log folder"}
 
     def labels(container):
         found, stack = [], [container]
@@ -476,12 +484,13 @@ def test_settings_has_help_and_about(make_window):
         return found
 
     # Detailed logging is a switch in Help, and only there.
-    in_help, everywhere = labels(window.help_box), labels(window.settings_pop.body)
+    in_help = labels(window.help_more)
+    everywhere = labels(window.settings.simple) + labels(window.settings.advanced)
     for title in ("Detailed logging",):
         assert title in in_help and everywhere.count(title) == 1, title
     window._from_settings(window.show_help)
     _pump(root, 0.2)
-    assert not window.settings_pop.is_open and window._help.win.winfo_exists()
+    assert not window.settings.is_open and window._help.win.winfo_exists()
     assert not errors
 
 
