@@ -660,6 +660,10 @@ class PlayerWindow:
         self._polls = 0
         self._saved_snapshot = json.dumps(self.prefs, sort_keys=True)
         root.protocol("WM_DELETE_WINDOW", self.quit)
+        if sys.platform == "darwin":
+            # Cmd+Q, or Quit from the Dock, reaches Tk as an Apple event that Tk would answer by
+            # ending the program on the spot: it closes the player the ordinary way instead.
+            root.createcommand("::tk::mac::Quit", self.quit)
         if self.exclusive.get():
             # Bit-perfect from the start: the device may not be last time's (a different Windows
             # default, or the chosen one unplugged), so the same ear check as switching it on —
