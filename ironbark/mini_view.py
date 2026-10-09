@@ -20,7 +20,10 @@ instead of pressing a button (they used to fill the strip's whole height).
 One look with the full window: play is the same drawn green button (smaller), previous and next
 the same drawn glyphs, the other buttons round discs under the pointer, and the status a small
 drawn dot — so there is one play button style in the app, not three. Each button's tooltip names
-its key too, from the one key table (keys.py), as the full window's do.
+its key too, from the one key table (keys.py), as the full window's do. (0.41.1) The glyphs are weighed
+against each other: previous / next a little smaller than the full window's (SKIP_GLYPH), beside the
+strip's smaller play button, and the gear / full player / close at the strip's icon size (theme.ICON),
+so no button looks drawn with a thicker pen than its neighbours.
 """
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ SEEK_HEIGHT = 12            # px at 100%: the seek bar's strip (the bar itself i
 PLAY_DIAMETER = 32          # px at 100%: the strip's play button
 BUTTON = 28                 # px at 100%: previous / next: their round disc…
 SMALL_BUTTON = 24           # …and Settings, full player and close
+SKIP_GLYPH = 10             # px at 100%: previous / next glyphs — lighter than the full window's (12), to sit
+                            # beside the strip's smaller play button instead of outweighing it
 STATUS_DOT = 8              # px at 100%: the status dot
 
 
@@ -96,7 +101,7 @@ class MiniView(tk.Frame):
         # (0.25.0) Packed without fill="y": each button is just its icon, centred on the strip's
         # height, so only the icon takes a click (the strip around it drags the window).
         def small(name, command, label, **options):
-            return RoundIconButton(self, root, name, command, size=theme.ICON_SMALL, diameter=SMALL_BUTTON,
+            return RoundIconButton(self, root, name, command, size=theme.ICON, diameter=SMALL_BUTTON,
                                    width=SMALL_BUTTON, bg="BG", label=label, **options)
 
         self.close_button = small("close", on_quit, f"Close ({keys.hint('quit')})", hover="CLOSE_HOVER",
@@ -115,13 +120,14 @@ class MiniView(tk.Frame):
         Tooltip(self.status_dot, lambda: self._status_detail)
         self._paint_status("BG")
         self.next_button = RoundIconButton(self, root, "next", on_next, diameter=BUTTON, width=BUTTON, bg="BG",
-                                           drawn="next", label=f"Next ({keys.hint('next')})")
+                                           drawn="next", glyph=SKIP_GLYPH, label=f"Next ({keys.hint('next')})")
         self.next_button.pack(side="right")
         self.play_button = controls.PlayButton(self, on_play, diameter=PLAY_DIAMETER,
                                                label=f"Play / pause ({keys.hint('play')})")
         self.play_button.pack(side="right", padx=max(0, theme.px(theme.GAP_SMALL) - self.play_button.margin))
         self.previous_button = RoundIconButton(self, root, "prev", on_previous, diameter=BUTTON, width=BUTTON,
-                                               bg="BG", drawn="prev", label=f"Previous ({keys.hint('previous')})")
+                                               bg="BG", drawn="prev", glyph=SKIP_GLYPH,
+                                               label=f"Previous ({keys.hint('previous')})")
         self.previous_button.pack(side="right")
 
         # The rest: title, artist (or a passing note), the seek bar.
