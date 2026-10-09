@@ -283,7 +283,7 @@ def test_songs_added_while_a_playlist_tab_loads_are_kept(make_window, tmp_path, 
     gate = threading.Event()
     real = PlayerWindow._read_playlist
 
-    def slow(playlist):
+    def slow(playlist, allowed=lambda song: True):
         tracks = real(playlist)          # the loader's snapshot is taken first...
         if threading.current_thread().name == "tab-load":
             gate.wait(5)                 # ...and handed back a while later

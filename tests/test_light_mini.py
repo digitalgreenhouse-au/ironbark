@@ -1,4 +1,4 @@
-"""0.19.0: the Light theme (and Follow Windows), WCAG AA contrast for both palettes,
+"""0.19.0: the Light theme, WCAG AA contrast for both palettes,
 and mini mode — switching keeps the window's places and never touches the music."""
 
 from __future__ import annotations
@@ -95,20 +95,22 @@ def test_light_palette_keeps_dg_green():
 def test_dark_is_the_default():
     """Dark is the default theme."""
     assert theme.DEFAULT_THEME == "dark" and settings.DEFAULTS["theme"] == "dark"
-    assert [key for key, _ in theme.THEME_CHOICES] == ["dark", "light", "system"]
+    assert [key for key, _ in theme.THEME_CHOICES] == ["dark", "light"]
 
 
 def test_palette_for_each_choice():
     assert theme.palette_for("dark") is theme.DARK
     assert theme.palette_for("light") is theme.LIGHT
-    assert theme.palette_for("system", windows_light=True) is theme.LIGHT
-    assert theme.palette_for("system", windows_light=False) is theme.DARK
+    assert theme.palette_for("system") is theme.DARK                 # (no longer a choice: Dark, like anything unknown)
     assert theme.palette_for("nonsense") is theme.DARK
 
 
-def test_follow_windows_with_windows_unknown_stays_dark(monkeypatch):
+def test_a_saved_follow_windows_is_settled_once(monkeypatch):
+    """0.38.0: nothing polls Windows; a "system" choice from before becomes Light or Dark once."""
+    monkeypatch.setattr(theme, "windows_uses_light", lambda: True)
+    assert theme.settled_choice("system") == "light"
     monkeypatch.setattr(theme, "windows_uses_light", lambda: None)
-    assert theme.palette_for("system") is theme.DARK
+    assert theme.settled_choice("system") == "dark" and theme.settled_choice("light") == "light"
 
 
 def _fake_winreg(value=None, missing=False):
@@ -224,7 +226,7 @@ def make_window(tmp_path, monkeypatch):
 
     def make(*, scaling: float | None = None, **prefs):
         """scaling: lay the window out as at that display scaling (1.0 = 100%, 1.5 = 150%)."""
-        base = dict(media_controls=False, watch_music=False, clip_guard=False, exclusive=False,
+        base = dict(media_controls=False, clip_guard=False, exclusive=False,
                     library_folder=str(tmp_path / "Music"), geometry="420x640+120+120", always_on_top=False)
         settings.save({**settings.DEFAULTS, **base, **prefs})
         try:
@@ -331,25 +333,14 @@ def test_theme_switch_recolours_every_window(make_window):
     assert player.calls == []          # switching themes never touches the music
 
 
-def test_light_from_settings_on_start_and_follow_windows(make_window, monkeypatch):
+def test_light_from_settings_on_start_and_a_saved_follow_windows_settles(make_window, monkeypatch):
     window, root, _player, errors = make_window(theme="light")
     assert theme.current is theme.LIGHT and str(root.cget("bg")).lower() == theme.LIGHT.BG
-    windows = {"light": False}
-    monkeypatch.setattr(theme, "windows_uses_light", lambda: windows["light"])
-    window.theme_box.current(2)                     # Follow Windows (dark right now)
-    window._theme_chosen()
-    assert theme.current is theme.DARK
-    windows["light"] = True                         # Windows switches to light while we run…
-    window._follow_windows()                        # …and the next look notices
-    assert theme.current is theme.LIGHT
-    windows["light"] = False
-    window._follow_windows()
-    assert theme.current is theme.DARK
-    window.theme_box.current(1)                     # a fixed choice ignores Windows
-    window._theme_chosen()
-    windows["light"] = False
-    window._follow_windows()
-    assert theme.current is theme.LIGHT
+    window.quit()
+    monkeypatch.setattr(theme, "windows_uses_light", lambda: True)
+    window, root, _player, errors = make_window(theme="system")      # (a settings file from before 0.38.0)
+    assert window.prefs["theme"] == "light" and theme.current is theme.LIGHT
+    assert [*window.theme_box.cget("values")] == ["Dark", "Light"]
     assert errors == []
 
 

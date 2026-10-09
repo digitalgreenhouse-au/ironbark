@@ -89,24 +89,20 @@ DEFAULTS = {
     "shuffle": False,
     "repeat": "off",             # "off", "all" (the album / playlist) or "one" (the same song)
     "experiments": None,         # Settings → Experimental switches: {key: bool} (see experiments.py)
-    "allow_network": False,      # Settings → Network: rip verification may look up checksums online
-    "local_network": False,      # Settings → Library: the network playback cache may run (music on a NAS, a share)
-    "check_updates": False,      # Settings → Network: once a day, ask whether a newer version is out (updates.py)
-    "update_checked": 0.0,       # when that was last asked (seconds since 1970; 0 = never)
+    "local_network": False,      # Settings → Library: music on the home network may be read, and the cache may run
     "media_controls": True,      # Settings → Window: media keys, Windows' media panel, taskbar buttons
     "detailed_logging": False,   # Settings → Window: the player's own notes in app.log too, not just problems
     "library_view": "albums",    # the Library's view: albums/artists/genres/years/composers/recent, or a song
                                  # view: songs/most_played/recently_played/favourites/needs_look
-    "library_check": "off",      # the whole-library quality check: "off", "on" (keeps new music checked) or "paused"
+    "library_check": "off",      # the whole-library quality check: "off", "on" (running) or "paused" (read as paused at start)
     "library_song_columns": [],  # the Library's song views' optional columns on show: "plays", "last" (last played)
     "track_columns": [],         # optional track-list columns on show: "artist", "album", "plays"
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window
     "help_geometry": "",         # the Keyboard shortcuts sheet (F1)
     "about_geometry": "",        # the About Ironbark window
-    "watch_music": True,         # Settings → Library: look for new / changed / removed music every few minutes
-    "new_music": None,           # {"since": when watching began, "opened": {album folder: when opened}}
-    "theme": "dark",             # Settings → Window → Theme: "dark", "light" or "system" (follow Windows)
+    "new_music": None,           # {"since": when new music started to count, "opened": {album folder: when opened}}
+    "theme": "dark",             # Settings → Window → Theme: "dark" or "light" (a saved "system" is settled once at start)
     "mini_mode": False,          # the window was last left as the mini strip (it opens that way again)
     "mini_geometry": "",         # where (and how big) the mini strip was last left
     # Network playback (the Experimental "Network playback cache"): songs on network drives play from a copy

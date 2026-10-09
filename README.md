@@ -154,8 +154,6 @@ so Windows SmartScreen warns about an unknown publisher.
   with where they stop.
 - **Rip-log check** (offline): compares each track with the checksums your EAC or XLD log recorded
   when the CD was ripped.
-- **Rip verification** (optional, online): compares a CD rip with the **AccurateRip** and
-  **CUETools** databases. Off unless you switch on Settings → Network → *Allow network access*.
 - **The whole library at once** (Library → *Needs a look*, when you choose to start it): every song
   gets the same check in the background, at low priority, and the view lists what needs a look —
   damaged files, MD5 mismatches, lossy-source, upsampling and padded-bit-depth clues, clipping,
@@ -187,9 +185,6 @@ so Windows SmartScreen warns about an unknown publisher.
   can still show. It is never sent anywhere.
 - Settings → Help → **About Ironbark**: the version, every bundled component's licence, and a *Copy
   version info* button.
-- Settings → Help → **Check for updates** (off by default, and only while network access is
-  allowed) mentions a newer version in the status line. The request names the Ironbark version,
-  and the website sees your computer's internet address. It never downloads or installs anything.
 
 ### Experimental (Settings → Experimental, off until you switch them on)
 
@@ -314,24 +309,14 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 
 ## Privacy
 
-Ironbark doesn't collect anything about you or your music. Nothing uses the internet until you
-switch on Settings → Network → *Allow network access*. Then only two features can:
+Ironbark doesn't collect anything about you or your music, and **it never uses the internet**: no
+update check, no look-ups, no usage tracking. Lyrics, the rip-log check and the library's song search
+all work from files on your computer.
 
-- **Rip verification**: when you press *Verify rip online*, it sends only the disc's IDs and track
-  layout to AccurateRip and CUETools DB. As with any request, those websites see your computer's
-  internet address and the Ironbark version. The CUETools DB look-up isn't encrypted, so others on
-  your network can see which disc is looked up.
-- **Check for updates** (Settings → Help, its own switch, also off by default): once a day it asks
-  digitalgreenhouse.com.au for one small file saying what the latest version is. The request names
-  the Ironbark version, and the website sees your computer's internet address, as any website you
-  visit does; nothing else goes with it. Nothing is downloaded or installed: a newer version is only
-  mentioned in the status line.
-
-Lyrics, the rip-log check and the library's song search all work offline, from files on your
-computer. Music on network drives (`\\server\share`, or a mapped drive like Z:) and OneDrive plays
-without network access: Windows fetches those files, as it does for any program. The network
-playback cache (Experimental) only talks to the network drives your music is already on; it never
-uses the internet.
+Music on your home network (a NAS, a shared folder, a mapped drive like Z:) and OneDrive plays as
+any program reads a file. With Settings → Library → **Local network access** on,
+the network playback cache keeps copies of those songs on this computer; it only ever talks to the
+drives your music is already on.
 
 Settings, playlists and the logs are kept on your computer (on Windows, in `%APPDATA%\Ironbark`);
 the library database (with your play counts and favourites) and the network playback cache's copies

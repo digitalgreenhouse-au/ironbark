@@ -233,10 +233,9 @@ Open **Now Playing** (I) and press **Verify & examine** (for a FLAC file) or **E
 - **A lossless check:** a FLAC file stores its own fingerprint (an MD5 checksum). Ironbark decodes
   the whole file and checks it. A damaged file is reported with where the damage starts.
 
-Below that you can **measure the whole album** (dynamic range and loudness), **check a rip against
-its rip log** (the EAC or XLD log saved when the CD was ripped; this works offline), and **verify a
-rip online** against the AccurateRip and CUETools databases. The online check only works once you
-allow network access (see [Privacy](#privacy)).
+Below that you can **measure the whole album** (dynamic range and loudness) and **check a rip against
+its rip log** (the EAC or XLD log saved when the CD was ripped, which holds the AccurateRip checksums
+the ripper found; nothing goes online).
 
 ### The whole library at once
 
@@ -449,18 +448,13 @@ logging** makes the log note more while you reproduce a problem (turn it off aga
 
 ## Privacy
 
-Ironbark doesn't collect anything about you or your music, and it has no usage tracking. Nothing
-uses the internet until you switch on Settings → Network → **Allow network access**. Then only two
-features can, and only when you use them:
+Ironbark doesn't collect anything about you or your music, and it **never uses the internet**: no
+update check, no look-ups, no usage tracking. Lyrics, the rip-log check and song search all work
+offline. Diagnostics are never sent anywhere.
 
-- **Rip verification:** when you press *Verify rip online*, Ironbark sends the disc's IDs and track
-  layout to AccurateRip and CUETools DB. Those websites see your computer's internet address and the
-  Ironbark version, as any website does. The CUETools DB look-up isn't encrypted.
-- **Check for updates** (Settings → Help, a second switch, also off at first): once a day it asks
-  digitalgreenhouse.com.au for a small file saying what the latest version is. Nothing is downloaded
-  or installed; a newer version is only mentioned in the status line.
-
-Lyrics, the rip-log check and song search all work offline. Diagnostics are never sent anywhere.
+Music on your home network plays as any program reads a file. With Settings → Library → **Local
+network access** on, the network playback cache keeps copies of those songs on this computer; it only
+ever talks to the drives your music is already on.
 
 ## Where Ironbark keeps things
 

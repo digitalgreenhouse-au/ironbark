@@ -475,9 +475,9 @@ def test_settings_has_help_and_about(make_window):
                 found.append(str(w.cget("text")))
         return found
 
-    # Detailed logging and Check for updates are switches in Help, and only there.
+    # Detailed logging is a switch in Help, and only there.
     in_help, everywhere = labels(window.help_box), labels(window.settings_pop.body)
-    for title in ("Detailed logging", "Check for updates"):
+    for title in ("Detailed logging",):
         assert title in in_help and everywhere.count(title) == 1, title
     window._from_settings(window.show_help)
     _pump(root, 0.2)

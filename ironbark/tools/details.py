@@ -21,7 +21,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from .. import audiofile, controls, network, placement, shapes, theme, toolwin
+from .. import audiofile, controls, placement, shapes, theme, toolwin
 from . import loopback, ripcheck
 from ..statustext import (MIXER, QUALITY_WORDS, copy_failed_text, copy_note, fewer_bits, fmt_clock, fmt_duration,
                          fmt_size, fmt_speed, levelling_text, network_line, output_line, to_db, tone_of)
@@ -51,9 +51,6 @@ NUMBER_ROWS = ("position", "bitrate", "peak", "volume", "buffer")   # Live rows 
 VALUE_WRAP = 360        # px at 100%: where a value's text wraps
 LABEL_MIN = 96          # px at 100%: the label column is never narrower (it grows to its longest label)
 FIT_MARGIN = 48         # px at 100%: kept free below the window when it's as tall as the screen allows
-NETWORK_HINT = ("Turn on Settings → Network → Allow network access first. Only the disc's IDs and "
-                "track layout are sent (to the CUETools DB unencrypted, so others on the network can "
-                "see which disc is looked up).")
 
 
 def source_rows(track, network) -> list[tuple[str, str]]:
@@ -388,7 +385,6 @@ class NowPlayingWindow:
     _index_cache: dict[Path, FrameIndex | None] = {}
     _album_cache: dict[Path, AlbumResult] = {}  # album folder -> its DR and loudness
     # audio file -> the rip check of its disc (one folder can hold several discs, checked one at a time)
-    _rip_cache: dict[Path, ripcheck.Verification] = {}
     _log_cache: dict[Path, ripcheck.LogCheck] = {}   # …and its check against the rip log (offline)
     INDEX_CACHE_SIZE = 20
 
@@ -402,7 +398,7 @@ class NowPlayingWindow:
         self.stored = stored
         self.remember = remember
         self._stored_found: Path | None = None   # a stored result came in for this song (shown on the tick)
-        self.prefs = prefs if prefs is not None else {}  # read live: Settings → Allow network access
+        self.prefs = prefs if prefs is not None else {}
         self.on_moved = on_moved
         self.win = tk.Toplevel(parent, bg=theme.BG)
         self.win.title("Now Playing")
@@ -420,7 +416,6 @@ class NowPlayingWindow:
         self._album_state: dict | None = None
         self._rip_cancel = threading.Event()   # only the window closing stops a rip check
         self._closed = threading.Event()
-        self._rip_state: dict | None = None
         self._log_state: dict | None = None    # the check against the rip log under way
         self._job = None
         self._keep_going = toolwin.KeepGoing(self.win)
@@ -800,55 +795,33 @@ class NowPlayingWindow:
                 pass  # the row is being rebuilt
         self.win.after(200, self._watch_album, state)
 
-    # -- is the rip identical to other people's? (AccurateRip, CUETools DB) ------------
-    def network_changed(self):
-        """Settings → Allow network access was switched: redraw the Check (the button's state)."""
-        if self.win.winfo_exists():
-            self._show_check()
-
+    # -- is the rip what the ripper's log says it was? --------------------------------------------
     def _show_rip(self, row: int):
-        """The Rip rows: the checks done so far (against the rip log, then online), and a button for
-        each one not done yet. The rip-log check needs no network."""
+        """The Rip rows: the rip-log check's result, or the button that runs it (offline: the disc
+        against the checksums its EAC / XLD log recorded)."""
         track = self.player.status().track
         if track is None or not is_cd_audio(track):
             return  # nothing to check: rip verification is for CD audio
         folder = track.path.parent
         real = audiofile.real_path(track.path)
-        found_log, found = self._log_cache.get(real), self._rip_cache.get(real)
-        for result, describe in ((found_log, ripcheck.describe_log), (found, ripcheck.describe)):
-            if result is not None:
-                for label, text, tone in describe(result):
-                    self._row(self.check_frame, row, label, text, TONE_STYLE[tone])
-                    row += 1
-        if found_log is not None and found is not None:
+        found_log = self._log_cache.get(real)
+        if found_log is not None:
+            for label, text, tone in ripcheck.describe_log(found_log):
+                self._row(self.check_frame, row, label, text, TONE_STYLE[tone])
+                row += 1
             return
         self._label(self.check_frame, row, "Rip", theme.pad(theme.GAP, 1))
         holder = ttk.Frame(self.check_frame)
         holder.grid(row=row, column=1, sticky="w", pady=theme.pad(theme.GAP, 1))
-        line = 0
-        if found_log is None:
-            running = self._log_state is not None and self._log_state["folder"] == folder
-            self.log_button = controls.FlatButton(holder, "Check against rip log (works offline)",
-                                                  lambda: self._start_log(track.path, folder),
-                                                  state="disabled" if running else "normal")
-            self.log_button.grid(row=line, column=0, sticky="w")
-            self.log_progress = ttk.Label(holder, text="", style="Muted.TLabel",
-                                          wraplength=theme.px(VALUE_WRAP - 20), justify="left")
-            self.log_progress.grid(row=line + 1, column=0, sticky="w", pady=theme.pad(theme.GAP_SMALL, 0))
-            self.log_progress.grid_remove()   # (a running check's watch fills it: _say)
-            line += 2
-        if found is not None:
-            return
-        allowed = network.network_allowed(self.prefs)
-        running = self._rip_state is not None and self._rip_state["folder"] == folder
-        self.rip_button = controls.FlatButton(holder, "Verify rip online (AccurateRip, CUETools DB)",
-                                              lambda: self._start_rip(track.path, folder),
-                                              state="normal" if allowed and not running else "disabled")
-        self.rip_button.grid(row=line, column=0, sticky="w", pady=theme.pad(theme.GAP_SMALL if line else 0, 0))
-        self.rip_progress = ttk.Label(holder, text="", style="Muted.TLabel",
+        running = self._log_state is not None and self._log_state["folder"] == folder
+        self.log_button = controls.FlatButton(holder, "Check against rip log",
+                                              lambda: self._start_log(track.path, folder),
+                                              state="disabled" if running else "normal")
+        self.log_button.grid(row=0, column=0, sticky="w")
+        self.log_progress = ttk.Label(holder, text="", style="Muted.TLabel",
                                       wraplength=theme.px(VALUE_WRAP - 20), justify="left")
-        self.rip_progress.grid(row=line + 1, column=0, sticky="w", pady=theme.pad(theme.GAP_SMALL, 0))
-        self._say(self.rip_progress, "" if allowed else NETWORK_HINT)   # (a running check's watch updates it)
+        self.log_progress.grid(row=1, column=0, sticky="w", pady=theme.pad(theme.GAP_SMALL, 0))
+        self.log_progress.grid_remove()   # (a running check's watch fills it: _say)
 
     def _start_log(self, path: Path, folder: Path):
         """Check the disc against its rip log's CRCs, on a worker (no network: nothing is sent)."""
@@ -884,49 +857,6 @@ class NowPlayingWindow:
             except tk.TclError:
                 pass  # the row is being rebuilt
         self.win.after(200, self._watch_log, state)
-
-    def _start_rip(self, path: Path, folder: Path):
-        if not network.network_allowed(self.prefs):
-            return
-        state = {"folder": folder, "progress": 0.0, "done": False}
-        self._rip_state = state
-        self.rip_button.configure(state="disabled")
-        cancel = self._rip_cancel
-        prefs = self.prefs
-
-        def work():
-            try:
-                result = ripcheck.verify(path, prefs, cancel,
-                                         progress=lambda p: state.__setitem__("progress", p))
-            except network.NetworkOff:
-                result = None  # switched off part-way: nothing kept, the button comes back
-            except Exception as error:  # noqa: BLE001 — a failed check is reported, never a crash
-                result = ripcheck.Verification(problem=f"something went wrong ({error})")
-            if result is not None:
-                # Kept for every file of the disc checked (the track's own disc, not the whole folder).
-                for file in (result.rip.files if result.rip is not None else [audiofile.real_path(path)]):
-                    self._rip_cache[file] = result
-            state["done"] = True
-
-        threading.Thread(target=work, name="rip-check", daemon=True).start()
-        self._watch_rip(state)
-
-    def _watch_rip(self, state: dict):
-        if not self.win.winfo_exists() or state is not self._rip_state:
-            return
-        if state["done"]:
-            self._rip_state = None
-            self._show_check()
-            return
-        track = self.player.status().track
-        if track is not None and track.path.parent == state["folder"]:
-            text = (f"Reading every track… {state['progress']:.0%}" if state["progress"] < 1
-                    else "Asking AccurateRip and CUETools DB…")
-            try:
-                self._say(self.rip_progress, text)
-            except tk.TclError:
-                pass  # the row is being rebuilt
-        self.win.after(200, self._watch_rip, state)
 
     def _start_analysis(self):
         track = self.player.status().track

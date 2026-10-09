@@ -45,7 +45,7 @@ def test_the_window_check_leaves_the_settings_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "settings_path", lambda: real)
     # As in the other window tests: no media-controls or new-music threads, which would outlive
     # the window inside the test run; and no real library folder.
-    for key, value in dict(media_controls=False, watch_music=False, clip_guard=False,
+    for key, value in dict(media_controls=False, clip_guard=False,
                            library_folder=str(tmp_path / "Music")).items():
         monkeypatch.setitem(settings.DEFAULTS, key, value)
     try:
@@ -70,7 +70,7 @@ def test_the_window_check_registers_nothing_system_wide(monkeypatch):
 
     started = []
     monkeypatch.setattr(mediakeys, "start_windows", lambda hub, hwnd: started.append(hwnd))
-    assert settings.DEFAULTS["media_controls"] is True and settings.DEFAULTS["watch_music"] is True
+    assert settings.DEFAULTS["media_controls"] is True and "watch_music" not in settings.DEFAULTS
     try:
         selfcheck._check_window()
     except Exception as error:
@@ -124,7 +124,6 @@ def test_a_hidden_desktop_is_only_used_when_this_thread_has_no_window_yet(monkey
 def test_the_pieces_that_fail_quietly_in_the_player_are_checked(tmp_path, monkeypatch):
     # Windows' audio list, media controls and secure connections are switched off quietly in the
     # player when they're missing, so only the self-check would notice them gone from a build.
-    assert "root certificates" in selfcheck._check_network()
     if sys.platform == "win32":
         assert "pycaw" in selfcheck._check_windows_audio()
         assert "taskbar buttons" in selfcheck._check_media_controls()
@@ -132,7 +131,7 @@ def test_the_pieces_that_fail_quietly_in_the_player_are_checked(tmp_path, monkey
     report = tmp_path / "report.txt"
     selfcheck.run(str(report))
     text = report.read_text(encoding="utf-8")
-    for name in ("Windows audio", "media controls", "secure connections"):
+    for name in ("Windows audio", "media controls"):
         assert f"OK    {name}: " in text
 
 

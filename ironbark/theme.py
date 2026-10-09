@@ -152,7 +152,7 @@ LIGHT = Palette(
 
 PALETTES = {"dark": DARK, "light": LIGHT}
 # Settings → Window → Theme: (prefs value, what the menu says). Dark by default.
-THEME_CHOICES = (("dark", "Dark"), ("light", "Light"), ("system", "Follow Windows"))
+THEME_CHOICES = (("dark", "Dark"), ("light", "Light"))   # (0.38.0: no "Follow Windows" — nothing polls Windows)
 DEFAULT_THEME = "dark"
 
 current: Palette = DARK
@@ -272,7 +272,8 @@ def windows_uses_light() -> bool | None:
     """Is Windows set to light mode for apps? (Settings → Personalisation → Colours → "Choose
     your app mode".) None when it can't be told (not Windows, or the value isn't there).
 
-    Read-only registry look, cheap enough to poll: HKCU\\Software\\Microsoft\\Windows\\
+    Read once, at the first start after 0.38.0, to turn a saved "Follow Windows" into Dark or Light
+    (nothing polls it any more). A read-only registry look: HKCU\\Software\\Microsoft\\Windows\\
     CurrentVersion\\Themes\\Personalize, DWORD AppsUseLightTheme (1 = light, 0 = dark) — the same
     key mediakeys.py reads SystemUsesLightTheme from for the taskbar. Microsoft Learn doesn't
     document this value as an API (it documents UISettings' foreground colour for Win32 apps);
@@ -290,14 +291,17 @@ def windows_uses_light() -> bool | None:
         return None
 
 
-def palette_for(choice: str, windows_light: bool | None = None) -> Palette:
-    """The palette for a Settings choice ("dark" / "light" / "system"). "system" follows Windows
-    (`windows_light`, read now if not given); when Windows can't be asked it stays Dark."""
-    if choice == "system":
-        if windows_light is None:
-            windows_light = windows_uses_light()
-        return LIGHT if windows_light else DARK
+def palette_for(choice: str) -> Palette:
+    """The palette for a Settings choice ("dark" / "light"; anything else is Dark)."""
     return PALETTES.get(choice, PALETTES[DEFAULT_THEME])
+
+
+def settled_choice(choice: str) -> str:
+    """A saved Theme choice as it is now: "system" (Follow Windows, until 0.38.0) becomes Light or
+    Dark once, as Windows is set at that moment."""
+    if choice == "system":
+        return "light" if windows_uses_light() else "dark"
+    return choice
 
 
 # -- text ----------------------------------------------------------------------------------
