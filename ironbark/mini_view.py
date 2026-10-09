@@ -16,6 +16,11 @@ Like the rest of the app it takes every colour from theme.py, so it follows the 
 theme. (0.20.0) The seek bar is controls.Slider, the same drawn slider as the full window's.
 (0.25.0) The buttons are only as big as their icons — clicks above or below them drag the strip
 instead of pressing a button (they used to fill the strip's whole height).
+
+One look with the full window: play is the same drawn green button (smaller), previous and next
+the same drawn glyphs, the other buttons round discs under the pointer, and the status a small
+drawn dot — so there is one play button style in the app, not three. Each button's tooltip names
+its key too, from the one key table (keys.py), as the full window's do.
 """
 
 from __future__ import annotations
@@ -24,12 +29,16 @@ import sys
 import tkinter as tk
 from typing import Callable
 
-from . import chrome, controls, theme
-from .tabbar import IconButton, Tooltip, glyph
+from . import chrome, controls, keys, shapes, theme
+from .tabbar import RoundIconButton, Tooltip
 
 DEFAULT_SIZE = (380, 76)    # px at 100%: the strip's size the first time it's opened
 MIN_SIZE = (260, 64)        # px at 100%: smallest the strip can be made (title, artist and seek bar still fit)
 SEEK_HEIGHT = 12            # px at 100%: the seek bar's strip (the bar itself is thinner)
+PLAY_DIAMETER = 32          # px at 100%: the strip's play button
+BUTTON = 28                 # px at 100%: previous / next: their round disc…
+SMALL_BUTTON = 24           # …and Settings, full player and close
+STATUS_DOT = 8              # px at 100%: the status dot
 
 
 def double_click_ms() -> int:
@@ -83,31 +92,36 @@ class MiniView(tk.Frame):
         self.app_root = root   # (not _root: that name is a Tk method and would shadow it)
         pad = theme.px(theme.GAP)
 
-        # Right-hand end: close, back to full, Settings, the status square, then the transport.
+        # Right-hand end: close, back to full, Settings, the status dot, then the transport.
         # (0.25.0) Packed without fill="y": each button is just its icon, centred on the strip's
         # height, so only the icon takes a click (the strip around it drags the window).
-        self.close_button = IconButton(self, root, "close", on_quit, size=theme.ICON_SMALL, width=30, bg="BG",
-                                       hover="CLOSE_HOVER", hover_fg="ON_ACCENT", label="Close")
-        self.close_button.pack(side="right", padx=(0, theme.px(theme.GAP_SMALL)))
-        self.full_button = IconButton(self, root, "full", on_full, size=theme.ICON_SMALL, width=30, bg="BG",
-                                      label="Full player (Z)")
-        self.full_button.pack(side="right")
-        self.settings_button = IconButton(self, root, "settings", on_settings, size=theme.ICON_SMALL, width=30,
-                                          bg="BG", label="Settings")
-        self.settings_button.pack(side="right")
-        square = theme.px(10)
-        self.status_square = tk.Frame(self, bg=theme.BG, width=square, height=square, cursor="hand2")
-        self.status_square.pack(side="right", padx=theme.pad(theme.GAP, theme.GAP_SMALL))
-        self.status_square.bind("<Button-1>", lambda e: on_details())
+        def small(name, command, label, **options):
+            return RoundIconButton(self, root, name, command, size=theme.ICON_SMALL, diameter=SMALL_BUTTON,
+                                   width=SMALL_BUTTON, bg="BG", label=label, **options)
+
+        self.close_button = small("close", on_quit, f"Close ({keys.hint('quit')})", hover="CLOSE_HOVER",
+                                  pressed="CLOSE_HOVER", hover_fg="ON_ACCENT")
+        self.close_button.pack(side="right", padx=(0, theme.px(theme.GAP)))
+        self.full_button = small("full", on_full, f"Full player ({keys.hint('mini')})")
+        self.full_button.pack(side="right", padx=(0, theme.px(theme.GAP_HAIR)))
+        self.settings_button = small("settings", on_settings, f"Settings ({keys.hint('settings')})")
+        self.settings_button.pack(side="right", padx=(0, theme.px(theme.GAP_HAIR)))
+        self.status_dot = tk.Label(self, bg=theme.BG, bd=0, cursor="hand2")
+        self.status_dot.pack(side="right", padx=theme.pad(theme.GAP, theme.GAP))
+        self.status_dot.bind("<Button-1>", lambda e: on_details())
+        self.status_square = self.status_dot   # (its old name)
         self._status_detail = ""
-        Tooltip(self.status_square, lambda: self._status_detail)
-        self.next_button = IconButton(self, root, "next", on_next, size=theme.ICON, width=30, bg="BG", label="Next")
+        self._status_colour = None
+        Tooltip(self.status_dot, lambda: self._status_detail)
+        self._paint_status("BG")
+        self.next_button = RoundIconButton(self, root, "next", on_next, diameter=BUTTON, width=BUTTON, bg="BG",
+                                           drawn="next", label=f"Next ({keys.hint('next')})")
         self.next_button.pack(side="right")
-        self.play_button = IconButton(self, root, "play", on_play, size=theme.ICON_LARGE, width=36, bg="BG",
-                                      fg="ACCENT", label="Play / pause")
-        self.play_button.pack(side="right")
-        self.previous_button = IconButton(self, root, "prev", on_previous, size=theme.ICON, width=30, bg="BG",
-                                          label="Previous")
+        self.play_button = controls.PlayButton(self, on_play, diameter=PLAY_DIAMETER,
+                                               label=f"Play / pause ({keys.hint('play')})")
+        self.play_button.pack(side="right", padx=max(0, theme.px(theme.GAP_SMALL) - self.play_button.margin))
+        self.previous_button = RoundIconButton(self, root, "prev", on_previous, diameter=BUTTON, width=BUTTON,
+                                               bg="BG", drawn="prev", label=f"Previous ({keys.hint('previous')})")
         self.previous_button.pack(side="right")
 
         # The rest: title, artist (or a passing note), the seek bar.
@@ -122,22 +136,42 @@ class MiniView(tk.Frame):
         self.seek = controls.Slider(text, on_release=on_seek, height=SEEK_HEIGHT)
         self.seek.pack(side="bottom", fill="x")
         Tooltip(self.title_label, lambda: self.title_label.cget("text"))   # a long title is cut off
+        # Tab follows the stacking order, which is the order they were made (right to left, for the
+        # packing): raised left to right, Tab goes seek bar, previous, play, next … and Close last.
+        for widget in (text, self.previous_button, self.play_button, self.next_button, self.status_dot,
+                       self.settings_button, self.full_button, self.close_button):
+            self.tk.call("raise", str(widget))   # (a canvas's own lift() raises its items instead)
 
         # No title bar in mini mode either: the strip's empty parts drag the window.
         for widget in (self, text, self.title_label, self.sub_label):
             widget.bind("<ButtonPress-1>", lambda e: chrome.start_move(self.app_root))
+        theme.on_change(self._palette_changed)
+
+    def _palette_changed(self, _palette):
+        colour, self._status_colour = self._status_colour, None   # (the same role: a new colour)
+        self._paint_status(colour or "BG")
 
     # -- what's shown --------------------------------------------------------------------------
     def show(self, *, title: str, artist: str, position: float, duration: float, playing: bool,
-             status_colour: str, status_detail: str, notice: str = ""):
+             status_colour: str, status_detail: str, notice: str = "", band: tuple = ()):
         """Bring the strip up to date (cheap when nothing changed). `notice` (e.g. "Volume 40%")
-        stands in for the artist line while it's set."""
+        stands in for the artist line while it's set; `band` is what of a network song is downloaded
+        (the seek bar's faint band)."""
         sub = notice or artist
         if self.title_label.cget("text") != title:
             self.title_label.configure(text=title)
         if self.sub_label.cget("text") != sub:
             self.sub_label.configure(text=sub)
         self.seek.set(position, duration)
-        self.play_button.configure(text=glyph(self.app_root, "pause" if playing else "play"))
-        self.status_square.configure(bg=status_colour)
+        self.seek.set_band(band)
+        self.play_button.set_playing(playing)
+        self._paint_status(status_colour)
         self._status_detail = status_detail
+
+    def _paint_status(self, colour: str):
+        """The status dot in `colour` (a role, or the background's colour: no dot)."""
+        if colour == self._status_colour:
+            return
+        self._status_colour = colour
+        self._status_photo = shapes.disc_photo(self.status_dot, theme.px(STATUS_DOT), colour, "BG")
+        self.status_dot.configure(image=self._status_photo, bg=theme.BG)

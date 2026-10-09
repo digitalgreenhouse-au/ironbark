@@ -13,9 +13,11 @@ files uses those instead, so nothing is listed twice.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import re
 import struct
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,9 +34,14 @@ from .tagio.mpeg import MP3File
 from .tagio.ogg import OggOpusFile, OggVorbisFile
 from .tagio.riff import AiffFile, WaveFile
 
+log = logging.getLogger(__name__)
+
 _UNREADABLE = (TagError, OSError, IndexError, struct.error)  # a damaged file: listed with what's known
 
 AUDIO_EXTENSIONS = {".flac", ".wav", ".mp3", ".aif", ".aiff", ".aifc", ".m4a", ".ogg", ".oga", ".opus"}
+# Folders that never hold anyone's music: the Recycle Bin and Windows' own system folder on a
+# drive, and the hidden folders macOS and NAS boxes keep beside the music (Finder data, thumbnails).
+_SKIP_FOLDERS = {"$recycle.bin", "system volume information", ".trashes", ".appledouble", "@eadir", "#recycle"}
 # The codec a file's name suggests (for the Library's quality column, before anything is read)
 _CODEC_BY_EXT = {".flac": "FLAC", ".wav": "WAV", ".mp3": "MP3", ".aif": "AIFF", ".aiff": "AIFF", ".aifc": "AIFF",
                  ".m4a": "ALAC", ".ogg": "Vorbis", ".oga": "Vorbis", ".opus": "Opus"}
@@ -86,6 +93,9 @@ class Track:
     date: str = ""               # the date / year tag as written ("2004", "2004-05-03")
     compilation: bool = False    # tagged as a compilation (various artists)
     embedded_cue: object = dataclasses.field(default=None, repr=False, compare=False)  # FLAC CUESHEET block
+    # The file couldn't be read just now (locked by another program, a network drive dropping
+    # out), so only its name is known: worth reading again later, unlike a damaged file.
+    unreadable: bool = dataclasses.field(default=False, repr=False, compare=False)
 
     @property
     def is_flac(self) -> bool:
@@ -141,8 +151,9 @@ def channel_name(channels: int) -> str:
 
 
 def natural_key(text: str) -> list:
-    """Sort key that orders "2" before "10"."""
-    return [int(chunk) if chunk.isdigit() else chunk for chunk in re.split(r"(\d+)", text.lower())]
+    """Sort key that orders "2" before "10". Only runs of decimal digits count as numbers (every
+    odd-numbered piece of the split): "²" or "①" are digits to str.isdigit, but not to int()."""
+    return [int(chunk) if i % 2 else chunk for i, chunk in enumerate(re.split(r"(\d+)", text.lower()))]
 
 
 _LEADING_THE = re.compile(r"^\s*the\s+", re.IGNORECASE)
@@ -179,7 +190,7 @@ def parse_number(value: str | None) -> int | None:
 
 
 def title_from_filename(path: Path) -> str:
-    if path.stem.strip().isdigit():
+    if path.stem.strip().isdecimal():
         return f"Track {int(path.stem)}"  # rips named 01.flac, 02.flac…
     stem = _LEADING_TRACK_NO.sub("", path.stem, count=1).strip()
     return stem or path.stem
@@ -221,34 +232,102 @@ def _vorbis_extras(tags) -> dict:
 
 def read_track(path: Path) -> Track:
     """Reads by what the file really contains; flags it if that doesn't match its name. A CUE
-    track's path (audiofile.CuePath) gives that track (the whole file if the sheet has changed)."""
+    track's path (audiofile.CuePath) gives that track; one its sheet no longer has (the .cue
+    moved or changed) is listed as missing, keeping its path, rather than as the whole file."""
     cue = audiofile.cue_of(path)
     if cue is not None:
         whole = read_track(audiofile.real_path(path))
         found = [t for t in split_cue_images([whole]) if t.cue is not None and t.cue.number == cue.number]
-        return found[0] if found else whole
+        if found:
+            return found[0]
+        return dataclasses.replace(whole, path=path, title=f"Track {cue.number}", duration=0.0, md5=0,
+                                   missing=True, embedded_cue=None)
     by_name = _FAMILY_BY_EXT.get(path.suffix.lower(), "")
-    sniffed = audiofile.sniff(path)
-    if sniffed:
-        actual = "MP4" if sniffed == "mp4" else "Ogg"
-    else:
+    if by_name == "FLAC":
+        # The usual case in one open (on a network drive each open costs several round trips): a
+        # .flac that really is FLAC — FLACFile checks the "fLaC" mark itself. Anything else
+        # (damaged or misnamed) goes the long way below, which looks at the contents first.
+        try:
+            return _flac_track(path, FLACFile(path))
+        except OSError as error:   # locked, or a network drive dropping out: as _read_flac would say
+            return Track(path=path, title=title_from_filename(path), unreadable=_passing(error))
+        except _UNREADABLE:
+            pass
+    head = _contents(path)
+    actual, ogg_flac = head if head is not None else ("", False)
+    if head is not None and not actual:  # the first bytes don't say: ask libsndfile
         try:
             actual = _FAMILY_BY_FORMAT.get(sf.info(str(path)).format, "")
         except (sf.LibsndfileError, OSError, RuntimeError):
+            log.debug("libsndfile couldn't say what %s holds", path, exc_info=True)
             actual = ""
     family = actual or by_name
-    readers = {"WAV": _read_wav, "MP3": _read_mp3, "AIFF": _read_aiff, "MP4": _read_m4a, "Ogg": _read_ogg}
-    track = readers.get(family, _read_flac)(path)
+    if family == "Ogg":
+        track = _read_ogg(path, ogg_flac)
+    else:
+        readers = {"WAV": _read_wav, "MP3": _read_mp3, "AIFF": _read_aiff, "MP4": _read_m4a}
+        track = readers.get(family, _read_flac)(path)
     if actual and by_name and actual != by_name:
         track.misnamed = path.suffix.lower()
     return track
 
 
+def _contents(path: Path) -> tuple[str, bool] | None:
+    """What a file holds, from its first bytes (one open; on a network drive each open costs
+    several round trips): the container family ("FLAC", "MP3", "WAV", "AIFF", "MP4", "Ogg", or
+    "" when the bytes don't say), and whether it's FLAC inside Ogg. None if it can't be opened."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+            if head.startswith(b"ID3") and len(head) >= 10:
+                # An ID3v2 tag comes first (MP3s, and some FLACs): what follows it decides.
+                # Its size is "syncsafe" (7 bits a byte), plus a 10-byte footer when flagged.
+                size = 10 + sum((b & 0x7F) << shift for b, shift in zip(head[6:10], (21, 14, 7, 0)))
+                f.seek(size + (10 if head[5] & 0x10 else 0))
+                after = f.read(4)
+                if after.startswith(b"fLaC"):
+                    return "FLAC", False
+                return ("MP3" if _mpeg_frame(after) else ""), False
+    except OSError:
+        log.debug("couldn't read the start of %s", path, exc_info=True)
+        return None
+    if head.startswith(b"fLaC"):
+        return "FLAC", False
+    if m4a.is_mp4(head):
+        return "MP4", False
+    if head.startswith(b"OggS"):
+        return "Ogg", head[28:33] == b"\x7fFLAC"
+    if head[:4] in (b"RIFF", b"RF64") and head[8:12] == b"WAVE":
+        return "WAV", False
+    if head[:4] == b"FORM" and head[8:12] in (b"AIFF", b"AIFC"):
+        return "AIFF", False
+    return ("MP3" if _mpeg_frame(head) else ""), False
+
+
+def _mpeg_frame(data: bytes) -> bool:
+    """An MPEG audio frame header: 11 sync bits, then a version and a layer that aren't the
+    reserved values (which also rules out AAC's ADTS header, layer 0)."""
+    return (len(data) >= 2 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0
+            and data[1] & 0x18 != 0x08 and data[1] & 0x06 != 0)
+
+
+def _passing(error: BaseException) -> bool:
+    """Whether a failed read is worth trying again later: the system couldn't read the file just
+    now (locked, a network drive dropping out), rather than the file being damaged."""
+    if isinstance(error, sf.LibsndfileError):
+        return error.code == 2  # libsndfile's "system error": the read itself failed
+    return isinstance(error, OSError)
+
+
 def _read_flac(path: Path) -> Track:
     try:
         audio = FLACFile(path)
-    except _UNREADABLE:
-        return Track(path=path, title=title_from_filename(path))
+    except _UNREADABLE as error:
+        return Track(path=path, title=title_from_filename(path), unreadable=_passing(error))
+    return _flac_track(path, audio)
+
+
+def _flac_track(path: Path, audio: FLACFile) -> Track:
     tags = audio.tags
     info = audio.info
     return Track(
@@ -267,7 +346,7 @@ def _read_flac(path: Path) -> Track:
         bitrate=info.bitrate or 0,
         encoder=describe_encoder(tags.vendor if tags is not None else ""),
         md5=info.md5_signature,
-        size=path.stat().st_size,
+        size=audio.size,   # (measured on the file FLACFile had open: no second look at it)
     )
 
 
@@ -301,52 +380,37 @@ def _tag_extras(tags: dict[str, str]) -> dict:
                 compilation=tags.get("compilation", "").lower() in ("1", "yes", "true"))
 
 
-def _wav_tags(path: Path) -> dict[str, str]:
-    """WAV keeps tags in an ID3 block and/or a RIFF "INFO" list. Read both; ID3 wins."""
+def _wav_tags(path: Path, id3_file, text: dict[str, str]) -> tuple[dict[str, str], bool]:
+    """WAV keeps tags in an ID3 block and/or a RIFF "INFO" list; AIFF in an "ID3 " chunk
+    (tagio/riff.py) and/or NAME / AUTH text chunks. `text` is what libsndfile read from the
+    INFO list or text chunks; the ID3 block (`id3_file`: WaveFile or AiffFile) wins. Also says
+    whether the ID3 block couldn't be read just now (see _passing)."""
     try:
-        tags = _id3_tags(WaveFile(path).tags)
-    except _UNREADABLE:
-        tags = {}
-    try:
-        with sf.SoundFile(str(path)) as f:
-            for key in _INFO_FIELDS:
-                value = (getattr(f, key, "") or "").strip()
-                if value and key not in tags:
-                    tags[key] = value
-    except (sf.LibsndfileError, OSError, RuntimeError):
-        pass
-    return tags
-
-
-def _aiff_tags(path: Path) -> dict[str, str]:
-    """AIFF keeps tags in an "ID3 " chunk (tagio/riff.py); libsndfile also reads the NAME / AUTH
-    text chunks as title / artist. ID3 wins."""
-    try:
-        tags = _id3_tags(AiffFile(path).tags)
-    except _UNREADABLE:
-        tags = {}
-    try:
-        with sf.SoundFile(str(path)) as f:
-            for key in ("title", "artist"):
-                value = (getattr(f, key, "") or "").strip()
-                if value and key not in tags:
-                    tags[key] = value
-    except (sf.LibsndfileError, OSError, RuntimeError):
-        pass
-    return tags
+        tags, passing = _id3_tags(id3_file(path).tags), False
+    except _UNREADABLE as error:
+        tags, passing = {}, _passing(error)
+    for key, value in text.items():
+        if value and key not in tags:
+            tags[key] = value
+    return tags, passing
 
 
 def _read_aiff(path: Path) -> Track:
-    return _read_wav(path, codec="AIFF", tag_reader=_aiff_tags)
+    return _read_wav(path, codec="AIFF")
 
 
-def _read_wav(path: Path, codec: str = "WAV", tag_reader=None) -> Track:
+def _read_wav(path: Path, codec: str = "WAV") -> Track:
+    """WAV or AIFF: the format and libsndfile's text tags from one open, then the ID3 tags."""
+    keys, id3_file = (_INFO_FIELDS, WaveFile) if codec == "WAV" else (("title", "artist"), AiffFile)
     try:
-        info = sf.info(str(path))
-    except (sf.LibsndfileError, OSError, RuntimeError):
-        return Track(path=path, title=title_from_filename(path), codec=codec)
+        with sf.SoundFile(str(path)) as f:
+            info = SimpleNamespace(samplerate=f.samplerate, frames=f.frames, channels=f.channels,
+                                   subtype=f.subtype, subtype_info=f.subtype_info)
+            text = {key: (getattr(f, key, "") or "").strip() for key in keys}
+    except (sf.LibsndfileError, OSError, RuntimeError) as error:
+        return Track(path=path, title=title_from_filename(path), codec=codec, unreadable=_passing(error))
     bits, is_float = _SUBTYPE_BITS.get(info.subtype, (0, False))
-    tags = (tag_reader or _wav_tags)(path)
+    tags, passing = _wav_tags(path, id3_file, text)
     details = ()
     if info.subtype not in _SUBTYPE_BITS:  # e.g. AIFF-C holding µ-law or another packed format
         details = (("Encoding", f"{info.subtype_info} — not plain PCM"),)
@@ -367,6 +431,7 @@ def _read_wav(path: Path, codec: str = "WAV", tag_reader=None) -> Track:
         codec=codec,
         float_samples=is_float,
         details=details,
+        unreadable=passing,
     )
 
 
@@ -388,19 +453,21 @@ def _read_m4a(path: Path) -> Track:
     """An .m4a / MP4: Apple Lossless plays (audiofile.py); AAC is listed but can't be played.
     What the file holds comes from the player's own MP4 reader (m4a.py, the one playback uses);
     the tags and figures from tagio/mp4.py."""
+    passing = False
     try:
         m4a.read_index(path)
         codec_name = "alac"
     except m4a.NotAlac as error:
         codec_name = error.codec or "unknown"
-    except OSError:
-        codec_name = "unknown"
+    except OSError as error:
+        codec_name, passing = "unknown", _passing(error)
     try:
         audio = MP4File(path)
         info, tags = audio.info, audio.tags
-    except _UNREADABLE:
+    except _UNREADABLE as error:
         info, tags = SimpleNamespace(length=0.0, sample_rate=0, bits_per_sample=0, channels=0, bitrate=0,
                                      codec_description=""), None
+        passing = passing or _passing(error)
     genres = mp4_genres(tags)
     tags = tags if tags is not None else {}
     text = {key: str(tags[atom][0]).strip() for atom, key in _MP4_FIELDS.items() if tags.get(atom)}
@@ -425,6 +492,7 @@ def _read_m4a(path: Path) -> Track:
         bitrate=info.bitrate or 0,
         encoder=encoder,
         size=path.stat().st_size,
+        unreadable=passing,
     )
     if codec_name == "alac":
         track.codec = "ALAC"
@@ -458,24 +526,28 @@ def opus_input_rate(path: Path) -> int:
     return int.from_bytes(head[at + 12: at + 16], "little")
 
 
-def _read_ogg(path: Path) -> Track:
+def _read_ogg(path: Path, ogg_flac: bool | None = None) -> Track:
     """Ogg Vorbis and Ogg Opus (both lossy; libsndfile decodes them). Tags are Vorbis comments,
-    the same keys as FLAC. FLAC inside Ogg is recognised but can't be played."""
-    if audiofile.sniff(path) == "oggflac":
+    the same keys as FLAC. FLAC inside Ogg is recognised but can't be played (`ogg_flac`: already
+    known from the file's first bytes; None = look)."""
+    if ogg_flac is None:
+        ogg_flac = audiofile.sniff(path) == "oggflac"
+    if ogg_flac:
         return Track(path=path, title=title_from_filename(path), codec="Ogg FLAC", size=path.stat().st_size,
                      unsupported="FLAC inside an Ogg file can't be played (a normal .flac copy will)",
                      details=(("Warning", "can't be played — FLAC inside an Ogg file isn't supported by the "
                                           "player's decoder; a normal .flac copy of it will play"),))
     try:
         info = sf.info(str(path))
-    except (sf.LibsndfileError, OSError, RuntimeError):
-        return Track(path=path, title=title_from_filename(path), codec="Vorbis")
+    except (sf.LibsndfileError, OSError, RuntimeError) as error:
+        return Track(path=path, title=title_from_filename(path), codec="Vorbis", unreadable=_passing(error))
     opus = info.subtype == "OPUS"
+    passing = False
     try:
         audio = (OggOpusFile if opus else OggVorbisFile)(path)
         tags, bitrate = audio.tags, int(audio.bitrate or 0)
-    except _UNREADABLE:
-        tags, bitrate = None, 0
+    except _UNREADABLE as error:
+        tags, bitrate, passing = None, 0, _passing(error)
     duration = info.frames / info.samplerate if info.samplerate else 0.0
     if not bitrate and duration:
         bitrate = int(path.stat().st_size * 8 / duration)
@@ -505,6 +577,7 @@ def _read_ogg(path: Path) -> Track:
         size=path.stat().st_size,
         codec="Opus" if opus else "Vorbis",
         details=tuple(details),
+        unreadable=passing,
     )
 
 
@@ -514,8 +587,8 @@ _MP3_MODES = {0: "stereo", 1: "joint stereo", 2: "dual channel", 3: "mono"}
 def _read_mp3(path: Path) -> Track:
     try:
         audio = MP3File(path)
-    except _UNREADABLE:
-        return Track(path=path, title=title_from_filename(path), codec="MP3")
+    except _UNREADABLE as error:
+        return Track(path=path, title=title_from_filename(path), codec="MP3", unreadable=_passing(error))
     info = audio.info
     tags = _id3_tags(audio.tags)
     software = str(audio.tags.text("TSSE")[0]).strip() if audio.tags and audio.tags.text("TSSE") else ""
@@ -559,6 +632,18 @@ def _read_mp3(path: Path) -> Track:
     )
 
 
+def is_music_name(name: str) -> bool:
+    """A music file, by its name: an audio extension, and not one of the "._" files macOS leaves
+    beside every file on drives and network shares it has used (they hold Finder data, not audio,
+    under the same extension)."""
+    return not name.startswith("._") and Path(name).suffix.lower() in AUDIO_EXTENSIONS
+
+
+def skip_folder(name: str) -> bool:
+    """A folder no music search should go into (see _SKIP_FOLDERS)."""
+    return name.lower() in _SKIP_FOLDERS
+
+
 def scan_folder(folder: str | Path) -> list[Track]:
     """Every audio file under `folder` (including Disc 1/Disc 2 style subfolders), in play order.
 
@@ -567,7 +652,10 @@ def scan_folder(folder: str | Path) -> list[Track]:
     track-number tag fall back to natural filename order.
     """
     folder = Path(folder)
-    paths = [p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
+    paths = []
+    for here, dirs, names in os.walk(folder):
+        dirs[:] = [d for d in dirs if not skip_folder(d)]
+        paths += [Path(here, name) for name in names if is_music_name(name)]
     return _in_play_order(folder, paths)
 
 
@@ -577,10 +665,10 @@ def scan_album(folder: str | Path) -> list[Track]:
     folder = Path(folder)
     paths = []
     for entry in folder.iterdir():
-        if entry.is_file() and entry.suffix.lower() in AUDIO_EXTENSIONS:
+        if entry.is_file() and is_music_name(entry.name):
             paths.append(entry)
         elif entry.is_dir() and _DISC_FOLDER.match(entry.name):
-            paths += [p for p in entry.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
+            paths += [p for p in entry.iterdir() if p.is_file() and is_music_name(p.name)]
     return _in_play_order(folder, paths)
 
 
@@ -590,8 +678,21 @@ def _in_play_order(folder: Path, paths: list[Path]) -> list[Track]:
 
 def play_order(folder: Path, tracks: list[Track]) -> list[Track]:
     """Tracks under `folder` in play order (see scan_folder)."""
+    top = os.fspath(folder)
+    top = top if top.endswith(os.sep) else top + os.sep
+
+    def subfolder_of(track: Track) -> str:
+        # The track's folder below `folder`, as Path.relative_to(...).as_posix() would give it, worked
+        # out on the text (making Path objects was most of the time a big library took to sort).
+        here = os.path.dirname(os.fspath(track.path))
+        if here == top or here + os.sep == top:
+            return "."
+        if here.startswith(top):
+            return here[len(top):].replace(os.sep, "/")
+        return track.path.parent.relative_to(folder).as_posix()   # (other spellings of the same folder)
+
     def sort_key(track: Track):
-        subfolder = track.path.parent.relative_to(folder).as_posix()
+        subfolder = subfolder_of(track)
         return (
             natural_key(subfolder),
             natural_key(track.album),
@@ -610,6 +711,7 @@ def _sheets_in(folder: Path) -> list[cuesheet.CueSheet]:
         try:
             sheets.append(cuesheet.read(cue))
         except OSError:
+            log.info("couldn't read the CUE sheet %s", cue, exc_info=True)
             continue
     return sheets
 
@@ -686,10 +788,11 @@ def split_cue_images(tracks: list[Track]) -> list[Track]:
     """Each CUE image (see cue_layout) replaced by its tracks, in place. Only when *every* music
     file in its folder is an image: a folder that also has separate track files (a rip kept both
     ways, or a .cue that describes the separate files) lists its files as they are, so nothing
-    appears twice."""
+    appears twice. A file that couldn't be read as audio at all (no sample rate) is left as it is
+    and doesn't count."""
     by_folder: dict[Path, list[Track]] = {}
     for track in tracks:
-        if track.cue is None and not track.unsupported:
+        if track.cue is None and not track.unsupported and track.sample_rate:
             by_folder.setdefault(track.path.parent, []).append(track)
     layouts: dict[int, tuple] = {}
     for folder, group in by_folder.items():
@@ -703,7 +806,7 @@ def split_cue_images(tracks: list[Track]) -> list[Track]:
             embedded = (cuesheet.from_flac_block(track.embedded_cue, track.sample_rate, track.path)
                         if track.embedded_cue is not None else None)
             layout = cue_layout(track.path, round(track.duration * track.sample_rate), track.sample_rate,
-                                sheets, names, embedded) if track.sample_rate else None
+                                sheets, names, embedded)
             if layout is None:
                 break  # a separate track file: the folder stays as it is
             found[id(track)] = layout
@@ -785,8 +888,9 @@ def find_albums(root: str | Path) -> list[Album]:
     counts: dict[Path, int] = {}
     first_file: dict[Path, Path] = {}
     codecs: dict[Path, set[str]] = {}
-    for folder, _dirs, files in os.walk(root):
-        flacs = sorted(f for f in files if Path(f).suffix.lower() in AUDIO_EXTENSIONS)
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not skip_folder(d)]
+        flacs = sorted(f for f in files if is_music_name(f))
         if not flacs:
             continue
         count = len(flacs)
@@ -803,16 +907,16 @@ def find_albums(root: str | Path) -> list[Album]:
     for path, count in counts.items():
         album = Album(path=path, name=path.name, track_count=count, codecs=tuple(sorted(codecs[path])))
         try:
-            info = audiofile.info(first_file[path])
+            info = audiofile.info(first_file[path], header=True)   # (a header: never a whole song fetched for it)
             album.sample_rate, album.bits = info.samplerate, _SUBTYPE_BITS.get(info.subtype, (0, False))[0]
         except (sf.LibsndfileError, OSError, RuntimeError):
-            pass
+            log.debug("couldn't read the format of %s", first_file[path], exc_info=True)
         albums.append(album)
 
     # Same folder name in two places (e.g. a backup copy): say where each one lives.
-    names = [a.name for a in albums]
+    names = Counter(a.name for a in albums)
     for album in albums:
-        if names.count(album.name) > 1 and album.path != root:
+        if names[album.name] > 1 and album.path != root:
             album.name = f"{album.name}  ({album.path.parent.name})"
     return sorted(albums, key=lambda a: natural_key(a.name))
 
@@ -821,6 +925,15 @@ def album_folder(track_path: Path) -> Path:
     """The album a track belongs to: its folder, or the parent of a "CD1"/"Disc 2" folder."""
     folder = track_path.parent
     return folder.parent if _DISC_FOLDER.match(folder.name) else folder
+
+
+def album_folder_text(folder: str) -> str:
+    """album_folder for a file's folder given as text: the folder, or the parent of a "CD1" /
+    "Disc 2" folder (no Path objects made: for working through a whole library)."""
+    parent, name = os.path.split(folder)
+    if not name:   # a drive or the top of a share: no parent to go to
+        return folder
+    return parent if _DISC_FOLDER.match(name) else folder
 
 
 def group_by_album(tracks: list[Track]) -> list[tuple[Path, int, int]]:

@@ -151,7 +151,7 @@ def test_flat_button_speaks_ttk(root):
 def test_primary_button_greys_out_like_a_plain_one(root):
     plain = controls.FlatButton(root, "A", state="disabled")
     primary = controls.FlatButton(root, "B", kind="primary", state="disabled")
-    assert primary.fill_colour() == plain.fill_colour() == theme.SURFACE
+    assert primary.fill_colour() == plain.fill_colour() == theme.SURFACE_HI     # the plain pill
     primary.set_enabled(True)
     assert primary.fill_colour() == theme.SELECT
 
@@ -163,7 +163,7 @@ def test_choice_row_follows_its_variable(root):
     row = controls.ChoiceRow(root, (("live", "Live"), ("track", "Whole track")), var, command=lambda: changes.append(1))
     row.pack()
     root.update()
-    assert row.labels["live"].cget("fg") == theme.ACCENT_TEXT and row.bars["live"].cget("bg") == theme.ACCENT
+    assert row.labels["live"].cget("fg") == theme.ACCENT_TEXT and row.bars["live"].lit
     assert row.labels["track"].cget("fg") == theme.MUTED
     font = row.labels["live"].cget("font")
     row.choose("track")
@@ -172,7 +172,7 @@ def test_choice_row_follows_its_variable(root):
     assert changes == [1]
     assert row.labels["track"].cget("fg") == theme.ACCENT_TEXT and row.labels["live"].cget("font") == font
     var.set("live")                                          # set from code: the row follows
-    assert row.bars["live"].cget("bg") == theme.ACCENT and row.bars["track"].cget("bg") == theme.BG
+    assert row.bars["live"].lit and not row.bars["track"].lit
     row.marks = {"track"}
     row.paint()
     assert row.labels["track"].cget("fg") == theme.ACCENT_TEXT
@@ -194,7 +194,7 @@ def test_switch_flips_and_greys_out(root):
     switch.toggle.toggle()
     assert var.get() is False and heard == [False]          # greyed out: clicks do nothing
     switch.state(["!disabled"])
-    switch.label.event_generate("<ButtonRelease-1>")
+    switch.label.event_generate("<ButtonRelease-1>", x=2, y=2)   # let go over the words
     assert var.get() is True
 
 
@@ -283,7 +283,9 @@ def test_now_playing_lines_up_colours_and_fits(root, tmp_path):
         texts = [win.meter.itemcget(i, "text") for i in win.meter.find_all() if win.meter.type(i) == "text"]
         assert any(t.startswith(theme.MINUS) for t in texts)                 # −7.5 dB, a true minus
         # Flat pill buttons, and no blank line under the Windows check while it has nothing to say.
-        assert set(win.tool_buttons) == {"Meters (M)", "PCM stream (B)", "Compare two files (D)"}
+        assert set(win.tool_buttons) == {"Meters", "PCM stream", "Compare two files"}
+        assert win.tool_buttons["Meters"].tip.text == "Meters (M)"            # the key is in the tooltip
+        assert win.tool_buttons["Meters"].winfo_reqheight() == theme.px(theme.CONTROL_H_SMALL)
         assert isinstance(win.windows_button, controls.FlatButton)
         assert not win.windows_note.winfo_manager()
         # Never taller than the screen; the panel scrolls instead.
@@ -295,6 +297,66 @@ def test_now_playing_lines_up_colours_and_fits(root, tmp_path):
         NowPlayingWindow._analysis_cache.pop(path, None)
 
 
+def test_now_playing_check_stays_greyed_out_while_it_runs(root, tmp_path, monkeypatch):
+    import threading
+    from ironbark import details
+    from ironbark.details import NowPlayingWindow
+    from ironbark.library import read_track
+
+    track = read_track(_flac(tmp_path))
+    release, calls = threading.Event(), []
+
+    def slow(path, bits, md5, progress=None, cancel=None):
+        calls.append(path)
+        progress(0.37)
+        release.wait(10)
+        return None                                   # (as when the check is cancelled)
+
+    monkeypatch.setattr(details, "analyse", slow)
+    win = NowPlayingWindow(root, ShownPlayer(track), prefs={})
+    _pump(root, 0.2)
+    win.check_button.invoke()
+    _pump(root, 0.3)
+    assert win.check_button.instate(["disabled"])
+    win.network_changed()                             # the Check section is rebuilt while it runs
+    _pump(root, 0.3)
+    assert win.check_button.instate(["disabled"]) and "37%" in win.check_progress.cget("text")
+    win.check_button.invoke()
+    assert len(calls) == 1                            # no second check of the same file
+    release.set()
+    _pump(root, 0.6)
+    assert win.check_button.instate(["!disabled"])    # it ended without a result: the button is back…
+    assert not win.check_progress.winfo_manager()     # …and no progress line is left behind
+    win.close()
+    assert not root.errors
+
+
+def test_now_playing_work_that_fails_gives_its_button_back(root, tmp_path, monkeypatch):
+    from ironbark import details
+    from ironbark.details import NowPlayingWindow
+    from ironbark.library import read_track
+
+    track = read_track(_flac(tmp_path))
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError("too big")
+
+    monkeypatch.setattr(details, "album_measure", out_of_memory)
+    monkeypatch.setattr(details, "analyse", out_of_memory)
+    win = NowPlayingWindow(root, ShownPlayer(track), prefs={})
+    _pump(root, 0.2)
+    win.album_button.invoke()
+    _pump(root, 0.6)
+    assert win.album_button.instate(["!disabled"]) and win._album_state is None
+    win.check_button.invoke()
+    _pump(root, 0.6)
+    assert win.check_button.instate(["!disabled"])
+    assert "The check failed" in win.check_progress.cget("text")
+    assert NowPlayingWindow.cached_analysis(track.path) is None   # not mistaken for a damaged file
+    win.close()
+    assert not root.errors
+
+
 def test_now_playing_follows_light(root, tmp_path):
     from ironbark.details import NowPlayingWindow
     from ironbark.library import read_track
@@ -304,8 +366,8 @@ def test_now_playing_follows_light(root, tmp_path):
     _pump(root, 0.3)
     theme.use(theme.LIGHT, root)
     _pump(root, 0.3)
-    button = win.tool_buttons["Meters (M)"]
-    assert button.cget("bg") == theme.LIGHT.BG and button.fill_colour() == theme.LIGHT.SURFACE
+    button = win.tool_buttons["Meters"]
+    assert button.cget("bg") == theme.LIGHT.BG and button.fill_colour() == theme.LIGHT.SURFACE_HI
     win.close()
     assert not root.errors
 
@@ -383,9 +445,9 @@ def test_library_window_has_the_main_window_finish(root, tmp_path, monkeypatch):
                         on_load_all=lambda p, s: None)
     _pump(root, 0.3)
     assert isinstance(win.search, controls.SearchBox) and win.search_var is win.search.query
-    assert isinstance(win.views, controls.ChoiceRow) and win.views.bars["albums"].cget("bg") == theme.ACCENT
+    assert isinstance(win.views, controls.ChoiceRow) and win.views.bars["albums"].lit
     win.views.choose("artists")
-    assert win.view == "artists" and win.views.bars["artists"].cget("bg") == theme.ACCENT
+    assert win.view == "artists" and win.views.bars["artists"].lit and not win.views.bars["albums"].lit
     assert isinstance(win.scrollbar, controls.AutoScrollbar)
     # Esc in the search box empties it; Esc in an empty box is left to the window (it closes).
     win.search_var.set("x")

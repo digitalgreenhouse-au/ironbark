@@ -34,7 +34,7 @@ import numpy as np
 import soundfile as sf
 
 from . import APP_NAME, __version__, audiofile, compare, loudness, settings
-from .proof import resample
+from .proof import QUIET, resample
 
 TRIAL_CHOICES = (8, 10, 12, 16, 20, 25)
 TRIALS = 16
@@ -42,6 +42,7 @@ LENGTH_CHOICES = (5, 10, 15, 20, 30)   # excerpt lengths offered, seconds
 LENGTH = 10
 MAX_LENGTH_S = 30.0       # both versions are held in memory: keep it modest
 MARGIN_S = 2.0            # how far B may be out of step with A and still be lined up
+PROBE_S = 3.0             # the stretch of A's excerpt looked for in B to line them up
 LEVEL_WARN_DB = 0.1       # flag level differences above this (audible on its own)
 SIGNIFICANT = 0.05        # the usual bar: under 1 chance in 20 of guessing this well
 
@@ -103,12 +104,12 @@ class Pair:
 
 def _level(x: np.ndarray, rate: int) -> tuple[float | None, str]:
     meter = loudness.Loudness(rate, x.shape[1])
-    meter.add(x)
+    for start in range(0, len(x), rate):   # a second at a time: one filter pass over a long hi-res
+        meter.add(x[start: start + rate])  # excerpt would take hundreds of MB
     value = loudness.integrated(meter.powers)
     if value is not None and math.isfinite(value):
         return float(value), "LUFS"
-    rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))
-    return (20 * math.log10(rms) if rms > 0 else None), "dB RMS"
+    return _level_rms(x), "dB RMS"
 
 
 def _to_channels(x: np.ndarray, channels: int) -> np.ndarray:
@@ -129,28 +130,33 @@ def prepare(path_a, path_b, start_s: float, length_s: float = LENGTH,
     notes = []
     with audiofile.open(path_a) as fa, audiofile.open(path_b) as fb:
         # Both read with a margin either side: resampling rings at an excerpt's hard ends, and B
-        # may sit a little earlier or later than A.
+        # may sit a little earlier or later than A. Kept as float32 (what's played) unless it's
+        # resampled, which works in float64.
         def stretch(f: sf.SoundFile, info: compare.FileInfo) -> np.ndarray:
             margin, n = int(MARGIN_S * info.rate), int(round(length_s * info.rate))
-            x = compare._read(f, int(round(start_s * info.rate)) - margin, n + 2 * margin)
-            if info.rate != rate:
+            resampled = info.rate != rate
+            x = compare._read(f, int(round(start_s * info.rate)) - margin, n + 2 * margin,
+                              dtype="float64" if resampled else "float32")
+            if resampled:
                 x = resample(x, info.rate, rate)
                 notes.append(f"{'A' if f is fa else 'B'} was upsampled {info.rate / 1000:g} → {rate / 1000:g} kHz "
                              "to play on one stream with the other")
-            return _to_channels(x.astype(np.float32), channels)
+            return _to_channels(x.astype(np.float32, copy=False), channels)
 
         a_region = stretch(fa, a_info)
         if cancel is not None and cancel.is_set():
             raise InterruptedError
         b_region = stretch(fb, b_info)
     margin, n = int(MARGIN_S * rate), int(round(length_s * rate))
-    a = a_region[margin: margin + n]
-    lag, match = compare.find_lag(compare._mono(a.astype(np.float64)), compare._mono(b_region.astype(np.float64)))
+    a = a_region[margin: margin + n].copy()
+    del a_region
+    lag, match = _line_up(a, b_region, margin, min(n, int(PROBE_S * rate)))
     lined_up = match > 0.5
     if not lined_up:
         lag = margin
         notes.append("B couldn't be lined up with A (a different recording or edit?): both play from the same time")
-    b = b_region[lag: lag + n]
+    b = b_region[lag: lag + n].copy()
+    del b_region
     if len(b) < n:
         b = np.concatenate([b, np.zeros((n - len(b), channels), np.float32)])
     pair = Pair(Path(path_a), Path(path_b), np.ascontiguousarray(a), np.ascontiguousarray(b), rate, start_s,
@@ -163,8 +169,24 @@ def prepare(path_a, path_b, start_s: float, length_s: float = LENGTH,
     return pair
 
 
+def _line_up(a: np.ndarray, b_region: np.ndarray, margin: int, probe_len: int) -> tuple[int, float]:
+    """(where A's excerpt starts in B's region, how well it matched 0…1); `margin` is where it
+    starts if B isn't out of step at all. B can only be up to `margin` out either way, so a
+    few seconds of A searched over that much is all it takes, as in compare.find_offset
+    (correlating the whole excerpt instead takes hundreds of MB at high sample rates)."""
+    for start in compare._probe_starts(len(a), probe_len):
+        probe = compare._mono(a[start: start + probe_len].astype(np.float64))
+        if np.sqrt(np.mean(probe ** 2)) < QUIET:
+            continue  # silence: nothing to match
+        region = compare._mono(b_region[start: start + probe_len + 2 * margin].astype(np.float64))
+        at, match = compare.find_lag(probe, region, prefer=margin)   # region[margin] is "not out of step"
+        if match > 0.5:
+            return at, match
+    return margin, 0.0
+
+
 def _level_rms(x: np.ndarray) -> float | None:
-    rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))
+    rms = float(np.sqrt(np.mean(np.square(x, dtype=np.float64))))
     return 20 * math.log10(rms) if rms > 0 else None
 
 

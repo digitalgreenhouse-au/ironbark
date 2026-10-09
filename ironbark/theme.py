@@ -55,6 +55,13 @@ class Palette:
     STRIP: str                # the tab strip along the top
     CLOSE_HOVER: str          # the window's close button under the pointer
     SWITCH_OFF: str           # the track of a slider switch that's off: clearly "empty", not disabled
+    # The rounded look. DG green (ACCENT) is never drawn on STRIP_HI or HOVER: in Light it falls
+    # under 3:1 there, so marks, ticks and "on" glyphs on them are ACCENT_TEXT.
+    STRIP_HI: str             # on the strip under the pointer: a tab's plate, the + and gear discs
+    TAB_EDGE: str             # the selected tab's rim, the strip's bottom line, the lines between tabs
+    EDGE: str                 # the 1 px rim of fields, plain buttons, menus, pop-overs and prompts
+    HOVER: str                # a list or menu row under the pointer; round icon buttons' disc on BG
+    THUMB: str                # a scrollbar's thumb at rest
 
     # The meters' own colours. The VU face is drawn like a real meter's (cream card, black ink,
     # red over 0 VU) whatever the theme; they're roles so they're named in one place.
@@ -92,6 +99,11 @@ DARK = Palette(
     STRIP="#0e0f12",
     CLOSE_HOVER="#c42b1c",  # Windows' own close-button red
     SWITCH_OFF="#4a4d55",
+    STRIP_HI="#24262b",
+    TAB_EDGE="#2c2e33",
+    EDGE="#45484f",
+    HOVER="#36383e",
+    THUMB="#787d85",
     METER_FACE="#efe4c8",   # the classic VU face
     METER_INK="#1d1d1b",
     METER_RED="#ba372a",    # (0.19.0: was #c0392b — a shade darker, for AA on the cream face)
@@ -125,6 +137,11 @@ LIGHT = Palette(
     STRIP="#edeff2",
     CLOSE_HOVER="#c42b1c",  # Windows' own close-button red
     SWITCH_OFF="#c9ccd1",
+    STRIP_HI="#dcdfe4",
+    TAB_EDGE="#d0d4d9",
+    EDGE="#c3c7cd",
+    HOVER="#e8ebee",
+    THUMB="#878c94",
     METER_FACE="#efe4c8",
     METER_INK="#1d1d1b",
     METER_RED="#ba372a",
@@ -146,6 +163,7 @@ current: Palette = DARK
 BG = SURFACE = SURFACE_HI = SURFACE_DOWN = BORDER = TEXT = MUTED = ACCENT = ACCENT_TEXT = ACCENT_INK = ""
 SELECT = ON_ACCENT = ""
 GOOD = WARN = DANGER = STRIP = CLOSE_HOVER = SWITCH_OFF = ""
+STRIP_HI = TAB_EDGE = EDGE = HOVER = THUMB = ""
 METER_FACE = METER_INK = METER_RED = METER_RIM = METER_LEVEL = METER_LOUDNESS = ""
 globals().update(DARK.roles())
 
@@ -157,6 +175,16 @@ SPECTROGRAM_STOPS = ((0.00, "#000000"), (0.18, "#0e0a46"), (0.38, "#641487"), (0
 # The taskbar's thumbnail buttons sit on Windows' taskbar, so they follow *its* light/dark setting.
 TASKBAR_GLYPH_ON_DARK = "#f0f0f0"
 TASKBAR_GLYPH_ON_LIGHT = "#1e1e1e"
+# Tape reels (Experimental): things on a deck keep their own colours in either theme — brushed
+# aluminium flanges, brown oxide tape, black rubber.
+REEL_FLANGE = "#b9bec5"
+REEL_FLANGE_RIM = "#858b93"
+REEL_TAPE = "#3d2b20"
+REEL_HUB = "#2b2e33"
+REEL_HUB_EAR = "#5a6068"
+REEL_HEAD = "#9aa0a7"
+REEL_CAPSTAN = "#d4d8dc"
+REEL_RUBBER = "#1c1e21"
 
 
 def colour(role_or_colour: str) -> str:
@@ -199,6 +227,8 @@ TEXT_PAIRS = (
     ("WARN", "SURFACE_HI"),                                    # (0.20.0) the volume badge under the pointer
     ("DANGER", "BG"), ("DANGER", "SURFACE"),
     ("METER_INK", "METER_FACE"), ("METER_RED", "METER_FACE"),  # the VU face's numbers
+    ("TEXT", "STRIP_HI"), ("MUTED", "STRIP_HI"),               # a tab's name on its hover plate
+    ("TEXT", "HOVER"), ("MUTED", "HOVER"),                     # a hovered list or menu row
 )
 # …and for icons, lines and marks that carry meaning.
 GRAPHIC_PAIRS = (
@@ -208,9 +238,17 @@ GRAPHIC_PAIRS = (
     ("MUTED", "SWITCH_OFF"),                                   # …and when off
     ("ON_ACCENT", "CLOSE_HOVER"),                              # the × on the red close button
     ("METER_LEVEL", "BG"), ("METER_LOUDNESS", "BG"),           # meter bars
-    ("ACCENT_TEXT", "SURFACE_HI"),                             # (0.21.0) a menu tick on the highlighted row
+    ("ACCENT_TEXT", "HOVER"),                                  # a menu tick on the highlighted row; an "on"
+                                                               # shuffle / repeat on its hover disc
     ("WARN", "SURFACE"), ("WARN", "BG"),                       # (0.21.0) a warning box's edge and sign
     ("DANGER", "SURFACE"),                                     # (0.21.0) the red ring round "Delete"
+    ("MUTED", "BORDER"),                                       # a network song's downloaded band on the seek bar
+    ("WARN", "HOVER"),                                         # Up next's "!" (a network song not downloaded) lit
+    ("ACCENT_TEXT", "STRIP"),                                  # the playing tab's level mark
+    ("ACCENT_TEXT", "STRIP_HI"),                               # …on a hovered tab; the gear while Settings is open
+    ("GOOD", "HOVER"),                                         # the bit-perfect lock (on) on its hover disc
+    ("GOOD", "BG"), ("MUTED", "BG"),                           # the status dot (WARN on BG is above)
+    ("THUMB", "BG"), ("THUMB", "SURFACE"),                     # a scrollbar's thumb at rest
 )
 
 
@@ -283,21 +321,30 @@ NUMBERS = FONT
 MINUS = "\u2212"          # the minus sign: as wide as "+" in Segoe UI (the hyphen isn't)
 FIGURE_SPACE = "\u2007"   # a space as wide as a digit (measured: 10 px, as a digit, Segoe UI 9 pt)
 
+# The semibold face, for titles: Windows ships Segoe UI in a true semibold, which Tk can use as a
+# family of its own (Tk 8.6's -weight knows only normal and bold). `apply` checks Tk really has it
+# (semibold_family); where it doesn't (a Mac, so far), "semibold" falls back to bold.
+FONT_SEMIBOLD = "Segoe UI Semibold" if sys.platform == "win32" else ""
+SEMIBOLD = ""         # set by apply: FONT_SEMIBOLD when Tk has it, else "" (bold stands in)
+
 # The type scale, in points (Tk scales points with the display itself, so no px() here).
 SIZE_TINY = 7         # scale numbers under bars and plots
 SIZE_SMALL = 8        # captions, one-line descriptions, small notes
 SIZE_BODY = 9         # ordinary text (Windows' own default size)
-SIZE_LARGE = 10       # a slightly bigger mark (the × in Up next)
+SIZE_LARGE = 10       # a slightly bigger mark (the × in Up next); the line under the now-playing title
 SIZE_HEADING = 11     # a pop-over's title
 SIZE_TITLE = 12       # a window's title line
+SIZE_DISPLAY = 13     # the now-playing title (semibold)
+SIZE_DISPLAY_WIDE = 16    # …in a wide window (the split layouts from 1280 logical px)
+SIZE_DISPLAY_LARGE = 20   # …and from 1920 logical px
 SIZE_MONO = 10        # sample numbers (PCM stream)
 
-# Icon glyphs (Segoe Fluent Icons / MDL2 Assets), in points.
-ICON_SMALL = 9        # strip buttons, the ⓘ button, a tab's ×
-ICON = 10             # the gear, the bit-perfect lock
+# Icon glyphs (Segoe Fluent Icons / MDL2 Assets), in points — each size has one job.
+TAB_CLOSE = 8         # a tab's ×, the search ×, Up next's ×, chevrons
+ICON_SMALL = 9        # minimise / close, the magnifier
+ICON = 10             # +, the gear, the lock, ⓘ; the mini strip's and menus' icons
 ICON_MEDIUM = 11      # shuffle / repeat
-ICON_LARGE = 13       # previous / next
-TAB_CLOSE = 8         # the small × on a tab
+ICON_LARGE = 13       # the mini strip's play glyph only (previous / next are drawn: shapes.skip)
 
 # The VU face (Pillow): TrueType files, and text heights as a share of the face's height.
 METER_FONT_FILE = "segoeui.ttf"
@@ -306,9 +353,35 @@ METER_FACE_TEXT = 0.085    # the scale numbers
 METER_FACE_BIG = 0.16      # "VU", "−" and "+"
 
 
+def tone(spec) -> str:
+    """A colour from a role, a "#rrggbb", or a mix spelt (a, b, amount) — a worked-out shade that is
+    worked out again whenever it's drawn, so it follows a palette change."""
+    if isinstance(spec, tuple):
+        return mix(*spec)
+    return colour(spec)
+
+
 def font(size: int = SIZE_BODY, *style: str) -> tuple:
-    """A Segoe UI font at one of the SIZE_* steps, e.g. font(SIZE_SMALL, "bold")."""
+    """A Segoe UI font at one of the SIZE_* steps, e.g. font(SIZE_SMALL, "bold"). "semibold" is the
+    semibold face where Tk has it (see FONT_SEMIBOLD), else bold."""
+    if "semibold" in style:
+        rest = tuple(s for s in style if s != "semibold")
+        return (SEMIBOLD, size, *rest) if SEMIBOLD else (FONT, size, "bold", *rest)
     return (FONT, size, *style)
+
+
+def semibold_family(root: tk.Misc | None = None) -> str:
+    """FONT_SEMIBOLD if Tk really draws it here, else "". Measured, like tabular_digits: Tk quietly
+    swaps a family it can't find for another (Arial, on Windows), so the family Tk ends up with must
+    be the one asked for, and its words must come out wider than the regular face's."""
+    if not FONT_SEMIBOLD:
+        return ""
+    semi = tkfont.Font(root=root, family=FONT_SEMIBOLD, size=SIZE_DISPLAY)
+    regular = tkfont.Font(root=root, family=FONT, size=SIZE_DISPLAY)
+    sample = "Gacked On Anger"
+    if semi.actual("family") != FONT_SEMIBOLD or semi.measure(sample) <= regular.measure(sample):
+        return ""
+    return FONT_SEMIBOLD
 
 
 def mono(size: int = SIZE_MONO, *style: str) -> tuple:
@@ -362,16 +435,73 @@ GAP = 6
 GAP_MEDIUM = 8
 GAP_LARGE = 10
 GAP_WIDE = 12
+GAP_PANE = 24         # (wide window) round the now-playing stack, and between it and the track list
+
+# List rows: the text's line height times this.
+ROW_SPACING = 1.5
+ROW_SPACING_ROOMY = 1.75   # a wide window's list (layout.SPLIT_M and wider)
+
+# Corners (px at 100%): one rule for the whole app — icon-only buttons are round, buttons with
+# words are pills, and what you type into or what holds content has corners of 4, 8 or 12.
+RADIUS_S = 4
+RADIUS_M = 8
+RADIUS_L = 12
+
+# The tab strip (px at 100%). Every name and glyph on it is centred on one line, ROW_Y down.
+STRIP_H = 36              # the strip's height
+TAB_TOP = 6               # where the selected tab's body starts (it runs down into the page)
+TAB_H = STRIP_H - TAB_TOP
+ROW_Y = 21                # the centre line of every tab name and strip glyph
+TAB_FLARE = 6             # the small inward curves where the selected tab flows into the page
+TAB_GAP = 2               # between two tabs
+TAB_MAX = 200             # a tab's widest, however wide the window
+MIN_TAB = 6               # a tab's narrowest: however many are open, they all fit (and +)
+TAB_SLIM = 48             # narrower than this, a tab shows a centred short name (or just its mark)
+TAB_PAD_L = 8             # a tab's name starts this far in…
+TAB_PAD_R = 6             # …and ends this far before the tab's right edge
+TAB_PAD_SLIM = 4          # a slim tab's name, each side
+PLATE_INSET = 4           # a hovered tab's plate, in from the tab's sides (= TAB_FLARE - TAB_GAP)
+PLATE_H = 24              # …and its height
+DIVIDER_H = 16            # the line between two quiet tabs
+MARK_W = 9                # the playing mark: three 2 px level bars…
+MARK_GAP = 5              # …and the gap after it, before the name
+CLOSE_SLOT = 20           # a tab's × and the room it takes from the name
+CLOSE_DISC = 16           # the disc under the × when the pointer is on it
+DRAG_GAP = 28             # empty strip left of the first tab, for dragging the window
+DISC = 28                 # the + and gear buttons' round hover disc
+DISC_MARGIN = 2           # either side of the gear
+ADD_GAP = 2               # between the last tab and +
+CAPTION_W = 40            # minimise and close: full-height plates this wide
+
+# Controls (px at 100%).
+CONTROL_H = 32            # fields, and pills with words
+CONTROL_H_SMALL = 24      # badges, compact pills
+PILL_PAD = 12             # a pill's words, in from its ends…
+PILL_PAD_SMALL = 8        # …on a compact pill
+FIELD_INSET = 12          # a field's text, in from its left edge
+FOCUS_RING = 2            # the DG-green ring round whatever has the keyboard
+MENU_ROW_H = 32           # a menu row's height
+MENU_INSET = 12           # a menu's words and separators, in from its sides
+MENU_PLATE_INSET = 4      # the highlighted row's rounded plate, in from the menu's sides
 
 # (0.20.0) The slim scrollbar (no arrow buttons; see SLIM_SCROLLBAR) and the search box's insets.
-SCROLLBAR_WIDTH = 8       # px at 100%: the thumb shows 1 px narrower each side (its border is the window colour)
-SEARCH_ICON_ROOM = 26     # px at 100%: room left of the search text for the magnifier
+SCROLLBAR_WIDTH = 8       # px at 100%: the scrollbar's trough
+THUMB_REST = 4            # its thumb: a pill this wide at rest…
+THUMB_HOT = 6             # …and this wide under the pointer or while dragged
+SEARCH_ICON_ROOM = 30     # px at 100%: room left of the search text for the magnifier
 SEARCH_CLEAR_ROOM = 24    # …and right of it for the ×
 
 # ttk style names made by apply() (0.20.0).
 SLIM_SCROLLBAR = "Slim.Vertical.TScrollbar"
 SLIM_HSCROLLBAR = "Slim.Horizontal.TScrollbar"   # (0.22.0) the same, across (PCM stream's long rows)
 SEARCH_ENTRY = "Search.TEntry"
+# Fields and slim scrollbars on a SURFACE panel or card (Settings, prompts) rather than the window:
+# a field is filled one step "into" what holds it — SURFACE on the window, BG on a card.
+CARD_ENTRY = "Card.TEntry"
+CARD_COMBOBOX = "Pop.TCombobox"
+CARD_SCROLLBAR = "Pop.Slim.Vertical.TScrollbar"
+ROOMY_TREE = "Roomy.Treeview"              # the main window's list in a wide window…
+ROOMY_LARGE_TREE = "RoomyLarge.Treeview"   # …and from 1920 logical px
 
 _scale: float | None = None
 
@@ -403,11 +533,75 @@ def pad(*values: float):
 
 
 # -- ttk styles ----------------------------------------------------------------------------
+def _elements(root: tk.Tk, style: ttk.Style) -> None:
+    """The ttk image elements the styles draw with: fields, the drop-downs' chevron, the list
+    heading's line, the selected row's rounded plate and the scrollbar thumbs (shapes.element_pictures).
+    Made once per Tk root — an element's name can't be made twice — and kept on
+    `root._dg_style_images`; after a palette change the same pictures get new pixels."""
+    from PIL import ImageTk
+
+    from . import shapes   # (shapes draws with this module's colours: imported when it's needed)
+
+    pictures = shapes.element_pictures()
+    natural = {name: picture.size for name, (picture, _border) in pictures.items()}
+    # Ttk repeats a picture's middle to fill its element, one draw call per copy: drawn with a
+    # middle a few pixels across, a heading or row the width of a big window took seconds to paint.
+    # So the middles are made wide (or long, for a scrollbar's thumb), while each element still asks
+    # for its natural size (its width and height options), so nothing is laid out differently.
+    pictures = {name: (shapes.widened(picture, border, *_drawn_size(name, picture.size)), border)
+                for name, (picture, border) in pictures.items()}
+    images = getattr(root, "_dg_style_images", None)
+    if images is not None:
+        for name, (picture, _border) in pictures.items():
+            if (images[name].width(), images[name].height()) == picture.size:
+                images[name].paste(picture)
+        return
+    images = root._dg_style_images = {name: ImageTk.PhotoImage(picture, master=root)
+                                      for name, (picture, _border) in pictures.items()}
+    border = {name: b for name, (_picture, b) in pictures.items()}
+
+    def size(name: str) -> dict:
+        return {"width": natural[name][0], "height": natural[name][1]}
+
+    for prefix, where in (("Round", "BG"), ("Card", "SURFACE")):
+        name = f"field {where}"
+        style.element_create(f"{prefix}.field", "image", images[name], ("disabled", images[name + " off"]),
+                             ("focus", images[name + " focus"]), border=border[name], padding=0, sticky="nswe",
+                             **size(name))
+    style.element_create("Round.chevron", "image", images["chevron"], ("disabled", images["chevron off"]),
+                         ("pressed", images["chevron hot"]), ("active", images["chevron hot"]), sticky="")
+    style.element_create("Round.heading", "image", images["heading"], border=border["heading"], sticky="nswe",
+                         **size("heading"))
+    style.element_create("Round.selection", "image", images["clear"], ("selected", images["selection"]),
+                         border=border["selection"], sticky="nswe", **size("selection"))
+    # (A scrollbar finds its thumb by the element's name: it must end in ".thumb".)
+    for axis, element in (("v", "Slim.Vertical.Scrollbar.thumb"), ("h", "Slim.Horizontal.Scrollbar.thumb")):
+        name = f"thumb {axis}"
+        style.element_create(element, "image", images[name], ("pressed", images[name + " hot"]),
+                             ("active", images[name + " hot"]), border=border[name], sticky="nswe", **size(name))
+
+
+ELEMENT_MIDDLE = 1024   # px: how far a style picture's plain middle is stretched (see _elements)
+
+
+def _drawn_size(name: str, size: tuple[int, int]) -> tuple[int, int]:
+    """The size a style picture is drawn at: wide (rows, headings, fields), or long along a
+    scrollbar thumb's own direction only (across, its rounded profile must stay as drawn)."""
+    if name.startswith("chevron"):
+        return size
+    if name.startswith("thumb v"):
+        return size[0], ELEMENT_MIDDLE
+    if name.startswith("thumb h"):
+        return ELEMENT_MIDDLE, size[1]
+    return ELEMENT_MIDDLE, max(size[1], px(3 * CONTROL_H))
+
+
 def apply(root: tk.Tk) -> None:
     """Style the app's ttk widgets with the current palette (run again after a palette change)."""
-    global _scale, NUMBERS
+    global _scale, NUMBERS, SEMIBOLD
     _scale = root.winfo_fpixels("1i") / 96
     NUMBERS = FONT if tabular_digits(FONT, root) else MONO
+    SEMIBOLD = semibold_family(root)
     root.configure(bg=BG)
     style = ttk.Style(root)
     if "clam" in style.theme_names():
@@ -433,14 +627,22 @@ def apply(root: tk.Tk) -> None:
               background=[("active", BG)],
               indicatorbackground=[("selected", ACCENT), ("active", SURFACE_HI)])
 
-    style.configure("TCombobox", background=SURFACE, foreground=TEXT, fieldbackground=SURFACE,
-                    bordercolor=BORDER, lightcolor=SURFACE, darkcolor=SURFACE, arrowcolor=TEXT)
-    style.map("TCombobox",
-              fieldbackground=[("readonly", SURFACE)],
-              foreground=[("readonly", TEXT)],
-              selectbackground=[("readonly", SURFACE)],
-              selectforeground=[("readonly", TEXT)],
-              background=[("active", SURFACE_HI)])
+    # Fields and drop-downs are pictures (ttk image elements, see _elements): a rounded field with a
+    # 1 px EDGE rim, a 2 px DG-green ring while it has the keyboard, and a drawn chevron instead of
+    # a separate arrow box. All of them are CONTROL_H tall, the words FIELD_INSET in.
+    _elements(root, style)
+    line = tkfont.nametofont("TkDefaultFont", root=root).metrics("linespace")
+    pad_y = max(1, (px(CONTROL_H) - line) // 2)
+    for name, field in (("TCombobox", "Round.field"), (CARD_COMBOBOX, "Card.field")):
+        style.layout(name, [(field, {"sticky": "nswe", "children": [
+            ("Round.chevron", {"side": "right", "sticky": "ns"}),
+            ("Combobox.padding", {"expand": "1", "sticky": "nswe", "children": [
+                ("Combobox.textarea", {"sticky": "nswe"})]})]})])
+        style.configure(name, foreground=TEXT, padding=(px(FIELD_INSET), pad_y, 0, pad_y), arrowcolor=MUTED)
+        style.map(name, foreground=[("disabled", MUTED), ("readonly", TEXT)],
+                  fieldbackground=[("readonly", BG if name == CARD_COMBOBOX else SURFACE)],
+                  selectbackground=[("readonly", BG if name == CARD_COMBOBOX else SURFACE)],
+                  selectforeground=[("readonly", TEXT)])
     # The combobox's drop-down list is a classic Tk listbox.
     root.option_add("*TCombobox*Listbox.background", SURFACE)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
@@ -454,39 +656,50 @@ def apply(root: tk.Tk) -> None:
     style.configure("Vertical.TScrollbar", background=SURFACE, troughcolor=BG,
                     bordercolor=BG, lightcolor=SURFACE, darkcolor=SURFACE, arrowcolor=MUTED)
     style.map("Vertical.TScrollbar", background=[("active", SURFACE_HI)])
-    # (0.20.0) The slim scrollbar: just a thumb in a trough the colour of the window — no arrow
-    # buttons. clam makes the bar `arrowsize` wide; its thumb's border is drawn in the window
-    # colour, so the visible thumb is 2 px narrower. (controls.AutoScrollbar shows it only when
-    # the list is longer than its window.)
-    style.layout(SLIM_SCROLLBAR, [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
-        ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-    style.configure(SLIM_SCROLLBAR, background=MUTED, troughcolor=BG, bordercolor=BG, lightcolor=MUTED,
-                    darkcolor=MUTED, gripcount=0, arrowsize=max(4, px(SCROLLBAR_WIDTH)))
-    style.map(SLIM_SCROLLBAR, background=[("pressed", TEXT), ("active", TEXT)],
-              lightcolor=[("pressed", TEXT), ("active", TEXT)], darkcolor=[("pressed", TEXT), ("active", TEXT)])
+    # (0.20.0) The slim scrollbar: just a thumb in a trough the colour of what holds it — no arrow
+    # buttons; clam makes the bar `arrowsize` wide. The thumb is a picture: a THUMB_REST pill, wider
+    # and lighter under the pointer or while dragged. (controls.AutoScrollbar shows it only when the
+    # list is longer than its window.)
+    for name, trough in ((SLIM_SCROLLBAR, BG), (CARD_SCROLLBAR, SURFACE)):
+        style.layout(name, [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+            ("Slim.Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+        style.configure(name, troughcolor=trough, bordercolor=trough, lightcolor=trough, darkcolor=trough,
+                        gripcount=0, arrowsize=max(4, px(SCROLLBAR_WIDTH)))
     style.layout(SLIM_HSCROLLBAR, [("Horizontal.Scrollbar.trough", {"sticky": "we", "children": [
-        ("Horizontal.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-    style.configure(SLIM_HSCROLLBAR, background=MUTED, troughcolor=BG, bordercolor=BG, lightcolor=MUTED,
-                    darkcolor=MUTED, gripcount=0, arrowsize=max(4, px(SCROLLBAR_WIDTH)))
-    style.map(SLIM_HSCROLLBAR, background=[("pressed", TEXT), ("active", TEXT)],
-              lightcolor=[("pressed", TEXT), ("active", TEXT)], darkcolor=[("pressed", TEXT), ("active", TEXT)])
+        ("Slim.Horizontal.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+    style.configure(SLIM_HSCROLLBAR, troughcolor=BG, bordercolor=BG, lightcolor=BG, darkcolor=BG, gripcount=0,
+                    arrowsize=max(4, px(SCROLLBAR_WIDTH)))
 
-    style.configure("TEntry", fieldbackground=SURFACE, foreground=TEXT, insertcolor=TEXT,
-                    bordercolor=BORDER, lightcolor=SURFACE, darkcolor=SURFACE)
-    style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
+    for name, field in (("TEntry", "Round.field"), (CARD_ENTRY, "Card.field")):
+        style.layout(name, [(field, {"sticky": "nswe", "children": [
+            ("Entry.padding", {"sticky": "nswe", "children": [("Entry.textarea", {"sticky": "nswe"})]})]})])
+        style.configure(name, foreground=TEXT, insertcolor=TEXT, padding=(px(FIELD_INSET), pad_y))
+        style.map(name, foreground=[("disabled", MUTED)])
     style.configure("Various.TEntry", foreground=MUTED)  # (0.16.0) Edit tags: a "(various)" field
-    style.map("Various.TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
     # (0.20.0) The track list's search box: room inside for the magnifier (left) and the × (right).
-    style.configure(SEARCH_ENTRY, padding=(px(SEARCH_ICON_ROOM), px(GAP_HAIR), px(SEARCH_CLEAR_ROOM), px(GAP_HAIR)))
-    style.map(SEARCH_ENTRY, bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
+    style.configure(SEARCH_ENTRY, padding=(px(SEARCH_ICON_ROOM), pad_y, px(SEARCH_CLEAR_ROOM), pad_y))
 
-    row_height = int(tkfont.nametofont("TkDefaultFont").metrics("linespace") * 1.5)
-    style.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=TEXT,
-                    bordercolor=BORDER, lightcolor=SURFACE, darkcolor=SURFACE, rowheight=row_height)
-    style.map("Treeview", background=[("selected", SELECT)], foreground=[("selected", ON_ACCENT)])
-    style.configure("Treeview.Heading", background=BG, foreground=MUTED, bordercolor=BORDER,
-                    lightcolor=BG, darkcolor=BG, relief="flat")
-    style.map("Treeview.Heading", background=[("active", SURFACE_HI)])
+    # Lists are frameless, on the window's own colour: a heading line under small muted headings,
+    # the row under the pointer HOVER (a tag, full width: Tk 8.6 rows have no hover state), and the
+    # selected row a rounded SELECT plate (Round.selection, drawn over the row's own background).
+    body_line = tkfont.nametofont("TkDefaultFont", root=root).metrics("linespace")
+    style.configure("Treeview", background=BG, fieldbackground=BG, foreground=TEXT, bordercolor=BG,
+                    lightcolor=BG, darkcolor=BG, rowheight=int(body_line * ROW_SPACING))
+    # The main window's list in a wide window: roomier rows, and from 1920 logical px larger text.
+    # ("Treeview" itself is shared with the Library window and never changes with the main window.)
+    large_line = tkfont.Font(root=root, font=font(SIZE_LARGE)).metrics("linespace")
+    style.configure(ROOMY_TREE, rowheight=int(body_line * ROW_SPACING_ROOMY))
+    style.configure(ROOMY_LARGE_TREE, font=font(SIZE_LARGE), rowheight=int(large_line * ROW_SPACING_ROOMY))
+    style.configure(f"{ROOMY_LARGE_TREE}.Heading", font=font(SIZE_BODY))
+    for name in ("Treeview", ROOMY_TREE, ROOMY_LARGE_TREE):
+        style.map(name, background=[("selected", BG)], foreground=[("selected", ON_ACCENT)])
+    style.layout("Treeview.Row", [("Treeitem.row", {"sticky": "nswe"}), ("Round.selection", {"sticky": "nswe"})])
+    style.layout("Treeview.Heading", [("Round.heading", {"sticky": "nswe"}), ("Treeheading.padding", {
+        "sticky": "nswe", "children": [("Treeheading.image", {"side": "right", "sticky": ""}),
+                                       ("Treeheading.text", {"sticky": "we"})]})])
+    style.configure("Treeview.Heading", background=BG, foreground=MUTED, font=font(SIZE_SMALL), relief="flat",
+                    padding=(px(GAP_SMALL), px(GAP_SMALL), px(GAP_SMALL), px(GAP)))
+    style.map("Treeview.Heading", foreground=[("active", TEXT)])
     # (0.20.0) No dotted focus box round a list row: a row is just its text (some Tk builds' themes
     # add a Treeitem.focus element here; the selected row's colour already says where you are).
     style.layout("Treeview.Item", [("Treeitem.padding", {"sticky": "nswe", "children": [
@@ -497,8 +710,8 @@ def apply(root: tk.Tk) -> None:
     style.configure("Pop.TFrame", background=SURFACE)
     style.configure("Pop.TLabel", background=SURFACE, foreground=TEXT)
     style.configure("PopMuted.TLabel", background=SURFACE, foreground=MUTED)
-    style.configure("PopCaption.TLabel", background=SURFACE, foreground=MUTED, font=font(SIZE_SMALL, "bold"))
-    style.configure("PopTitle.TLabel", background=SURFACE, foreground=TEXT, font=font(SIZE_HEADING, "bold"))
+    style.configure("PopCaption.TLabel", background=SURFACE, foreground=MUTED, font=font(SIZE_SMALL, "semibold"))
+    style.configure("PopTitle.TLabel", background=SURFACE, foreground=TEXT, font=font(SIZE_HEADING, "semibold"))
     style.configure("Pop.TCheckbutton", background=SURFACE, foreground=TEXT,
                     indicatorbackground=BG, indicatorforeground=ON_ACCENT)
     style.map("Pop.TCheckbutton", background=[("active", SURFACE)],
@@ -506,11 +719,20 @@ def apply(root: tk.Tk) -> None:
     # (0.21.0) No ttk button or scale styles for pop-overs any more: Settings' buttons are drawn pills
     # (controls.PillButton) and its volume the drawn slider (controls.Slider).
 
-    style.configure("Title.TLabel", font=font(SIZE_TITLE, "bold"))
+    style.configure("Title.TLabel", font=font(SIZE_TITLE, "semibold"))
+    # The main window's now-playing title, and the line under it (artist — album).
+    style.configure("Display.TLabel", font=font(SIZE_DISPLAY, "semibold"))
+    style.configure("Subtitle.TLabel", foreground=MUTED, font=font(SIZE_LARGE))
+    # …in a wide window: a bigger title (from 1280 logical px, larger again from 1920), artist line
+    # and format line.
+    style.configure("DisplayWide.TLabel", font=font(SIZE_DISPLAY_WIDE, "semibold"))
+    style.configure("DisplayLarge.TLabel", font=font(SIZE_DISPLAY_LARGE, "semibold"))
+    style.configure("SubtitleLarge.TLabel", foreground=MUTED, font=font(SIZE_HEADING))
+    style.configure("InfoLarge.TLabel", foreground=MUTED, font=font(SIZE_BODY))
     # (0.22.0) Section headings in every window as in Settings (PopCaption): small bold capitals in
     # the secondary text colour, with a faint line above each one but the first (controls.section).
     # (They were DG green until 0.21.0; muted, the green and amber *values* stand out.)
-    style.configure("Section.TLabel", foreground=MUTED, font=font(SIZE_SMALL, "bold"))
+    style.configure("Section.TLabel", foreground=MUTED, font=font(SIZE_SMALL, "semibold"))
     # (0.22.0) Live numbers: digits all one width (numbers()), plain / green / amber.
     style.configure("Number.TLabel", font=numbers(SIZE_BODY))
     style.configure("GoodNumber.TLabel", foreground=GOOD, font=numbers(SIZE_BODY))
@@ -543,6 +765,7 @@ def dark_title_bar(window: tk.Misc) -> None:
 
 # -- switching palettes --------------------------------------------------------------------
 _hooks: list = []   # callables returning the on_change callback (or None once it's gone)
+_hooks_kept = 0     # how many hooks were alive at the last sweep (see on_change)
 
 
 def on_change(callback: Callable[[Palette], None]) -> Callable[[Palette], None]:
@@ -550,11 +773,24 @@ def on_change(callback: Callable[[Palette], None]) -> Callable[[Palette], None]:
     in place (Pillow pictures, Treeview tags, colours a window keeps between frames). A bound
     method is held weakly (it lives as long as its window); a callback that raises TclError
     (its window is gone) is dropped. Returns the callback."""
+    global _hooks_kept
+    # Widgets made and dropped all day (a menu per right-click) would otherwise leave their dead
+    # hooks here until the next palette change: sweep them out whenever the list has doubled.
+    if len(_hooks) >= 2 * _hooks_kept + 64:
+        _hooks[:] = [ref for ref in _hooks if ref() is not None]
+        _hooks_kept = len(_hooks)
     if hasattr(callback, "__self__"):
         _hooks.append(weakref.WeakMethod(callback))
     else:
         _hooks.append(lambda: callback)
     return callback
+
+
+def _drop_hook(ref):
+    try:
+        _hooks.remove(ref)
+    except ValueError:   # (already swept out: a hook added during a palette change sweeps too)
+        pass
 
 
 # Tk widget options that hold a colour.
@@ -649,9 +885,9 @@ def use(palette: Palette, root: tk.Misc | None = None) -> None:
     for ref in list(_hooks):
         callback = ref()
         if callback is None:
-            _hooks.remove(ref)
+            _drop_hook(ref)
             continue
         try:
             callback(palette)
         except tk.TclError:
-            _hooks.remove(ref)
+            _drop_hook(ref)

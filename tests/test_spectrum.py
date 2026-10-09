@@ -1,6 +1,7 @@
 """0.7.0: the Spectrogram window's maths (spectrum.py), the bitscope's bit counting, and
 smoke tests of the Spectrogram and PCM stream windows (skipped without a display)."""
 
+import gc
 import queue
 import re
 import time
@@ -201,6 +202,8 @@ def root():
     theme.apply(r)
     yield r
     r.destroy()
+    del r
+    gc.collect()   # here, on the main thread (Tk objects freed on another thread abort Python)
 
 
 def int32(x):
@@ -219,7 +222,7 @@ def test_spectrogram_window_live_and_whole_track(root, tmp_path):
     for item in blocks(int32(sine(1000.0, seconds=1.0))):
         player.feed.put(item)
     win._tick()
-    assert len(win.live.columns) == 25 and len(win._rgb) == 25
+    assert len(win.live.columns) == 25 and win._pixels_made == 25
     assert "Live, newest on the right" in win.info.cget("text")
     win.view.set("track")
     win._view_changed()
@@ -247,10 +250,146 @@ def test_pcm_window_bitscope_strip(root):
     v16 = rng.integers(-32768, 32768, size=(8192, 2)).astype(np.int32)
     for item in blocks(v16 << 16, bits=24):         # 16-bit sound in a 24-bit stream (padded)
         player.feed.put(item)
-    win._tick()
+    deadline = time.time() + 5                     # (the bits are counted on the window's own thread)
+    while win.scope.bits_in_use() is None and time.time() < deadline:
+        tick(win)
+        time.sleep(0.02)
+    tick(win)
     assert win.scope.bits_in_use() == 16
     text = win.scope_info.cget("text")
     assert "16 of 24 bits used" in text and "not checked yet" in text
     assert win.scope_canvas.find_all()             # bars drawn
     win.close()
     assert player.unmonitored
+
+
+def tick(win, times=1):
+    """One refresh by hand, then cancel the next one the window lines up (the test does the ticking)."""
+    for _ in range(times):
+        win._tick()
+        win.win.after_cancel(win._job)
+
+
+def heard_now(data, track, path, frame=0, rate=RATE, bits=16):
+    """A monitor-feed item being heard right now."""
+    return {"frame": frame, "dac_time": time.perf_counter() - 0.01, "rate": rate, "bits": bits, "source": data,
+            "sent": data, "track": track, "path": path}
+
+
+def test_pcm_window_takes_a_mono_track_then_a_stereo_one(root):
+    from ironbark.pcm_window import PcmWindow
+    errors = []
+    root.report_callback_exception = lambda *info: errors.append(info)
+    player = FakePlayer()
+    win = PcmWindow(root, player, {})
+    win.win.update()
+    mono = np.arange(4096, dtype=np.int32)[:, None] << 16
+    player.feed.put(heard_now(mono, "Mono", "mono.flac"))
+    tick(win)
+    player.feed.put(heard_now(np.repeat(mono, 2, axis=1), "Stereo", "stereo.flac"))
+    tick(win)
+    assert errors == []                                      # (an IndexError here froze the window for good)
+    head = win.header.get("1.0", "end")
+    assert "Left" in head and "Right" in head
+    assert "new track: Stereo" in win.text.get("1.0", "end")
+    win.close()
+
+
+def test_pcm_window_leaves_a_still_stack_alone(root, monkeypatch):
+    from ironbark.pcm_window import PcmWindow
+    player = FakePlayer()
+    win = PcmWindow(root, player, {})
+    win.win.update()
+    block = heard_now(np.arange(8192, dtype=np.int32).reshape(4096, 2) << 16, "Test", "t.flac")
+    player.feed.put(block)
+    tick(win)
+    block["dac_time"] -= 10                                  # paused: nothing new is heard
+    tick(win)
+    assert win.info.cget("text").startswith("Paused or stopped")
+    shown = []
+    real_show = win._show
+    monkeypatch.setattr(win, "_show", lambda *a: shown.append(1) or real_show(*a))
+    win.text.tag_add("sel", "1.0", "1.8")                    # picking out a value to copy
+    tick(win, 3)
+    assert shown == []                                       # nothing changed: the stack isn't rebuilt
+    assert win.text.tag_ranges("sel")                        # …so the selection stays
+    win.base_choice.choose("Hex")
+    assert shown == [1]                                      # a new base is shown at once
+    win.close()
+
+
+def test_pcm_window_counts_bits_off_the_window_thread(root, monkeypatch):
+    import threading
+    from ironbark.pcm_window import PcmWindow
+    threads = []
+    real_add = spectrum.BitScope.add
+    monkeypatch.setattr(spectrum.BitScope, "add",
+                        lambda self, *a, **k: threads.append(threading.current_thread()) or real_add(self, *a, **k))
+    player = FakePlayer()
+    win = PcmWindow(root, player, {})
+    win.win.update()
+    for item in blocks(np.ones((8192, 2), np.int32) << 16, bits=16):
+        player.feed.put(item)
+    deadline = time.time() + 5
+    while win.scope.bits_in_use() is None and time.time() < deadline:
+        tick(win)
+        time.sleep(0.02)
+    assert win.scope.bits_in_use() == 16
+    assert threads and threading.main_thread() not in threads   # the counting doesn't hold up the window
+    win.close()
+
+
+def test_spectrogram_colours_nothing_in_whole_track_view(root, monkeypatch):
+    from ironbark.spectrogram_window import SpectrogramWindow
+    win = SpectrogramWindow(root, FakePlayer(), {"spectrogram_view": "track"})
+    win.win.geometry("700x400")
+    win.win.update()
+    coloured = []
+    real_colours = spectrum.colours
+    monkeypatch.setattr(spectrum, "colours", lambda levels: coloured.append(levels.shape) or real_colours(levels))
+    for item in blocks(int32(sine(1000.0, seconds=1.0))):
+        win.feed.put(item)
+    tick(win)
+    assert len(win.live.columns) == 25 and coloured == []   # the live picture isn't on show: not coloured
+    win.view_choice.choose("live")
+    assert coloured                                          # coloured when it's shown
+    win.close()
+
+
+def test_spectrogram_resize_recolours_only_what_shows_once_the_size_settles(root, monkeypatch):
+    from ironbark.spectrogram_window import COLUMN_PX, SpectrogramWindow
+    win = SpectrogramWindow(root, FakePlayer(), {"spectrogram_view": "live"})
+    win.win.geometry("700x400")
+    win.win.update()
+    win.win.after_cancel(win._job)
+    level = np.full(spectrum.LIVE_FFT // 2 + 1, -60.0)
+    for _ in range(2000):                                    # 80 s kept, as after a few minutes of music
+        win.live.columns.append((level, RATE))
+    win._made_total = 2000
+    win._draw()
+    coloured = []
+    real_colours = spectrum.colours
+    monkeypatch.setattr(spectrum, "colours", lambda levels: coloured.append(levels.shape) or real_colours(levels))
+    x0, y0, width, height = win._plot
+    win._plot = (x0, y0, width, height + 40)                 # taller, as while dragging the window's edge
+    win._draw()
+    assert [shape for shape in coloured if len(shape) == 1] == []   # meanwhile the old picture is stretched
+    win._relayout()                                          # the size settles
+    columns = [shape for shape in coloured if len(shape) == 1]
+    assert 0 < len(columns) <= width // COLUMN_PX           # only the columns on show (not all 2,000 kept)
+    win.close()
+
+
+def test_spectrogram_leaves_a_still_picture_alone(root):
+    from ironbark.spectrogram_window import SpectrogramWindow
+    player = FakePlayer()
+    win = SpectrogramWindow(root, player, {"spectrogram_view": "live"})
+    win.win.geometry("700x400")
+    win.win.update()
+    for item in blocks(int32(sine(1000.0, seconds=1.0))):
+        player.feed.put(item)
+    tick(win)
+    items = win.canvas.find_all()
+    tick(win, 3)                                             # nothing more heard
+    assert win.canvas.find_all() == items                    # nothing deleted and drawn again
+    win.close()

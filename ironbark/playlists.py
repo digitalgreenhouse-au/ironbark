@@ -4,9 +4,17 @@ They live in a "Playlists" folder next to the settings, but any .m3u / .m3u8 fil
 opened. Paths are written in full so a playlist works wherever it's copied; relative paths
 in playlists from elsewhere are resolved against the playlist's own folder.
 
+Playlists are written as UTF-8. One another program saved in an older encoding (a Windows code
+page) is read in that (`fallback_encoding` says which), and the player asks before saving over it.
+
 A CUE sheet track (one track of a long file) is written as its file's path with a
 "#IRONBARK-CUE:<track number>" line before it. Other players skip the comment and play the whole
-file; this player reads it back as that one track.
+file; this player reads it back as that one track. While the track can't be found (the drive is
+unplugged, the .cue has been moved) it keeps its number, so saving the playlist meanwhile
+doesn't turn it into the whole file.
+
+A web address (http:// or https://) can't be played yet: it's read as an `audiofile.UrlPath`,
+listed as missing, and written back exactly as it was.
 """
 
 from __future__ import annotations
@@ -15,7 +23,8 @@ import os
 import re
 from pathlib import Path
 
-from . import audiofile, settings
+from . import audiofile, cuesheet, settings
+from .audiofile import CuePath, CueRange
 from .library import Track, cue_track_path
 
 EXTENSIONS = {".m3u8", ".m3u"}
@@ -56,13 +65,25 @@ def unused_name(base: str = "Playlist") -> str:
     return f"{base} {n}"
 
 
-def read(path: Path) -> list[Path]:
-    """The song paths in a playlist, in order (missing files included — the caller decides)."""
-    raw = path.read_bytes()
+def fallback_encoding(path: Path) -> str:
+    """The older encoding a playlist had to be read in — "" when it's UTF-8 or UTF-16 (or can't be
+    read just now) — named for people: "Windows-1252", "Windows code page 932"."""
     try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("cp1252", errors="replace")  # older .m3u files from Windows players
+        _text, encoding = cuesheet.decode_with(Path(path).read_bytes())
+    except OSError:
+        return ""
+    name = encoding.lower().replace("_", "-")
+    if name.startswith("utf"):
+        return ""
+    if name.startswith("cp") and name[2:].isdigit():
+        return "Windows-1252" if name == "cp1252" else f"Windows code page {name[2:]}"
+    return encoding
+
+
+def read(path: Path) -> list[Path]:
+    """The song paths in a playlist, in order (missing files included — the caller decides).
+    A CUE track that can't be found just now is a CuePath whose range starts at -1 (unknown)."""
+    text = cuesheet.decode(path.read_bytes())  # UTF-8, UTF-16, or older players' Windows code page
     songs = []
     cue_number = None
     for line in text.splitlines():
@@ -75,10 +96,15 @@ def read(path: Path) -> list[Path]:
             continue
         if not line or line.startswith("#"):
             continue
+        if audiofile.is_web_address(line):   # kept exactly, so saving the playlist doesn't lose it
+            songs.append(audiofile.UrlPath.parse(line))
+            cue_number = None
+            continue
         song = Path(line)
         song = song if song.is_absolute() else (path.parent / song)
-        if cue_number is not None and song.is_file():
-            song = cue_track_path(song, cue_number)
+        if cue_number is not None:
+            found = cue_track_path(song, cue_number) if song.is_file() else song
+            song = found if audiofile.cue_of(found) else CuePath(song, cue=CueRange("", cue_number, -1, None))
         cue_number = None
         songs.append(song)
     return songs
@@ -93,16 +119,14 @@ def write(path: Path, tracks: list[Track]) -> None:
         if cue is not None:
             lines.append(f"{CUE_MARK}{cue.number}")
         lines.append(str(track.path))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.replace(temporary, path)  # never leave a half-written playlist behind
+    # (A file name that isn't valid Unicode is written as Windows holds it; `read` takes it back.)
+    settings.write_file(path, "\n".join(lines) + "\n", errors="surrogatepass")
 
 
 def rename(path: Path, new_name: str) -> Path:
     target = path.with_name(f"{safe_name(new_name)}{path.suffix}")
-    if target != path:
-        if target.exists():
+    if target.name != path.name:  # (compared as written: "rock" -> "Rock" is a rename too)
+        if target.exists() and not target.samefile(path):
             raise FileExistsError(f"There's already a playlist called “{target.stem}”")
         os.replace(path, target)
     return target

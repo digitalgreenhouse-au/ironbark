@@ -1,6 +1,7 @@
 """0.15.0: genre / composer / date / album artist read from every format; the saved
-library index (refresh with added / changed / removed files, CUE images, atomic save); the
-browse views' grouping (artists incl. compilations, genres, years, composers) and sort order."""
+library index (refresh with added / changed / removed files, CUE images; since 0.31 kept in the
+library database, an old library_index.json brought across once); the browse views' grouping
+(artists incl. compilations, genres, years, composers) and sort order."""
 import json
 import os
 import time
@@ -14,7 +15,7 @@ from tagging import text, write_id3, write_vorbis
 from ironbark.tagio import id3 as id3tags
 from ironbark.tagio.flac import FLACFile
 from ironbark.tagio.mp4 import MP4File
-from ironbark import browse, library, library_index, settings
+from ironbark import browse, library, library_db, library_index, settings
 from ironbark.audiofile import CuePath
 from ironbark.library import Album, Track, sort_name, year_of
 from ironbark.library_index import LibraryIndex
@@ -174,16 +175,16 @@ def music(tmp_path):
     return root
 
 
-def test_first_build_reads_everything_and_saves_atomically(app, music):
+def test_first_build_reads_everything_and_stores_it(app, music):
     index = LibraryIndex(music)
     assert not index.built and index.entries == {}
     diff = index.refresh()
     assert len(diff.added) == 6 and not diff.changed and not diff.removed
     assert index.built and index.progress == (6, 6)
-    saved = app / "library_index.json"
-    assert saved.is_file() and not saved.with_suffix(".json.tmp").exists()
-    data = json.loads(saved.read_text(encoding="utf-8"))
-    assert data["format"] == library_index.FORMAT and Path(data["root"]) == music and len(data["files"]) == 6
+    # (0.31) stored in the library database as each folder is read: no JSON file is written any more
+    assert (app / library_db.FILE_NAME).is_file() and not (app / "library_index.json").exists()
+    again = LibraryIndex(music)
+    assert len(again.entries) == 6 and again.built == index.built
     # first build: "added" is when the file arrived (its creation time), never in the future
     assert all(0 < e.added <= time.time() for e in index.entries.values())
 
@@ -243,18 +244,49 @@ def test_update_after_a_tag_save_rereads_those_files(app, music):
     assert next(t for t in index.tracks() if t.path == path).genre == "Rock"
 
 
-def test_damaged_old_or_other_folders_index_is_rebuilt(app, music, tmp_path):
-    LibraryIndex(music).refresh()
-    saved = app / "library_index.json"
-    saved.write_text("{not json", encoding="utf-8")
-    assert not LibraryIndex(music).entries
-    LibraryIndex(music).refresh()
-    data = json.loads(saved.read_text(encoding="utf-8"))
-    data["format"] = library_index.FORMAT - 1
-    saved.write_text(json.dumps(data), encoding="utf-8")
-    assert not LibraryIndex(music).entries                 # made by an older reader: read again
-    LibraryIndex(music).refresh()
-    assert not LibraryIndex(tmp_path / "Elsewhere").entries  # an index of a different folder
+def test_an_old_json_index_is_brought_across_and_a_bad_one_left_for_a_first_build(app, music, tmp_path,
+                                                                                   monkeypatch):
+    """(0.31) library_index.json from before the database: brought across once, dates and all,
+    before the first look (nothing read again); a damaged one, one made by an older reader or one
+    for a different folder is left alone, and the first look reads everything."""
+    from legacy_index import JsonIndex
+
+    built = LibraryIndex(music)
+    built.refresh()
+    stored = built.entries
+
+    def old_index(folder: Path, root: Path = music, fmt: int = library_index.FORMAT) -> Path:
+        index = JsonIndex(root, folder / "library_index.json")
+        index.entries, index.built = stored, built.built
+        index.save()
+        if fmt != library_index.FORMAT:
+            data = json.loads(index.path.read_text(encoding="utf-8"))
+            data["format"] = fmt
+            index.path.write_text(json.dumps(data), encoding="utf-8")
+        return index.path
+
+    reads = []
+    real = library_index.read_track
+    monkeypatch.setattr(library_index, "read_track", lambda p: reads.append(p) or real(p))
+    for name, make, brought in (("good", lambda f: old_index(f), True),
+                                ("damaged", lambda f: old_index(f).write_text("{not json", encoding="utf-8"), False),
+                                ("older", lambda f: old_index(f, fmt=library_index.FORMAT - 1), False),
+                                ("other", lambda f: old_index(f, root=tmp_path / "Elsewhere"), False)):
+        folder = tmp_path / name
+        folder.mkdir()
+        make(folder)
+        monkeypatch.setattr(settings, "settings_path", lambda folder=folder: folder / "settings.json")
+        reads.clear()
+        index = LibraryIndex(music)
+        assert not index.entries
+        index.refresh()
+        assert len(reads) == (0 if brought else 6), name
+        assert {k: (e.added, e.seen) for k, e in index.entries.items()} == (
+            {k: (e.added, e.seen) for k, e in stored.items()} if brought else
+            {k: (e.added, e.seen) for k, e in index.entries.items()})
+        assert (folder / "library_index.json.migrated").exists() is brought, name
+        if brought:
+            assert index.built == built.built and index.refresh().nothing
 
 
 def test_cue_images_index_as_their_tracks(app, tmp_path):

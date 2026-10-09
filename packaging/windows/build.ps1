@@ -4,7 +4,8 @@
 
 .DESCRIPTION
   1. Runs the tests (skip with -SkipTests).
-  2. PyInstaller packages the app (ironbark.spec) into a folder holding Ironbark.exe.
+  2. PyInstaller packages the app (ironbark.spec) into a folder holding Ironbark.exe, with every
+     bundled library's licence in its licenses folder (the build stops if one is missing).
   3. Runs the *built* Ironbark.exe --self-check; a failure stops the build.
   4. Inno Setup makes Ironbark-Setup-X.Y.Z.exe (skipped, with a warning, if Inno Setup 6 isn't installed).
   5. Zips the folder as Ironbark-X.Y.Z-windows-portable.zip, and writes SHA256SUMS.txt.

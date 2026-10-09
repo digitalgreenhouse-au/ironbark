@@ -13,7 +13,9 @@
 
 Sound goes through audition.py (seamless loop: every signal is exactly periodic). The level is the
 test's own — the player's volume slider doesn't apply — and it never plays on a device other than
-the one chosen (no falling back to the default output).
+the one chosen (no falling back to the default output). Stop (or the space bar) always works, also
+part-way through a measurement. Another window that plays its own sound (ABX, Clipping → Hear it)
+stops this one first, and the other way round.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from tkinter import ttk
 
 import numpy as np
 
-from . import audition, controls, devices, loopback, placement, popups, testsignals, theme
+from . import audition, controls, devices, loopback, placement, popups, testsignals, theme, toolwin
 from .engine import State
 
 REFRESH_MS = 100
@@ -53,9 +55,14 @@ def record(input_name: str, output: str | None, rate: int, seconds: float) -> tu
         raise RuntimeError(f"{input_name} isn't connected")
     channels = max(1, min(2, int(sd.query_devices(index)["max_input_channels"])))
     extra = sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS else None
-    with sd.InputStream(device=index, channels=channels, samplerate=rate, dtype="float32",
-                        extra_settings=extra) as stream:
-        audio, overflowed = stream.read(int(seconds * rate))
+    stream = sd.InputStream(device=index, channels=channels, samplerate=rate, dtype="float32",
+                            extra_settings=extra)
+    devices.holding(stream)   # (a PortAudio re-scan would cut it off: none while it's open)
+    try:
+        with stream:
+            audio, overflowed = stream.read(int(seconds * rate))
+    finally:
+        devices.released(stream)
     return np.asarray(audio, dtype=np.float64), rate, (["The recording overflowed (samples lost)"] if overflowed else [])
 
 
@@ -126,7 +133,7 @@ class TestSignalsWindow:
         self.output = tk.StringVar(value=prefs.get("testsignals_output") or player.output_device
                                    or devices.default_output_name() or "")
         self.output_box = ttk.Combobox(route, textvariable=self.output, state="readonly",
-                                       values=devices.output_names())
+                                       values=devices.output_names(), postcommand=self._list_outputs)
         self.output_box.grid(row=0, column=1, sticky="ew", pady=theme.px(2))
         ttk.Label(route, text="Record from", style="Muted.TLabel").grid(row=1, column=0, sticky="w", padx=theme.pad(0, 8))
         self.input = tk.StringVar(value=prefs.get("testsignals_input") or LOOPBACK)
@@ -172,7 +179,11 @@ class TestSignalsWindow:
         self._result: dict | None = None      # what the measuring thread hands back
         self._message = ""
         self._rates: dict[str, int] = {}      # output name -> its rate (asked once)
+        self._keep_going = toolwin.KeepGoing(self.win)
         self._options_changed()
+        # Space stops the test sound (it never starts one: that's asked first), and only then is it
+        # this window's: otherwise it plays / pauses the music, as in every window.
+        self.win.bind("<space>", lambda e: (self.stop() or "break") if self.playing or self.measuring else None)
         self.win.bind("<Configure>", self._moved, add="+")
         self._job = self.win.after(REFRESH_MS, self._tick)
 
@@ -199,6 +210,10 @@ class TestSignalsWindow:
     def loopback(self) -> bool:
         return self.input.get() == LOOPBACK
 
+    def _list_outputs(self):
+        """The outputs as Windows lists them now: one plugged in since the window opened shows up."""
+        self.output_box.configure(values=devices.output_names())
+
     def _options_changed(self):
         self.prefs.update(testsignals_kind=self.kind.get(), testsignals_level=self._level_db(),
                           testsignals_bits=int(self.bits.get()), testsignals_output=self.output.get(),
@@ -222,7 +237,11 @@ class TestSignalsWindow:
     def _start_sound(self) -> bool:
         """Ask first, then play the signal on the chosen output. False if it didn't start."""
         output = self.output.get()
-        if not output or devices.find_device(output, rescan_ok=False) is None:
+        found = devices.find_device(output, rescan_ok=False) if output else None
+        # Plugged in since the player started: Windows lists it, but the sound system hasn't looked
+        # for it yet (it looks again only with no sound playing: below, once everything has stopped).
+        plugged_in = found is None and bool(output) and output in devices.output_names()
+        if found is None and not plugged_in:
             self._message = "Choose an output that's connected — nothing was played"
             self._refresh()
             return False
@@ -237,11 +256,20 @@ class TestSignalsWindow:
             self._refresh()
             return False
         self.stop()
+        toolwin.take_sound(self)  # another window's sound stops first
+        self.player.suspend()     # the player pauses and lets go of the device (one sound at a time)
+        if plugged_in:
+            if devices.find_device(output) is None:   # (now it may look again: nothing else is open)
+                self._message = (f"{output} isn't ready for the sound system yet: play some music on it "
+                                 "once, or restart the player — nothing was played")
+                self._refresh()
+                return False
+            self._rates.pop(output, None)
+            signal = self.build_signal()   # at the device's own rate, now that it can be asked
         self.signal, self.measurement = signal, None
         switcher = audition.Switcher([signal.stereo()], signal.rate, seamless=True)
         self.audition = audition.Audition(switcher, device=output, exclusive=self.exclusive.get(),
                                           stream_factory=self._stream_factory)
-        self.player.suspend()     # the player pauses and lets go of the device (one sound at a time)
         try:
             self.audition.play(0)
         except Exception as exc:  # noqa: BLE001 — a device that won't open is a message, not a crash
@@ -278,9 +306,20 @@ class TestSignalsWindow:
         self._refresh()
 
     def stop(self):
+        if self.measuring:   # stopped part-way: the recording still running is dropped when it ends
+            self._result = None
+            self._message = "Stopped — no measurement"
         if self.audition is not None:
             self.audition.stop()
         self._refresh()
+
+    def sound_taken(self):
+        """Another window started its own sound: this one stops, and says why."""
+        if self.playing:
+            measuring, self._result = self.measuring, None
+            self.audition.stop()
+            self._message = "Stopped: another window is playing" + (" — no measurement" if measuring else "")
+            self._refresh()
 
     def _take_result(self):
         result, self._result = self._result, None
@@ -360,7 +399,7 @@ class TestSignalsWindow:
         self.exclusive_check.state(["disabled"] if busy or self.loopback else ["!disabled"])
         self.measure_button.state(["disabled"] if busy else ["!disabled"])
         self.play_button.state(["disabled"] if busy else ["!disabled"])
-        self.stop_button.state(["!disabled"] if self.playing and not self.measuring else ["disabled"])
+        self.stop_button.state(["!disabled"] if self.playing else ["disabled"])   # (measuring too)
 
         try:
             preview = self.build_signal()
@@ -402,6 +441,11 @@ class TestSignalsWindow:
         self._job = None
         if not self.win.winfo_exists():
             return
+        with self._keep_going:
+            self._step()
+        self._job = self.win.after(REFRESH_MS, self._tick)
+
+    def _step(self):
         if self._result is not None and self._result.get("done"):
             self._take_result()
         elif self.playing and self.player.status().state is State.PLAYING:   # play was pressed in the player
@@ -409,7 +453,6 @@ class TestSignalsWindow:
             self.stop()
             self._message = "Stopped: the player started playing again"
             self._refresh()
-        self._job = self.win.after(REFRESH_MS, self._tick)
 
     def _rewrap(self, event):
         width = max(200, event.width - theme.px(24))
@@ -433,5 +476,6 @@ class TestSignalsWindow:
         self._result = None
         if self.audition is not None:
             self.audition.stop()
+        toolwin.give_back_sound(self)
         self.win.destroy()
         self.on_close()

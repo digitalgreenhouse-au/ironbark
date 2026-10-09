@@ -3,37 +3,110 @@
 One album: a plain numbered list. Several albums (e.g. the whole library): each album
 gets a header row above its tracks. A playlist: a flat list in its own order, with artists.
 Right-click a song (or an album header) for Play / Add to playlist / Remove, etc. Typing in the search box narrows the list to the
-songs whose title, artist, album or file name match every word typed; double-clicking a
-result plays it in place, and the album carries on from there.
+songs whose title, artist, album, album artist, composer, genre, year or file name hold every word
+typed (accents and case ignored: searchfold.py); double-clicking a result plays it in place, and the
+album carries on from there.
+
+The list is a virtual_list.VirtualTree: only the rows on show are in the Treeview, worked out as
+they're drawn, so a tab of a whole library (200,000 songs) opens, scrolls and searches as quickly as
+an album. A search of a list that long runs on the list's own thread (`_Worker`), off Tk's; a tab
+whose songs come from the library database a page at a time (library_tracks.LibraryTrackList: it has
+`peek`, `want`, `matching` and `groups`) is searched there by the database, and a row whose song
+hasn't been read yet shows "…" until it has.
+
+Several songs can be selected (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A); everything that takes
+songs takes them all (`selected_rows`): Play next, Add to Up next, Add to playlist, Remove from the
+playlist, Edit tags, the favourites, and dragging.
 
 Songs (or an album, by its header) can be dragged: onto a tab to add them there, or up and down
 a playlist to reorder it. The view only reports the drag (`on_drag`); the window decides what
 it means (see TreeDrag and ui.PlayerWindow._song_drag).
 
-Artist and Album columns can be added (off by default: the window is narrow); right-click the
-headings, or a song, to switch them (`set_columns`, saved by the window).
+Artist, Album and Plays columns can be added (off by default: the window is narrow); right-click the
+headings, or a song, to switch them (`set_columns`, saved by the window). Plays (how often each song
+has been played, from the library database's count) is read for the rows on show only, on the list's
+own thread.
+
+In a wide window (layout.py's split tiers, `set_tier`) the list has the window's full height and
+its own column setting (`set_wide_columns`): Artist, Album and Format show by themselves wherever
+the tier has room — except a column whose value is the same on every row of the tab (`varies`,
+worked out once per list), so one album shows # · Title · Time and a playlist everything. A header
+row above the list holds the view switch — Tracks · Up next · Lyrics (`view_switch`; the window
+shows Up next or the lyrics in the list's place: `on_view`) — and the tab's song count (`set_count`);
+under it the search box, with a choice beside it: This tab | Whole library (`scope_choice`). With
+Whole library the words typed search every song, album and artist instead of the tab, and the
+window shows those results in the list's place (`on_scope`; the keys typed in the box that act on
+results go to `on_library_key`). The rows are roomier, and from 1920 logical px the text is larger.
+
+The list's keys (Enter plays, Ctrl+Enter / Ctrl+Shift+Enter queue, Delete removes, Alt+↑ / ↓
+move a song, Ctrl+A selects every song) are in the keyboard table (keys.py); the window binds them,
+using `activate`, `selected_rows`, `selected_track` and `select_all`.
 
 The look (0.20.0): the row under the pointer lights up, the playing song is marked (♪ in place of
-its number, green bold text) even when another row is selected, album header rows read
-"Album · Artist" with the quality on the right, the scrollbar is slim and only there when the list
-is longer than the window, and the search box has a magnifier and a × to clear it.
+its number, green semibold text) even when another row is selected, album header rows read
+"Album · Artist" in green semibold with the quality on the right, the scrollbar is slim and only
+there when the list is longer than the window, and the search box has a magnifier and a × to clear
+it. The list is frameless on the window's colour, the selected row a rounded green plate, and the
+scrollbar sits in the window's right margin, so the list's words line up with the search box.
+
+A search that finds nothing in the tab offers the whole library instead: a "Search the whole
+library (Ctrl+Shift+F)" row under "No matches" (click it, or Enter on it) hands the words to the
+song search panel (`on_search_library`). A favourite song shows a ♥ before its title
+(`is_favourite`; `refresh_titles` after the favourites change redraws only the rows on show).
+
+A tab with songs on a network drive (with the network playback cache on) gets a narrow "Cached"
+column before Time (`set_cache_column`): how much of each song is on this computer, as Up next
+shows it — ● in the cache, ◐ 72%, ○ waiting, ! couldn't download. The window works the marks out
+for the rows on show (`visible_tracks`) and hands them in (`set_marks`).
 """
 
 from __future__ import annotations
 
+import bisect
+import queue
+import threading
 import tkinter as tk
-import unicodedata
+from array import array
+from collections import OrderedDict
+from collections.abc import Sequence
 from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import controls, popups, theme
-from .library import Track, group_by_album
+from . import audiofile, controls, layout, searchfold, theme
+from .library import Track, album_folder, group_by_album
+from .virtual_list import CELL_ROOM, ELLIPSIS, VirtualTree
 
 SEARCH_DELAY_MS = 150
-OPTIONAL_COLUMNS = ("artist", "album")  # columns that can be switched on
+SEARCH_THREAD_AT = 20_000   # songs: a list this long is searched on the list's own thread, off Tk's
+POLL_MS = 40                # how often the list looks for what its thread (or the database) has brought
+PLAYS_KEPT = 20_000         # play counts remembered (the rows shown lately)
+OPTIONAL_COLUMNS = ("artist", "album", "plays")  # columns that can be switched on in the narrow window
+WIDE_COLUMNS = layout.OPTIONAL           # …and in a wide one (where Format is one too)
+COLUMNS = ("no", "title", "artist", "album", "quality", "plays", "cache", "time")
+QUALITY_W = 72      # px at 100%: the Format column ("24/96", "FLAC", "Opus")
+PLAYS_W = 52        # px at 100%: the Plays column
+CACHE_W = 60        # px at 100%: the Cached column ("◐ 72%")
+TIME_W = 52         # px at 100%: the Time column
+# The widest value each of those columns shows (Time: an album row's format, when there's no Format column).
+WIDEST = {"cache": "◐ 99%", "plays": "9,999", "time": "24/352.8"}
+VISIBLE_MOST = 200  # visible_tracks never hands back more rows than this
+SEARCH_MAX = 520    # px at 100%: the search box's widest, in a wide window's header row
+# How a wide window shares the list's width: by weight, Artist and Album never past their caps (px at
+# 100%), whatever is left to the title. The narrow window shares 2 / 1 / 1 with no caps.
+NARROW_WEIGHTS = {"title": 2, "artist": 1, "album": 1}
+WIDE_WEIGHTS = {"title": 3, "artist": 2, "album": 2}
+WIDE_CAPS = {"artist": 320, "album": 360}
+TREE_STYLES = {layout.COLUMN: "", layout.SPLIT: "", layout.SPLIT_M: theme.ROOMY_TREE,   # ("": Treeview's own)
+               layout.SPLIT_L: theme.ROOMY_LARGE_TREE}
 DRAG_START = 6  # px at 100%: move this far with the button down and a press becomes a drag
 PLAYING_MARK = "♪"   # (0.20.0) in the # column of the playing song
+FAVOURITE_MARK = "♥"
+SEARCH_LIBRARY = "Search the whole library (Ctrl+Shift+F)"
+# A wide window's view switch and search choice: (value, words).
+VIEWS = (("tracks", "Tracks"), ("up_next", "Up next"), ("lyrics", "Lyrics"))
+SCOPES = (("tab", "This tab"), ("library", "Whole library"))
+SEARCH_HINTS = {"tab": "Search songs, artists, albums", "library": "Search every song, album and artist"}
 
 
 def _clock(seconds: float) -> str:
@@ -41,14 +114,13 @@ def _clock(seconds: float) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def _fold(text: str) -> str:
-    """Lower-case and strip accents, so "live" finds "Lïve"."""
-    decomposed = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
+# The search's folding and the text it looks through (kept under their old names here too).
+_fold = searchfold.fold
+_haystack = searchfold.haystack
 
 
 def matches(track: Track, words: list[str]) -> bool:
-    haystack = _fold(" ".join((track.title, track.artist, track.album, track.path.stem)))
+    haystack = _haystack(track)
     return all(word in haystack for word in words)
 
 
@@ -68,10 +140,15 @@ def _quality(track: Track) -> str:
     return f"{track.bits}/{track.sample_rate / 1000:g}" if track.sample_rate else ""
 
 
-def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40) -> Callable[[], None]:
+def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40,
+                caps: dict[str, int] | None = None) -> Callable[[], None]:
     """Share a list's width between its stretchy columns (by `weights`) once the fixed ones have
     their room, whenever it's resized or columns are switched on / off. (Tk itself never shrinks
-    columns to fit, so extra columns would push the last ones out of sight.) Returns the fitter."""
+    columns to fit, so extra columns would push the last ones out of sight.) `caps`: real px a column
+    named in it never grows past; what it leaves goes to the others. A stretchy column gets at least
+    `minimum` — unless the list is too narrow for that, when they share what's left, so the fixed
+    columns (a year, a time) always keep their room. Both dicts are read on every fit, so changing
+    them in place (then calling the fitter) changes the sharing. Returns the fitter."""
     for column in weights:
         tree.column(column, stretch=False)  # sized here, not by Tk
 
@@ -86,10 +163,27 @@ def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40
         if "tree" in [str(part) for part in tree.cget("show")]:
             fixed += int(tree.column("#0", "width"))
         stretchy = [c for c in shown if c in weights]
-        total = sum(weights[c] for c in stretchy) or 1
         room = max(0, width - fixed - 4)
+        capped: dict[str, int] = {}
+        while True:   # a column that would pass its cap gets the cap; the others share what's left
+            free = [c for c in stretchy if c not in capped]
+            total = sum(weights[c] for c in free) or 1
+            left = room - sum(capped.values())
+            over = [c for c in free if caps and c in caps and int(left * weights[c] / total) > caps[c]]
+            if not over or len(over) == len(free):
+                break
+            capped.update((c, caps[c]) for c in over)
+        least = minimum if room >= minimum * len(stretchy) else 1   # (too narrow: they give way, not the fixed ones)
+        widths = {c: capped[c] if c in capped else max(least, int(left * weights[c] / total)) for c in stretchy}
+        excess = sum(widths.values()) - room
+        for column in sorted(stretchy, key=lambda c: -widths[c]):   # (each at its minimum: the widest give way)
+            if excess <= 0:
+                break
+            cut = min(excess, widths[column] - least)
+            widths[column] -= cut
+            excess -= cut
         for column in stretchy:
-            tree.column(column, width=max(minimum, int(room * weights[column] / total)))
+            tree.column(column, width=widths[column])
 
     tree.bind("<Configure>", fit, add="+")
     return fit
@@ -98,7 +192,7 @@ def fit_columns(tree: ttk.Treeview, weights: dict[str, float], minimum: int = 40
 class TreeDrag:
     """Turns press–move–release on a Treeview row into a drag (after a few pixels, so clicks and
     double-clicks still work as before). `what(iid)` says what a row carries (None = not
-    draggable); `on_drag(carried, x_root, y_root, phase)` hears "move" for each movement and
+    draggable), asked as the drag starts; `on_drag(carried, x_root, y_root, phase)` hears "move" for each movement and
     "drop" or "cancel" (Escape) at the end. Nothing is moved here."""
 
     def __init__(self, tree: ttk.Treeview, what: Callable[[str], object | None],
@@ -116,10 +210,11 @@ class TreeDrag:
         return bool(self._state and self._state["moving"])
 
     def _press(self, event):
+        # What the row carries is asked once the press becomes a drag, not at every click (a row of a
+        # selection of 200,000 songs carries them all).
         iid = self.tree.identify_row(event.y)
-        carried = self.what(iid) if iid and self.tree.identify_region(event.x, event.y) == "cell" else None
-        self._state = None if carried is None else {"carried": carried, "x0": event.x_root, "y0": event.y_root,
-                                                     "moving": False}
+        on_row = bool(iid) and self.tree.identify_region(event.x, event.y) == "cell"
+        self._state = {"iid": iid, "x0": event.x_root, "y0": event.y_root, "moving": False} if on_row else None
 
     def _motion(self, event):
         state = self._state
@@ -128,7 +223,11 @@ class TreeDrag:
         if not state["moving"]:
             if max(abs(event.x_root - state["x0"]), abs(event.y_root - state["y0"])) < self._start:
                 return
-            state["moving"] = True
+            carried = self.what(state["iid"])
+            if carried is None:   # (a row that can't be dragged)
+                self._state = None
+                return
+            state["carried"], state["moving"] = carried, True
             self.tree.configure(cursor="hand2")
         self.on_drag(state["carried"], event.x_root, event.y_root, "move")
 
@@ -139,166 +238,801 @@ class TreeDrag:
             self.on_drag(state["carried"], event.x_root, event.y_root, "drop")
 
     def _cancel(self, _event=None):
+        """Esc: a drag under way is called off — and that's all the key does."""
         state, self._state = self._state, None
         if state is not None and state["moving"]:
             self.tree.configure(cursor="")
             self.on_drag(state["carried"], 0, 0, "cancel")
+            return "break"
+        return None
+
+
+# -- work off Tk's thread ------------------------------------------------------------------------------
+class _Worker:
+    """The track list's own thread, for work too slow for Tk's: a big list's search, play counts from
+    the library database. One job of each kind is wanted at a time (a newer one replaces it before it
+    starts); results come back on `results`, which the list's `after` loop drains. Jobs are plain
+    functions of plain data: nothing here touches Tk or holds the list."""
+
+    def __init__(self):
+        self.results: queue.SimpleQueue = queue.SimpleQueue()
+        self._jobs: queue.SimpleQueue = queue.SimpleQueue()
+        self._latest: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._count = 0
+        self._thread: threading.Thread | None = None
+        self._stopped = False
+
+    def ask(self, kind: str, fn: Callable, *args) -> int:
+        with self._lock:
+            self._count += 1
+            number = self._latest[kind] = self._count
+            if self._thread is None and not self._stopped:
+                self._thread = threading.Thread(target=self._run, name="track-list", daemon=True)
+                self._thread.start()
+        self._jobs.put((kind, number, fn, args))
+        return number
+
+    def wanted(self, kind: str, number: int) -> bool:
+        with self._lock:
+            return self._latest.get(kind) == number
+
+    def forget(self, kind: str):
+        """A job of this kind on its way is no longer wanted (its result is dropped)."""
+        with self._lock:
+            self._latest.pop(kind, None)
+
+    def stop(self):
+        with self._lock:
+            self._stopped = True
+        self._jobs.put(None)
+
+    def join(self, timeout: float | None = None):
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def _run(self):
+        while True:
+            item = self._jobs.get()
+            if item is None:
+                return
+            kind, number, fn, args = item
+            item = None
+            if not self.wanted(kind, number):
+                continue
+            try:
+                self.results.put((kind, number, fn(*args), None))
+            except Exception as error:   # (handed back: the list says so, or carries on without)
+                self.results.put((kind, number, None, error))
+            fn = args = None
+
+
+def _search(tracks: Sequence[Track], haystacks: list[str] | None, words: list[str], last) -> tuple:
+    """(The list's thread, or Tk's for a short list.) The songs matching every word, in list order,
+    and each song's folded search text (folded once per list, then kept). While the words only grow
+    (more typing), only the songs found last time are looked through again. A list from the library
+    database is searched there (its `matching`)."""
+    finder = getattr(tracks, "matching", None)
+    if finder is not None:
+        return None, finder(words)
+    if haystacks is None:
+        haystacks = [_haystack(track) for track in tracks]
+    candidates = range(len(tracks))
+    if last is not None and all(any(old in new for new in words) for old in last[0]):
+        candidates = last[1]   # every song these words find, the last ones found too
+    return haystacks, [i for i in candidates if all(word in haystacks[i] for word in words)]
+
+
+class Rows(list):
+    """The songs a right-click menu is for (track indexes); `album`: they're one album header's."""
+    album = False
+
+
+def _play_counts(db, keys: list[str]) -> dict[str, int]:
+    return db.play_counts(keys)
+
+
+class _Listing:
+    """The rows the track list shows, for its VirtualTree: album headers and songs (every song, or the
+    ones a search found) and the "No matches" rows. `entries` holds a row's song (its index) or album
+    header (-1 - its group); the rows themselves are made only as they're drawn."""
+
+    def __init__(self, view: PlaylistView, entries: Sequence[int], tail: list[str]):
+        self.view, self.entries, self.tail = view, entries, tail
+
+    def __len__(self) -> int:
+        return len(self.entries) + len(self.tail)
+
+    def entry(self, row: int) -> int | str:
+        n = len(self.entries)
+        return self.tail[row - n] if row >= n else self.entries[row]
+
+    def key(self, row: int) -> str:
+        found = self.entry(row)
+        if isinstance(found, str):
+            return found
+        return str(found) if found >= 0 else f"a{-1 - found}"
+
+    def row(self, row: int) -> tuple:
+        found = self.entry(row)
+        if isinstance(found, str):
+            return self.view._note_row(found)
+        return self.view._song_row(found) if found >= 0 else self.view._header_row(-1 - found)
+
+    def index_of(self, key: str) -> int | None:
+        if key in self.tail:
+            return len(self.entries) + self.tail.index(key)
+        if key.isdigit():
+            return self.view._row_of(int(key))
+        if key.startswith("a") and key[1:].isdigit():
+            return self.view._header_row_of(int(key[1:]))
+        return None
 
 
 class PlaylistView:
     def __init__(self, parent: tk.Misc, on_play: Callable[[int], None],
                  on_menu: Callable[[list[int], tk.Event], None] = lambda rows, event: None,
-                 on_remove: Callable[[int], None] = lambda index: None,
-                 on_move: Callable[[int, int], None] = lambda index, step: None,
                  on_drag: Callable[[list[int], int, int, str], None] = lambda rows, x, y, phase: None,
-                 on_heading_menu: Callable[[tk.Event], None] = lambda event: None):
+                 on_heading_menu: Callable[[tk.Event], None] = lambda event: None,
+                 on_search_library: Callable[[str], None] | None = None,
+                 is_favourite: Callable[[Track], bool] = lambda track: False,
+                 plays_db: Callable[[], object | None] = lambda: None,
+                 on_view: Callable[[str], None] = lambda view: None,
+                 on_scope: Callable[[str], None] = lambda scope: None,
+                 on_library_key: Callable[[str], None] = lambda how: None):
         self.on_play = on_play
+        self.on_view, self.on_scope, self.on_library_key = on_view, on_scope, on_library_key
+        self.scope = "tab"                  # what the box searches: "tab", or "library" (a wide window only)
         self.on_heading_menu = on_heading_menu
-        self.columns: tuple[str, ...] = ()  # optional columns on show (see set_columns)
-        self.on_menu, self.on_remove, self.on_move = on_menu, on_remove, on_move
+        self.on_search_library = on_search_library
+        self.is_favourite = is_favourite
+        self.plays_db = plays_db                # the library database the Plays column counts from (None: none)
+        self.columns: tuple[str, ...] = ()  # the narrow window's optional columns (see set_columns)
+        self.wide_columns: tuple[str, ...] = tuple(c for c in WIDE_COLUMNS if c != "plays")   # a wide window's
+        self.tier = layout.COLUMN           # the window's layout (set_tier)
+        self.varies: frozenset[str] = frozenset()   # optional columns whose value isn't the same on every row
+        self.shown: tuple[str, ...] = ()    # the optional columns on show now
+        self.on_menu = on_menu
         self.flat = False
-        self._album_start: dict[str, int] = {}  # header row id -> first track index
-        self._tracks: list[Track] = []
+        self._tracks: Sequence[Track] = []
+        self._peek: Callable[[int], Track | None] | None = None   # a list read from the database a page at a time
+        self._serial_seen = None
         self._search_job = None
+        self._poll_job = None
         self.playing: int | None = None         # (0.20.0) the playing song's index, marked in the list
-        self.hovered: str | None = None         # the row under the pointer
-        self._numbers: dict[int, int] = {}      # each listed song's number in the # column
+        # Kept per list (set_tracks), so a pause in typing doesn't redo them over a whole library:
+        self._groups: list = []                 # its albums: (folder, first index, end index)
+        self._starts: list[int] = []            # …each one's first index (to find a song's album)
+        self._grouped = False
+        self._haystacks: list[str] | None = None   # each song's folded search text (made at the first search)
+        self._last_search: tuple[list[str], list[int]] | None = None   # words, and the songs they found
+        self._list_serial = 0                   # bumped with each new list (a search on its way for another is dropped)
+        # What's listed now: the words searched for, the songs found (None: all), the albums listed.
+        self._words: list[str] = []
+        self._found: Sequence[int] | None = None
+        self._listed_groups: Sequence[int] = ()
+        self._listing = _Listing(self, (), [])
+        self._worker = _Worker()
+        self._asked: dict[str, int | None] = {"search": None, "plays": None}
+        self._asking: list[str] = []            # the words of the search on its way from the list's thread
+        self._plays: OrderedDict[str, int] = OrderedDict()   # song key -> times played (the rows shown lately)
+        self._plays_wanted: list[str] = []
+        self._plays_job = None
+        self.cache_column = False               # the Cached column shows (a tab with network songs)
+        self._marks: dict[int, str] = {}        # each song's mark in it, by index
 
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
         self.frame = frame
+        # A wide window's header row: the view switch on the left and the tab's count on the right;
+        # under it the search row, the search box (moved in) with This tab | Whole library beside
+        # it. Made before the search box: a widget packed into a frame other than its parent must be
+        # above that frame in Tk's stacking order. Neither is packed in the narrow window.
+        self.header = ttk.Frame(frame)
+        self.view_var = tk.StringVar(frame, value="tracks")
+        self.view_switch = controls.ChoiceRow(self.header, VIEWS, self.view_var,
+                                              command=lambda: self.on_view(self.view_var.get()))
+        self.view_switch.pack(side="left")
+        self.count_label = ttk.Label(self.header, text="", style="Sub.TLabel", anchor="e")
+        self.count_label.pack(side="right", padx=theme.pad(theme.GAP_WIDE, 0))
+        self.header.bind("<Configure>", lambda e: self._fit_search(), add="+")
+        self.search_row = ttk.Frame(frame)
+        self._search_pad = 0
 
         # (0.20.0) A magnifier inside the box on the left, and a × on the right while there's
         # something typed; (0.22.0) the box itself is controls.SearchBox, shared with the Library.
-        self.search = controls.SearchBox(frame, "Search songs, artists, albums   Ctrl+F", on_clear=self.clear_search)
+        self.search = controls.SearchBox(frame, "Search songs, artists, albums", on_clear=self.clear_search,
+                                         keys="Ctrl+F")
         self.search.pack(fill="x", pady=theme.pad(0, theme.GAP))
         self.query, self.entry = self.search.query, self.search.entry
         self.magnifier, self.clear_button, self.hint = self.search.magnifier, self.search.clear_button, self.search.hint
         self.query.trace_add("write", lambda *_: self._query_changed())
         self.entry.bind("<Down>", lambda e: self._focus_results())
         self.entry.bind("<Return>", lambda e: self._play_first_result())
+        # Searching the whole library: Enter's other meanings act on its first result, as in the
+        # search panel (play next, add to Up next, open the album). Searching the tab, they're Enter.
+        for key, how in (("<Shift-Return>", "next"), ("<Control-Return>", "queue"), ("<Alt-Return>", "album")):
+            self.entry.bind(key, lambda e, h=how: self._library_key(h) or self._play_first_result())
+        # This tab | Whole library, beside the box in a wide window (made after the box: Tab reaches
+        # the box first).
+        self.scope_var = tk.StringVar(frame, value="tab")
+        self.scope_choice = controls.ChoiceRow(frame, SCOPES, self.scope_var,
+                                               command=lambda: self.on_scope(self.scope_var.get()))
 
-        table = ttk.Frame(frame)
+        # The album and playing rows' semibold: one font, made larger in place from 1920 logical px.
+        self._bold = tkfont.Font(root=frame._root(), font=theme.font(theme.SIZE_BODY, "semibold"))
+        # (0.20.0) The slim scrollbar, only there when the list is longer than its window — in the
+        # window's right margin (`parent` is the padded frame round the list).
+        self.list = VirtualTree(frame, COLUMNS, show="headings", on_activate=lambda index: self.activate(),
+                                fonts={"album": self._bold, "playing": self._bold}, playing_column="no",
+                                playing_mark=PLAYING_MARK, margin=True, multiple=True, scroll_parent=parent)
+        table = self.list.frame
         table.pack(fill="both", expand=True)
-        # height=4: ask for little, then grow into whatever room the window has.
-        self.tree = ttk.Treeview(table, columns=("no", "title", "artist", "album", "time"), show="headings",
-                                 selectmode="browse", height=4, displaycolumns=("no", "title", "time"))
+        self.table = table
+        self.tree = self.list.tree
+        self.scrollbar = self.list.scrollbar
+        self.tree.configure(displaycolumns=("no", "title", "time"))
         self.tree.heading("no", text="#", anchor="e")
         self.tree.heading("title", text="Title", anchor="w")
         self.tree.heading("artist", text="Artist", anchor="w")
         self.tree.heading("album", text="Album", anchor="w")
+        self.tree.heading("quality", text="Format", anchor="w")
+        self.tree.heading("plays", text="Plays", anchor="e")
+        self.tree.heading("cache", text="Cached", anchor="w")
         self.tree.heading("time", text="Time", anchor="e")
         self.tree.column("no", width=theme.px(38), stretch=False, anchor="e")
         self.tree.column("title", width=theme.px(240), stretch=True, anchor="w")
         self.tree.column("artist", width=theme.px(120), stretch=True, anchor="w")
         self.tree.column("album", width=theme.px(120), stretch=True, anchor="w")
-        self.tree.column("time", width=theme.px(52), stretch=False, anchor="e")
-        self._fit = fit_columns(self.tree, {"title": 2, "artist": 1, "album": 1}, minimum=theme.px(50))
-        bold = tkfont.nametofont("TkDefaultFont").copy()
-        bold.configure(weight="bold")
-        self._bold = bold
+        self.tree.column("quality", width=theme.px(QUALITY_W), stretch=False, anchor="w")
+        self.tree.column("plays", width=theme.px(PLAYS_W), stretch=False, anchor="e")
+        self.tree.column("cache", width=theme.px(CACHE_W), stretch=False, anchor="w")
+        self.tree.column("time", width=theme.px(TIME_W), stretch=False, anchor="e")
+        self._weights = dict(NARROW_WEIGHTS)   # changed in place by set_tier (the fitter reads them)
+        self._caps: dict[str, int] = {}
+        self._fit = fit_columns(self.tree, self._weights, minimum=theme.px(50), caps=self._caps)
         self._colour_tags()
         theme.on_change(self._palette_changed)
-        # (0.20.0) The slim scrollbar, only there when the list is longer than its window.
-        self.scrollbar = controls.AutoScrollbar(table, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=self.scrollbar.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.scrollbar.auto_pack(side="right", fill="y", padx=(theme.px(theme.GAP_HAIR), 0), before=self.tree)
-        # The row under the pointer lights up.
-        self.tree.bind("<Motion>", self._hover_row, add="+")
-        self.tree.bind("<Leave>", lambda e: self._set_hover(None), add="+")
-        self.tree.bind("<Double-Button-1>", self._activate)
-        self.tree.bind("<Return>", self._activate)
+        self.tree.bind("<ButtonRelease-1>", self._released, add="+")
         self.tree.bind("<Button-3>", self._context)
         for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
-            self.tree.bind(key, lambda e: self._context(popups.row_event(self.tree)) or "break")
-        self.tree.bind("<Delete>", lambda e: self._selected_track() is not None and self.on_remove(self._selected_track()))
-        self.tree.bind("<Control-Up>", lambda e: self._move(-1))
-        self.tree.bind("<Control-Down>", lambda e: self._move(1))
-        # Dragging songs: a song carries itself, an album header its album's listed songs.
-        self.drag = TreeDrag(self.tree, lambda iid: self.rows_of(iid) or None, on_drag)
+            self.tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
+        # Dragging songs: a song carries itself, an album header its album's listed songs, a row of a
+        # selection of several every song selected.
+        self.drag = TreeDrag(self.tree, lambda iid: self._carried(iid) or None, on_drag)
         self._drop_line = tk.Frame(self.tree, bg=theme.ACCENT, height=max(2, theme.px(2)))
+        self.tree.bind("<Destroy>", self._destroyed, add="+")
+
+    def _destroyed(self, event):
+        """Gone: the list's thread stops, and the font is let go here, on Tk's thread."""
+        if event.widget is not self.tree:
+            return
+        for job in (self._search_job, self._poll_job, self._plays_job):
+            if job is not None:
+                try:
+                    self.tree.after_cancel(job)
+                except tk.TclError:
+                    pass
+        self._search_job = self._poll_job = self._plays_job = None
+        self._worker.stop()
+        self._bold = None
+        self._listing = _Listing(self, (), [])
+        self._tracks = []
 
     def _colour_tags(self):
         # A Treeview gives the tag configured *first* the say when two set the same option (checked
-        # on Tk 8.6.12): "hover" comes first so a hovered album / playing row lights up too. Its
-        # text turns TEXT: green text on the hover grey would be under WCAG AA's 4.5:1 in Dark.
-        self.tree.tag_configure("hover", background=theme.SURFACE_HI, foreground=theme.TEXT)
+        # on Tk 8.6.12): "hover" (configured by the list itself) comes first so a hovered album /
+        # playing row lights up too. Its text turns TEXT: green text on the hover grey would be
+        # under WCAG AA's 4.5:1 in Dark.
+        self.tree.tag_configure("hover", background=theme.HOVER, foreground=theme.TEXT)
         self.tree.tag_configure("album", background=theme.BG, foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("playing", foreground=theme.ACCENT_TEXT, font=self._bold)
         self.tree.tag_configure("note", foreground=theme.MUTED)
+        self.tree.tag_configure("loading", foreground=theme.MUTED)
+        self.tree.tag_configure("link", foreground=theme.ACCENT_TEXT)
 
     def _palette_changed(self, _palette):
         """Treeview row colours aren't widget options, so theme.use can't swap them itself. (The
         search box looks after its own.)"""
-        self._colour_tags()
+        if self.tree.winfo_exists():
+            self._colour_tags()
 
     # -- hover -------------------------------------------------------------------
-    def _hover_row(self, event):
-        iid = self.tree.identify_row(event.y)
-        self._set_hover(iid if iid and iid != "none" and not self.drag.active else None)
+    @property
+    def hovered(self) -> str | None:
+        """The row under the pointer (its Treeview id), if any."""
+        return self.list.iid_of(self.list.hovered) if self.list.hovered is not None else None
 
     def _set_hover(self, iid: str | None):
         """Light up the row under the pointer (None: none)."""
-        if iid == self.hovered:
+        self.list.set_hover(self.list.index_of_iid(iid) if iid else None)
+
+    # -- columns and layout ------------------------------------------------------
+    def set_columns(self, columns):
+        """The narrow window's optional columns (OPTIONAL_COLUMNS), e.g. ("artist",)."""
+        self.columns = tuple(c for c in OPTIONAL_COLUMNS if c in columns)
+        if self.tier == layout.COLUMN:
+            self._show_columns()
+
+    def set_wide_columns(self, columns):
+        """A wide window's optional columns (WIDE_COLUMNS): each shows where the tier has room and
+        its value varies between rows."""
+        self.wide_columns = tuple(c for c in WIDE_COLUMNS if c in columns)
+        if self.tier != layout.COLUMN:
+            self._update_shown()
+
+    def wanted(self) -> tuple[str, ...]:
+        """The column setting in use: the narrow window's, or a wide one's."""
+        return self.columns if self.tier == layout.COLUMN else self.wide_columns
+
+    def set_tier(self, tier: str):
+        """The window's layout changed (layout.py): the list's style, columns, column sharing and
+        header row follow."""
+        if tier == self.tier:
             return
-        for row, on in ((self.hovered, False), (iid, True)):
-            if row and self.tree.exists(row):
-                tags = [t for t in self.tree.item(row, "tags") if t != "hover"]
-                self.tree.item(row, tags=(["hover"] + tags) if on else tags)
-        self.hovered = iid
+        wide, was_wide = tier != layout.COLUMN, self.tier != layout.COLUMN
+        self.tier = tier
+        self.tree.configure(style=TREE_STYLES[tier])
+        self._weights.clear()
+        self._weights.update(WIDE_WEIGHTS if wide else NARROW_WEIGHTS)
+        self._caps.clear()
+        if wide:
+            self._caps.update({c: theme.px(v) for c, v in WIDE_CAPS.items()})
+        self._bold.configure(size=theme.SIZE_LARGE if tier == layout.SPLIT_L else theme.SIZE_BODY)
+        if wide != was_wide:
+            self._pack_header(wide)
+        self._show_columns(draw=False)
+        self.list.fonts_changed()   # (the rows' font and height go with the style: drawn again once Tk is idle)
+
+    def set_view(self, view: str):
+        """The view switch shows this view chosen (the window shows the view itself)."""
+        if self.view_var.get() != view:
+            self.view_var.set(view)
+
+    def show_search_row(self, on: bool):
+        """The search row under the header: shown with the Tracks view, put away with the others."""
+        if on and not self.search_row.winfo_manager():
+            self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP), after=self.header)
+            self._search_pad = -1
+            self._fit_search()
+        elif not on and self.search_row.winfo_manager():
+            self.search_row.pack_forget()
+
+    def set_scope(self, scope: str):
+        """What the box searches: "tab" (this tab's songs, filtered in place) or "library" (the
+        window shows the whole library's results instead of the list). Back to the tab, the tab is
+        filtered by what's in the box."""
+        if scope == self.scope:
+            return
+        self.scope = scope
+        if self.scope_var.get() != scope:
+            self.scope_var.set(scope)
+        self.hint.configure(text=SEARCH_HINTS[scope])
+        if scope == "tab":
+            self._render()
+            return
+        if self._search_job:
+            self.tree.after_cancel(self._search_job)
+            self._search_job = None
+        self._worker.forget("search")   # (one on its way from the list's thread isn't wanted now)
+        self._asked["search"] = None
+
+    def _library_key(self, how: str):
+        if self.scope != "library":
+            return None
+        self.on_library_key(how)
+        return "break"
+
+    def _update_shown(self):
+        """Show the optional columns the setting, the tier and the rows call for."""
+        self._show_columns()
+
+    def _show_columns(self, draw: bool = True):
+        if self.tier == layout.COLUMN:
+            shown = self.columns
+        else:
+            shown = layout.columns_for(self.tier, self.wide_columns, self.varies)
+        self.shown = tuple(shown)
+        cache = ("cache",) if self.cache_column else ()
+        self.tree.configure(displaycolumns=("no", "title", *self.shown, *cache, "time"))
+        self._size_columns()
+        self._fit()
+        if draw:
+            self.list.refresh()   # (a title carries its artist only while the Artist column is hidden)
+
+    def _size_columns(self):
+        """The Cached and Plays columns as wide as their widest value in the rows' fonts (the playing
+        row's semibold too), never under their usual width: larger text mustn't cut "◐ 72%" short. The
+        Time column too while album rows show their format in it (no Format column): "24/176.4" whole,
+        not "24/17…"."""
+        fonts = [None] + ([self._bold] if self._bold is not None else [])
+        sized = [("cache", CACHE_W), ("plays", PLAYS_W)]
+        if self._grouped and "quality" not in self.shown:
+            sized.append(("time", TIME_W))
+        else:
+            self.tree.column("time", width=theme.px(TIME_W))
+        for column, usual in sized:
+            need = max(self.list.text_width(WIDEST[column], font) for font in fonts) + theme.px(CELL_ROOM)
+            self.tree.column(column, width=max(theme.px(usual), need))
+
+    def _pack_header(self, wide: bool):
+        """The header row and the search row (a wide window), or the search box on its own above the
+        list."""
+        self.search.pack_forget()
+        self.scope_choice.pack_forget()
+        if wide:
+            self.header.pack(fill="x", pady=theme.pad(0, theme.GAP), before=self.search_row
+                             if self.search_row.winfo_manager() else self.table)
+            if not self.search_row.winfo_manager():
+                self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP), after=self.header)
+            self.search.pack(in_=self.search_row, side="left", fill="x", expand=True)
+            self.scope_choice.pack(in_=self.search_row, side="left", padx=theme.pad(theme.GAP_LARGE, 0))
+            # Just above the row they're packed in, not above everything: Tab follows the stacking
+            # order, so raising them past the list would put the list first.
+            self.search.lift(self.search_row)
+            self.scope_choice.lift(self.search)
+            self._search_pad = -1
+            self._fit_search()
+        else:
+            self.header.pack_forget()
+            self.search_row.pack_forget()
+            if not self.table.winfo_manager():   # (a wide window was showing something else in its place)
+                self.table.pack(fill="both", expand=True)
+            self.search.pack(in_=self.frame, fill="x", pady=theme.pad(0, theme.GAP), before=self.table)
+
+    def _fit_search(self):
+        """In the search row the box grows with the list up to SEARCH_MAX, This tab | Whole library
+        right beside it."""
+        if self.tier == layout.COLUMN or not self.search_row.winfo_manager():
+            return
+        room = self.header.winfo_width() - self.scope_choice.winfo_reqwidth() - theme.px(theme.GAP_LARGE)
+        pad = max(0, room - theme.px(SEARCH_MAX))
+        if abs(pad - self._search_pad) > 2:
+            self._search_pad = pad
+            self.search_row.pack_configure(padx=(0, pad))
+
+    def set_cache_column(self, on: bool):
+        """Show the Cached column (the tab has songs on a network drive), or hide it."""
+        if on != self.cache_column:
+            self.cache_column = on
+            self._show_columns()
+
+    def set_marks(self, marks: dict[int, str]):
+        """Songs' marks in the Cached column, by index ("" for none); the rows on show are drawn
+        again only when one of theirs changed."""
+        changed = False
+        for index, mark in marks.items():
+            if self._marks.get(index, "") != mark:
+                self._marks[index] = mark
+                changed = True
+        if changed and self.cache_column:
+            self.list.refresh()
+
+    def visible_tracks(self) -> list[tuple[int, Track]]:
+        """(index, song) of the song rows on show now (at most VISIBLE_MOST; a song not read yet
+        from the database is left out until it has been)."""
+        listing = self._listing
+        top = self.list.top
+        end = min(len(listing), top + min(self.list.page(), VISIBLE_MOST))
+        found = []
+        for row in range(top, end):
+            entry = listing.entry(row)
+            if isinstance(entry, str) or entry < 0:
+                continue
+            track = self._tracks[entry] if self._peek is None else self._peek(entry)
+            if track is not None:
+                found.append((entry, track))
+        return found
+
+    def set_count(self, text: str):
+        """The tab's count in a wide window's header row, e.g. "Album · 13 songs · 51:57"."""
+        if self.count_label.cget("text") != text:
+            self.count_label.configure(text=text)
+            self._fit_search()
 
     # -- contents --------------------------------------------------------------
-    def set_columns(self, columns):
-        """Which optional columns (OPTIONAL_COLUMNS) to show, e.g. ("artist",)."""
-        self.columns = tuple(c for c in OPTIONAL_COLUMNS if c in columns)
-        self.tree.configure(displaycolumns=("no", "title", *self.columns, "time"))
-        self._fit()
-        self._render()
+    @staticmethod
+    def _varies(tracks: Sequence[Track]) -> frozenset[str]:
+        """The optional columns whose value isn't the same on every song (one pass over the list; a
+        list from the library database says itself). Plays always may."""
+        if not len(tracks):
+            return frozenset()
+        known = getattr(tracks, "varies", None)
+        if known is not None:
+            return frozenset(known) | {"plays"}
+        first = tracks[0]
+        artist, album, quality = first.artist, first.album or album_folder(first.path).name, _quality(first)
+        varies = {"plays"}
+        for track in tracks[1:]:
+            if "artist" not in varies and track.artist != artist:
+                varies.add("artist")
+            if "album" not in varies and (track.album or album_folder(track.path).name) != album:
+                varies.add("album")
+            if "quality" not in varies and _quality(track) != quality:
+                varies.add("quality")
+            if len(varies) == len(WIDE_COLUMNS):
+                break
+        return frozenset(varies)
 
-    def set_tracks(self, tracks: list[Track], flat: bool = False):
+    def set_tracks(self, tracks: Sequence[Track], flat: bool = False):
         """flat: a playlist, shown in its own order without album headers. (The playing mark is
-        dropped: the window marks the playing song again if this list has it.)"""
-        self._tracks = list(tracks)
+        dropped: the window marks the playing song again if this list has it.) `tracks` may be a
+        list from the library database (library_tracks.LibraryTrackList): read a page at a time."""
+        if self._search_job:
+            self.tree.after_cancel(self._search_job)
+            self._search_job = None
+        self._worker.forget("search")
+        self._asked["search"] = None
+        self._tracks = list(tracks) if isinstance(tracks, list) else tracks
+        self._peek = getattr(tracks, "peek", None)
+        self._serial_seen = getattr(tracks, "serial", None)
         self.playing = None
         self.flat = flat
-        self._render()
+        groups = getattr(tracks, "groups", None)
+        count = len(self._tracks)
+        if flat:
+            self._groups = [(None, 0, count)]
+        else:
+            self._groups = list(groups) if groups is not None else group_by_album(self._tracks)
+        self._starts = [start for _folder, start, _end in self._groups]
+        self._grouped = len(self._groups) > 1
+        self.varies = self._varies(self._tracks)
+        self._haystacks = None
+        self._last_search = None
+        self._marks = {}
+        self._list_serial += 1
+        if self.tier != layout.COLUMN:
+            self._show_columns(draw=False)
+        else:   # (album rows or none: the Time column's width may change)
+            self._size_columns()
+            self._fit()
+        words = self._typed()
+        if words and count >= SEARCH_THREAD_AT:
+            self._list(words=[], found=None, keep=False)   # (every song, until the search comes back)
+            self._ask_search(words)
+        else:
+            self._list(words, self._match_now(words), keep=False)
+
+    def _typed(self) -> list[str]:
+        return [_fold(w) for w in self.query.get().split()]
+
+    def _match_now(self, words: list[str]) -> list[int] | None:
+        """The songs matching every word, in list order (None: no words, so every song), worked out
+        here and now."""
+        if not words:
+            self._last_search = None
+            return None
+        haystacks, found = _search(self._tracks, self._haystacks, words, self._last_search)
+        if haystacks is not None:
+            self._haystacks = haystacks
+        self._last_search = (words, found)
+        return found
+
+    def _list(self, words: list[str], found: Sequence[int] | None, keep: bool = True):
+        """List `found` (None: every song) under their album headers; "No matches" (and the whole
+        library's search) when a search found nothing."""
+        groups, grouped = self._groups, self._grouped
+        tail: list[str] = []
+        listed: Sequence[int]
+        entries: Sequence[int]
+        if found is None:
+            listed = range(len(groups)) if grouped else ()
+            if grouped:
+                made = array("q")
+                for g, (_folder, start, end) in enumerate(groups):
+                    made.append(-1 - g)
+                    made.extend(range(start, end))
+                entries = made
+            else:
+                entries = range(len(self._tracks))
+        else:
+            if grouped:
+                made, listed_groups = array("q"), []
+                g, current = 0, -1
+                for i in found:
+                    while groups[g][2] <= i:
+                        g += 1
+                    if g != current:
+                        made.append(-1 - g)
+                        listed_groups.append(g)
+                        current = g
+                    made.append(i)
+                entries, listed = made, listed_groups
+            else:
+                entries, listed = found, ()
+            if not found:
+                tail = ["none"] + (["library"] if self.on_search_library is not None else [])
+        new_words = words != self._words
+        self._words, self._found, self._listed_groups = words, found, listed
+        self._listing = _Listing(self, entries, tail)
+        self.list.playing = self._row_of(self.playing)
+        if keep and new_words:
+            self.list.top = 0   # (a new search lists from its first find)
+        self.list.set_source(self._listing, keep=keep)
+        if keep and new_words and self.list.selected is not None:
+            self.list.see(self.list.selected)
 
     def _render(self):
-        self.tree.delete(*self.tree.get_children())
-        self._album_start.clear()
-        self._numbers.clear()
-        self.hovered = None
-        tracks = self._tracks
-        words = [_fold(w) for w in self.query.get().split()]
-        groups = [(None, 0, len(tracks))] if self.flat else group_by_album(tracks)
-        grouped = len(groups) > 1
-        shown = 0
-        for g, (folder, start, end) in enumerate(groups):
-            picked = [i for i in range(start, end) if not words or matches(tracks[i], words)]
-            if not picked:
+        """List the songs the search finds (all of them with no search) under their album headers,
+        here and now (a search waiting for a pause in typing, or on its way from the list's thread,
+        isn't needed any more)."""
+        if self._search_job:   # (this shows the search as it stands: a pending one would only repeat it)
+            self.tree.after_cancel(self._search_job)
+            self._search_job = None
+        self._worker.forget("search")
+        self._asked["search"] = None
+        words = self._typed()
+        self._list(words, self._match_now(words))
+
+    # -- the rows ----------------------------------------------------------------
+    def _track(self, i: int) -> Track | None:
+        """Song i, or None while it's being read (a list from the database: asked for here)."""
+        peek = self._peek
+        if peek is None:
+            return self._tracks[i]
+        track = peek(i)
+        if track is None:
+            self._tracks.want(i)
+            self._start_poll()
+        return track
+
+    def _start_of(self, i: int) -> int:
+        return self._groups[bisect.bisect_right(self._starts, i) - 1][1]
+
+    def _song_row(self, i: int) -> tuple:
+        track = self._track(i)
+        if track is None:
+            return (str(i), ("", ELLIPSIS, "", "", "", "", "", ""), ("loading",))
+        number = (i - self._start_of(i) + 1) if self._grouped else (i + 1)
+        plays = self._plays_text(track) if "plays" in self.shown else ""
+        return (str(i), (number, self._title(i, bool(self._words), track), track.artist, track.album,
+                         _quality(track), plays, self._marks.get(i, ""), _clock(track.duration)), ())
+
+    def _header_row(self, g: int) -> tuple:
+        folder, start, _end = self._groups[g]
+        track = self._track(start)
+        if track is None:
+            text, quality = getattr(folder, "name", "") or ELLIPSIS, ""
+        else:
+            text, quality = album_heading([track], folder), _quality(track)
+        return (f"a{g}", ("", text, "", "", quality, "", "", "" if "quality" in self.shown else quality),
+                ("album",))
+
+    @staticmethod
+    def _note_row(key: str) -> tuple:
+        if key == "none":
+            return ("none", ("", "No matches", "", "", "", "", "", ""), ("note",))
+        return ("library", ("", SEARCH_LIBRARY, "", "", "", "", "", ""), ("link",))
+
+    def _title(self, i: int, searching: bool, track: Track | None = None) -> str:
+        """Song i's title cell: with its artist while searching and in a playlist (unless the
+        Artist column shows it), and a note when its file has gone."""
+        track = track if track is not None else self._tracks[i]
+        show_artist = (searching or self.flat) and track.artist and "artist" not in self.shown
+        title = f"{track.title}  ·  {track.artist}" if show_artist else track.title
+        if self.is_favourite(track):
+            title = f"{FAVOURITE_MARK} {title}"
+        if not track.missing:
+            return title
+        if isinstance(track.path, audiofile.UrlPath):
+            return title + "   (web address — not supported yet)"
+        return title + "   (file not found)"
+
+    def _row_of(self, i: int | None) -> int | None:
+        """Where song i is listed (None: not listed — the search hides it)."""
+        if i is None or not 0 <= i < len(self._tracks):
+            return None
+        found = self._found
+        if found is None:
+            k = i
+        else:
+            k = bisect.bisect_left(found, i)
+            if k >= len(found) or found[k] != i:
+                return None
+        if not self._grouped:
+            return k
+        g = bisect.bisect_right(self._starts, i) - 1
+        return k + bisect.bisect_right(self._listed_groups, g)
+
+    def _header_row_of(self, g: int) -> int | None:
+        """Where album header g is listed (None: the search found none of its songs)."""
+        if not self._grouped or not 0 <= g < len(self._groups):
+            return None
+        listed = self._listed_groups
+        k = bisect.bisect_left(listed, g)
+        if k >= len(listed) or listed[k] != g:
+            return None
+        start = self._groups[g][1]
+        before = start if self._found is None else bisect.bisect_left(self._found, start)
+        return before + k
+
+    def _group_songs(self, g: int) -> Sequence[int]:
+        """Album g's songs as listed now (the ones the search found)."""
+        _folder, start, end = self._groups[g]
+        found = self._found
+        if found is None:
+            return range(start, end)
+        return found[bisect.bisect_left(found, start):bisect.bisect_left(found, end)]
+
+    @property
+    def _songs(self) -> list[str]:
+        """The song rows listed now, top to bottom (their ids)."""
+        found = self._found
+        return [str(i) for i in (range(len(self._tracks)) if found is None else found)]
+
+    def _first_song(self) -> int | None:
+        found = self._found
+        if found is None:
+            return 0 if len(self._tracks) else None
+        return found[0] if found else None
+
+    # -- play counts (the Plays column) -------------------------------------------
+    def _plays_text(self, track: Track) -> str:
+        key = audiofile.key(track.path)
+        count = self._plays.get(key)
+        if count is None:
+            if key not in self._plays_wanted:
+                self._plays_wanted.append(key)
+                if self._plays_job is None:
+                    self._plays_job = self.tree.after_idle(self._ask_plays)
+            return ""
+        self._plays.move_to_end(key)
+        return f"{count:,}" if count else ""
+
+    def _ask_plays(self):
+        """The rows on show asked for play counts not known yet: read them on the list's thread."""
+        self._plays_job = None
+        keys, self._plays_wanted = self._plays_wanted, []
+        db = self.plays_db()
+        if keys and db is not None:
+            self._asked["plays"] = self._worker.ask("plays", _play_counts, db, keys)
+            self._start_poll()
+
+    def _take_plays(self, counts: dict[str, int] | None):
+        if counts:
+            self._plays.update(counts)
+            while len(self._plays) > PLAYS_KEPT:
+                self._plays.popitem(last=False)
+            if "plays" in self.shown:
+                self.list.refresh()
+
+    def plays_changed(self):
+        """A song's play was counted: the Plays column reads its counts again."""
+        self._worker.forget("plays")   # (one on its way has the counts from before)
+        self._asked["plays"] = None
+        self._plays.clear()
+        if "plays" in self.shown:
+            self.list.refresh()
+
+    # -- the list's own loop -------------------------------------------------------
+    def _start_poll(self):
+        if self._poll_job is None and self.tree.winfo_exists():
+            self._poll_job = self.tree.after(POLL_MS, self._poll)
+
+    def _poll(self):
+        """Take in what the list's thread has finished, and rows of a database list that have
+        arrived; look again while anything is still on its way."""
+        self._poll_job = None
+        while True:
+            try:
+                kind, number, value, error = self._worker.results.get_nowait()
+            except queue.Empty:
+                break
+            if not self._worker.wanted(kind, number) or self._asked.get(kind) != number:
                 continue
-            if grouped:
-                header = f"a{g}"
-                self.tree.insert("", "end", iid=header, tags=("album",),
-                                 values=("", album_heading(tracks[start:end], folder), "", "",
-                                         _quality(tracks[start])))
-                self._album_start[header] = picked[0] if words else start
-            for i in picked:
-                track = tracks[i]
-                number = (i - start + 1) if grouped else (i + 1)
-                show_artist = (words or self.flat) and track.artist and "artist" not in self.columns
-                title = f"{track.title}  ·  {track.artist}" if show_artist else track.title
-                if track.missing:
-                    title += "   (file not found)"
-                self._numbers[i] = number
-                playing = i == self.playing
-                self.tree.insert("", "end", iid=str(i), tags=("playing",) if playing else (),
-                                 values=(PLAYING_MARK if playing else number, title, track.artist, track.album,
-                                         _clock(track.duration)))
-                shown += 1
-        if words and not shown:
-            self.tree.insert("", "end", iid="none", tags=("note",), values=("", "No matches", "", "", ""))
+            self._asked[kind] = None
+            if kind == "search" and error is None:
+                self._take_search(*value)
+            elif kind == "plays" and error is None:
+                self._take_plays(value)
+        tracks = self._tracks
+        serial = getattr(tracks, "serial", None)
+        if serial is not None and serial != self._serial_seen:
+            self._serial_seen = serial
+            self.list.refresh()
+        waiting = getattr(tracks, "waiting", None)
+        if any(n is not None for n in self._asked.values()) or (waiting is not None and waiting()):
+            self._start_poll()
 
     # -- search ----------------------------------------------------------------
     @property
@@ -311,73 +1045,177 @@ class PlaylistView:
 
     def clear_search(self):
         self.query.set("")
-        self.tree.focus_set()
+        if self.scope == "library":   # (the list isn't on show: the keyboard stays in the box)
+            self.entry.focus_set()
+        else:
+            self.tree.focus_set()
 
     def _query_changed(self):
+        if self.scope == "library":   # (the window's results follow the box; the tab stays as it is)
+            return
         if self._search_job:
             self.tree.after_cancel(self._search_job)
-        self._search_job = self.tree.after(SEARCH_DELAY_MS, self._render)  # wait for a pause in typing
+        self._search_job = self.tree.after(SEARCH_DELAY_MS, self._search_now)  # wait for a pause in typing
+
+    def _search_now(self):
+        """The pause in typing came: search (a big list on the list's own thread)."""
+        if self._search_job:   # (called before the pause: the search waiting for it isn't needed)
+            self.tree.after_cancel(self._search_job)
+        self._search_job = None
+        words = self._typed()
+        if words and len(self._tracks) >= SEARCH_THREAD_AT:
+            if self._asked["search"] is None or words != self._asking:   # (the same search on its way: wait for it)
+                self._ask_search(words)
+        else:
+            self._render()
+
+    def _ask_search(self, words: list[str]):
+        serial = self._list_serial
+        self._asking = words
+        self._asked["search"] = self._worker.ask("search", lambda *args: (serial, words, *_search(*args)),
+                                                 self._tracks, self._haystacks, words, self._last_search)
+        self._start_poll()
+
+    def _take_search(self, serial: int, words: list[str], haystacks, found):
+        if serial != self._list_serial or words != self._typed():
+            return   # (for a list since replaced, or words since changed: a newer search follows)
+        if haystacks is not None:
+            self._haystacks = haystacks
+        self._last_search = (words, found)
+        self._list(words, found)
+
+    def _flush_search(self):
+        """Words typed but not yet searched for (the pause hasn't come, or the search is still on
+        its way): search for them now, so a quick Enter or Down acts on what was typed, not on the
+        list from before."""
+        if self._search_job or self._asked["search"] is not None or self._typed() != self._words:
+            self._render()
 
     def _focus_results(self):
-        rows = [r for r in self.tree.get_children() if r.isdigit()]
-        if rows:
+        if self._library_key("down"):
+            return
+        self._flush_search()
+        first = self._first_song()
+        if first is not None:
             self.tree.focus_set()
-            self.tree.selection_set(rows[0])
-            self.tree.focus(rows[0])
+            self.list.select(self._row_of(first))
 
     def _play_first_result(self):
-        rows = [r for r in self.tree.get_children() if r.isdigit()]
-        if rows:
-            self.on_play(int(rows[0]))
+        if self._library_key("play"):
+            return
+        self._flush_search()
+        first = self._first_song()
+        if first is not None:
+            self.on_play(first)
+        elif "library" in self._listing.tail:   # no matches: Enter searches the whole library
+            self.search_library()
+
+    def search_library(self):
+        """Hand the words typed to the whole-library search (the "Search the whole library" row)."""
+        if self.on_search_library is not None:
+            self.on_search_library(self.query.get().strip())
+
+    def _released(self, event):
+        if self.tree.identify_row(event.y) == "library" and "library" in self._listing.tail:
+            self.search_library()
+
+    def refresh_titles(self):
+        """Song rows' titles again (a favourite's ♥ came or went): only the rows on show are drawn."""
+        self.list.refresh()
 
     # -- right-click and editing -------------------------------------------------
     def rows_of(self, iid: str) -> list[int]:
         """Track indexes a row stands for: one song, or every listed song of an album header."""
         if iid.isdigit():
             return [int(iid)]
-        if iid in self._album_start:
-            rows = list(self.tree.get_children())
-            after = rows[rows.index(iid) + 1:]
-            songs = []
-            for row in after:
-                if not row.isdigit():
-                    break
-                songs.append(int(row))
-            return songs
+        if iid.startswith("a") and iid[1:].isdigit() and self._header_row_of(int(iid[1:])) is not None:
+            return list(self._group_songs(int(iid[1:])))
         return []
+
+    def _carried(self, iid: str) -> list[int]:
+        """What a dragged row carries: every song selected when it's one of several selected, else
+        its own song (an album header: its album's)."""
+        index = self.list.index_of_iid(iid)
+        if index is not None and self.list.is_selected(index) and self.list.selected_count() > 1:
+            return self.selected_rows()
+        return self.rows_of(iid)
 
     def _context(self, event):
         if self.tree.identify_region(event.x, event.y) == "heading":
             self.on_heading_menu(event)
             return
         iid = self.tree.identify_row(event.y)
-        if not iid or iid == "none":
+        if not iid or iid in ("none", "library"):
             return
-        self.tree.selection_set(iid)
-        self.tree.focus(iid)
-        self.on_menu(self.rows_of(iid), event)
+        index = self.list.index_of_iid(iid)
+        if index is None:
+            return
+        self.list.sync()
+        if not self.list.is_selected(index):   # (a right-click inside the selection keeps it)
+            self.list.select(index, see=False)
+        rows = Rows(self.selected_rows())
+        rows.album = self.list.selected_count() == 1 and not iid.isdigit()
+        self.on_menu(rows, event)
 
     def selected_rows(self) -> list[int]:
-        """The tracks the selected row stands for (a song, or an album header's songs)."""
-        selection = self.tree.selection()
-        return self.rows_of(selection[0]) if selection else []
+        """The tracks the selected rows stand for, in list order: the songs selected, and an album
+        header's listed songs when none of them is selected itself (a header picked on its own, or
+        Ctrl+clicked). A header that's just inside a Shift range brings nothing more: what's acted on
+        is what's lit."""
+        self.list.sync()
+        listing = self._listing
+        entries, count = listing.entries, len(listing.entries)
+        runs = self.list.chosen.runs
+        if self._found is None and runs == [(0, len(listing))]:
+            return list(range(len(self._tracks)))   # (everything: Ctrl+A)
+        songs: list[int] = []
+        headers: list[int] = []
+        for start, end in runs:
+            for row in range(start, min(end, count)):
+                found = entries[row]
+                if found >= 0:
+                    songs.append(found)
+                else:
+                    headers.append(-1 - found)
+        if not headers:
+            return songs
+        picked = set(songs)
+        for g in headers:
+            listed = self._group_songs(g)
+            if not any(i in picked for i in listed):
+                songs.extend(listed)
+        return sorted(set(songs))
 
-    def _selected_track(self) -> int | None:
-        selection = self.tree.selection()
-        return int(selection[0]) if selection and selection[0].isdigit() else None
+    def selected_track(self) -> int | None:
+        """The selected song's index (None: nothing, or an album header, is selected); with several
+        selected, the one the keyboard is on."""
+        self.list.sync()
+        row = self.list.selected
+        if row is None or not self.list.is_selected(row) or row >= len(self._listing):
+            return None
+        found = self._listing.entry(row)
+        return found if isinstance(found, int) and found >= 0 else None
 
-    def _move(self, step: int):
-        index = self._selected_track()
-        if index is not None:
-            self.on_move(index, step)
-        return "break"
+    def selected_count(self) -> int:
+        self.list.sync()
+        return self.list.selected_count()
 
     def select(self, index: int):
-        iid = str(index)
-        if self.tree.exists(iid):
-            self.tree.selection_set(iid)
-            self.tree.focus(iid)
-            self.tree.see(iid)
+        """Select song `index` alone (nothing, when the search hides it), scrolled into view."""
+        row = self._row_of(index)
+        if row is not None:
+            self.list.select(row)
+
+    def select_tracks(self, indices, cursor: int | None = None):
+        """Select these songs (the ones listed), the keyboard on `cursor` (default: the first)."""
+        rows = [r for r in (self._row_of(i) for i in indices) if r is not None]
+        self.list.select_indices(rows, cursor=self._row_of(cursor) if cursor is not None else None)
+
+    def select_all(self) -> bool:
+        """Ctrl+A: every row listed (False when the list is empty)."""
+        if not self._found and self._found is not None:
+            return False
+        return self.list.select_all()
 
     # -- reordering by dragging ---------------------------------------------------
     def contains(self, x_root: int, y_root: int) -> bool:
@@ -386,17 +1224,23 @@ class PlaylistView:
         return (tree.winfo_rootx() <= x_root < tree.winfo_rootx() + tree.winfo_width()
                 and tree.winfo_rooty() <= y_root < tree.winfo_rooty() + tree.winfo_height())
 
+    def _shown_songs(self) -> list[str]:
+        """The song rows on show, top to bottom (their ids)."""
+        return [iid for iid in self.tree.get_children() if iid.isdigit()]
+
     def drop_index(self, y_root: int) -> int:
         """Where a dragged song would land: the index of the song the drop line sits above
-        (len = after the last). Only meaningful for a flat list (a playlist) with no search."""
+        (len = after the last). Only meaningful for a flat list (a playlist) with no search. Below the
+        rows on show (the gap under the last whole row): just after the last one on show — the end
+        of the playlist only when that's its last song."""
         y = y_root - self.tree.winfo_rooty()
-        rows = [r for r in self.tree.get_children() if r.isdigit()]
+        rows = self._shown_songs()
         if not rows:
             return 0
         iid = self.tree.identify_row(y)
         if not iid or not iid.isdigit():
             first = self.tree.bbox(rows[0])
-            return int(rows[0]) if first and y < first[1] else len(self._tracks)
+            return int(rows[0]) if first and y < first[1] else int(rows[-1]) + 1
         box = self.tree.bbox(iid)
         index = int(iid)
         return index + 1 if box and y > box[1] + box[3] / 2 else index
@@ -406,15 +1250,16 @@ class PlaylistView:
         if index is None:
             self._drop_line.place_forget()
             return
-        rows = [r for r in self.tree.get_children() if r.isdigit()]
+        rows = self._shown_songs()
         if not rows:
             self._drop_line.place_forget()
             return
-        if str(index) in rows and self.tree.bbox(str(index)):
-            y = self.tree.bbox(str(index))[1]
-        else:
+        box = self.tree.bbox(str(index)) if str(index) in rows else ""
+        if box:
+            y = box[1]
+        else:   # (just after the last row on show: under it)
             last = self.tree.bbox(rows[-1])
-            if not last:
+            if not last or index != int(rows[-1]) + 1:
                 self._drop_line.place_forget()
                 return
             y = last[1] + last[3]
@@ -424,32 +1269,48 @@ class PlaylistView:
     # -- selection -------------------------------------------------------------
     def clear_current(self):
         self._mark_playing(None)
-        self.tree.selection_remove(*self.tree.selection())
+        self.list.select(None, see=False)
 
     def show_current(self, index: int):
-        """The playing song: marked (♪, green bold), selected and scrolled into view."""
+        """The playing song: marked (♪, green bold), and — while the selection is following playback
+        (nothing selected, or just the song that was playing) — selected and scrolled into view. Songs
+        the user picked stay picked, and the list stays where they are."""
+        self.list.sync()
+        chosen = self.list.chosen
+        following = not chosen or (len(chosen) == 1 and self.list.playing is not None
+                                   and self.list.is_selected(self.list.playing))
         self._mark_playing(index)
-        iid = str(index)
-        if self.tree.exists(iid):
-            self.tree.selection_set(iid)
-            self.tree.see(iid)
+        row = self._row_of(index)
+        if row is not None and following:   # (a song the search hides keeps its mark, unselected)
+            self.list.select(row)
 
     def _mark_playing(self, index: int | None):
         """Move the playing mark (the row keeps it however the selection moves)."""
-        if index == self.playing:
+        if index == self.playing and self.list.playing == self._row_of(index):
             return
-        old, self.playing = self.playing, index
-        for row, on in ((old, False), (index, True)):
-            if row is None or not self.tree.exists(str(row)):
-                continue
-            iid = str(row)
-            tags = [t for t in self.tree.item(iid, "tags") if t != "playing"]
-            self.tree.item(iid, tags=tags + ["playing"] if on else tags)
-            self.tree.set(iid, "no", PLAYING_MARK if on else self._numbers.get(row, row + 1))
+        self.playing = index
+        self.list.set_playing(self._row_of(index))
 
-    def _activate(self, _event=None):
-        selection = self.tree.selection()
-        if not selection or selection[0] == "none":
-            return
-        iid = selection[0]
-        self.on_play(self._album_start[iid] if iid in self._album_start else int(iid))
+    def activate(self) -> bool:
+        """Play the selected song (an album header: its album). False when nothing is selected. With
+        several selected, the one the keyboard is on — or, when that one isn't lit (Ctrl+clicked out),
+        the first that is: what's acted on is what's lit."""
+        self.list.sync()
+        row = self.list.selected
+        if row is not None and not self.list.is_selected(row):
+            row = self.list.chosen.first()
+        if row is None or row >= len(self._listing):
+            return False
+        found = self._listing.entry(row)
+        if found == "none":
+            return False
+        if found == "library":
+            self.search_library()
+            return True
+        if found < 0:
+            songs = self._group_songs(-1 - found)
+            if not len(songs):
+                return False
+            found = songs[0]
+        self.on_play(found)
+        return True

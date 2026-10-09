@@ -1,4 +1,4 @@
-"""Up next (0.15.0): "Play next" / "Add to queue" songs play before the list carries on, in order;
+"""Up next (0.15.0): "Play next" / "Add to Up next" songs play before the list carries on, in order;
 a queued song joins on gaplessly (checked sample for sample through the stand-in sound card, as
 test_gapless.py), and the list carries on after the song the queue interrupted."""
 import time
@@ -111,7 +111,7 @@ def test_the_list_changing_while_a_queued_song_plays():
     p.add_to_queue([q])
     queued, _ = p._follow(1)
     join(p, SimpleNamespace(), queued)
-    p._session = SimpleNamespace(paused=False, close=lambda: None)   # (as if playing)
+    p._session = SimpleNamespace(paused=False, close=lambda: None, relineup=lambda: None)   # (as if playing)
     p.set_tracks([c, b, a], keep_playing=True)                       # e.g. a playlist reordered
     assert p.queued_now is queued and p.index == 1                   # b moved; it's still where the list carries on
     assert p._follow(queued) == (2, a.path)
@@ -181,8 +181,11 @@ def test_next_and_previous_with_up_next(tmp_path, fake_card):
     p.previous()                               # from a queued song: back to the list's song it interrupted
     assert p.queued_now is None and p.index == 0
     p.play_next([tq])
-    p.play_queued(0)                           # picked from the Up next list: plays now
+    picked = p.queue[0]
+    p.play_queued(picked)                      # picked from the Up next list: plays now
     assert p.status().track is tq and p.up_next() == []
+    p.play_queued(picked)                      # (picked again from a list not yet redrawn: it has played)
+    assert p.status().track is tq and p.queued_now is picked
     p.set_exclusive(False)
     p.set_output_device("elsewhere")           # reopening the device keeps the queued song
     assert p.status().track is tq

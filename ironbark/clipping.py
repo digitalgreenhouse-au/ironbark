@@ -29,7 +29,7 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
 from . import audiofile
-from .analysis import FILE_OVERSAMPLE, _TAPS_PER_PHASE, _oversampling_phases, guard_trim
+from .analysis import FILE_OVERSAMPLE, _TAPS_PER_PHASE, _blocks, _oversampling_phases, guard_trim
 
 FACTOR = FILE_OVERSAMPLE      # 8 rebuilt points per sample
 OVER_GAP_S = 0.010            # passes over full scale closer together than this are one over
@@ -218,25 +218,17 @@ def scan(path, cancel: threading.Event | None = None,
         finder = OverFinder(channels, rate)
         total = max(1, f.frames)
         done = 0
-        damaged = None
-        blocks = f.blocks(blocksize=rate * SCAN_BLOCK_S, dtype="float64", always_2d=True)
-        while True:
+        damaged: list = []   # a file that stops decoding part-way (or is cut short): scanned up to there
+        for block in _blocks(f, damaged, blocksize=rate * SCAN_BLOCK_S, dtype="float64", always_2d=True):
             if cancel is not None and cancel.is_set():
                 return None
-            try:
-                block = next(blocks)
-            except StopIteration:
-                break
-            except RuntimeError:     # libsndfile: the rest can't be decoded
-                damaged = done / rate
-                break
             finder.add(block)
             done += len(block)
             if progress:
                 progress(done / total)
         finder.finish()
     return OverScan(rate, total / rate if rate else 0.0, finder.overs, finder.true_peak,
-                    finder.highest_sample, finder.peak_at, damaged)
+                    finder.highest_sample, finder.peak_at, done / rate if damaged else None)
 
 
 def summary(result: OverScan) -> str:

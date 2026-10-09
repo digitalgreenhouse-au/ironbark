@@ -98,3 +98,17 @@ python_home = Path(sys.base_prefix)
 shutil.copy2(python_home / "LICENSE.txt", out / "Python-LICENSE.txt")
 for terms in sorted((python_home / "tcl").glob("t*8.6/license.terms")):
     shutil.copy2(terms, out / f"{terms.parent.name}-license.terms.txt")
+
+# The native libraries whose licences no Python package carries (OpenSSL, libffi, Tcl, PortAudio,
+# tkdnd, the codecs inside libsndfile, …): kept in packaging\licenses, each with where it came from.
+for text in sorted((REPO / "packaging" / "licenses").glob("*.txt")):
+    shutil.copy2(text, out / text.name)
+
+# Every DLL and .pyd in the build must have its licence beside it, or the build stops here.
+sys.path.insert(0, SPECPATH)
+import licence_check  # noqa: E402
+
+missing = licence_check.gaps(Path(DISTPATH) / "Ironbark")
+if missing:
+    raise SystemExit("Licence check failed (add the licence to packaging\\licenses and a rule to "
+                     "packaging\\windows\\licence_check.py):\n  " + "\n  ".join(missing))

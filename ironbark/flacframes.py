@@ -73,6 +73,36 @@ def _audio_start(data) -> tuple[int, int, int]:
             return pos, sample_rate, total
 
 
+def seek_points(head: bytes, most: int = 256) -> list[tuple[int, int]]:
+    """The SEEKTABLE's points from a FLAC file's first bytes: [(first sample, byte offset from
+    the first frame), …] in order (placeholder points left out; thinned to at most `most`). Empty
+    when there's no table, or the metadata goes past `head`."""
+    pos = head.find(b"fLaC")
+    if pos < 0:
+        return []
+    pos += 4
+    while pos + 4 <= len(head):
+        header = head[pos]
+        length = int.from_bytes(head[pos + 1:pos + 4], "big")
+        if header & 0x7F == 3:  # SEEKTABLE: 18 bytes a point
+            body = head[pos + 4:pos + 4 + length]
+            if len(body) < length:
+                return []
+            points = []
+            for at in range(0, length - 17, 18):
+                sample = int.from_bytes(body[at:at + 8], "big")
+                if sample == 0xFFFFFFFFFFFFFFFF:   # a placeholder
+                    continue
+                points.append((sample, int.from_bytes(body[at + 8:at + 16], "big")))
+            points.sort()
+            step = max(1, -(-len(points) // most))
+            return points[::step]
+        pos += 4 + length
+        if header & 0x80:
+            return []
+    return []
+
+
 def _parse_header(data, pos: int, size: int):
     """Return (coded number, block size, header length) if a valid frame header is at pos."""
     if pos + 6 > size:
@@ -122,6 +152,101 @@ def _parse_header(data, pos: int, size: int):
     if i >= size or crc8(data[pos:i]) != data[i]:
         return None
     return value, block, i + 1 - pos
+
+
+MAX_HEADER = 16   # the longest frame header: sync, 2 bytes, a 7-byte number, block size, rate, CRC-8
+
+
+class Scanner:
+    """`build_index`, fed the file's bytes in order as they arrive (a download). It knows where
+    the audio starts once the metadata is in, and the end sample of the last complete frame so far
+    (a frame is complete once the next one's header has arrived). `finish(size)` after the whole
+    file gives exactly what build_index gives. Once past the metadata only a few bytes are kept."""
+
+    def __init__(self):
+        self._buf = bytearray()
+        self._base = 0               # file offset of _buf[0]
+        self.first_frame: int | None = None
+        self.sample_rate = 0
+        self.total = 0
+        self.samples: list[int] = []
+        self.offsets: list[int] = []
+        self._pos = 0                # next file offset to look for a frame at
+        self._sync: bytes | None = None
+        self._nominal = 0
+        self._expected = 0
+        self.fed = 0
+
+    def feed(self, data: bytes) -> None:
+        self._buf += data
+        self.fed += len(data)
+        if self.first_frame is None:
+            try:
+                start, rate, total = _audio_start(self._buf)
+            except (IndexError, ValueError):
+                return   # the metadata isn't all here yet
+            if start > len(self._buf):
+                return
+            self.first_frame, self.sample_rate, self.total = start, rate, total
+            self._pos = start
+        self._scan(final=False)
+
+    def _scan(self, final: bool) -> None:
+        buf, base = self._buf, self._base
+        size = len(buf)
+        pos = self._pos - base
+        while True:
+            if self._sync is None:
+                found = [x for x in (buf.find(b"\xff\xf8", pos), buf.find(b"\xff\xf9", pos)) if x >= 0]
+                at = min(found) if found else -1
+            else:
+                at = buf.find(self._sync, pos)
+            if at < 0:
+                pos = size if final else max(pos, size - 1)   # (a sync code may straddle the end)
+                break
+            if not final and at + MAX_HEADER > size:
+                pos = at   # its header isn't all here yet
+                break
+            parsed = _parse_header(buf, at, size)
+            if parsed is None or (self._sync is not None and parsed[0] != self._expected):
+                pos = at + 1   # sync bytes inside compressed audio, not a frame
+                continue
+            number, block, header_len = parsed
+            if self._sync is None:
+                self._sync = bytes(buf[at:at + 2])
+                self._nominal = block
+            variable = self._sync == b"\xff\xf9"
+            self.samples.append(number if variable else number * self._nominal)
+            self.offsets.append(base + at)
+            self._expected = number + block if variable else number + 1
+            pos = at + header_len + 1
+        pos = min(pos, size)
+        self._pos = base + pos
+        if pos:
+            del self._buf[:pos]
+            self._base += pos
+
+    def end_sample(self) -> int | None:
+        """Where the last complete frame in what has arrived ends (None before the first)."""
+        return self.samples[-1] if self.samples else None
+
+    def byte_at(self, sample: int) -> int | None:
+        """The start of the frame holding `sample`, once the scanner has seen that far."""
+        if not self.samples or sample > self.samples[-1]:
+            return None
+        k = int(np.searchsorted(np.asarray(self.samples), sample, side="right")) - 1
+        return self.offsets[max(0, k)]
+
+    def finish(self, size: int) -> FrameIndex:
+        """The whole file has been fed: the same index build_index makes."""
+        if self.first_frame is None:
+            raise ValueError("not a FLAC file")
+        self._scan(final=True)
+        samples, offsets = list(self.samples), list(self.offsets)
+        end_sample = self.total or (samples[-1] + self._nominal if samples else 0)
+        samples.append(end_sample)
+        offsets.append(size)
+        return FrameIndex(np.array(samples, dtype=np.int64), np.array(offsets, dtype=np.int64), self.sample_rate)
 
 
 def build_index(path: str | Path) -> FrameIndex:

@@ -290,7 +290,7 @@ def _tag_values(path: Path) -> tuple[dict[str, list[str]], int | None]:
     for key in ("TRACKNUMBER", "TRCK"):
         for value in tags.get(key, []):
             digits = value.strip().split("/")[0]
-            if digits.isdigit():
+            if digits.isdecimal():   # (not isdigit: "²" is a digit int() can't read)
                 number = int(digits)
                 break
         if number is not None:

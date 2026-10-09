@@ -5,7 +5,9 @@
   redesigned: their corner frequency, Q and gains are worked out from the published
   coefficients, then the same filters are built for the new rate.
 - Loudness = -0.691 + 10 log10(sum of G_i x the mean square of each K-weighted channel), in
-  LUFS. G = 1.0 for left, right and centre, 1.41 for the surrounds; the LFE is left out.
+  LUFS. G = 1.0 for left, right and centre, 1.41 for the surrounds; the LFE is left out. In
+  other layouts (quad, 6.1, 7.1) G follows where each speaker sits (BS.1770-5 Annex 3, Tables
+  4 and 5): 1.41 from 60 to 120 degrees either side of straight ahead, 1.0 elsewhere.
 - Momentary: a 400 ms sliding window. Short-term: 3 s. Neither is gated.
 - Integrated: 400 ms blocks overlapping by 75%; an absolute gate at -70 LUFS, then a relative
   gate 10 LU below the level of the blocks that passed it.
@@ -49,12 +51,22 @@ LRA_SETTLING = 60.0        # seconds before EBU Mode calls the LRA stable
 
 
 def channel_weights(channels: int) -> list[float]:
-    """G_i in the files' own channel order (WAV/FLAC): L R C [LFE] Ls Rs."""
-    if channels == 5:
-        return [1.0, 1.0, 1.0, SURROUND, SURROUND]
-    if channels == 6:
-        return [1.0, 1.0, 1.0, 0.0, SURROUND, SURROUND]
-    return [1.0] * channels
+    """G_i in FLAC's channel order for each channel count (RFC 9639, 9.1.3; a WAV's channel
+    mask lists these speakers in the same order):
+    4 (quad)  L R Ls Rs — the back pair played on the surround speakers, as in 5.0
+    5 (5.0)   L R C Ls Rs
+    6 (5.1)   L R C LFE Ls Rs
+    7 (6.1)   L R C LFE back-centre side-L side-R — back centre (180 degrees) 1.0, sides (90) 1.41
+    8 (7.1)   L R C LFE back-L back-R side-L side-R — back pair (135 degrees) 1.0, sides (90) 1.41
+    Any other count is taken as front channels (1.0 each)."""
+    layouts = {
+        4: [1.0, 1.0, SURROUND, SURROUND],
+        5: [1.0, 1.0, 1.0, SURROUND, SURROUND],
+        6: [1.0, 1.0, 1.0, 0.0, SURROUND, SURROUND],
+        7: [1.0, 1.0, 1.0, 0.0, 1.0, SURROUND, SURROUND],
+        8: [1.0, 1.0, 1.0, 0.0, 1.0, 1.0, SURROUND, SURROUND],
+    }
+    return layouts.get(channels, [1.0] * channels)
 
 
 # -- K-weighting ---------------------------------------------------------------------
@@ -157,9 +169,13 @@ def integrated(powers: np.ndarray) -> float | None:
     """Gated integrated loudness (LUFS) of a stretch of power steps. None until a block passes
     the gates. Blocks that don't fit whole at the end are left out, as Tech 3341 says."""
     blocks = windows(powers, MOMENTARY, BLOCK_HOP)
+    return _gated(blocks, to_lufs(blocks))
+
+
+def _gated(blocks: np.ndarray, levels: np.ndarray) -> float | None:
+    """Integrated loudness from the gating blocks' mean powers and their levels (LUFS)."""
     if not len(blocks):
         return None
-    levels = to_lufs(blocks)
     loud = levels > ABSOLUTE_GATE
     if not loud.any():
         return None
@@ -170,14 +186,19 @@ def integrated(powers: np.ndarray) -> float | None:
 
 def loudness_range(powers: np.ndarray) -> float | None:
     """LRA (LU), as EBU Tech 3342's reference implementation computes it."""
-    levels = to_lufs(windows(powers, SHORT_TERM, LRA_HOP))
+    return _spread(to_lufs(windows(powers, SHORT_TERM, LRA_HOP)))
+
+
+def _spread(levels: np.ndarray) -> float | None:
+    """LRA from the short-term levels (LUFS, 10 a second)."""
     levels = levels[levels >= ABSOLUTE_GATE]
     if not len(levels):
         return None
     gated = 10 * math.log10(float(np.mean(10 ** (levels / 10))))
-    levels = np.sort(levels[levels >= gated + LRA_RELATIVE_GATE])
+    levels = levels[levels >= gated + LRA_RELATIVE_GATE]
     n = len(levels)
-    low, high = (levels[math.floor((n - 1) * p / 100 + 0.5)] for p in LRA_PERCENTILES)  # MATLAB's round()
+    ranks = [math.floor((n - 1) * p / 100 + 0.5) for p in LRA_PERCENTILES]  # MATLAB's round()
+    low, high = np.partition(levels, ranks)[ranks]   # the values a full sort puts at those places
     return float(high - low)
 
 
@@ -248,15 +269,80 @@ class Loudness:
         return (self.count - self.start) * self.step / self.rate
 
 
+class _Growing:
+    """A float array that keeps being added to."""
+
+    def __init__(self):
+        self._data = np.zeros(1024)
+        self.count = 0
+
+    @property
+    def values(self) -> np.ndarray:
+        return self._data[: self.count]
+
+    def extend(self, values: np.ndarray) -> None:
+        if self.count + len(values) > len(self._data):
+            grown = np.zeros(max(2 * len(self._data), self.count + len(values)))
+            grown[: self.count] = self.values
+            self._data = grown
+        self._data[self.count: self.count + len(values)] = values
+        self.count += len(values)
+
+
+class Programme:
+    """The integrated loudness and loudness range of a measurement that keeps growing (the live
+    meters' "this track so far"), kept up to date as its power steps arrive. Each gating block
+    and short-term level is worked out once, when its steps are in, so a reading only gates
+    the blocks so far instead of going over every step again. Gives exactly what integrated()
+    and loudness_range() give for the same steps."""
+
+    def __init__(self):
+        self._sums = _Growing()      # running total, as windows() makes it: sums[k] = steps 0..k-1 added
+        self._sums.extend(np.zeros(1))
+        self._blocks = _Growing()    # gating blocks' mean powers
+        self._levels = _Growing()    # …and their LUFS
+        self._short = _Growing()     # short-term levels (LUFS) for LRA
+
+    @property
+    def steps(self) -> int:
+        return self._sums.count - 1
+
+    def add(self, powers: np.ndarray) -> None:
+        if not len(powers):
+            return
+        # Added on from the last total in the same order as one cumsum over them all, so every
+        # window below comes out exactly as windows() makes it.
+        self._sums.extend(np.cumsum(np.concatenate([self._sums.values[-1:], powers]))[1:])
+        blocks = self._new_windows(MOMENTARY, BLOCK_HOP, self._blocks.count)
+        self._blocks.extend(blocks)
+        self._levels.extend(to_lufs(blocks))
+        self._short.extend(to_lufs(self._new_windows(SHORT_TERM, LRA_HOP, self._short.count)))
+
+    def _new_windows(self, steps: int, hop: int, have: int) -> np.ndarray:
+        """Mean powers of the windows of `steps` steps (one every `hop`) whole now, after the
+        first `have`."""
+        whole = (self.steps - steps) // hop + 1 if self.steps >= steps else 0
+        starts = np.arange(have, whole) * hop
+        total = self._sums.values
+        return (total[starts + steps] - total[starts]) / steps
+
+    def integrated(self) -> float | None:
+        return _gated(self._blocks.values, self._levels.values)
+
+    def loudness_range(self) -> float | None:
+        return _spread(self._short.values)
+
+
 # -- whole files ----------------------------------------------------------------------
 def file_powers(path, cancel: threading.Event | None = None,
-                progress: Callable[[float], None] | None = None) -> np.ndarray | None:
-    """A file's power steps from start to end (None if cancelled)."""
-    with audiofile.open(path) as f:
+                progress: Callable[[float], None] | None = None, wait: bool | None = None) -> np.ndarray | None:
+    """A file's power steps from start to end (None if cancelled). `wait` False: a song on a network
+    drive with no complete copy here yet raises audiofile.NotCached at once (nothing is fetched)."""
+    with audiofile.open(path, cancel=cancel.is_set if cancel is not None else None, wait=wait) as f:
         meter = Loudness(f.samplerate, f.channels)
         total = max(1, f.frames)
         done = 0
-        for block in f.blocks(blocksize=f.samplerate * 5, dtype="float32", always_2d=True):
+        for block in audiofile.blocks(f, f.samplerate * 5, dtype="float32", always_2d=True):
             if cancel is not None and cancel.is_set():
                 return None
             meter.add(block)
@@ -269,12 +355,17 @@ def file_powers(path, cancel: threading.Event | None = None,
 def album_loudness(paths: Iterable, cancel: threading.Event | None = None,
                    progress: Callable[[float], None] | None = None) -> tuple[float | None, float | None] | None:
     """(integrated LUFS, LRA) of an album played straight through: every track's power steps
-    measured together, as one programme. None if cancelled."""
+    measured together, as one programme. None if cancelled. Songs on a network drive are measured
+    only from their complete copies here (nothing is fetched for it): audiofile.NotCached while one
+    isn't, so a part of an album is never taken for the whole of it."""
     paths = list(paths)
     gathered = []
     for k, path in enumerate(paths):
         try:
-            powers = file_powers(path, cancel, (lambda p, k=k: progress((k + p) / len(paths))) if progress else None)
+            powers = file_powers(path, cancel, (lambda p, k=k: progress((k + p) / len(paths))) if progress else None,
+                                 wait=False)
+        except audiofile.NotCached:
+            raise
         except (OSError, RuntimeError):
             continue  # a file that won't decode just doesn't count
         if powers is None:

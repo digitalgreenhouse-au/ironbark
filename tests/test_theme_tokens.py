@@ -140,6 +140,27 @@ def test_dark_palette_is_todays_look():
     assert theme.colour("#123456") == "#123456"
 
 
+def test_the_rounded_looks_roles():
+    """The five roles of the rounded look, in both palettes (none of the older roles changed)."""
+    assert [getattr(theme.DARK, r) for r in ("STRIP_HI", "TAB_EDGE", "EDGE", "HOVER", "THUMB")] == \
+        ["#24262b", "#2c2e33", "#45484f", "#36383e", "#787d85"]
+    assert [getattr(theme.LIGHT, r) for r in ("STRIP_HI", "TAB_EDGE", "EDGE", "HOVER", "THUMB")] == \
+        ["#dcdfe4", "#d0d4d9", "#c3c7cd", "#e8ebee", "#878c94"]
+
+
+def test_strip_geometry_tokens_add_up():
+    """The strip's numbers fit together: the hover plate's inset is the flare less the gap, every
+    glyph's line sits inside the strip, and at 480 px with four tabs each tab keeps today's room
+    for its name (59 px at 100%)."""
+    assert theme.PLATE_INSET == theme.TAB_FLARE - theme.TAB_GAP
+    assert theme.TAB_TOP + theme.TAB_H == theme.STRIP_H
+    assert theme.TAB_TOP < theme.ROW_Y - theme.PLATE_H / 2 and theme.ROW_Y + theme.PLATE_H / 2 < theme.STRIP_H
+    room = 480 - (2 * theme.CAPTION_W + theme.DISC + 2 * theme.DISC_MARGIN) - (theme.DISC + theme.ADD_GAP) \
+        - (theme.DRAG_GAP + 10)
+    per_tab = max(theme.MIN_TAB, min(theme.TAB_MAX, room // 4 - theme.TAB_GAP))
+    assert per_tab == 73 and per_tab - theme.TAB_PAD_L - theme.TAB_PAD_R == 59
+
+
 def _other_palette() -> theme.Palette:
     """A made-up palette: every colour different (inverted), for switching tests."""
     def invert(value):
@@ -218,7 +239,7 @@ def test_palette_switch_recolours_widgets(root):
     assert text.tag_cget("head", "foreground") == other.ACCENT
     assert button.cget("bg") == other.STRIP and button.cget("fg") == other.MUTED
     button._paint(True)            # hover after the switch: the new palette's colours, not the old
-    assert button.cget("bg") == other.SURFACE_HI and button.cget("fg") == other.TEXT
+    assert button.cget("bg") == other.STRIP_HI and button.cget("fg") == other.TEXT
     button._paint(False)
     row.set_enabled(False)
     # (0.21.0) a greyed-out menu item: MUTED faded toward the background, worked out in the new palette
@@ -235,3 +256,20 @@ def test_palette_switch_recolours_widgets(root):
 def ttk_background(root, style: str) -> str:
     from tkinter import ttk
     return str(ttk.Style(root).lookup(style, "background"))
+
+
+def test_semibold_is_the_real_face_or_bold(root, monkeypatch):
+    """"semibold" is Segoe UI's own semibold where Tk has it (checked by measuring, like the tabular
+    digits), and plain bold where it doesn't."""
+    import sys
+
+    if sys.platform == "win32":
+        assert theme.SEMIBOLD == theme.FONT_SEMIBOLD == "Segoe UI Semibold"
+        assert theme.font(theme.SIZE_DISPLAY, "semibold") == ("Segoe UI Semibold", theme.SIZE_DISPLAY)
+    monkeypatch.setattr(theme, "FONT_SEMIBOLD", "No Such Family Anywhere")
+    assert theme.semibold_family(root) == ""
+    theme.apply(root)
+    assert theme.font(theme.SIZE_DISPLAY, "semibold") == (theme.FONT, theme.SIZE_DISPLAY, "bold")
+    assert theme.font(theme.SIZE_SMALL, "semibold", "italic") == (theme.FONT, theme.SIZE_SMALL, "bold", "italic")
+    monkeypatch.undo()
+    theme.apply(root)

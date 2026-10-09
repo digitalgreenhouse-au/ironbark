@@ -13,11 +13,12 @@ import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
 
-from ironbark import experiments, library, settings, tag_editor, theme
+from ironbark import experiments, layout, library, settings, tag_editor, theme
 from ironbark.engine import State
 from ironbark.library_window import LibraryWindow
 from ironbark.playlist_view import PlaylistView
 from ironbark.tag_window import TagHistoryWindow, TagWindow
+from ironbark.favourites import Favourites
 from ironbark.ui import PlayerWindow, Tab
 
 ON = {"experiments": {tag_editor.EXPERIMENT: True}}
@@ -73,12 +74,14 @@ def labels(menu) -> list[str]:
 
 def window(root, prefs, tracks, **extra):
     """Just enough of a PlayerWindow for the track menu and the tag-editing methods."""
-    w = SimpleNamespace(root=root, prefs=prefs, tabs=[Tab("album", "C:/Music/Album")], current=0,
-                        playlist=SimpleNamespace(columns=(), selected_rows=lambda: [0, 1]),
-                        opened=[], _tag_window=None, _tag_history=None, **extra)
+    w = SimpleNamespace(root=root, prefs=prefs, tabs=[Tab("album", "C:/Music/Album")], current=0, _tier=layout.COLUMN,
+                        playlist=SimpleNamespace(columns=(), wanted=lambda: (), shown=(),
+                                                 selected_rows=lambda: [0, 1]),
+                        opened=[], _tag_window=None, _tag_history=None, sleep_timer=None,
+                        player=SimpleNamespace(stop_after=None), favourites=Favourites(lambda: None), **extra)
     w.tabs[0].tracks = tracks
-    for name in ("_menu", "_track_menu", "_columns_menu", "_tag_editing", "edit_selected_tags", "edit_album_tags",
-                 "show_tag_history"):
+    for name in ("_menu", "_track_menu", "_columns_menu", "_sleep_menu", "stop_after_current", "_tag_editing",
+                 "edit_selected_tags", "edit_album_tags", "show_tag_history", "_with_songs"):
         setattr(w, name, getattr(PlayerWindow, name).__get__(w))
     w._known_playlists = lambda: []
     w.edit_tags = lambda tracks: w.opened.append(("edit", len(tracks))) if w._tag_editing() else None
@@ -162,12 +165,14 @@ def test_edit_an_album_then_undo_it(root, music):
 
     history = TagHistoryWindow(root, {}, on_saved=saves.append, busy=lambda: set(),
                                confirm=lambda message, detail: True)
+    wait(root, lambda: history.loading is None)          # (read on a worker thread)
     assert len(history.entries) == 1 and history.tree.set("0", "what").startswith("Album and Year")
     history.tree.selection_set("0")
     root.update()
     history.undo()
     wait(root, lambda: len(saves) == 2)
     assert {library.read_track(t.path).album for t in tracks} == {"Album"}
+    wait(root, lambda: history.loading is None and len(history.entries) == 2)
     assert history.tree.set("1", "state") == "undone"
     history.close()
 

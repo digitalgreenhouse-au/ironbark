@@ -8,7 +8,8 @@
   of each channel since the track began.
 
 The maths is in stereo.py; this file only draws. Fed by the file's own samples (before the
-volume), so the picture is the same at any volume.
+volume), so the picture is the same at any volume. A frame is drawn only when something changed
+(sound heard, glow still fading, a new reading) and while the window is on screen.
 """
 
 from __future__ import annotations
@@ -21,17 +22,23 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from . import controls, placement, stereo, theme
+from . import controls, placement, stereo, theme, toolwin
 
 REFRESH_MS = 33          # ~30 frames a second
 FADE = 0.7               # how much of the glow is left after each frame (gone in ~1/3 s)
 GLOW = 1.2               # how bright one dot is (brightness = 1 - e^(-GLOW x dots))
+GLOW_FLOOR = 1e-3        # glow below this is under one colour step: cleared to exactly 0 (fading
+                         # on would leave tiny "subnormal" numbers that slow every frame many times over)
 BALANCE_SPAN = 12.0      # dB at each end of the balance bar
 VIEWS = (("lissajous", "Lissajous"), ("polar", "Polar"))
+_UNSET = object()        # no frame drawn yet: the next one is drawn whatever the reading
 
 
-def _rgb(colour: str) -> np.ndarray:
-    return np.array(theme.rgb(colour), dtype=np.float32)
+def _glow_colours(background: str, dot: str) -> list[int]:
+    """The picture's 256 colours, background to fully lit, as Pillow's flat palette list."""
+    bg, lit = np.array(theme.rgb(background), float), np.array(theme.rgb(dot), float)
+    steps = np.linspace(0.0, 1.0, 256)[:, None]
+    return (bg + steps * (lit - bg)).astype(np.uint8).ravel().tolist()
 
 
 def describe_correlation(reading: stereo.ScopeReading | None) -> str:
@@ -111,17 +118,22 @@ class ScopeWindow:
         self.engine = stereo.ScopeEngine(self.feed)
         self.engine.start()
         self._glow: np.ndarray | None = None
-        self._photo = None
+        self._dark = True          # the glow is all zero (nothing to fade)
+        self._photo = None         # the picture, drawn into in place each frame
+        self._shown = _UNSET       # the reading the bars and lines show
         self._geometry = None      # (x, y, width, height, centre x, centre y, radius) of the picture
         self._last = time.perf_counter()
-        self._bg, self._dot = _rgb(theme.BG), _rgb(theme.GOOD)
+        self._colours = _glow_colours(theme.BG, theme.GOOD)
+        self._keep_going = toolwin.KeepGoing(self.win)
         theme.on_change(self._palette_changed)
         self.win.bind("<Configure>", self._moved, add="+")
         self._job = self.win.after(REFRESH_MS, self._tick)
 
     def _palette_changed(self, _palette):
-        """The glow picture's colours are kept between frames: take the new ones."""
-        self._bg, self._dot = _rgb(theme.BG), _rgb(theme.GOOD)
+        """The glow picture's colours are kept between frames: take the new ones (and draw the
+        guides again in theirs)."""
+        self._colours = _glow_colours(theme.BG, theme.GOOD)
+        self._layout_changed()
 
     # -- layout ---------------------------------------------------------------------
     def _bars_height(self) -> int:
@@ -142,6 +154,14 @@ class ScopeWindow:
         cy = height - 1 if self.view.get() == "polar" else height / 2
         self._geometry = (x, y, width, height, width / 2, cy, radius)
         self._glow = np.zeros((height, width), dtype=np.float32)
+        self._dark = True
+        # The picture and the guides stay on the canvas; each frame only repaints the picture
+        # (and the bars, when the reading changed).
+        self._photo = ImageTk.PhotoImage("RGB", (width, height), master=self.win)
+        self.canvas.delete("all")
+        self.canvas.create_image(x, y, image=self._photo, anchor="nw")
+        self._draw_guides(x + width / 2, y + cy, radius)
+        self._shown = _UNSET
         self._draw()
 
     def _view_changed(self):
@@ -162,35 +182,47 @@ class ScopeWindow:
         counts = np.bincount(rows * width + cols, minlength=width * height)
         self._glow += counts.reshape(height, width).astype(np.float32)
 
-    def _image(self):
-        brightness = 1.0 - np.exp(-GLOW * self._glow)
-        rgb = self._bg + brightness[..., None] * (self._dot - self._bg)
-        return ImageTk.PhotoImage(Image.fromarray(rgb.astype(np.uint8)), master=self.win)
+    def _image(self) -> Image.Image:
+        """The glow as a picture: brightness 1 - e^(-GLOW x glow), one of 256 palette steps."""
+        lit = -np.expm1(self._glow * -GLOW)
+        image = Image.fromarray((lit * 255).astype(np.uint8))
+        image.putpalette(self._colours)
+        return image
 
     def _tick(self):
         if not self.win.winfo_exists():
             return
-        now = time.perf_counter()
-        if self._glow is not None:
-            self._glow *= FADE
-            self._add_points(self.engine.samples_between(self._last, now))
-        self._last = now
-        reading = self.engine.reading_at(now)
-        self._draw(reading)
+        with self._keep_going:
+            self._step()
         self._job = self.win.after(REFRESH_MS, self._tick)
+
+    def _step(self):
+        now = time.perf_counter()
+        since, self._last = self._last, now
+        if self._glow is None or not toolwin.on_screen(self.win):
+            self._shown = _UNSET   # minimised: nothing drawn (the engine reads on, on its own thread)
+            return
+        points = self.engine.samples_between(since, now)
+        reading = self.engine.reading_at(now)
+        if self._dark and not len(points) and reading == self._shown:
+            return                 # nothing heard, nothing fading, the same reading: the frame shown is right
+        self._glow *= FADE
+        self._glow[self._glow < GLOW_FLOOR] = 0.0
+        self._add_points(points)
+        self._dark = self._glow.max() == 0
+        self._draw(reading)
 
     # -- drawing ------------------------------------------------------------------------
     def _draw(self, reading: stereo.ScopeReading | None = None):
-        c = self.canvas
-        c.delete("all")
-        if self._geometry is None or self._glow is None:
+        if self._geometry is None or self._photo is None:
             return
         x0, y0, width, height, cx, cy, radius = self._geometry
-        self._photo = self._image()
-        c.create_image(x0, y0, image=self._photo, anchor="nw")
-        self._draw_guides(x0 + cx, y0 + cy, radius)
-        self._draw_bars(reading, y0 + height + theme.px(14))
-        self._draw_texts(reading)
+        self._photo.paste(self._image())
+        if reading != self._shown:
+            self._shown = reading
+            self.canvas.delete("bars")
+            self._draw_bars(reading, y0 + height + theme.px(14))
+            self._draw_texts(reading)
 
     def _draw_guides(self, cx: float, cy: float, r: float):
         c = self.canvas
@@ -224,17 +256,19 @@ class ScopeWindow:
         w = c.winfo_width()
         left, right = theme.px(78), w - theme.px(8)
         bar_h = theme.px(12)
-        c.create_text(0, y + bar_h / 2, text=label, anchor="w", fill=theme.MUTED, font=theme.font(theme.SIZE_SMALL))
-        c.create_rectangle(left, y, right, y + bar_h, fill=theme.SURFACE, width=0)
+        c.create_text(0, y + bar_h / 2, text=label, anchor="w", fill=theme.MUTED, font=theme.font(theme.SIZE_SMALL),
+                      tags="bars")
+        c.create_rectangle(left, y, right, y + bar_h, fill=theme.SURFACE, width=0, tags="bars")
         if fraction_to != fraction_from:
             a, b = sorted((fraction_from, fraction_to))
             c.create_rectangle(left + a * (right - left), y, left + b * (right - left), y + bar_h, fill=colour,
-                               width=0)
+                               width=0, tags="bars")
         for f, text in ticks:
             x = left + f * (right - left)
             anchor = "nw" if f <= 0 else "ne" if f >= 1 else "n"   # the end labels stay inside the window
-            c.create_line(x, y + bar_h, x, y + bar_h + 3, fill=theme.MUTED)
-            c.create_text(x, y + bar_h + 3, text=text, anchor=anchor, fill=theme.MUTED, font=theme.font(theme.SIZE_TINY))
+            c.create_line(x, y + bar_h, x, y + bar_h + 3, fill=theme.MUTED, tags="bars")
+            c.create_text(x, y + bar_h + 3, text=text, anchor=anchor, fill=theme.MUTED,
+                          font=theme.font(theme.SIZE_TINY), tags="bars")
 
     def _draw_bars(self, reading: stereo.ScopeReading | None, y: int):
         value = reading.correlation if reading is not None else None
@@ -282,5 +316,6 @@ class ScopeWindow:
             self.win.after_cancel(self._job)
         self.engine.stop()
         self.player.unmonitor(self.feed)
+        self._photo = None   # its picture goes with the window, on this thread
         self.win.destroy()
         self.on_close()
