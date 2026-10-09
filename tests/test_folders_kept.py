@@ -8,10 +8,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import mini_view, places, theme
 from ironbark.library_view import unsearched_note
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 NET = Path("Y:/Net Music")
 

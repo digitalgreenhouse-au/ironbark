@@ -16,9 +16,9 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-from .. import controls, placement, theme, toolwin
-from . import reels
+from .. import controls, theme, toolwin
 from ..engine import State
+from . import reels
 
 EXPERIMENT = "tape_reels"
 

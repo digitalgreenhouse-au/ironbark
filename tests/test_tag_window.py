@@ -11,15 +11,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
 from fakework import FakeWork
 
-from ironbark import experiments, library, settings, tag_editor, theme
+from ironbark import library, settings, tag_editor, theme
 from ironbark.engine import State
-from ironbark.library_view import LibraryView
-from ironbark.playlist_view import PlaylistView
-from ironbark.tag_window import TagHistoryWindow, TagWindow
 from ironbark.favourites import Favourites
+from ironbark.library_view import LibraryView
+from ironbark.tag_window import TagHistoryWindow, TagWindow
+from ironbark.tagio.flac import FLACFile
 from ironbark.ui import PlayerWindow, Tab
 
 ON: dict = {}   # (tag editing was Experimental until 0.37.0; nothing to switch on now)

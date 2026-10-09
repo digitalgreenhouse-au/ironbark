@@ -49,14 +49,15 @@ ironbark/netcache). Nothing here changes until that is installed (`set_resolver`
 
 from __future__ import annotations
 
+import builtins
 import io
 import os
 import struct
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Callable
 
 import numpy as np
 import soundfile as sf
@@ -152,7 +153,7 @@ class LocalTrack:
     gen: int = 0
 
     @staticmethod
-    def plain(path) -> "LocalTrack":
+    def plain(path) -> LocalTrack:
         return path if isinstance(path, LocalTrack) else LocalTrack(path)
 
     @property
@@ -261,7 +262,7 @@ class UrlPath(_BasePath):
         self.url = url
 
     @classmethod
-    def parse(cls, url: str) -> "UrlPath":
+    def parse(cls, url: str) -> UrlPath:
         from urllib.parse import unquote, urlsplit
         parts = urlsplit(url)
         # A stand-in path of the host and the decoded parts, so name / suffix / stem mean something.
@@ -333,7 +334,7 @@ def sniff(path) -> str:
     """What the file's first bytes say it is, where libsndfile alone can't tell us:
     "mp4" (an .m4a / MP4 container), "oggflac" (FLAC inside Ogg), else ""."""
     try:
-        with io.open(os.fspath(path), "rb") as f:
+        with builtins.open(os.fspath(path), "rb") as f:
             head = f.read(64)
     except OSError:
         return ""
@@ -803,11 +804,11 @@ _shortfalls_lock = threading.Lock()
 
 def has_length_header(path) -> bool:
     """Whether the MP3's first frame is a Xing / Info / VBRI frame, which gives the exact length."""
-    with io.open(path, "rb") as f:
+    with builtins.open(path, "rb") as f:
         data = f.read(1 << 16)
     pos = mp3frames._skip_id3v2(data)
     if pos >= len(data):
-        with io.open(path, "rb") as f:   # a big ID3 tag (cover art): read past it
+        with builtins.open(path, "rb") as f:   # a big ID3 tag (cover art): read past it
             f.seek(pos)
             data, pos = f.read(1 << 16), 0
     while pos + 4 <= len(data):

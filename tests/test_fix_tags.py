@@ -17,15 +17,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
-
 from mp4_maker import write_m4a
 from test_tag_editor import FORMATS, make, picture
+
 from ironbark import artwork, library, settings, tag_editor, tagio, theme
+from ironbark.tag_editor import Edit, Job, TagSave
 from ironbark.tagio import id3, ogg
 from ironbark.tagio.flac import FLACFile
 from ironbark.tagio.mpeg import MP3File
 from ironbark.tagio.vorbis import Picture, VComment
-from ironbark.tag_editor import Edit, Job, TagSave
 
 RNG = np.random.default_rng(41)
 
@@ -189,7 +189,7 @@ def test_a_compressed_id3_frame_is_never_inflated_past_its_limit():
 
 
 def test_a_compressed_frame_must_match_its_declared_size():
-    body = b"\x00" + "Zipped".encode()
+    body = b"\x00" + b"Zipped"
     packed = zlib.compress(body)
     lying = frame24("TIT2", id3.to_synchsafe(len(body) + 50) + packed, b"\x00\x09")
     parsed = id3.ID3Tag.parse(tag(4, lying))

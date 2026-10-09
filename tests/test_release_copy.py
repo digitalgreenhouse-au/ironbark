@@ -6,11 +6,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import diagnostics, help_window, keys, library_view, quick_search, statustext, ui
-from ironbark.tools import details
 from ironbark.library import Track
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
+from ironbark.tools import details
 
 
 def _narrow_fonts_ok(root) -> bool:

@@ -16,14 +16,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
+from fakework import FakeWork
+from test_cue_playback import make_image
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import analysis, artwork, audiofile, library, placement, playlists, settings, ui
 from ironbark.engine import State, Status
 from ironbark.library import Track
 from ironbark.ui import SAFE_VOLUME, PlayerWindow, Tab
-from fakework import FakeWork
-from test_cue_playback import make_image
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 
@@ -440,9 +440,10 @@ def test_closing_during_a_tag_save_lets_it_finish_the_file_in_hand(make_window):
 
 
 def test_quitting_mid_tag_save_leaves_no_copy_beside_the_songs(make_window, tmp_path, monkeypatch):
+    from test_tag_window import flac, wait
+
     from ironbark import tag_editor
     from ironbark.tag_window import TagWindow
-    from test_tag_window import flac, wait
 
     window, root, player, errors = make_window()
     album = tmp_path / "Tagged"

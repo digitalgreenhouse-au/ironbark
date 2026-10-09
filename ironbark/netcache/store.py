@@ -111,7 +111,7 @@ class Item:
     mirror the database row; the rest lives in memory. `cond` guards the byte counts and leases
     and is only ever held for bookkeeping, never during I/O."""
 
-    def __init__(self, store: "Store", *, key: str, kind: str, source: str, host: str, ext: str, **saved):
+    def __init__(self, store: Store, *, key: str, kind: str, source: str, host: str, ext: str, **saved):
         self.store = store
         self.id = saved.pop("id", None) or item_id(key)
         self.key, self.kind, self.source, self.host, self.ext = key, kind, source, host, ext

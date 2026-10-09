@@ -57,14 +57,14 @@ import threading
 import tkinter as tk
 from array import array
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from tkinter import font as tkfont
 from tkinter import ttk
-from typing import Callable
 
 from . import audiofile, controls, searchfold, theme
-from .library import Track, album_folder, group_by_album
+from .library import Track, group_by_album
 from .tabbar import Toggle, Tooltip
+from .virtual_list import CELL_ROOM, ELLIPSIS, VirtualTree
 
 
 def _keys_held(tracks, keys: list[str]) -> set[str]:
@@ -74,7 +74,6 @@ def _keys_held(tracks, keys: list[str]) -> set[str]:
         return held(keys)
     wanted = set(keys)
     return {audiofile.key(t.path) for t in tracks if audiofile.key(t.path) in wanted}
-from .virtual_list import CELL_ROOM, ELLIPSIS, VirtualTree
 
 SEARCH_DELAY_MS = 150
 SEARCH_THREAD_AT = 20_000   # songs: a list this long is searched on the list's own thread, off Tk's

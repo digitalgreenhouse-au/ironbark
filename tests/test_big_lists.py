@@ -10,13 +10,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_keys import _focus, _resolved, _run
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import keys, playlist_view, playlists, theme, virtual_list
 from ironbark.library import Track
 from ironbark.library_db import LibraryDB
-
-from test_keys import _focus, _resolved, _run
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 
 @pytest.fixture
@@ -225,11 +224,11 @@ def test_slash_goes_to_the_search_box(make_window):
 
 # -- the Library's song views --------------------------------------------------------------------------
 def test_library_song_views_select_several_and_act_on_them_all(root, tmp_path, monkeypatch, tk_thread_rule):
+    from test_library_view import flac, wait_for_index
+
     from ironbark import library_index, settings
     from ironbark.library_view import LibraryView
     from ironbark.quick_search import Actions
-
-    from test_library_view import flac, wait_for_index
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     music = tmp_path / "Music"
@@ -381,9 +380,9 @@ def test_the_track_list_shows_a_light_tab_and_searches_it_in_the_database(root, 
 
 
 def test_open_all_albums_makes_a_light_tab_the_window_plays_and_counts(make_window, tmp_path):
-    from ironbark import library_index, library_tracks
-
     from test_library_view import flac
+
+    from ironbark import library_index, library_tracks
 
     window, root, player, errors = make_window()
     music = tmp_path / "Music"
@@ -421,10 +420,10 @@ def library_tracks_count_text(window, tab) -> str:
 # -- the album list shared with the search panel, searched off Tk's thread when big ------------------------
 def test_library_albums_are_the_search_panels_and_a_big_list_is_searched_off_tk(root, tmp_path, monkeypatch,
                                                                                  tk_thread_rule):
+    from test_library_view import flac, wait_for_index
+
     from ironbark import library_index, library_view, quick_search, settings
     from ironbark.library_view import LibraryView
-
-    from test_library_view import flac, wait_for_index
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     monkeypatch.setattr(library_view, "ALBUM_THREAD_AT", 1)      # (as a library of 25,000 albums would)
@@ -453,9 +452,9 @@ def test_library_albums_are_the_search_panels_and_a_big_list_is_searched_off_tk(
 def test_a_big_selection_of_a_library_tab_is_read_off_tks_thread(make_window, tmp_path, monkeypatch):
     import threading
 
-    from ironbark import library_index, library_tracks, popups, ui
-
     from test_library_view import flac
+
+    from ironbark import library_index, library_tracks, popups, ui
 
     monkeypatch.setattr(ui, "READ_HERE_MOST", 2)          # (as a Ctrl+A over 200,000 songs would be)
     reads = []

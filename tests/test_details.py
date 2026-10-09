@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo
 from ironbark.library import Track, format_rate
+from ironbark.statustext import output_line
 
 
 def test_format_rate():

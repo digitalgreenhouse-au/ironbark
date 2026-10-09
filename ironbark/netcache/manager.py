@@ -67,8 +67,20 @@ from . import netwatch, policy, verify
 from .fetch import Changed, Identity, Permanent, ShareFetcher, Transient
 from .growing import open_shared
 from .sources import Classifier, Kind
-from .store import (DOWNLOADED, DOWNLOADING, FAILED, PARTIAL, QUEUED, READY, STALE, VERIFYING, Island,
-                    Item, OwnerLock, Store)
+from .store import (
+    DOWNLOADED,
+    DOWNLOADING,
+    FAILED,
+    PARTIAL,
+    QUEUED,
+    READY,
+    STALE,
+    VERIFYING,
+    Island,
+    Item,
+    OwnerLock,
+    Store,
+)
 
 log = logging.getLogger(__name__)
 
@@ -304,7 +316,7 @@ class Manager:
         return float("inf") if not gb else float(gb) * GB
 
     # -- lifetime -----------------------------------------------------------------------------
-    def start(self) -> "Manager":
+    def start(self) -> Manager:
         self.folder.mkdir(parents=True, exist_ok=True)
         if self._watch_network is not None:
             try:
@@ -1039,7 +1051,7 @@ class Manager:
             if planned is not None:
                 # prepare()'s roles last only while the plan still has those songs there: playback
                 # moving on (to a song on this computer, say) or stopping lets go of them.
-                for role, (key, rank, when) in list(self._explicit.items()):
+                for role, (key, _rank, when) in list(self._explicit.items()):
                     if when > asked:
                         continue
                     if (role == "play" and keys_at[:1] != [key]) or (role == "next" and key not in keys_at[1:]):
@@ -1055,14 +1067,14 @@ class Manager:
                 fits = min(fits, 1)
             chosen = {key for _, key, *_ in ahead[:fits]}
             extra = []
-            for position, key, path, kind, host in window:
+            for position, key, _path, _kind, _host in window:
                 if position == 0 or key in chosen:
                     rank = (CURRENT if position == 0 else NEXT if position == 1 else FOLLOWING if position == 2
                             else QUEUE)
                     wants[key] = min(rank, wants.get(key, rank))
                 elif position > depth and depth and not self.narrowed:   # (Off: nothing ahead at all)
                     extra.append(key)
-            for role, (key, rank, _) in self._explicit.items():
+            for _role, (key, rank, _) in self._explicit.items():
                 if key in self.items:
                     wants[key] = min(rank, wants.get(key, rank))
             for key in self._asks:

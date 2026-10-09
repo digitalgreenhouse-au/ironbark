@@ -6,10 +6,10 @@ from __future__ import annotations
 import sys
 
 import pytest
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import chrome, keys, placement, settings, theme
 from ironbark.ui import FULL_MAX_WIDTH, FULL_MIN_SIZE, NO_LIMIT
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 
 def _a_column(window) -> bool:

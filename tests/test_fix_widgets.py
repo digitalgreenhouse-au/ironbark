@@ -13,11 +13,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_library_view import flac, wait_for_index
 
 from ironbark import controls, playlist_view, popups, theme
 from ironbark.library import Track
-
-from test_library_view import flac, wait_for_index
 
 
 @pytest.fixture

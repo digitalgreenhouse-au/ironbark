@@ -215,7 +215,7 @@ class TextFrame(Frame):
         self.encoding = encoding
 
     @classmethod
-    def parse(cls, id: str, body: bytes, source: int) -> "TextFrame":
+    def parse(cls, id: str, body: bytes, source: int) -> TextFrame:
         if not body:
             return cls(id, [], None, raw=body, source=source)
         encoding = body[0] if body[0] <= 3 else LATIN1
@@ -237,7 +237,7 @@ class UserTextFrame(TextFrame):
         self.desc = desc
 
     @classmethod
-    def parse(cls, id: str, body: bytes, source: int) -> "UserTextFrame":
+    def parse(cls, id: str, body: bytes, source: int) -> UserTextFrame:
         encoding = body[0] if body and body[0] <= 3 else LATIN1
         desc, rest = _split_term(encoding, body[1:])
         return cls(_decode(encoding, desc), _decode_list(encoding, rest), encoding, raw=body, source=source)
@@ -264,7 +264,7 @@ class CommentFrame(Frame):
         self.desc, self.text, self.lang, self.encoding = desc, list(text), lang, encoding
 
     @classmethod
-    def parse(cls, id: str, body: bytes, source: int) -> "CommentFrame":
+    def parse(cls, id: str, body: bytes, source: int) -> CommentFrame:
         if len(body) < 4:
             raise TagError("a comment frame is too short")
         encoding = body[0] if body[0] <= 3 else LATIN1
@@ -301,7 +301,7 @@ class SyncedLyricsFrame(Frame):
         self.content_type, self.desc, self.encoding = content_type, desc, encoding
 
     @classmethod
-    def parse(cls, id: str, body: bytes, source: int) -> "SyncedLyricsFrame":
+    def parse(cls, id: str, body: bytes, source: int) -> SyncedLyricsFrame:
         if len(body) < 6:
             raise TagError("a synchronised lyrics frame is too short")
         encoding = body[0] if body[0] <= 3 else LATIN1
@@ -331,7 +331,7 @@ class PictureFrame(Frame):
         self.mime, self.type, self.desc, self.data, self.encoding = mime, type, desc, bytes(data), encoding
 
     @classmethod
-    def parse(cls, id: str, body: bytes, source: int) -> "PictureFrame":
+    def parse(cls, id: str, body: bytes, source: int) -> PictureFrame:
         if not body:
             raise TagError("an empty picture frame")
         encoding = body[0] if body[0] <= 3 else LATIN1
@@ -393,7 +393,7 @@ class ID3Tag:
 
     # -- reading --
     @classmethod
-    def parse(cls, data: bytes) -> "ID3Tag":
+    def parse(cls, data: bytes) -> ID3Tag:
         """A tag from bytes starting with "ID3" (the whole tag; anything after it is ignored)."""
         if len(data) < HEADER or data[:3] != b"ID3":
             raise TagError("no ID3v2 tag here")
@@ -449,7 +449,7 @@ class ID3Tag:
             self.frames[self.frames.index(old)] = TextFrame("TDOR", old.text, old.encoding)
 
     @classmethod
-    def from_v1(cls, block: bytes) -> "ID3Tag | None":
+    def from_v1(cls, block: bytes) -> ID3Tag | None:
         """An ID3v1 / v1.1 tag (the file's last 128 bytes) as frames; None if it isn't one."""
         if len(block) != 128 or block[:3] != b"TAG":
             return None
@@ -766,7 +766,7 @@ def render_v1(tag: ID3Tag, old: bytes) -> bytes:
     return body + bytes([genre])
 
 
-def damaged_reason(tag: "ID3Tag | None") -> str:
+def damaged_reason(tag: ID3Tag | None) -> str:
     """Why a file's ID3 tag isn't rewritten, in plain words."""
     if tag is not None and tag.problem:
         return f"its ID3 tag couldn't be read to the end ({tag.problem}), so it isn't rewritten (nothing in it is lost)"

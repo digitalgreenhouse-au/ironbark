@@ -32,7 +32,7 @@ from tkinter import ttk
 
 import numpy as np
 
-from .. import controls, placement, theme, toolwin
+from .. import controls, theme, toolwin
 from . import spectrum
 from .details import describe_bits
 

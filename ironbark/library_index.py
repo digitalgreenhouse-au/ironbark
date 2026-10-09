@@ -42,10 +42,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import audiofile, library_db, settings
-from .audiofile import CuePath, CueRange
 from .indexer import Diff, Indexer
 from .library import Album, Track, read_track
-from .library_db import LibraryDB, track_from_dict   # noqa: F401
+from .library_db import LibraryDB, track_from_dict  # noqa: F401
 
 __all__ = ["Diff", "Entry", "FILE_NAME", "FORMAT", "LibraryIndex", "index_path", "shared", "track_from_dict",
            "track_to_dict"]

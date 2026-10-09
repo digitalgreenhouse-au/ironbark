@@ -21,7 +21,7 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from .. import audiofile, controls, placement, theme, toolwin
+from .. import audiofile, controls, theme, toolwin
 from ..library import album_folder
 from ..loudness import LRA_SETTLING
 from .meters import PPM_TYPES, MeterEngine, Reading, album_alignment, album_alignment_loudness, album_files
@@ -401,7 +401,7 @@ class MeterWindow(toolwin.ToolWindow):
     def _draw_bar_scales(self):
         c = self.canvas
         left, right, rows, bar_h, row_h, top = self._bar_geometry()
-        for r, (label, name, ch) in enumerate(rows):
+        for r, (label, _name, _ch) in enumerate(rows):
             y = self._row_y(r, top, row_h)
             c.create_text(0, y + bar_h / 2, text=label, anchor="w", fill=theme.MUTED, font=theme.font(theme.SIZE_SMALL))
             c.create_rectangle(left, y, right, y + bar_h, fill=theme.SURFACE, width=0)
@@ -445,7 +445,7 @@ class MeterWindow(toolwin.ToolWindow):
                           fill=theme.METER_INK, font=theme.font(theme.SIZE_SMALL, "bold"), tags="live")
         # Bars.
         left, right, rows, bar_h, row_h, top = self._bar_geometry()
-        for r, (label, name, ch) in enumerate(rows):
+        for r, (_label, name, ch) in enumerate(rows):
             y = self._row_y(r, top, row_h)
             if reading is None:
                 value = float("-inf")

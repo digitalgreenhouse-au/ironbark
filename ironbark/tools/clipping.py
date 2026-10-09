@@ -21,17 +21,16 @@ from __future__ import annotations
 
 import math
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
 from .. import audiofile
-from .abx import level_of
-from ..analysis import FILE_OVERSAMPLE, TAPS_PER_PHASE, oversampling_phases, guard_trim
+from ..analysis import FILE_OVERSAMPLE, TAPS_PER_PHASE, guard_trim, oversampling_phases
 from ..audiofile import read_blocks
+from .abx import level_of
 from .audition import level_gains
 
 FACTOR = FILE_OVERSAMPLE      # 8 rebuilt points per sample

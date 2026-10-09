@@ -18,9 +18,9 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from .musicfiles import is_music_name, natural_key, skip_folder
 from . import tagio
 from .library import album_folder
+from .musicfiles import is_music_name, natural_key, skip_folder
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 FRONT_COVER = 3  # picture type for "front cover" in FLAC and ID3

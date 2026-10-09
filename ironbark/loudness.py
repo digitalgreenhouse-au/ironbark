@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import math
 import threading
+from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import Callable, Iterable
 
 import numpy as np
 

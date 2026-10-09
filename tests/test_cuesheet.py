@@ -3,12 +3,12 @@
 import numpy as np
 import pytest
 import soundfile as sf
-from ironbark.tagio.flac import CueSheet as FlacCueSheet
-from ironbark.tagio.flac import CueSheetIndex as CueSheetTrackIndex
-from ironbark.tagio.flac import CueSheetTrack, FLACFile
 
 from ironbark import cuesheet
 from ironbark.cuesheet import format_time, frames_to_samples, parse, parse_time
+from ironbark.tagio.flac import CueSheet as FlacCueSheet
+from ironbark.tagio.flac import CueSheetIndex as CueSheetTrackIndex
+from ironbark.tagio.flac import CueSheetTrack, FLACFile
 
 # A disc ripped to one file, as rippers write it: disc-level CD-Text and REM lines, a pregap
 # taken from the file (INDEX 00), a hidden PREGAP of silence, flags, ISRC.

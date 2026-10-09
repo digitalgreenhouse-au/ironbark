@@ -4,6 +4,25 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.42.0 — 10/10/2026
+
+- **Fixed:** a Library tab with a search query failed at the search's folding step (a name that
+  was never defined). Found by the new linter.
+- **The audio thread's rules are written down** in the engine: nothing that waits, no file or
+  network access, no logging, nothing that touches the window. A new test,
+  `tests/test_callback_rules.py`, drives the sound-card callback with those calls forbidden.
+- **For contributors:** the repo now runs **ruff** (the linter) and **import-linter** (which
+  module may import which: the engine, the file readers, the library database and the network
+  cache know nothing of the window or the tools; the Check tools import from the core, never
+  back; the tag code is self-contained). `uv run pre-commit install` runs the quick checks before
+  each commit; `tests/test_architecture.py` checks the same import rules in the quick tier.
+  GitHub's tests now run in three tiers: the lint and import checks plus the quick tier on every
+  push (Windows, and Ubuntu as an advisory run for now), the full suite on pull requests, on
+  pushes to `main` and `dev`, and nightly.
+- Mechanical tidy-ups from the linter: import order, unused imports, modern type spellings
+  (`X | None`), two lambdas made into functions, one `raise` that now keeps its cause. Nothing
+  about how the player behaves changed.
+
 ## 0.41.1 — 09/10/2026
 
 - **Library folders on the network stay listed.** With *Local network access* off, a network

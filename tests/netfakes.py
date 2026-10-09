@@ -11,14 +11,13 @@
 """
 from __future__ import annotations
 
+import importlib
 import itertools
 import threading
 import time
 from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
-
-import importlib
 
 from ironbark.netcache import fetch, sources
 
@@ -67,7 +66,7 @@ class FakeShare:
     def reads(self, name: str) -> list[int]:
         return [offset for (n, op, offset, _) in self.log if n == name and op == "read"]
 
-    def fetcher(self, source: str) -> "_FakeFetcher":
+    def fetcher(self, source: str) -> _FakeFetcher:
         return _FakeFetcher(self, source.replace("\\", "/").rsplit("/", 1)[-1])
 
 

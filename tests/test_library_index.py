@@ -12,13 +12,14 @@ import pytest
 import soundfile as sf
 from mp4_maker import write_m4a
 from tagging import text, write_id3, write_vorbis
-from ironbark.tagio import id3 as id3tags
-from ironbark.tagio.flac import FLACFile
-from ironbark.tagio.mp4 import MP4File
+
 from ironbark import browse, library, library_db, library_index, settings
 from ironbark.audiofile import CuePath
 from ironbark.library import Album, Track, sort_name, year_of
 from ironbark.library_index import LibraryIndex
+from ironbark.tagio import id3 as id3tags
+from ironbark.tagio.flac import FLACFile
+from ironbark.tagio.mp4 import MP4File
 
 RNG = np.random.default_rng(10)
 

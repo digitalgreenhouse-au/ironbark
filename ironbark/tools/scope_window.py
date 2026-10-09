@@ -22,7 +22,7 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from .. import controls, placement, theme, toolwin
+from .. import controls, theme, toolwin
 from . import stereo
 
 REFRESH_MS = 33          # ~30 frames a second

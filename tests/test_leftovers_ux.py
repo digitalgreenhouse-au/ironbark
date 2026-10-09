@@ -6,16 +6,15 @@ from __future__ import annotations
 
 import gc
 import json
-import re
 import sys
 import threading
 from pathlib import Path
 
 import pytest
-
-from ironbark import crash, diagnostics, help_window, library_index, logs, selfcheck, settings, theme, ui
-from ironbark.popups import Prompt
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
+
+from ironbark import crash, diagnostics, library_index, logs, selfcheck, settings, theme, ui
+from ironbark.popups import Prompt
 
 REPO = Path(__file__).resolve().parent.parent
 

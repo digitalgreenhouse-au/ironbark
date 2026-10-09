@@ -1,11 +1,12 @@
 import numpy as np
 import soundfile as sf
 from tagging import text, write_id3
+
 from ironbark.analysis import analyse
-from ironbark.tools.details import describe_analysis
-from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo
 from ironbark.library import find_albums, read_track, scan_album
+from ironbark.statustext import output_line
+from ironbark.tools.details import describe_analysis
 
 
 def make_wav(path, seconds=0.5, rate=48000, subtype="PCM_24", info=None, id3=None):

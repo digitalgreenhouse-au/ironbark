@@ -14,9 +14,9 @@ import sounddevice as sd
 import soundfile as sf
 
 from ironbark import engine, settings, theme
-from ironbark.tools import abx, audition
 from ironbark.engine import Player, State
 from ironbark.library import Track
+from ironbark.tools import abx, audition
 
 RATE = 44100
 RNG = np.random.default_rng(3)
@@ -426,8 +426,8 @@ def test_abx_keys_play_nothing_old_while_a_new_excerpt_loads_or_after_it_fails(r
 
 
 def test_abx_starts_from_a_cue_track_not_its_whole_file(root, tmp_path, no_device):
-    from ironbark.tools.abx_window import AbxWindow
     from ironbark.audiofile import CuePath, CueRange
+    from ironbark.tools.abx_window import AbxWindow
     image = tmp_path / "image.wav"
     sf.write(image, music(60), RATE, subtype="FLOAT")
     second = CuePath(str(image), cue=CueRange(sheet=str(tmp_path / "image.cue"), number=2, start=40 * RATE, end=None))

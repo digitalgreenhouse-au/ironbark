@@ -16,10 +16,10 @@ import pytest
 import soundfile as sf
 
 from ironbark import analysis, experiments, settings, theme
-from ironbark.tools import audition, clipping
 from ironbark.analysis import guard_trim, headroom_index, headroom_label, max_under_read, true_peak
 from ironbark.audiofile import CuePath, CueRange
 from ironbark.engine import State
+from ironbark.tools import audition, clipping
 
 RATE = 44100
 
@@ -194,9 +194,9 @@ def test_guard_true_peak_is_8x(tmp_path):
 
 
 def test_guard_wins_over_bit_perfect_and_says_so():
-    from ironbark.tools.details import describe_proof
-    from ironbark.statustext import output_line
     from ironbark.engine import OutputInfo
+    from ironbark.statustext import output_line
+    from ironbark.tools.details import describe_proof
     out = OutputInfo("DAC", 44100, 44100, exclusive=True, hardware_volume=True)
     text, tone = output_line(out, 1.0, trim=10 ** (-1.1 / 20))
     assert "clipping guard -1.1 dB" in text and "isn't bit-perfect (the guard comes first)" in text
@@ -208,6 +208,7 @@ def test_guard_wins_over_bit_perfect_and_says_so():
 
 def test_settings_say_by_just_enough():
     from pathlib import Path
+
     import ironbark.ui as ui
     source = Path(ui.__file__).read_text(encoding="utf-8")
     assert "by just enough" in source and "by about 1 dB" not in source

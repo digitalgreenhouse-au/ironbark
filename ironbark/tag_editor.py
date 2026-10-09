@@ -40,14 +40,13 @@ import os
 import re
 import shutil
 import stat as stat_module
+import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
-
-import struct
 
 import numpy as np
 import soundfile as sf

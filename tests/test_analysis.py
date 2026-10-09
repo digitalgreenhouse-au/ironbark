@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
 
 from ironbark.analysis import analyse, dr_from_blocks
+from ironbark.tagio.flac import FLACFile
 
 
 def write(path, data, rate=44100, subtype="PCM_16"):

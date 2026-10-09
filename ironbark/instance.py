@@ -31,9 +31,9 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from . import APP_NAME
 
@@ -113,7 +113,7 @@ class Instance:
         self._listening = listening
 
     @classmethod
-    def alone(cls) -> "Instance":
+    def alone(cls) -> Instance:
         """Running without the check (it couldn't be made): the only copy, as far as it knows."""
         return cls(True)
 
@@ -562,9 +562,9 @@ class SocketServer:
 
             write_file(info_path, json.dumps({"port": self.sock.getsockname()[1], "key": self.key,
                                               "pid": os.getpid()}))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
             self.sock.close()
-            raise OSError("couldn't set up the local socket")
+            raise OSError("couldn't set up the local socket") from exc
         self.thread = threading.Thread(target=self._serve, name="instance-socket", daemon=True)
         self.thread.start()
 

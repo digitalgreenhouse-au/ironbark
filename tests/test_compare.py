@@ -8,8 +8,8 @@ import pytest
 import soundfile as sf
 
 from ironbark import theme
-from ironbark.tools import compare
 from ironbark.proof import resample
+from ironbark.tools import compare
 
 RATE = 44100
 RNG = np.random.default_rng(11)
@@ -159,6 +159,7 @@ def root():
 
 def test_compare_window_shows_the_result(root, tmp_path):
     import time
+
     from ironbark.tools.compare_window import CompareWindow
     x = as16(music(seconds=4))
     a, b = write16(tmp_path / "a.flac", x), write16(tmp_path / "b.flac", np.concatenate([np.zeros((10, 2)), x]))
@@ -178,6 +179,7 @@ def test_compare_window_shows_the_result(root, tmp_path):
 
 def test_compare_window_keeps_a_cue_track(root, tmp_path):
     import time
+
     from ironbark.audiofile import CuePath, CueRange
     from ironbark.tools.compare_window import CompareWindow
     x = as16(music(seconds=4))
@@ -196,8 +198,8 @@ def test_compare_window_keeps_a_cue_track(root, tmp_path):
 
 
 def test_file_chooser_lists_every_kind_of_file_the_player_plays():
-    from ironbark.tools.compare_window import AUDIO_TYPES
     from ironbark.library import AUDIO_EXTENSIONS
+    from ironbark.tools.compare_window import AUDIO_TYPES
     patterns = AUDIO_TYPES[0][1].split()
     assert AUDIO_TYPES[0][0] == "Audio files"
     assert {p.removeprefix("*") for p in patterns} == set(AUDIO_EXTENSIONS)   # AIFF, ALAC, Ogg… too

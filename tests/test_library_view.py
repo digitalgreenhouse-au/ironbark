@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
 
 from ironbark import library_index, settings, theme
 from ironbark.engine import Player
@@ -18,6 +17,7 @@ from ironbark.library import Track
 from ironbark.library_view import LibraryView, added_text
 from ironbark.playlist_view import PlaylistView
 from ironbark.tabbar import MenuRow, Popover
+from ironbark.tagio.flac import FLACFile
 from ironbark.ui import PlayerWindow
 
 
@@ -227,4 +227,3 @@ def test_up_next_line_and_list(root):
     w._paint_up_next()
     root.update()
     assert not w.up_next_label.winfo_ismapped() and not w.up_next_pop.is_open
-

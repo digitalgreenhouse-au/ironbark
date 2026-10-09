@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import mp4_maker
 import numpy as np
 import pytest
 import soundfile as sf
@@ -31,8 +32,6 @@ from ironbark.audiofile import CuePath, CueRange, Gate, LocalTrack
 from ironbark.library import Track
 from ironbark.netcache.growing import GrowingFile
 from ironbark.netcache.store import FAILED, READY, Item, Store
-
-import mp4_maker
 
 RNG = np.random.default_rng(23)
 
@@ -408,7 +407,7 @@ def test_a_cue_track_decodes_bit_identically_through_stalls(tmp_path):
 def _utf8_number(value: int) -> bytes:
     if value < 0x80:
         return bytes([value])
-    for count, limit in ((2, 0x800), (3, 0x10000), (4, 0x200000), (5, 0x4000000), (6, 0x80000000)):
+    for count, limit in ((2, 0x800), (3, 0x10000), (4, 0x200000), (5, 0x4000000), (6, 0x80000000)):  # noqa: B007 (read after the loop)
         if value < limit:
             break
     else:

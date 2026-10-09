@@ -39,7 +39,7 @@ from __future__ import annotations
 import math
 from collections import deque
 
-from ..engine import QUIET_WINDOW_S, quiet_point   # noqa: F401  (the engine's: it decides where to cut)
+from ..engine import QUIET_WINDOW_S, quiet_point  # noqa: F401  (the engine's: it decides where to cut)
 
 MIN_START_S = 3.0            # a forced start (play pressed while preparing): the buffer plus the patience
 QUICK_RESUME_S = 5.0

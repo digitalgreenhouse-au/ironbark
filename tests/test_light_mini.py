@@ -7,7 +7,6 @@ import gc
 import sys
 import time
 import types
-from pathlib import Path
 
 import numpy as np
 import pytest

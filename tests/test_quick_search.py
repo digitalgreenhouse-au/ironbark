@@ -10,13 +10,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
 
 from ironbark import audiofile, library_index, settings, theme
 from ironbark.favourites import Favourites
 from ironbark.library import Album, Track
 from ironbark.playlist_view import SEARCH_LIBRARY, PlaylistView
 from ironbark.quick_search import Catalogue, count_text, search_library, song_values
+from ironbark.tagio.flac import FLACFile
 
 
 def flac(path: Path, **tags) -> Path:

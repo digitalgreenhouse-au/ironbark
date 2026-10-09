@@ -5,13 +5,13 @@ import pytest
 import soundfile as sf
 
 from ironbark import artwork, audiofile, formats, settings
-from ironbark.tools import compare
 from ironbark.analysis import AlbumResult, analyse
-from ironbark.tools.details import describe_album, describe_proof, describe_range
-from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo
 from ironbark.library_index import Diff, LibraryIndex
 from ironbark.proof import Proof
+from ironbark.statustext import output_line
+from ironbark.tools import compare
+from ironbark.tools.details import describe_album, describe_proof, describe_range
 from ironbark.watcher import Watcher
 
 

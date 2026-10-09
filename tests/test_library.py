@@ -2,9 +2,9 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
 
 from ironbark.library import natural_key, parse_number, scan_folder, title_from_filename
+from ironbark.tagio.flac import FLACFile
 
 
 def make_flac(path: Path, seconds=0.1, rate=44100, tags=None):

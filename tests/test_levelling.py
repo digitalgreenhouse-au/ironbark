@@ -2,8 +2,6 @@
 measured fallback (EBU Tech 3341 signals), the peak limit, the clipping guard winning when it's
 smaller, the wording, and — the one that matters most — Off leaves playback exactly as it was:
 every sample sent identical to the file."""
-import gc
-import math
 import queue
 import threading
 import time
@@ -12,19 +10,19 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import soundfile as sf
 import sounddevice as sd
+import soundfile as sf
+from mp4_maker import write_m4a
+from tagging import write_id3, write_vorbis
 
-from ironbark import engine, levelling, tagio
-from ironbark.tools.details import describe_proof
-from ironbark.statustext import output_line
+from ironbark import engine, levelling
 from ironbark.engine import BLOCK_FRAMES, OutputInfo, Player
 from ironbark.levelling import GainTags, Levelling, level_for, mode_for, parse_gain, parse_peak, parse_r128
 from ironbark.library import Track
 from ironbark.proof import Proof, SentRecord, apply_gain
+from ironbark.statustext import output_line
 from ironbark.tagio import id3, mp4
-from mp4_maker import write_m4a
-from tagging import write_id3, write_vorbis
+from ironbark.tools.details import describe_proof
 
 RNG = np.random.default_rng(18)
 TIME_INFO = SimpleNamespace(outputBufferDacTime=0.0, currentTime=0.0)

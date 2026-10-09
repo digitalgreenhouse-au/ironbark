@@ -22,14 +22,13 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tkinter as tk
 from pathlib import Path
 from tkinter import font as tkfont
 
 import pytest
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import theme
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 GOLDEN = Path(__file__).with_name("golden_narrow.json")
 RECORD = os.environ.get("IRONBARK_RECORD_GOLDEN") == "1"

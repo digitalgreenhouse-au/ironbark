@@ -121,9 +121,11 @@ def from_sylt(frame: id3.SyncedLyricsFrame, samplerate: int, source: str = "") -
     if not frame.entries:
         return None
     if frame.stamp_format == 1:   # MPEG frames
-        seconds = lambda stamp: stamp * MPEG_FRAME_SAMPLES / max(1, samplerate)
+        def seconds(stamp):
+            return stamp * MPEG_FRAME_SAMPLES / max(1, samplerate)
     else:                         # milliseconds
-        seconds = lambda stamp: stamp / 1000
+        def seconds(stamp):
+            return stamp / 1000
     joined = any("\n" in text or "\r" in text for text, _ in frame.entries)
     lines: list[Line] = []
     break_next = True   # (also: a piece ending in a newline puts the next one on a new line)

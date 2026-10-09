@@ -10,12 +10,11 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-
-from ironbark import library_index, playlists
-from ironbark.library import read_track
-from ironbark.ui import Tab
 from tagging import write_vorbis
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
+
+from ironbark import library_index, playlists
+from ironbark.ui import Tab
 
 
 def _wait(root, ready, seconds: float = 10.0) -> bool:
@@ -110,7 +109,7 @@ def test_whole_library_search_lists_the_librarys_songs_and_a_plus_adds_one_to_th
     # The toggle off: the box filters the tab only, and the library rows go.
     window.playlist.set_whole_library(False)
     _pump(root, 0.2)
-    assert window.playlist.library_hit("lib0") is None and not window.prefs.get("search_whole_library") is None
+    assert window.playlist.library_hit("lib0") is None and window.prefs.get("search_whole_library") is not None
     assert errors == []
 
 
