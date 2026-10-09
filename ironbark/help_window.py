@@ -93,6 +93,10 @@ def licence_folder() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
     folder = Path(sys.executable).resolve().parent / "licenses"
+    if not folder.is_dir() and sys.platform == "darwin":
+        # In the Mac app bundle the build's files sit with the libraries (Contents/Frameworks,
+        # PyInstaller's sys._MEIPASS), not beside the program itself (Contents/MacOS).
+        folder = Path(getattr(sys, "_MEIPASS", folder.parent)) / "licenses"
     return folder if folder.is_dir() else None
 
 
