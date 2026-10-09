@@ -368,7 +368,7 @@ def test_the_track_list_scrollbar_sits_in_the_margin(make_window):
     tree, bar = window.playlist.tree, window.playlist.scrollbar
     assert bar.needed and bar.winfo_manager() == "place"
     assert bar.winfo_rootx() >= tree.winfo_rootx() + tree.winfo_width()  # outside the list: in the margin
-    search = window.playlist.search.entry
+    search = window.playlist.search_row   # the box and the Whole library switch share the row
     assert tree.winfo_rootx() + tree.winfo_width() == search.winfo_rootx() + search.winfo_width()
     assert errors == []
 

@@ -97,7 +97,7 @@ ACTIONS: tuple[Action, ...] = (
            arg=True, shown="Ctrl+1 – Ctrl+8"),
     Action("last_tab", _keys("Ctrl+9",), "main", "Go to the last tab", "Tabs & lists"),
     Action("open_folder", _keys("Ctrl+O",), "main", "Open a folder", "Tabs & lists"),
-    Action("open_playlist", _keys("Ctrl+Shift+O",), "main", "Open a playlist file", "Tabs & lists"),
+    Action("open_playlist", _keys("Ctrl+Alt+O",), "main", "Open a playlist file", "Tabs & lists"),
     Action("new_playlist", _keys("Ctrl+N",), "main", "New playlist", "Tabs & lists"),
     # (shift: '/' is Shift+7 on German, Nordic and Spanish keyboards; on a US one Shift+/ is "?")
     Action("search_tab", _keys("Ctrl+F", "/"), "main", "Search this tab", "Tabs & lists", shift=True),
@@ -145,7 +145,11 @@ ACTIONS: tuple[Action, ...] = (
     Action("move_song", _keys("Alt+Up", "Alt+Down"), "list", "Move the song up / down the playlist", "Editing",
            arg=True),
     Action("undo", _keys("Ctrl+Z",), "main", "Undo: songs removed or moved, or taken out of Up next", "Editing"),
-    Action("rename", _keys("F2",), "main", "Rename the playlist", "Editing"),
+    Action("rename", _keys("F2",), "main", "Rename the tab (a playlist: its file)", "Editing"),
+    Action("open_album_tab", _keys("Ctrl+Shift+O",), "list", "Track list: open the song's album in a new tab",
+           "Tabs & lists"),
+    Action("add_to_this_playlist", _keys("Ctrl+Shift+A",), "list",
+           "Track list: add the library song found to this playlist", "Tabs & lists"),
     Action("edit_tags", _keys("E",), "main", "Edit tags of the selected song (Experimental)", "Editing", shift=True),
     Action("save_tags", _keys("Ctrl+S",), "tags", "Edit tags: save", "Editing"),
 )

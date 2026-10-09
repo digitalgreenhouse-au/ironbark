@@ -4,6 +4,25 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.40.0 — 09/10/2026
+
+**The Library is a tab.** The main Library tab holds every song of every library folder, grouped by
+album. It's always there: it can't be closed, but it can be dragged along the strip like any other
+tab, and it sits on a plate of its own, a shade apart from the rest. A song plays in place; the small
+mark at the right of each row (or Ctrl+Shift+O) opens that song's album in a new tab, the music
+untouched.
+
+- **Rename any tab**: right-click → Rename tab… (or F2). The name is yours; the now-playing head
+  still shows the album's real title, and "Use the album's name" puts it back. A playlist tab renames
+  its file, as before.
+- **The search box searches the whole library** — a small switch beside it, on by default. Typing
+  lists this tab's matches first, then "From your library": a song outside this tab plays from the
+  Library tab (selected and scrolled to it); in a playlist tab every library row carries a "+", and
+  one click (or Enter, or Ctrl+Shift+A) adds the song to the playlist you're in, with Undo. Switch it
+  off and the box filters the tab only, as before.
+- Not yet: the Library window's views (Artists, Genres, Years, …) inside the tab, the bulk "Add
+  songs…" picking mode, and Ctrl+K folding into the tab. Those are the next version.
+
 ## 0.39.0 — 09/10/2026
 
 **Settings fills the window.** Press the gear (or Ctrl+,) and Settings takes the place of the cover,

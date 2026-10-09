@@ -97,6 +97,7 @@ DEFAULTS = {
     "library_check": "off",      # the whole-library quality check: "off", "on" (running) or "paused" (read as paused at start)
     "library_song_columns": [],  # the Library's song views' optional columns on show: "plays", "last" (last played)
     "track_columns": [],         # optional track-list columns on show: "artist", "album", "plays"
+    "search_whole_library": True,   # the search box's Whole library toggle: this tab's matches, then the library's
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window
     "help_geometry": "",         # the Keyboard shortcuts sheet (F1)
