@@ -107,7 +107,7 @@ from .engine import Player, State
 from .favourites import Favourites
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
-from .library_view import LibraryView, adding_folder, view_menu
+from .library_view import LibraryView, adding_folder, unsearched_note, view_menu
 from .lyrics_window import LyricsWindow
 from .tools.meter_window import MeterWindow
 from .tools.meters import album_files
@@ -635,6 +635,7 @@ class PlayerWindow:
         self._status_cut = False
         # A notice with a link at the end of the status line: (notice, link words, what a click does).
         self._notice_link: tuple[str, str, Callable[[], None]] | None = None
+        self._noted_unsearched = False   # the note about network folders a search leaves out: once a session
 
         self._build()
         self._bind_keys()
@@ -3193,6 +3194,11 @@ class PlayerWindow:
         database on the worker, handed back to the list (stale answers are dropped there)."""
         index = self._index()
         query = " ".join(words)
+        if not self._noted_unsearched:
+            note = unsearched_note(library_folders(self.prefs), self.prefs)
+            if note:   # (once a session: the folders are greyed in Settings → Library too)
+                self._noted_unsearched = True
+                self._set_notice(note, 8000)
 
         def work():
             try:
@@ -3624,8 +3630,11 @@ class PlayerWindow:
                                          initialdir=str(self._library_root()), mustexist=True)
         if not folder:
             return
-        roots, note = adding_folder(self._library_roots(), Path(folder))
-        if roots != self._library_roots():
+        # Every folder listed, not only those readable now: with Local network access off, a network
+        # folder stays listed (greyed) rather than being dropped for the one added.
+        listed = library_folders(self.prefs)
+        roots, note = adding_folder(listed, Path(folder))
+        if roots != listed:
             self._set_library_folders(roots)
         if note:
             self._set_notice(note, 8000)
@@ -3633,7 +3642,7 @@ class PlayerWindow:
     def _remove_library_folder(self, folder: Path):
         """Settings → Library → Remove: asked first (Enter and Esc keep it). Its music files stay
         where they are; its albums leave the Library until it's added back."""
-        folders = [f for f in self._library_roots() if f != folder]
+        folders = [f for f in library_folders(self.prefs) if f != folder]   # (greyed network folders stay listed)
         if not folders:
             return
         self._for_prompt()
@@ -3643,8 +3652,8 @@ class PlayerWindow:
             "Its albums leave the Library and its searches. The music files stay where they are, and your "
             "plays and favourites are kept for when the folder is added back.", detail=str(folder),
             buttons=(("Remove", True), ("Keep", False)), default=1, cancel=False).wait()
-        folders = [f for f in self._library_roots() if f != folder]   # (as they are now: the box waited)
-        if not remove or not folders or folder not in self._library_roots():
+        folders = [f for f in library_folders(self.prefs) if f != folder]   # (as they are now: the box waited)
+        if not remove or not folders or folder not in library_folders(self.prefs):
             return
         self._set_library_folders(folders)
         self._set_notice(f"Took “{folder}” out of the Library (its music files are untouched)", 6000)

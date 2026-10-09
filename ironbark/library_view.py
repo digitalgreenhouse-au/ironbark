@@ -72,7 +72,7 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable
 
-from . import (audiofile, browse, controls, indexer, keys, library_check, library_db, library_index, popups,
+from . import (audiofile, browse, controls, indexer, keys, library_check, library_db, library_index, places, popups,
                searchfold, theme)
 from .browse import album_label
 from .favourites import HEART
@@ -141,6 +141,17 @@ def adding_folder(roots: list[Path], folder: Path) -> tuple[list[Path], str]:
     return kept, (f"Added “{folder}”: it takes in {names}, so "
                   + ("that folder isn't listed on its own any more" if len(taken) == 1
                      else "those folders aren't listed on their own any more"))
+
+
+def unsearched_note(folders: list[Path], prefs: dict | None) -> str:
+    """What a whole-library search can't look through: the library folders on the network while
+    Local network access is off (listed in Settings → Library, greyed, and never indexed). "" when
+    every folder is read."""
+    left_out = places.refused(folders, prefs)
+    if not left_out:
+        return ""
+    names = ", ".join(f"“{folder}”" for folder in left_out)
+    return f"Not searched: {names} — on your network, and Local network access is off (Settings → Library)"
 
 
 def added_text(seconds: float) -> str:
