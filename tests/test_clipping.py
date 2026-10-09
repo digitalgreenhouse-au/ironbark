@@ -209,8 +209,8 @@ def test_guard_wins_over_bit_perfect_and_says_so():
 def test_settings_say_by_just_enough():
     from pathlib import Path
 
-    import ironbark.ui as ui
-    source = Path(ui.__file__).read_text(encoding="utf-8")
+    import ironbark.settings_view as settings_view  # (the Settings wording is built there)
+    source = Path(settings_view.__file__).read_text(encoding="utf-8")
     assert "by just enough" in source and "by about 1 dB" not in source
 
 

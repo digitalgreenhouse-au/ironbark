@@ -4,6 +4,14 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.46.0 — 10/10/2026
+
+- **The Settings page is built by its own module.** `settings_view.py` now makes the controls
+  (the two pages, the Network playback box, the Help buttons, the output list) and holds the small
+  widget helpers the page is made of; the main window keeps the handlers. The first of several
+  slices that move construction out of the main window, one per version. Nothing about how the
+  player behaves changed.
+
 ## 0.45.0 — 10/10/2026
 
 - **The platform's differences are named in one place**, `platforms.py`: which platform this is,

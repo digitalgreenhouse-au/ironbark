@@ -33,8 +33,8 @@ shows an "Open your library" button (Ctrl+L) instead of the empty layout.
 Pop-ups (0.21.0): every question box is an in-app prompt and every right-click menu a
 popups.PopupMenu (popups.py), so they follow Dark / Light; a prompt leaves the mini strip first
 (`_for_prompt`). Settings (0.39.0) is a view the full width of the window in place of the column
-(settings_view.py): a Simple page and an Advanced page, Done at the bottom; the window builds its
-controls (`_build_settings`) and packs the view (`_show_settings_view`).
+(settings_view.py): a Simple page and an Advanced page, Done at the bottom; settings_view builds the
+controls into it (`build_controls`, the handlers stay here) and the window packs the view (`_show_settings_view`).
 
 Opening from outside: files, folders, playlists and CUE sheets named on the command line, or handed
 over by a later launch (instance.py — "Open with", a double-click on a file while the player is
@@ -131,7 +131,7 @@ from . import (
     tkgc,
     watcher,
 )
-from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
+from .analysis import GUARD_HEADROOM_CHOICES, guard_trim
 from .engine import Player, State
 from .favourites import Favourites
 from .help_window import AboutWindow, HelpWindow
@@ -152,6 +152,7 @@ from .mini_view import MIN_SIZE as MINI_MIN_SIZE
 from .mini_view import MiniView, click_or_double
 from .playlist_view import PlaylistView
 from .searchfold import fold
+from .settings_view import SETTINGS_WIDTH, VOLUME_STEP
 from .statustext import (
     cache_mark,
     copy_failed_text,
@@ -161,7 +162,7 @@ from .statustext import (
     network_now_line,
     output_line,
 )
-from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
+from .tabbar import MenuRow, Popover, TabBar, Tooltip, glyph
 from .tag_window import TagHistoryWindow, TagWindow
 from .tools.details import NowPlayingWindow
 from .tools.meters import album_files
@@ -179,18 +180,10 @@ AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
 SEEK_STEP = 5.0
 LONG_SEEK_STEP = 30.0  # Shift+← / →
-VOLUME_STEP = 0.05   # per mouse-wheel notch over the transport, and per Ctrl+↑ / ↓
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
 WHEEL_NOTCH = 120 if platforms.IS_WINDOWS else 1   # Tk's wheel delta for one notch (Windows: 120)
 ALBUM_AGAIN_S = 30.0   # a network album not all downloaded yet: its loudness is measured again after this long
 SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: its drive or server isn't answering
-# Settings -> Network playback (the network playback cache): (saved value, what the choice says)
-NET_MODES = (("intelligent", "Intelligent"), ("fast", "Fast start"), ("complete", "Complete track"))
-NET_BUFFERS = ((10, "10 seconds"), (30, "30 seconds"), (60, "1 minute"), (300, "5 minutes"))
-NET_PREDOWNLOADS = (("off", "Off"), ("next", "Next track"), ("next2", "Next 2 tracks"), ("queue", "Up to 200 songs ahead"))
-NET_KEEPS = (("none", "Don't keep"), ("session", "Until playback finishes"), ("day", "For 1 day"),
-             ("limit", "Until the cache is full"))
-NET_SIZES = ((1, "1 GB"), (5, "5 GB"), (10, "10 GB"), (25, "25 GB"), (50, "50 GB"), (0, "Unlimited"))
 QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
@@ -205,8 +198,6 @@ FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the m
 # made full screen; its height is free.
 FULL_MAX_WIDTH = 560        # px at 100%: the full window's widest
 NO_LIMIT = 32000            # px: a size Tk is told not to cap (taller than any screen)
-SETTINGS_WIDTH = 310       # px at 100%: the Settings panel (less in a narrow window)
-SETTINGS_CHOICE_W = 120    # px at 100%: Settings' drop-downs beside their names (their left edges line up)
 DROP_GAP = 4               # px at 100%: a pop-over from the strip opens this far below it
 HEAD_ICON_SLOT = 24        # px at 100%: the lock's and ⓘ's slots (and round hover discs) beside the format line
 INFO_INK_INSET = 6         # px at 100%: the ⓘ glyph's ink stops this far inside its slot (measured from Segoe
@@ -215,12 +206,6 @@ STATUS_DOT = 8             # px at 100%: the status dot
 COVER_SETTLE_MS = 120      # while the window is resized, the cover is fetched afresh once it pauses this long
 CRASH_NOTE_MS = 60000      # how long "Ironbark closed unexpectedly last time" stays in the status line
 CRASH_NOTICE = f"{APP_NAME} closed unexpectedly last time"
-
-LOCAL_NETWORK_TEXT = ("Lets Ironbark read music on your home network (a NAS, a shared folder, a mapped drive) "
-                      "and keep copies here, so songs keep playing if the network drops (Network playback, below). "
-                      "Off, nothing on the network is read. Never the internet.")
-
-
 
 def split_status(text: str, width: int, measure: Callable[[str], int]) -> tuple[str, str]:
     """A status message for a line `width` px wide (`measure(text)` gives its width): ("", text)
@@ -921,7 +906,7 @@ class PlayerWindow:
         # it can be packed in the body (the full window) or under the mini strip.
         self.settings = settings_view.SettingsView(self.root, self.root, on_done=lambda: self._show_settings_view(False))
         self.settings.on_hide = self._settings_closed
-        self._build_settings(self.settings)
+        settings_view.build_controls(self, self.settings)
         self.settings.finish()
         self.root.bind("<Escape>", lambda e: self._escape_settings(), add="+")
         self.new_menu = self._build_new_menu()
@@ -932,263 +917,6 @@ class PlayerWindow:
                              on_details=self.show_details, on_quit=self.quit, on_settings=self._open_settings)
         for widget in (self.mini.previous_button, self.mini.play_button, self.mini.next_button):
             widget.bind("<MouseWheel>", self._wheel_volume)
-
-    def _caption(self, parent, text: str, first: bool = False):
-        """A section heading; every section after the first gets a faint line above it."""
-        if not first:
-            tk.Frame(parent, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
-        ttk.Label(parent, text=text.upper(), style="PopCaption.TLabel").pack(
-            anchor="w", pady=theme.pad(theme.GAP, theme.GAP_HAIR))
-
-    def _setting(self, parent, title: str, description: str, variable: tk.BooleanVar, command=None):
-        """An on/off setting: a slider switch on the right, a line underneath saying what it does (wrapped
-        at the text column's real edge, which SettingRow follows)."""
-        column = SETTINGS_WIDTH - 2 * theme.GAP_WIDE - SettingRow.SWITCH_ROOM
-        row = SettingRow(parent, self.root, title, description, variable, command, guess=theme.px(column))
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-        return row
-
-    def _pop_button(self, parent, text: str, command, label: str = "") -> controls.PillButton:
-        """(0.21.0) A button in a pop-over (Settings): a small plain pill, like the rest of the app's
-        buttons instead of a stock ttk button."""
-        return controls.PillButton(parent, text, command, kind="plain", small=True, bg="SURFACE", label=label)
-
-    def _choice_box(self, parent, label: str, values, *, state: str = "readonly", full: bool = False,
-                    gap: int = theme.GAP, width: int | None = None) -> ttk.Combobox:
-        """A Settings drop-down on its own row: its name on the left, the box SETTINGS_CHOICE_W wide on
-        the right (so the boxes' left edges line up), or the whole width (`full`, no name). `width`:
-        another width, in real px, for a section whose choices need more room. Tab reaches it; ↓
-        opens it."""
-        if full:
-            box = ttk.Combobox(parent, state=state, takefocus=True, style=theme.CARD_COMBOBOX)
-            box.pack(fill="x")
-            return box
-        row = ttk.Frame(parent, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(gap, 0))
-        holder = tk.Frame(row, bg=theme.SURFACE, width=width or theme.px(SETTINGS_CHOICE_W))
-        holder.pack(side="right", fill="y")   # (first: in a narrow window the name gives way, not the box)
-        ttk.Label(row, text=label, style="Pop.TLabel").pack(side="left")
-        box = ttk.Combobox(holder, state=state, takefocus=True, style=theme.CARD_COMBOBOX, values=list(values),
-                           width=1)
-        box.pack(fill="x")
-        holder.configure(height=box.winfo_reqheight())
-        holder.pack_propagate(False)
-        return box
-
-    def _build_settings(self, view: settings_view.SettingsView):
-        """The controls, on the view's two pages. **Simple** (what shows first): Output, Bit-perfect,
-        Volume · Theme, Album art, Keep on top · the library folders, Local network access · Keyboard
-        shortcuts, About, the version. **Advanced**: Clipping guard and its headroom, Volume levelling
-        and its pre-amp · Media keys, Home · Network playback (while Local network access is on) ·
-        Experimental · Help (Save diagnostics…, Open log folder, Detailed logging). Every on/off choice
-        is a slider switch with one plain line saying what it does."""
-        self.settings_area = view.area
-        b, a = view.simple, view.advanced
-        row = view.head
-        ttk.Label(row, text="Settings", style="PopTitle.TLabel").pack(side="left")
-        self.mini_button = self._pop_button(row, "Mini player", self.toggle_mini,   # (it closes Settings first)
-                                            "Shrink the player to a small strip. Also Z, or double-click the cover")
-        self.mini_button.pack(side="right")
-
-        # -- Simple --
-        self._caption(b, "Sound", first=True)
-        self._output_choices: list[str | None] = []
-        self.output_box = self._choice_box(b, "", (), full=True)
-        self.output_box.configure(postcommand=self._refresh_outputs)
-        self.output_box.bind("<<ComboboxSelected>>", self._change_output)
-        Tooltip(self.output_box, "Output: where the sound goes")
-        self._refresh_outputs()
-        if self.can_exclusive:
-            self._setting(b, "Bit-perfect", "Sound exactly as recorded. Other apps go quiet.",
-                          self.exclusive, self._toggle_exclusive)
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-        ttk.Label(row, text="Volume", style="Pop.TLabel").pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM))
-        self.volume_text = ttk.Label(row, text="", style="PopMuted.TLabel", width=15, anchor="e")
-        self.volume_text.pack(side="right", padx=theme.pad(theme.GAP_MEDIUM, 0))
-        # (0.21.0) The drawn slider (controls.Slider), following volume_var however it's changed.
-        self.volume_slider = controls.Slider(row, on_release=self._volume_slid, on_drag=self._volume_slid,
-                                             bg="SURFACE", step=VOLUME_STEP * 100, allow=self._volume_jump)
-        self.volume_slider.pack(side="left", fill="x", expand=True)
-        self.volume_slider.set(self.volume_var.get(), 100.0)
-        self.volume_var.trace_add("write", lambda *_: self.volume_slider.set(self.volume_var.get(), 100.0))
-
-        self._caption(b, "Window")
-        self.theme_box = self._choice_box(b, "Theme", [label for _, label in theme.THEME_CHOICES], gap=0)
-        self.theme_box.current([key for key, _ in theme.THEME_CHOICES].index(self.prefs["theme"]))
-        self.theme_box.bind("<<ComboboxSelected>>", self._theme_chosen)
-        self._setting(b, "Album art", "Off gives the track list more room.", self.show_art, self._toggle_art)
-        self._setting(b, "Keep on top", "Stay in front of other windows. The mini player has its own (on at first).",
-                      self.on_top, self._toggle_on_top)
-
-        self._caption(b, "Library")
-        self.library_rows = ttk.Frame(b, style="Pop.TFrame")   # one row per library folder
-        self.library_rows.pack(fill="x")
-        self._paint_library_folders()
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-        self._pop_button(row, "Add folder…", self._add_library_folder,
-                         "Add another folder of music to the Library").pack(side="right")
-        self._setting(b, "Local network access", LOCAL_NETWORK_TEXT, self.local_network, self._local_network_changed)
-
-        self._caption(b, "Help")
-        self.help_box = ttk.Frame(b, style="Pop.TFrame")
-        self.help_box.pack(fill="x")
-        row = ttk.Frame(self.help_box, style="Pop.TFrame")
-        row.pack(fill="x")
-        self._pop_button(row, f"Keyboard shortcuts ({keys.hint('help')})", lambda: self._from_settings(self.show_help),
-                         "Every key, with a filter box. Also F1 or ? in any Ironbark window").pack(side="left")
-        self._pop_button(row, "About Ironbark", lambda: self._from_settings(self.show_about),
-                         "Version, licences, privacy and the website").pack(side="right")
-        self.version_label = ttk.Label(b, text="", style="PopMuted.TLabel")
-        self.version_label.pack(anchor="e", pady=theme.pad(theme.GAP_LARGE, 0))
-        self._paint_version()
-
-        # -- Advanced --
-        self._caption(a, "Sound", first=True)
-        self._setting(a, "Clipping guard", "Lowers only tracks that would crackle, by just enough.",
-                      self.clip_guard, self._guard_changed)
-        # (0.24.0) "My DAC has headroom": room some converters have above full scale. Off by default.
-        self.headroom_box = self._choice_box(a, "My DAC has headroom",
-                                             [headroom_label(v) for v in GUARD_HEADROOM_CHOICES])
-        self.headroom_box.current(headroom_index(self.prefs.get("clip_headroom", 0.0)))
-        self.headroom_box.bind("<<ComboboxSelected>>", self._headroom_chosen)
-        Tooltip(self.headroom_box, "Only if your converter is known to take overs: the clipping guard then lets "
-                                   "the wave go this far past full scale before it turns a track down. "
-                                   "Measured converters range from none to about 3.5 dB. Off = none.")
-        # Volume levelling: off by default (any change of level means the device no longer gets the
-        # file's own samples); the pre-amp goes with it.
-        self.levelling_box = self._choice_box(a, "Volume levelling", [label for _, label in levelling.MODES])
-        self.levelling_box.current([key for key, _ in levelling.MODES].index(self._levelling_setting()))
-        self.levelling_box.bind("<<ComboboxSelected>>", self._levelling_chosen)
-        Tooltip(self.levelling_box, "Plays songs at about the same loudness, from their ReplayGain tags (or "
-                                    "Ironbark measures them). Track: each song on its own. Album: an album's "
-                                    "songs keep their own balance. Smart: Album while an album plays in order, "
-                                    "else Track. Not bit-perfect while it's on.")
-        self.preamp_box = self._choice_box(a, "Levelling pre-amp",
-                                           [levelling.preamp_label(v) for v in levelling.PREAMP_CHOICES],
-                                           state="disabled" if self._levelling_setting() == "off" else "readonly")
-        self.preamp_box.current(levelling.PREAMP_CHOICES.index(self._preamp_db()))
-        self.preamp_box.bind("<<ComboboxSelected>>", self._preamp_chosen)
-        Tooltip(self.preamp_box, "Added to every levelling gain. A song is only turned up as far as its "
-                                 "peak allows (it stays under −0.1 dB true peak).")
-
-        self._caption(a, "Window")
-        self._setting(a, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
-                      self.media_controls, self._toggle_media)
-        row = ttk.Frame(a, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-        self.home_text = ttk.Label(row, text="", style="Pop.TLabel")
-        self.home_text.pack(side="left", fill="x", expand=True)
-        self.snap_button = self._pop_button(row, "Snap to home", lambda: (self._close_settings(), self.snap_home()),
-                                            "Also Ctrl+Shift+H, or double-click the empty strip at the top")
-        self.snap_button.pack(side="right")
-        self._pop_button(row, "Use current", self.make_home, "Make the window's current spot and size its home").pack(
-            side="right", padx=theme.pad(0, theme.GAP))
-        self._setting(a, "Open at home", "Start up at the home position.", self.open_at_home)
-        self._update_home_text()
-
-        # Network playback (only while Local network access is on): how songs on network drives are
-        # fetched into the copy on this computer they play from.
-        self.netplay_box = ttk.Frame(a, style="Pop.TFrame")
-        self._netplay_after = None
-        self._build_netplay(self.netplay_box)
-        if self.local_network.get():
-            self.netplay_box.pack(fill="x")
-
-        if experiments.EXPERIMENTS:
-            self._caption(a, "Experimental")
-        else:  # one line, to keep the page short: the switches appear when there's something to try
-            tk.Frame(a, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
-            row = ttk.Frame(a, style="Pop.TFrame")
-            row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-            ttk.Label(row, text="EXPERIMENTAL", style="PopCaption.TLabel").pack(side="left")
-            note = ttk.Label(row, text="none right now", style="PopMuted.TLabel")
-            note.pack(side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
-            Tooltip(note, "New features appear here first, off until you switch them on")
-        for experiment in experiments.EXPERIMENTS:
-            var = tk.BooleanVar(value=experiments.enabled(self.prefs, experiment.key))
-            self.experiment_vars[experiment.key] = var
-            self._setting(a, experiment.title, experiment.description, var,
-                          lambda key=experiment.key: self._toggle_experiment(key))
-        self._caption(a, "Help")
-        self.help_more = ttk.Frame(a, style="Pop.TFrame")
-        self.help_more.pack(fill="x")
-        self._add_help_buttons(self.help_more)
-
-    def _choice(self, parent, label: str, choices, key: str, tip: str, on_change=None,
-                width: int | None = None) -> ttk.Combobox:
-        """A drop-down setting in a row (Settings' style, _choice_box): `choices` are (saved value,
-        words); `on_change()` runs after a new choice is saved. `width`: the box's, in real px."""
-        box = self._choice_box(parent, label, [words for _, words in choices], width=width)
-        values = [value for value, _ in choices]
-        box.current(values.index(self.prefs[key]) if self.prefs.get(key) in values else
-                    values.index(settings.DEFAULTS[key]))
-
-        def chosen(_event=None):
-            self.prefs[key] = values[box.current()]   # (the cache reads it live)
-            box.selection_clear()
-            if on_change is not None:
-                on_change()
-        box.bind("<<ComboboxSelected>>", chosen)
-        Tooltip(box, tip)
-        return box
-
-    def _build_netplay(self, box: ttk.Frame):
-        """Settings -> Network playback: buffering, pre-download, checking, and the cache itself."""
-        self._caption(box, "Network playback")
-        # One width for the section's drop-downs (their left edges line up), wide enough for the
-        # longest choice: the words, their inset, and the chevron's room.
-        font = tkfont.nametofont("TkTextFont", root=self.root)
-        longest = max(font.measure(words) for choices in (NET_MODES, NET_BUFFERS, NET_PREDOWNLOADS, NET_KEEPS, NET_SIZES)
-                      for _, words in choices)
-        width = max(theme.px(SETTINGS_CHOICE_W),
-                    longest + theme.px(theme.FIELD_INSET + theme.SEARCH_CLEAR_ROOM + theme.GAP_SMALL))
-        self.net_mode_box = self._choice(
-            box, "Playback buffering", NET_MODES, "net_mode",
-            "Intelligent: measures your network and waits only as long as it needs to. Fast start: starts as "
-            "soon as the initial buffer is downloaded. Complete track: downloads and checks the whole song "
-            "before it plays, so the network isn't needed once it starts.", width=width)
-        self.net_buffer_box = self._choice(
-            box, "Initial buffer", NET_BUFFERS, "net_buffer",
-            "Intelligent uses this as its starting point and waits less on a fast, steady network.", width=width)
-        self.net_predownload_box = self._choice(
-            box, "Pre-download", NET_PREDOWNLOADS, "net_predownload",
-            "How far ahead songs download while one plays, so they follow on without a wait. Songs not "
-            "played yet use at most half the cache; on a slow network only the next one is fetched.",
-            self._net_settings_changed, width=width)
-        self.net_keep_box = self._choice(
-            box, "Keep cached tracks", NET_KEEPS, "net_keep",
-            "Don't keep: a copy goes about a minute after it has played. Until playback finishes: kept while "
-            "the song is in the list playing or Up next. For 1 day: a day after it last played. Until the "
-            "cache is full: the copies played longest ago make room for new ones.", self._net_settings_changed,
-            width=width)
-        self.net_size_box = self._choice(
-            box, "Maximum cache size", NET_SIZES, "net_cache_gb",
-            "The most the copies may take on this computer. Whatever you choose, at least 2 GB (or 5% of the "
-            "drive) is always left free.", self._net_settings_changed, width=width)
-        self.net_verify = tk.BooleanVar(value=bool(self.prefs.get("net_verify", True)))
-        self._setting(box, "Check finished downloads", "Makes sure each downloaded copy is whole and plays "
-                      "correctly (a FLAC file's own fingerprint is checked too).", self.net_verify,
-                      self._net_verify_changed)
-        self.net_now_text = ttk.Label(box, text="", style="PopMuted.TLabel", wraplength=theme.px(250),
-                                      justify="left")
-        self.net_now_text.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-        Tooltip(self.net_now_text, "Excellent, Good, Poor or Unstable: how well the network keeps up with the "
-                "music. On a poorer network songs wait a little longer before they start, so they don't "
-                "pause later")
-        row = ttk.Frame(box, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-        self.cache_text = ttk.Label(row, text="", style="PopMuted.TLabel")
-        self.cache_text.pack(side="left", fill="x", expand=True)
-        row = ttk.Frame(box, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-        self._pop_button(row, "Empty the cache", self._empty_cache,
-                         "Delete the copies of network songs kept on this computer (not the songs themselves). "
-                         "Songs playing now are kept.").pack(side="right")
-        self._pop_button(row, "Open folder", self._open_cache_folder,
-                         "Where the copies of network songs are kept").pack(side="right", padx=theme.pad(0, theme.GAP))
-        self._paint_cache()
 
     def _net_verify_changed(self):
         self.prefs["net_verify"] = self.net_verify.get()
@@ -1308,29 +1036,6 @@ class PlayerWindow:
         except IndexError:
             return
         self._set_notice(text, 8000)
-
-    def _add_help_buttons(self, box: ttk.Frame):
-        """The rest of Settings → Help (the Advanced page): what to reach for when something's wrong
-        (Save diagnostics…, Open log folder, Detailed logging)."""
-        row = ttk.Frame(box, style="Pop.TFrame")
-        row.pack(fill="x")
-        self.diagnostics_button = self._pop_button(row, "Save diagnostics…", self.save_diagnostics,
-                                                   "Save a .zip to send with a problem report: versions, sound "
-                                                   "outputs, logs and settings. Your folders, tabs, playlists and "
-                                                   "outputs are given stand-in names, but song and album names in "
-                                                   "the logs can still show. Nothing is sent anywhere.")
-        self.diagnostics_button.pack(side="left")
-        self._pop_button(row, "Open log folder", self._open_log_folder,
-                         "Where crash.log and app.log are kept").pack(side="right")
-        self._setting(box, "Detailed logging", "Notes more of what the player does in its log, to help track "
-                      "down a problem. Off normally.", self.detailed_logging, self._detailed_logging_changed)
-
-    def _from_settings(self, show):
-        """A Settings button that opens a window: Settings closes first (the mini strip's grown
-        window goes back to the strip)."""
-        Popover.close_open()
-        self._close_settings()
-        show()
 
     def _volume_slid(self, value: float):
         """The Settings volume slider moved (while dragging, and let go)."""
@@ -3792,10 +3497,10 @@ class PlayerWindow:
             label.pack(side="left", fill="x", expand=True)
             Tooltip(label, text if allowed else f"{text} · on your network: needs Local network access (below)")
             if len(folders) == 1:
-                self._pop_button(row, "Change…", self._change_library_folder,
+                settings_view.pop_button(row, "Change…", self._change_library_folder,
                                  "Choose the folder your music is in").pack(side="right")
             else:
-                self._pop_button(row, "Remove", lambda folder=folder: self._remove_library_folder(folder),
+                settings_view.pop_button(row, "Remove", lambda folder=folder: self._remove_library_folder(folder),
                                  "Take this folder out of the Library (its music files stay where they are)").pack(
                     side="right")
 
@@ -4068,19 +3773,6 @@ class PlayerWindow:
                     f"{guard}{levelled} Click to turn Bit-perfect off.")
         return (f"Bit-perfect is off: Windows mixes the sound and may resample it.{levelled} "
                 "Click to lock Bit-perfect on.")
-
-    def _refresh_outputs(self):
-        """Re-read the connected devices (runs each time the dropdown opens)."""
-        names = devices.output_names()
-        chosen = self.player.output_device
-        default = devices.default_output_name()
-        self._output_choices = [None] + names
-        labels = [f"System default ({default})" if default else "System default"] + names
-        if chosen is not None and chosen not in names:
-            self._output_choices.append(chosen)
-            labels.append(f"{chosen} (not connected)")
-        self.output_box.configure(values=labels)
-        self.output_box.current(self._output_choices.index(chosen))
 
     def _change_output(self, _event=None):
         chosen = self._output_choices[self.output_box.current()]
