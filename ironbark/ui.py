@@ -107,7 +107,7 @@ from .engine import Player, State
 from .favourites import Favourites
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
-from .library_window import LibraryWindow, adding_folder
+from .library_view import LibraryView, adding_folder, view_menu
 from .lyrics_window import LyricsWindow
 from .tools.meter_window import MeterWindow
 from .tools.meters import album_files
@@ -120,7 +120,6 @@ from .tools.spectrogram_window import SpectrogramWindow
 from .tag_window import TagHistoryWindow, TagWindow
 from .playlist_view import PlaylistView
 from .searchfold import fold
-from .quick_search import QuickSearch
 from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
 
 log = logging.getLogger(__name__)
@@ -506,8 +505,10 @@ class PlayerWindow:
         self._compare: CompareWindow | None = None
         self._abx: AbxWindow | None = None
         self._testsignals: TestSignalsWindow | None = None
-        self._library: LibraryWindow | None = None
-        self._quick: QuickSearch | None = None       # the song search panel (Ctrl+K), made when first opened
+        self._library: LibraryView | None = None     # the Library's views (library_view.py), made when first opened
+        self._library_shown = False                  # …and on show in place of the track list
+        self._picking_for: Tab | None = None         # the playlist songs are being picked for in the Library tab
+        self._before_main: Tab | None = None         # the tab on show before the Library tab was selected
         # Favourite songs (♥): read from the library database on a worker, then kept here.
         self.favourites = Favourites(lambda: self._index().db)
         self.favourites.changed.append(self._favourites_changed)
@@ -837,7 +838,7 @@ class PlayerWindow:
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu,
-                                     on_search_library=self.find_in_library,
+                                     on_search_library=self.find_in_library, on_views=self._views_menu,
                                      is_favourite=lambda track: track in self.favourites,
                                      plays_db=lambda: self._index().db,
                                      on_library_search=self._search_library_for_list,
@@ -1333,7 +1334,7 @@ class PlayerWindow:
         self._paint_cache()
         self._paint_library_folders()
         index = self._index()   # (the library folders the switch allows: a look under way at others stops)
-        if not (self._library is not None and self._library.win.winfo_exists()):
+        if self._library is None:
             self.work.run(lambda: _look_once(self.watcher, index), name="library-folders")
         self._set_notice(f"The network playback cache {'starts' if on else 'stops'} when Ironbark next starts", 5000)
 
@@ -1417,7 +1418,7 @@ class PlayerWindow:
             "snap_home": call("snap_home"),
             "help": call("show_help"),
             "quit": call("quit"),
-            "library": lambda: self.open_library(),
+            "library": call("toggle_library"),
             "find": call("find_in_library"),
             "remove": call("_remove_selected"),
             "move_song": lambda key: self._move_selected(1 if key.endswith("Down") else -1),
@@ -1459,20 +1460,36 @@ class PlayerWindow:
         self._open_settings()
 
     def find_in_library(self, query: str | None = None):
-        """Ctrl+K / Ctrl+Shift+F, from any window: the song search panel over this window
-        (quick_search.py), ready to type in. `query`: search for that (the track list's "Search the
-        whole library")."""
+        """Ctrl+K / Ctrl+Shift+F, from any window: search the whole library — the Library tab's search
+        box, emptied, its Whole library switch on, ready to type in. `query` (the track list's "Search
+        the whole library" row): stay in this tab, switch Whole library on and search for that."""
         if self.mini_mode:
             self.toggle_mini()
         if self.root.state() == "iconic":
             self.root.deiconify()
         self.root.lift()
-        if self._quick is None:
-            self._quick = QuickSearch(self.root, self._index, self.song_actions(), top=self._below_strip)
-        self._quick.open(query)
+        if query is None:
+            main = self._main_tab(make=True)
+            if self.current != main:
+                self.select_tab(main)
+            self._show_library_view(False)
+            self.playlist.query.set("")
+        self.playlist.set_whole_library(True)
+        self._scope_changed(True)
+        if query is not None:
+            self.playlist.query.set(query)
+        self.playlist.focus_search()
+
+    def _views_menu(self):
+        """The Library tab's "Songs ▾" button: the views drop-down over the tab's own list (Songs is
+        ticked); a view picked opens the Library's views on it."""
+        button = self.playlist.views_button
+        x, y = button.winfo_rootx(), button.winfo_rooty() + button.winfo_height()
+        view_menu(self.root, "songs", lambda view: self.open_library(view=view), lambda: None,
+                  (x, y + theme.px(2)), new=bool(self._new_albums))
 
     def song_actions(self) -> quick_search.Actions:
-        """What the search panel and the Library's song views can ask of the player."""
+        """What the Library's song views (and the track list's library rows) can ask of the player."""
         return quick_search.Actions(
             play_song=self.play_song, queue_tracks=self._queue_tracks,
             open_album=lambda album, play: self.open_tab("album", album, play=play, interrupt=play),
@@ -1527,7 +1544,7 @@ class PlayerWindow:
     def _favourites_changed(self):
         """A song was made a favourite (or not), or the stored list arrived: the ♥ marks follow."""
         self.playlist.refresh_titles()
-        if self._library is not None and self._library.win.winfo_exists():
+        if self._library is not None:
             self._library.favourites_changed()
 
     def _apply_on_top(self):
@@ -1818,8 +1835,14 @@ class PlayerWindow:
         if not 0 <= index < len(self.tabs):
             return
         self._close_settings()   # (a tab clicked while Settings is on show: back to the player)
-        if index != self.current and self.playlist.searching and self.playlist.scope == "tab":
+        self._show_library_view(False)   # (…or the Library's views)
+        if self.playlist.picking is not None and index != self.current:
+            self._picking_for = None   # (another tab clicked while picking songs: picking ends, nothing added)
+            self.playlist.set_picking(None)
+        if index != self.current and self.playlist.searching and not self.playlist.whole_library:
             self.playlist.query.set("")  # a search belongs to the tab it was typed in (not the whole library's)
+        if 0 <= self.current < len(self.tabs) and not self.tabs[self.current].main and self.tabs[index].main:
+            self._before_main = self.tabs[self.current]   # (the Library's "Add to tab" adds to it)
         self.current = index
         tab = self.tabs[index]
         if tab.tracks is None:
@@ -2048,6 +2071,7 @@ class PlayerWindow:
         """What the track list shows for this tab: the open-album marks (the Library tab), the "+" on
         library rows (a playlist)."""
         self.playlist.set_open_column(tab is not None and tab.main)
+        self.playlist.set_views_button(tab is not None and tab.main)
         self.playlist.set_adds(tab is not None and tab.kind == "playlist")
 
     def _show_current_tab(self):
@@ -2097,6 +2121,8 @@ class PlayerWindow:
         mains = {i for i, t in enumerate(self.tabs) if t.main}
         self.bar.set_tabs([t.title for t in self.tabs], self.current, self.playing_tab, locked=mains, tinted=mains)
         self._show_empty(not self.tabs)
+        if self._library_shown:
+            self._library.opened()   # (its Add to tab button names the tab)
 
     def _load_tab_info(self, tab: Tab):
         """Look up a tab's album name without loading the whole album, so every tab is
@@ -2820,6 +2846,7 @@ class PlayerWindow:
         menu = self._menu()
         on_show = index == self.current   # (the keys act on the tab on show: their hints only there)
         if tab.kind == "playlist":
+            menu.add("Add songs from the Library…", lambda: self.start_picking(index))
             menu.add("Rename playlist…", lambda: self.rename_playlist(index), keys.hint("rename") if on_show else "")
             menu.add("Delete playlist…", lambda: self.delete_playlist(index))
             menu.add_separator()
@@ -2995,44 +3022,117 @@ class PlayerWindow:
         on_done(message)
 
     def open_library(self, view: str | None = None, album: Path | None = None, search: str | None = None):
-        """The Library window (one at a time): an open one is brought to the front as it was, search
-        and all (Ctrl+L) — unless the library folders have been changed in Settings since: then it's
-        made afresh for the new folders. `view`: show that view (e.g. "recent" for new music);
-        `album`: show (and select) that album; `search`: search the Library for that."""
+        """The Library's views (library_view.py) in the Library tab, in place of its track list — the
+        tab selected (made, when the saved tabs had none), the view's search box ready to type in.
+        `view`: show that view (e.g. "recent" for new music); `album`: show (and select) that album;
+        `search`: search the Library for that. The views are made once and kept; the library folders
+        changed in Settings since, they're made afresh for the new folders."""
+        if self.mini_mode:
+            self.toggle_mini()
+        if self.root.state() == "iconic":
+            self.root.deiconify()
+        self.root.lift()
+        main = self._main_tab(make=True)
+        if self.current != main:
+            self.select_tab(main)
+        if self._library is not None and list(self._library.roots) != self._library_roots():
+            self._show_library_view(False)
+            self._library.destroy()
+            self._library = None
+        if self._library is None:
+            self._library = self._make_library()
         if view is not None:
             self.prefs["library_view"] = view
-        if (self._library is not None and self._library.win.winfo_exists()
-                and list(self._library.roots) != self._library_roots()):
-            self._library.close()
-        if self._library is not None and self._library.win.winfo_exists():
-            if view is not None:
-                self._library.set_view(view)
-            if album is not None or search is not None:
-                self._library.show(album=album, search=search)
-            self._library.lift()
-            return
+            self._library.set_view(view)
+        self._show_library_view(True)
+        if album is not None or search is not None:
+            self._library.show(album=album, search=search)
+        self._library.focus_search()
+
+    def toggle_library(self):
+        """Ctrl+L: the Library's views — or, on show already, the track list back."""
+        if self._library_shown:
+            self._show_library_view(False)
+        else:
+            self.open_library()
+
+    def _make_library(self) -> LibraryView:
+        """The Library's views, built hidden in the window's body. Their keys (scope "library") answer
+        on the views' list and search box; "Add to tab" adds to the tab that was on show before the
+        Library tab (`_add_target`)."""
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         current = Path(tab.path) if tab and tab.kind == "album" else None
-        if album is not None:
-            current = Path(album)
-        library = LibraryWindow(self.root, self._library_roots(), current,
-                                on_choose=lambda path: self.open_tab("album", path, play=True),
-                                on_root_changed=self._set_library_folders,
-                                on_load_all=lambda root, query: self.open_tab("library", root, query),
-                                on_add=self.add_album_to_current, add_target=self._current_tab_title,
-                                on_drag=self._album_drag, on_queue=self.queue_album,
-                                view=self.prefs.get("library_view") or "albums",
-                                on_view=lambda view: self.prefs.update(library_view=view),
-                                geometry=self.prefs["library_geometry"],
-                                on_moved=lambda geometry: self.prefs.update(library_geometry=geometry),
-                                on_edit_tags=self.edit_album_tags,
-                                new_albums=lambda: self._new_albums, actions=self.song_actions(),
-                                on_add_tracks=self._add_tracks_to_current, checker=self.checker,
-                                song_columns=tuple(self.prefs.get("library_song_columns") or ()),
-                                on_song_columns=lambda columns: self.prefs.update(library_song_columns=columns))
-        self._library = self._with_keys(library, "library", library.key_handlers())
-        if album is not None or search:
-            library.show(album=album, search=search or None)
+        library = LibraryView(self.body, self._library_roots(), current,
+                              on_choose=lambda path: self.open_tab("album", path, play=True),
+                              on_root_changed=self._set_library_folders,
+                              on_load_all=lambda root, query: self.open_tab("library", root, query),
+                              on_add=lambda album, done: self.add_album_to_current(album, done, tab=self._add_target()),
+                              add_target=lambda: (self._add_target().title if self._add_target() else None),
+                              on_drag=self._album_drag, on_queue=self.queue_album,
+                              view=self.prefs.get("library_view") or "albums",
+                              on_view=lambda view: self.prefs.update(library_view=view),
+                              on_edit_tags=self.edit_album_tags,
+                              new_albums=lambda: self._new_albums, actions=self.song_actions(),
+                              on_add_tracks=self._add_tracks_to_target, checker=self.checker,
+                              song_columns=tuple(self.prefs.get("library_song_columns") or ()),
+                              on_song_columns=lambda columns: self.prefs.update(library_song_columns=columns),
+                              on_close=lambda: self._show_library_view(False),
+                              on_songs=lambda: self._show_library_view(False))
+        library.frame.pack_forget()
+        library.hidden()
+        self.keys.mark(library.tree, "library")
+        self.keys.mark(library.search.entry, "library")
+        self.keys.add_handlers(self.root, library.key_handlers())
+        return library
+
+    def _add_target(self) -> Tab | None:
+        """The tab the Library's "Add to tab" adds to: the one that was on show before the Library tab
+        (never the Library tab itself: it's every library folder already)."""
+        tab = self._before_main
+        return tab if tab is not None and tab in self.tabs and not tab.main else None
+
+    def _add_tracks_to_target(self, tracks: list[Track]) -> str:
+        """Songs from the Library's song views onto the bottom of the tab `_add_target` names (a new
+        tab of their own when there's none). Returns what was done, to say."""
+        tracks = [t for t in tracks if not t.missing]
+        if not tracks:
+            return "Nothing to add"
+        tab = self._add_target()
+        if tab is None:
+            self.open_files_tab([t.path for t in tracks])
+            return "Opened in a new tab"
+        message = self._add_tracks_to_tab(tab, tracks, [audiofile.key(t.path) for t in tracks])
+        self._set_notice(message)
+        return message
+
+    def _show_library_view(self, on: bool):
+        """The Library's views in place of the track list (the cover goes too, so the list gets the
+        height; the seek bar, transport and status line stay) — or the track list back."""
+        if on == self._library_shown or (on and self._library is None):
+            return
+        self._library_shown = on
+        if on:
+            Popover.close_open()
+            if self.settings.is_open:
+                self.settings.close()
+            for w in (self.head, self.playlist.frame, self.empty_view):
+                w.pack_forget()
+            self._library.frame.pack(fill="both", expand=True, after=self.status_row)
+            self._library.opened()
+            self._place_up_next()
+            return
+        self._library.frame.pack_forget()
+        self._library.hidden()
+        if self.mini_mode or self.settings.is_open:
+            return
+        if self._empty_shown:
+            self.empty_view.pack(fill="both", expand=True, after=self.status_row)
+        else:
+            self.head.pack(fill="x", before=self.seek_row)
+            self.playlist.frame.pack(fill="both", expand=True, after=self.status_row)
+            self.art_size = 0   # size the cover afresh
+            self.root.after_idle(self._fit_art)
+        self._place_up_next()
 
     # -- the library index --------------------------------------------------------------------------
     def _index(self) -> library_index.LibraryIndex:
@@ -3116,18 +3216,70 @@ class PlayerWindow:
             return
         self.play_in_library(hit.track)
 
-    def play_in_library(self, track: Track):
-        """Play this song from the main Library tab: the tab is selected and plays from it (or, while
-        it's still loading, once it has loaded)."""
+    def _main_tab(self, make: bool = False) -> int | None:
+        """The main Library tab's index; `make`: put one first when the saved tabs had none."""
         main = next((i for i, t in enumerate(self.tabs) if t.main), None)
-        if main is None:
+        if main is None and make:
             self.tabs.insert(0, Tab("library", ""))
             main = 0
             if self.playing_tab is not None:
                 self.playing_tab += 1
+            self._refresh_tabs()
+        return main
+
+    def play_in_library(self, track: Track):
+        """Play this song from the main Library tab: the tab is selected and plays from it (or, while
+        it's still loading, once it has loaded)."""
+        main = self._main_tab(make=True)
         self._play_from_main = audiofile.key(track.path)
         self.select_tab(main)
         self._play_from_main_now()
+
+    # -- picking songs for a playlist in the Library tab -------------------------------------------------
+    def start_picking(self, index: int):
+        """"Add songs from the Library…" on a playlist tab: the Library tab with a bar at its foot — pick
+        songs (any selection), Add puts them in the playlist and comes back; Cancel or Esc comes back
+        with nothing added."""
+        if not 0 <= index < len(self.tabs) or self.tabs[index].kind != "playlist":
+            return
+        tab = self.tabs[index]
+        main = self._main_tab(make=True)
+        if self.current != main:
+            self.select_tab(main)
+        self._show_library_view(False)
+        self._picking_for = tab
+        self.playlist.set_picking(tab.title, self._pick_add, lambda: self.end_picking(back=True))
+        self.playlist.list.select(None, see=False)   # (nothing picked yet: not the song on show)
+        self.playlist.focus_search()
+
+    def _pick_add(self):
+        """Add: the songs picked (an album header: its songs) go into the playlist, read off Tk's thread
+        when they're many; then back to the playlist tab, "Added N songs · Undo" in the status line."""
+        tab, main = self._picking_for, self._main_tab()
+        if tab is None or main is None or self.current != main:
+            self.end_picking(back=True)
+            return
+        tracks = self.tabs[main].tracks
+        rows = self.playlist.selected_rows() if tracks else []
+        if not rows:
+            return
+        self._with_songs(tracks, rows, lambda songs: self._picked(tab, songs))
+
+    def _picked(self, tab: Tab, songs: list[Track]):
+        if tab not in self.tabs:
+            self.end_picking(back=False)
+            return
+        message = self._add_tracks_to_tab(tab, songs, [audiofile.key(t.path) for t in songs])
+        self.end_picking(back=True)
+        self._set_notice(message)
+
+    def end_picking(self, back: bool = True):
+        """Picking is over: the bar goes; `back`, the playlist tab comes to the front (if it's still open)."""
+        tab, self._picking_for = self._picking_for, None
+        self.playlist.set_picking(None)
+        at = self._tab_index(tab) if tab is not None else -1
+        if back and at >= 0:
+            self.select_tab(at)
 
     def _play_from_main_now(self):
         """The song asked for from the Library tab, once its list is there."""
@@ -3505,9 +3657,9 @@ class PlayerWindow:
         self.prefs["library_folder"] = str(folders[0])   # (what a version before several folders reads)
         index = self._index()   # (takes the new folders on: a look still under way for the old ones stops)
         self.root.after_idle(self._paint_library_folders)   # (not now: the Remove clicked is one of the rows)
-        if self._library is not None and self._library.win.winfo_exists():
-            self._library.set_roots(folders)
-        if not (self._library is not None and self._library.win.winfo_exists()):
+        if self._library is not None:
+            self._library.set_roots(folders)   # (its own refresh looks through the new folders)
+        else:
             self.work.run(lambda: _look_once(self.watcher, index), name="library-folders")
         self._update_new_albums()
 
@@ -3551,7 +3703,7 @@ class PlayerWindow:
             text = watcher.note(report, len(watcher.arrived(report, self._new_albums)))
             if text:
                 self._set_notice(text, NEW_MUSIC_NOTE_MS)
-        if self._library is not None and self._library.win.winfo_exists():
+        if self._library is not None:
             if changed:
                 self._library.reload()
             elif found is not None:
@@ -3565,7 +3717,7 @@ class PlayerWindow:
             return
         self._new_music_state()["opened"][str(folder)] = time.time()
         self._new_albums = [f for f in self._new_albums if f != folder]
-        if self._library is not None and self._library.win.winfo_exists():
+        if self._library is not None:
             self._library.refill()
 
     def _status_clicked(self, _event=None):
@@ -3673,6 +3825,7 @@ class PlayerWindow:
         if self.settings.is_open:
             self.settings.close()
         else:
+            self._show_library_view(False)
             self._show_settings_view(True)
 
     def _close_settings(self):
@@ -3680,9 +3833,16 @@ class PlayerWindow:
             self.settings.close()
 
     def _escape_settings(self):
-        """Esc in the window: Settings closes (after any pop-over, which Esc closes first)."""
-        if Popover.open_one is None and self.settings.is_open:
+        """Esc in the window (after any pop-over, which Esc closes first): Settings closes; else picking
+        songs ends (back to the playlist, nothing added); else the Library's views go (the track list back)."""
+        if Popover.open_one is not None:
+            return
+        if self.settings.is_open:
             self.settings.close()
+        elif self.playlist.picking is not None:
+            self.end_picking(back=True)
+        elif self._library_shown:
+            self._show_library_view(False)
 
     def _show_settings_view(self, on: bool):
         """(0.39.0) The Settings view in place of the column — cover, seek bar, transport, track
@@ -4543,6 +4703,7 @@ class PlayerWindow:
         grown_from = self._mini_settings_from   # Settings open from the strip: the strip's own place
         Popover.close_open()
         self._close_settings()
+        self._show_library_view(False)
         here = grown_from or placement.current(self.root)
         if here:   # remember where the mode we're leaving was
             self.prefs["mini_geometry" if self.mini_mode else "geometry"] = here
@@ -4808,8 +4969,8 @@ class PlayerWindow:
         if empty == self._empty_shown:
             return
         self._empty_shown = empty
-        if self.settings.is_open:
-            return   # (the column isn't on show: packed for this when Settings closes)
+        if self.settings.is_open or self._library_shown:
+            return   # (the column isn't on show: packed for this when Settings or the Library's views close)
         if empty:
             for w in (self.head, self.seek_row, self.transport, self.playlist.frame):
                 w.pack_forget()
@@ -4883,7 +5044,7 @@ class PlayerWindow:
             if self._index_updated:
                 self._index_updated = False
                 self.checker.kick()   # (a tag edit changed the files: checked again)
-                if self._library is not None and self._library.win.winfo_exists():
+                if self._library is not None:
                     self._guarded(self._library.reload)
             self._guarded(self._watch_reports)
             if not self.favourites.ready:
@@ -4942,7 +5103,7 @@ class PlayerWindow:
             return
         self._plays_seen = stored
         self.playlist.plays_changed()
-        if self._library is not None and self._library.win.winfo_exists():
+        if self._library is not None:
             self._library.plays_changed()
 
     def _record_last_play(self):

@@ -48,7 +48,6 @@ DEFAULTS = {
     "library_folders": [],       # the folders the Library looks in ([] = Windows' own Music folder)
     "library_folder": "",        # (before library_folders) the one library folder: read into library_folders
     "now_playing_geometry": "",  # where the Now Playing window was last left
-    "library_geometry": "",      # where (and how big) the Library window was last left
     "tabs": None,                # open tabs: [{"kind": "album"|"folder"|"library", "path", "query", "title"}]
     "current_tab": 0,
     "home_geometry": "",         # the favourite spot "Snap to home" returns to
@@ -92,7 +91,7 @@ DEFAULTS = {
     "local_network": False,      # Settings → Library: music on the home network may be read, and the cache may run
     "media_controls": True,      # Settings → Window: media keys, Windows' media panel, taskbar buttons
     "detailed_logging": False,   # Settings → Window: the player's own notes in app.log too, not just problems
-    "library_view": "albums",    # the Library's view: albums/artists/genres/years/composers/recent, or a song
+    "library_view": "albums",    # the Library tab's views drop-down: albums/artists/genres/years/composers/recent, or a song
                                  # view: songs/most_played/recently_played/favourites/needs_look
     "library_check": "off",      # the whole-library quality check: "off", "on" (running) or "paused" (read as paused at start)
     "library_song_columns": [],  # the Library's song views' optional columns on show: "plays", "last" (last played)

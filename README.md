@@ -76,21 +76,24 @@ so Windows SmartScreen warns about an unknown publisher.
   classical works) whenever they share a sample rate.
 - **Tabs** for albums, folders, playlists and the Library. Each tab remembers where it was; opening a
   new tab never interrupts what's playing. Drag tabs to reorder them.
-- **Library** (Ctrl+L): browse by album, artist, genre, year, composer or recently added; sort by any
-  column; search. **Songs** lists every song in the library (with optional Plays and Last played
-  columns), and **Most played**, **Recently played** and **Favourites** (♥ — right-click any song) keep
-  your listening close. **Play next / Add to Up next** from any song or album.
+- **The Library tab** is always there: every song of every library folder, grouped by album, with
+  the search box searching the whole library. Its **views** (Ctrl+L, or the Songs ▾ button) show inside
+  the tab: browse by album, artist, genre, year, composer or recently added; sort by any column;
+  search. **Most played**, **Recently played** and **Favourites** (♥ — right-click any song) keep your
+  listening close, with optional Plays and Last played columns. **Play next / Add to Up next** from any
+  song or album; a playlist's *Add songs from the Library…* picks songs there.
 - **Select several songs** (Shift+click, Ctrl+click, Shift+↑ / ↓, Ctrl+A) in the track list, the
   Library's song views and the search results: play them next, queue them, add
   them to a playlist or your favourites, edit their tags, drag them onto a tab, or take them out of a
   playlist — one Ctrl+Z puts them all back.
-- **Search the whole library** (Ctrl+K): songs, albums and artists as you type, from any window;
-  Enter plays the song in its album, Shift+Enter plays it next, Ctrl+Enter adds it to Up next.
+- **Search the whole library** (Ctrl+K): the Library tab's search box finds songs as you type, from
+  any window; in any other tab the box lists that tab's matches first, then "From your library", and a
+  playlist tab adds a library song with one click on its "+".
 - **Built for big collections:** the Library keeps a database of your music, read once in the
   background (at low priority; in several processes for a big library) and then only what changed,
   so the player never freezes. Use **several music folders** (Settings → Library). An unplugged
-  drive or a sleeping network share never empties the Library. A tab of the whole library (Library →
-  *Open all albums in a tab*) opens, scrolls and searches as quickly as an album, even with 200,000
+  drive or a sleeping network share never empties the Library. The Library tab (the whole library)
+  opens, scrolls and searches as quickly as an album, even with 200,000
   songs, and an optional **Plays** column shows how often each song has been played.
 - **Search** ignores accents and special letters ("lodz" finds Łódź, "strasse" finds Straße) and
   looks at title, artist, album, album artist, composer, genre, year and file name.
@@ -285,15 +288,15 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 
 | Key | Action |
 |---|---|
-| Ctrl+L | Library (brings it to the front when it's open) |
-| Ctrl+K · Ctrl+Shift+F | Search the library |
-| Ctrl+F · / | Library: search box |
-| Ctrl+A | Library: select every song (the song views) |
-| Enter | Library: open the album in a new tab |
-| Ctrl+Enter | Library: add the album to Up next |
-| Ctrl+Shift+Enter | Library: play the album next |
-| Ctrl+Tab / Ctrl+Shift+Tab | Library: next / previous view (Albums, Artists, …) |
-| F5 | Library: look for added or changed music |
+| Ctrl+L | The Library's views (Albums, Artists, …) in the Library tab; again: back |
+| Ctrl+K · Ctrl+Shift+F | Search the whole library (the Library tab's search box) |
+| Ctrl+F · / | Library views: search box |
+| Ctrl+A | Library views: select every song (the song views) |
+| Enter | Library views: open the album in a new tab (a song: play it) |
+| Ctrl+Enter | Library views: add the album to Up next |
+| Ctrl+Shift+Enter | Library views: play the album next |
+| Ctrl+Tab / Ctrl+Shift+Tab | Library views: next / previous view (Albums, Artists, …) |
+| F5 | Library views: look for added or changed music |
 | ↓ · Enter | Search box: go to the list · play (open) the first result |
 | Enter · Shift+Enter · Ctrl+Enter · Alt+Enter | Library search (Ctrl+K): play · play next · add to Up next · open the album |
 | A – Z · 0 – 9 | Library list: jump to the first name starting with what you type |

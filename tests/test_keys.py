@@ -215,12 +215,12 @@ def test_every_window_answers_every_key_in_its_scope(make_window, monkeypatch):
     window.open_library()
     window.show_help()
     window.show_about()
-    window.edit_tags(window.tabs[0].tracks)
+    window.edit_tags(next(t for t in window.tabs if not t.main).tracks)   # (the Library tab came first)
     window.show_tag_history()
     _pump(root, 0.5)
     windows = {"main": root}
     for name in ("_now_playing", "_meters", "_pcm", "_clip", "_spectrogram", "_scope", "_compare", "_abx",
-                 "_testsignals", "_lyrics", "_library", "_help", "_about", "_tag_window", "_tag_history"):
+                 "_testsignals", "_lyrics", "_help", "_about", "_tag_window", "_tag_history"):
         windows[name] = getattr(window, name).win
     for name, win in windows.items():
         assert window.keys.attached(win), name
@@ -237,10 +237,16 @@ def test_every_window_answers_every_key_in_its_scope(make_window, monkeypatch):
     for action in (a for a in keys.ACTIONS if a.scope == "list"):
         for text in action.keys:
             assert _resolved(window, window.playlist.tree, text) == action.id, text
-    assert window.keys.scopes_of(windows["_library"]) == {"app", "library"}
+    # The Library's views live in the main window: their list and search box answer the "library" keys.
+    library = window._library
+    for action in (a for a in keys.ACTIONS if a.scope == "library"):
+        for text in action.keys:
+            assert _resolved(window, library.tree, text) == action.id, text
+            if keys.works_while_typing(keys.parse(text)):   # (a bare "/" types in the box)
+                assert _resolved(window, library.search.entry, text) == action.id, text
     assert window.keys.scopes_of(windows["_tag_window"]) == {"app", "tags"}
     assert _resolved(window, root, "Ctrl+F") == "search_tab"
-    assert _resolved(window, windows["_library"], "Ctrl+F") == "library_search"
+    assert _resolved(window, library.search.entry, "Ctrl+F") == "library_search"
     assert _resolved(window, windows["_meters"], "Ctrl+W") is None        # a tab key: only the player's
     # Every widget in a window carries the tag (after the window's own), so the keys reach it.
     for widget in (window.playlist.tree, window.playlist.entry, window._library.tree, window._help.tree):
@@ -376,11 +382,11 @@ def test_ctrl_l_brings_the_open_library_forward(make_window):
     _run(window, root, "Ctrl+L")
     assert window._library is first and first.search_var.get() == "abc"   # the same window, search kept
     view = first.view
-    _run(window, first.win, "Ctrl+Tab")
+    _run(window, first.tree, "Ctrl+Tab")
     assert first.view != view
-    _run(window, first.win, "Ctrl+Shift+Tab")
+    _run(window, first.tree, "Ctrl+Shift+Tab")
     assert first.view == view
-    _run(window, first.win, "F5")
+    _run(window, first.tree, "F5")
     assert rescans == [1]
     _run(window, root, "Ctrl+K")                            # search the library: its search box
     assert window._library is first
@@ -632,16 +638,25 @@ def test_read_only_boxes_dont_stop_the_keys(make_window):
     assert not errors
 
 
-def test_ctrl_k_in_a_search_box_keeps_what_was_typed(make_window):
+def test_ctrl_k_in_a_search_box_is_the_whole_library_search(make_window):
+    """Tk's entries deleted to the end of the line on Ctrl+K; in Ironbark it's the whole-library
+    search: the Library tab's box, emptied, with its Whole library switch on."""
+    from ironbark.ui import Tab
+
     window, root, player, errors = make_window()
+    window.tabs = [Tab("library", ""), *window.tabs]
+    window.current = 1
+    window._refresh_tabs()
     entry = window.playlist.entry
     window.playlist.query.set("abcdef")
+    window.playlist.set_whole_library(False)
     _focus(root, entry)
     entry.icursor(2)
-    entry.event_generate("<Control-Key-k>")                 # (Tk's entries deleted to the end of the line)
+    entry.event_generate("<Control-Key-k>")
     _pump(root, 0.3)
-    assert window.playlist.query.get() == "abcdef"
-    assert window._quick is not None and window._quick.is_open   # …and the song search opened
+    assert window.current == 0 and window.tabs[0].main
+    assert window.playlist.query.get() == "" and window.playlist.scope_var.get() is True
+    assert str(root.tk.call("focus")) == str(entry)
     assert not errors
 
 
@@ -757,20 +772,22 @@ def test_ctrl_l_shows_the_new_folder_after_the_library_folder_changed(make_windo
     elsewhere = tmp_path / "Other music"
     elsewhere.mkdir()
     window._set_library_folders([elsewhere])                # (Settings → Library → Change…): it follows
-    _run(window, root, "Ctrl+L")
+    _run(window, root, "Ctrl+L")                            # (on show: Ctrl+L puts the track list back)
     _pump(root, 0.2)
-    assert window._library.win.winfo_exists() and window._library.root_folder == elsewhere
+    assert not window._library_shown and window._library.frame.winfo_exists()
+    assert window._library.root_folder == elsewhere
     second = window._library
-    _run(window, root, "Ctrl+L")                            # the same folder: brought forward, as it was
-    assert window._library is second
-    # Folders changed without the open window being told: Ctrl+L makes it afresh for the new ones.
+    _run(window, root, "Ctrl+L")                            # the same folder: the views again, as they were
+    assert window._library is second and window._library_shown
+    # Folders changed without the views being told: Ctrl+L makes them afresh for the new ones.
     third = tmp_path / "Third"
     third.mkdir()
     window.prefs["library_folders"] = [str(third)]
-    _run(window, root, "Ctrl+L")
+    _run(window, root, "Ctrl+L")                            # (back to the list…)
+    _run(window, root, "Ctrl+L")                            # (…and the views, afresh)
     _pump(root, 0.2)
-    assert window._library is not second and not second.win.winfo_exists()
-    assert window._library.root_folder == third
+    assert window._library is not second and not second.frame.winfo_exists()
+    assert window._library.root_folder == third and window._library_shown
     assert not errors
 
 

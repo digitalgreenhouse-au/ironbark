@@ -367,6 +367,7 @@ class PlaylistView:
                  on_drag: Callable[[list[int], int, int, str], None] = lambda rows, x, y, phase: None,
                  on_heading_menu: Callable[[tk.Event], None] = lambda event: None,
                  on_search_library: Callable[[str], None] | None = None,
+                 on_views: Callable[[], None] | None = None,
                  is_favourite: Callable[[Track], bool] = lambda track: False,
                  plays_db: Callable[[], object | None] = lambda: None,
                  on_library_search: Callable[[list[str]], None] | None = None,
@@ -384,6 +385,11 @@ class PlaylistView:
         self._hits_for: list[str] = []       # the words they were found for
         self.on_heading_menu = on_heading_menu
         self.on_search_library = on_search_library
+        self.on_views = on_views                # the Library tab's "Songs ▾" button: the views drop-down
+        self.views_button = None
+        self.picking: str | None = None         # picking songs for this playlist (its title): the bar at the foot
+        self._pick_bar = None
+        self._pick_add = self._pick_cancel = None
         self.is_favourite = is_favourite
         self.plays_db = plays_db                # the library database the Plays column counts from (None: none)
         self.columns: tuple[str, ...] = ()  # the optional columns (see set_columns)
@@ -427,6 +433,10 @@ class PlaylistView:
         self.search = controls.SearchBox(self.search_row, "Search songs, artists, albums", on_clear=self.clear_search,
                                          keys="Ctrl+F")
         self.search.pack(side="left", fill="x", expand=True)
+        if on_views is not None:   # (made now, packed only on the Library tab: set_views_button)
+            self.views_button = controls.FlatButton(self.search_row, "Songs ▾", on_views, fit="Songs ▾",
+                                                    label="The Library's views: albums, artists, genres, years, "
+                                                          "composers, recently added, most played… (Ctrl+L)")
         # (0.40.0) Whole library: on, the box searches every song as well as this tab's.
         self.scope_var = tk.BooleanVar(frame, value=True)
         self.scope_switch = Toggle(self.search_row, frame._root(), self.scope_var, command=self._scope_toggled, bg="BG")
@@ -901,6 +911,52 @@ class PlaylistView:
         self.set_whole_library(self.scope_var.get())
         self.on_scope(self.whole_library)
 
+    def set_views_button(self, on: bool):
+        """The Library tab: the "Songs ▾" button before the search box, the way to the Library's views."""
+        button = self.views_button
+        if button is None:
+            return
+        if on and not button.winfo_manager():
+            button.pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM), before=self.search)
+        elif not on and button.winfo_manager():
+            button.pack_forget()
+
+    # -- picking songs for a playlist ("Add songs from the Library…") ----------------------------------
+    def set_picking(self, target: str | None, on_add: Callable[[], None] | None = None,
+                    on_cancel: Callable[[], None] | None = None):
+        """Picking mode on the Library tab: a bar at the foot — "Pick songs for “Road trip”", Add
+        (how many are selected) and Cancel. The songs are picked as any selection is (a click,
+        Ctrl+click, Shift+click, Ctrl+A; an album header picks its album). `target` None ends it."""
+        self.picking = target
+        self._pick_add, self._pick_cancel = on_add, on_cancel
+        if self._pick_bar is not None:
+            self._pick_bar.destroy()
+            self._pick_bar = None
+        self.list.on_select = None
+        if target is None:
+            return
+        bar = ttk.Frame(self.frame)
+        bar.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP, 0), before=self.table)
+        self._pick_bar = bar
+        short = target if len(target) <= 24 else target[:23] + "…"
+        self.pick_button = controls.FlatButton(bar, "Add", lambda: on_add() if on_add else None, kind="primary",
+                                               fit="Add 999 songs")
+        self.pick_button.pack(side="right")
+        controls.FlatButton(bar, "Cancel", lambda: on_cancel() if on_cancel else None).pack(
+            side="right", padx=theme.pad(0, theme.GAP))
+        self.pick_label = ttk.Label(bar, text=f"Pick songs for “{short}”", style="Muted.TLabel", anchor="w")
+        self.pick_label.pack(side="left", fill="x", expand=True)
+        self.list.on_select = lambda index: self._picking_changed()
+        self._picking_changed()
+
+    def _picking_changed(self):
+        """The selection moved while picking: the Add button says how many songs it would add."""
+        if self.picking is None:
+            return
+        count = len(self.selected_rows()) if self._tracks else 0
+        self.pick_button.set_text(f"Add {count:,} song{'' if count == 1 else 's'}" if count else "Add")
+        self.pick_button.set_enabled(bool(count))
+
     def set_open_column(self, on: bool):
         """The Library tab: an open-album mark at the right of every song row."""
         if on != self.open_column:
@@ -1211,8 +1267,8 @@ class PlaylistView:
                                    and self.list.is_selected(self.list.playing))
         self._mark_playing(index)
         row = self._row_of(index)
-        if row is not None and following:   # (a song the search hides keeps its mark, unselected)
-            self.list.select(row)
+        if row is not None and following and self.picking is None:   # (a song the search hides keeps its mark, unselected)
+            self.list.select(row)   # (while picking songs for a playlist, nothing is picked unasked)
 
     def _mark_playing(self, index: int | None):
         """Move the playing mark (the row keeps it however the selection moves)."""

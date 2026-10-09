@@ -15,7 +15,7 @@ from ironbark.tagio.flac import FLACFile
 from ironbark import library_index, settings, theme
 from ironbark.engine import Player
 from ironbark.library import Track
-from ironbark.library_window import LibraryWindow, added_text
+from ironbark.library_view import LibraryView, added_text
 from ironbark.playlist_view import PlaylistView
 from ironbark.tabbar import MenuRow, Popover
 from ironbark.ui import PlayerWindow
@@ -81,7 +81,7 @@ def column(window, name, parent=""):
 
 def test_browse_views_sorting_and_search(root, music):
     queued = []
-    w = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    w = LibraryView(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                       on_load_all=lambda r, q: None, on_queue=lambda path, front: queued.append((path.name, front)))
     wait_for_index(w, root)
     assert column(w, "album") == ["21", "Hits", "Tommy"] and "3 albums in" in w.status.cget("text")
@@ -115,14 +115,14 @@ def test_browse_views_sorting_and_search(root, music):
 
 
 def test_second_open_shows_the_saved_index_at_once(root, music):
-    w = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+    w = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
     wait_for_index(w, root)
     w.close()
     library_index._shared = None                 # as after a restart: read back from the database
     look = library_index.shared(music).indexer
     look._lock.acquire()                         # a look under way: the new window's refresh waits for it
     try:
-        again = LibraryWindow(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
+        again = LibraryView(root, music, None, lambda p: None, lambda p: None, lambda r, q: None)
         wait_for_albums(again, root)             # (the list comes from the query thread, a moment later)
         assert column(again, "album") == ["21", "Hits", "Tommy"] and again._refresh is not None   # before any
     finally:                                                                                       # refresh finished
@@ -138,16 +138,16 @@ def test_several_library_folders_and_add_folder(root, music, tmp_path, monkeypat
 
     more = tmp_path / "More"
     flac(more / "Blue" / "01.flac", title="River", artist="Joni Mitchell", album="Blue", date="1971")
-    monkeypatch.setattr(LibraryWindow, "_sorts", {})       # (the sort is kept for the session)
+    monkeypatch.setattr(LibraryView, "_sorts", {})       # (the sort is kept for the session)
     told = []
-    w = LibraryWindow(root, [music], None, lambda p: None, told.append, lambda r, q: None)
+    w = LibraryView(root, [music], None, lambda p: None, told.append, lambda r, q: None)
     wait_for_index(w, root)
-    assert column(w, "album") == ["21", "Hits", "Tommy"] and w.win.title() == "Library — Music"
+    assert column(w, "album") == ["21", "Hits", "Tommy"] and w._place() == "Music"
     monkeypatch.setattr(filedialog, "askdirectory", lambda **kwargs: str(more))
     w._add_folder()
     assert told == [[music, more]] and w.roots == [music, more]
     wait_for_index(w, root)
-    assert column(w, "album") == ["21", "Blue", "Hits", "Tommy"] and w.win.title() == "Library — 2 folders"
+    assert column(w, "album") == ["21", "Blue", "Hits", "Tommy"] and w._place() == "2 folders"
     assert "4 albums in 2 library folders" in w.status.cget("text")
     w.set_roots([more])                                      # (Settings → Library → Remove)
     wait_for_index(w, root)
@@ -162,7 +162,7 @@ def test_several_library_folders_and_add_folder(root, music, tmp_path, monkeypat
 def test_adding_a_folder_inside_or_around_the_library_folders():
     """(0.31) No album is ever listed twice: a folder inside a library folder is already in the
     library; one that holds library folders takes their place."""
-    from ironbark.library_window import adding_folder
+    from ironbark.library_view import adding_folder
     from ironbark.ui import library_folders
 
     music, jazz, other = Path("C:/Music"), Path("C:/Music/Jazz"), Path("D:/Other")

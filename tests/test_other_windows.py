@@ -22,7 +22,7 @@ import soundfile as sf
 from ironbark import controls, theme
 
 PACKAGE = Path(theme.__file__).parent
-WINDOW_MODULES = ("tools/details.py", "library_window.py", "tools/meter_window.py", "tools/pcm_window.py",
+WINDOW_MODULES = ("tools/details.py", "tools/meter_window.py", "tools/pcm_window.py",
                   "tools/spectrogram_window.py", "tools/scope_window.py", "tools/compare_window.py", "tools/abx_window.py",
                   "tools/testsignals_window.py", "tag_window.py")
 
@@ -434,24 +434,24 @@ def test_analysis_windows_use_choice_rows(root):
     assert not root.errors
 
 
-def test_library_window_has_the_main_window_finish(root, tmp_path, monkeypatch):
+def test_library_views_have_the_main_window_finish(root, tmp_path, monkeypatch):
     from ironbark import library_index, settings
-    from ironbark.library_window import LibraryWindow
+    from ironbark.library_view import LibraryView
 
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "settings" / "settings.json")
     monkeypatch.setattr(library_index, "_shared", None)
     music = tmp_path / "Music"
     (music / "Album").mkdir(parents=True)
     _flac(music / "Album")
-    win = LibraryWindow(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
+    win = LibraryView(root, music, None, on_choose=lambda p: None, on_root_changed=lambda p: None,
                         on_load_all=lambda p, s: None)
     _pump(root, 0.3)
     assert isinstance(win.search, controls.SearchBox) and win.search_var is win.search.query
-    assert isinstance(win.views, controls.ChoiceRow) and win.views.bars["albums"].lit
-    win.views.choose("artists")
-    assert win.view == "artists" and win.views.bars["artists"].lit and not win.views.bars["albums"].lit
+    assert isinstance(win.view_button, controls.FlatButton) and win.view_button.cget("text") == "Albums ▾"
+    win.set_view("artists")
+    assert win.view == "artists" and win.view_button.cget("text") == "Artists ▾"
     assert isinstance(win.scrollbar, controls.AutoScrollbar)
-    # Esc in the search box empties it; Esc in an empty box is left to the window (it closes).
+    # Esc in the search box empties it; Esc in an empty box is left to the window (the track list comes back).
     win.search_var.set("x")
     assert win._clear_search() == "break" and win.search_var.get() == ""
     assert win._clear_search() is None

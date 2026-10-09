@@ -396,7 +396,7 @@ def test_track_and_tab_menus(make_window, shown_menus, tmp_path, monkeypatch):
     assert not rows["Move up"].enabled and rows["Move down"].enabled and rows["Remove from playlist"].enabled
     tabbar.Popover.close_open()
     window._tab_menu(window.current, event)
-    assert shown_menus[-1].labels() == ["Rename playlist…", "Delete playlist…", "Move left", "Move right",
+    assert shown_menus[-1].labels() == ["Add songs from the Library…", "Rename playlist…", "Delete playlist…", "Move left", "Move right",
                                         "Close tab"]
     assert not {r.text: r for r in shown_menus[-1].rows()}["Move right"].enabled   # it's the last tab
     tabbar.Popover.close_open()

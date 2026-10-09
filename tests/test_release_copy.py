@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ironbark import diagnostics, help_window, keys, library_window, quick_search, statustext, ui
+from ironbark import diagnostics, help_window, keys, library_view, quick_search, statustext, ui
 from ironbark.tools import details
 from ironbark.library import Track
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
@@ -31,7 +31,7 @@ def test_the_diagnostics_wording_says_names_in_the_logs_can_still_show():
 # -- the names of things ------------------------------------------------------------------------------
 def test_each_thing_is_called_one_name():
     assert dict(ui.NET_PREDOWNLOADS)["queue"] == "Up to 200 songs ahead"   # "queue" is Up next elsewhere
-    assert library_window.HEADINGS["quality"] == quick_search.HEADINGS["quality"] == "Format"
+    assert library_view.HEADINGS["quality"] == quick_search.HEADINGS["quality"] == "Format"
     assert "Undo" in keys.BY_ID["undo"].label and "Up next" in keys.BY_ID["undo"].label
 
 
@@ -97,17 +97,17 @@ def test_the_new_status_messages_fit_the_narrow_window(make_window):
     assert not errors
 
 
-def test_the_search_panels_status_line_wraps_in_the_narrow_window(make_window):
+def test_the_library_views_status_line_wraps_in_the_narrow_window(make_window):
     window, root, player, errors = make_window(geometry="420x640+20+20")
     _pump(root, 0.4)
-    window.find_in_library()
+    window.open_library()
     _pump(root, 0.4)
-    status = window._quick.status
+    status = window._library.status
     long = "The library database is damaged: it will be repaired when the player next starts"
-    window._quick._say(long)
+    window._library._say(long)
     _pump(root, 0.3)
     assert status.cget("text") == long
     wrap = int(str(status.cget("wraplength")) or 0)
-    assert 0 < wrap <= status.winfo_width()             # wrapped to the panel, not cut at its edge
+    assert 0 < wrap <= status.winfo_width()             # wrapped to the view, not cut at its edge
     assert status.winfo_reqwidth() <= status.winfo_width() + 2 and not errors
-    window._quick.close()
+    window._library.close()
