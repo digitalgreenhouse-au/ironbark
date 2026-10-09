@@ -218,6 +218,7 @@ class Audition:
         self.exclusive = False
         self.device_name = ""
         self.note = ""   # e.g. why exclusive mode wasn't possible
+        self._claim = None  # the device held for bit-perfect (devices.claim), until stop
 
     @property
     def playing(self) -> bool:
@@ -248,22 +249,25 @@ class Audition:
         kwargs = dict(samplerate=self.switcher.rate, channels=self.switcher.channels, blocksize=BLOCK_FRAMES,
                       latency="low", callback=self._callback)
         if self.want_exclusive and index is not None and devices.exclusive_supported():
-            stream = None
+            stream = claim = None
             try:
-                stream = self._factory(device=index, dtype="int32", extra_settings=sd.WasapiSettings(exclusive=True),
+                claim = devices.claim(index, self.switcher.rate)
+                stream = self._factory(device=index, dtype="int32", extra_settings=devices.exclusive_settings(),
                                        dither_off=True, clip_off=True, **kwargs)
                 stream.start()
                 devices.holding(stream)
                 self.exclusive = True
                 self.device_name = self._name(stream)
+                self._claim = claim
                 return stream
-            except sd.PortAudioError as exc:
+            except (sd.PortAudioError, devices.Refused) as exc:
                 log.info("audition: exclusive mode refused: %s", exc)
                 if stream is not None:
                     stream.close(ignore_errors=True)
+                if claim is not None:
+                    claim.release()
                 self.note = "The device wouldn't take this in bit-perfect mode — playing shared"
-        extra = sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS and index is not None else None
-        stream = self._factory(device=index, dtype="float32", extra_settings=extra, **kwargs)
+        stream = self._factory(device=index, dtype="float32", extra_settings=devices.shared_settings(index), **kwargs)
         stream.start()
         devices.holding(stream)
         self.exclusive = False
@@ -295,6 +299,9 @@ class Audition:
                 log.exception("closing the audition stream")
             finally:
                 devices.released(stream)
+        if self._claim is not None:
+            self._claim.release()
+            self._claim = None
 
     close = stop
 
