@@ -7,8 +7,7 @@ Also here: drag and drop (folders, music files and playlists from Explorer; song
 albums inside the player — the rules are in dragdrop.py) and the keyboard's media keys / Windows'
 media panel / taskbar buttons (mediakeys.py).
 
-Tag editing (0.16.0, Experimental — no menu, key or button for it while its switch is off):
-right-click songs → Edit tags… (key E), or an album in the Library; Tag history… undoes. The
+Tag editing (0.16.0): right-click songs → Edit tags… (key E), or an album in the Library; Tag history… undoes. The
 careful saving is tag_editor.py; a song that's playing waits until the player moves on (`_poll`).
 
 Up next: right-click songs (or an album in the Library) → Play next / Add to Up next; they play
@@ -137,7 +136,6 @@ LONG_SEEK_STEP = 30.0  # Shift+← / →
 VOLUME_STEP = 0.05   # per mouse-wheel notch over the transport, and per Ctrl+↑ / ↓
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
 WHEEL_NOTCH = 120 if sys.platform == "win32" else 1   # Tk's wheel delta for one notch (Windows: 120)
-NETWORK_CACHE = "network_cache"   # the Experimental switch (experiments.py)
 ALBUM_AGAIN_S = 30.0   # a network album not all downloaded yet: its loudness is measured again after this long
 SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: its drive or server isn't answering
 # Settings -> Network playback (the network playback cache): (saved value, what the choice says)
@@ -184,6 +182,9 @@ NETWORK_ACCESS_TEXT = ("Lets Ironbark use the internet itself: rip verification'
                        "which disc is looked up) and Check for updates (Help, below). Music on network drives "
                        "(\\\\server\\share, or a mapped drive like Z:) and OneDrive plays without it: Windows "
                        "fetches those files, as it does for any program.")
+LOCAL_NETWORK_TEXT = ("Lets Ironbark keep copies of music on your home network (a NAS, a shared folder, a mapped "
+                      "drive) on this computer, so it plays through a short \"Preparing…\" and keeps playing if "
+                      "the network drops (Network playback, below). Never the internet.")
 UPDATE_CHECK_TEXT = (f"Once a day, asks digitalgreenhouse.com.au whether a newer {APP_NAME} is out. The request "
                      f"names this {APP_NAME}'s version, and the website sees your computer's internet address, as "
                      "any website does; nothing else goes with it. Needs Allow network access (Network, above).")
@@ -562,6 +563,7 @@ class PlayerWindow:
         self.clip_guard = tk.BooleanVar(value=bool(self.prefs["clip_guard"]))
         self.show_art = tk.BooleanVar(value=bool(self.prefs["show_art"]))
         self.allow_network = tk.BooleanVar(value=bool(self.prefs["allow_network"]))
+        self.local_network = tk.BooleanVar(value=bool(self.prefs["local_network"]))
         self.media_controls = tk.BooleanVar(value=bool(self.prefs["media_controls"]))
         self.watch_music = tk.BooleanVar(value=bool(self.prefs["watch_music"]))
         self.check_updates = tk.BooleanVar(value=bool(self.prefs["check_updates"]))
@@ -678,7 +680,7 @@ class PlayerWindow:
             self.root.after(INDEX_AFTER_MS, self._refresh_index)
         self._update_new_albums()
         self._update_job = self.root.after(UPDATE_FIRST_MS, self._update_tick)
-        if experiments.enabled(self.prefs, NETWORK_CACHE):
+        if self.local_network.get():
             self.root.after_idle(self._start_cache)   # (once the window is up: no I/O to speak of)
         self._check_job = self.root.after(CHECK_AFTER_MS, self.checker.kick)   # (nothing unless it was left on)
         # Up and running: from here Python's cycle collector runs only on this thread (tkgc.py).
@@ -1027,17 +1029,18 @@ class PlayerWindow:
                          "Add another folder of music to the Library").pack(side="right")
         self._setting(b, "Watch for new music", "Checks the folders every few minutes.",
                       self.watch_music, self._toggle_watch)
+        local_row = self._setting(b, "Local network access", LOCAL_NETWORK_TEXT,
+                                  self.local_network, self._local_network_changed)
+        # Network playback (only while Local network access is on): how songs on network drives are
+        # fetched into the copy on this computer they play from.
+        self.netplay_box = ttk.Frame(b, style="Pop.TFrame")
+        self._netplay_after = local_row
+        self._build_netplay(self.netplay_box)
+        if self.local_network.get():
+            self.netplay_box.pack(fill="x", after=local_row)
 
         self._caption(b, "Network")
-        network_row = self._setting(b, "Allow network access", NETWORK_ACCESS_TEXT,
-                                    self.allow_network, self._network_changed)
-        # Network playback (only while its Experimental switch is on): how songs on network drives
-        # are fetched into the copy on this computer they play from.
-        self.netplay_box = ttk.Frame(b, style="Pop.TFrame")
-        self._netplay_after = network_row
-        self._build_netplay(self.netplay_box)
-        if experiments.enabled(self.prefs, NETWORK_CACHE):
-            self.netplay_box.pack(fill="x", after=network_row)
+        self._setting(b, "Allow network access", NETWORK_ACCESS_TEXT, self.allow_network, self._network_changed)
 
         if experiments.EXPERIMENTS:
             self._caption(b, "Experimental")
@@ -1160,7 +1163,7 @@ class PlayerWindow:
         if manager is None:
             from . import netcache
 
-            on = experiments.enabled(self.prefs, NETWORK_CACHE)
+            on = self.local_network.get()
             text = "Cache: starts when Ironbark next starts" if on else "Cache: off"
             # (Copies from an earlier run, which Empty the cache deletes: looked for only while on show.)
             left = netcache.left_on_disk() if self.netplay_box.winfo_manager() else 0
@@ -1228,7 +1231,7 @@ class PlayerWindow:
 
     # -- the network playback cache (Experimental) --------------------------------------------
     def _start_cache(self):
-        """Experimental -> Network playback cache is on: start it (read when Ironbark starts)."""
+        """Local network access is on: start the network playback cache (read when Ironbark starts)."""
         from . import netcache
 
         try:
@@ -1330,27 +1333,26 @@ class PlayerWindow:
         self.prefs["detailed_logging"] = self.detailed_logging.get()
         logs.set_detailed(self.detailed_logging.get())
 
+    def _local_network_changed(self):
+        """Settings → Library → Local network access: the network playback cache may run. Its settings
+        show with it; the cache itself starts or stops when Ironbark next starts."""
+        on = self.local_network.get()
+        self.prefs["local_network"] = on
+        if on:
+            self.netplay_box.pack(fill="x", after=self._netplay_after)
+        else:
+            self.netplay_box.pack_forget()
+        self._paint_cache()
+        self._set_notice(f"The network playback cache {'starts' if on else 'stops'} when Ironbark next starts", 5000)
+
     def _toggle_experiment(self, key: str):
         experiments.set_enabled(self.prefs, key, self.experiment_vars[key].get())
         self._paint_version()
-        if key == NETWORK_CACHE:   # (its settings show with it; the cache itself starts or stops with Ironbark)
-            on = self.experiment_vars[key].get()
-            if on:
-                self.netplay_box.pack(fill="x", after=self._netplay_after)
-            else:
-                self.netplay_box.pack_forget()
-            self._paint_cache()
-            self._set_notice(f"The network playback cache {'starts' if on else 'stops'} when Ironbark next starts",
-                             5000)
         if key == TAPE_REELS:
             if self.experiment_vars[key].get():
                 self._set_notice(f"Tape reels: press {keys.hint('reels')} to open the deck", 5000)
             elif self._reels is not None and self._reels.win.winfo_exists():
                 self._reels.close()
-        if key == tag_editor.EXPERIMENT and not self._tag_editing():  # switched off: its windows go too
-            for window in (self._tag_window, self._tag_history):
-                if window is not None and window.win.winfo_exists():
-                    window.close()  # (one in the middle of saving stops after the file in hand)
 
     def _paint_version(self):
         """The version, and how many experiments are on — so it's never a mystery why the player
@@ -2745,11 +2747,10 @@ class PlayerWindow:
         add.add("New playlist…", songs(lambda found: self.new_playlist(found)))   # (Ctrl+N makes an empty one)
         menu.add("Remove from favourites" if favourite else "Add to favourites",
                  songs(lambda found: self.favourites.set(found, not favourite)), quick_search.HEART)
-        if self._tag_editing():
-            menu.add_separator()
-            menu.add("Edit tags…" if single else f"Edit tags of these {len(rows):,} songs…",
-                     songs(lambda found: self.edit_tags(found)), keys.hint("edit_tags"))
-            menu.add("Tag history (undo)…", self.show_tag_history)
+        menu.add_separator()
+        menu.add("Edit tags…" if single else f"Edit tags of these {len(rows):,} songs…",
+                 songs(lambda found: self.edit_tags(found)), keys.hint("edit_tags"))
+        menu.add("Tag history (undo)…", self.show_tag_history)
         if tab.kind == "playlist" and single:
             index = rows[0]
             menu.add_separator()
@@ -2967,7 +2968,7 @@ class PlayerWindow:
                                 on_view=lambda view: self.prefs.update(library_view=view),
                                 geometry=self.prefs["library_geometry"],
                                 on_moved=lambda geometry: self.prefs.update(library_geometry=geometry),
-                                on_edit_tags=self.edit_album_tags, can_edit_tags=self._tag_editing,
+                                on_edit_tags=self.edit_album_tags,
                                 new_albums=lambda: self._new_albums, actions=self.song_actions(),
                                 on_add_tracks=self._add_tracks_to_current, checker=self.checker,
                                 song_columns=tuple(self.prefs.get("library_song_columns") or ()),
@@ -3037,22 +3038,16 @@ class PlayerWindow:
             log.exception("couldn't read %s", album)
             return []
 
-    # -- tag editing (Experimental) -----------------------------------------------------------------
-    def _tag_editing(self) -> bool:
-        """Is Settings → Experimental → Tag editing on? Every way in checks this first."""
-        return experiments.enabled(self.prefs, tag_editor.EXPERIMENT)
-
+    # -- tag editing ------------------------------------------------------------------------------------
     def edit_selected_tags(self):
         """Key E: edit the selected songs (or the album whose header is selected)."""
-        if not self._tag_editing():
-            return
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         rows = self.playlist.selected_rows() if tab is not None and tab.tracks else []
         if rows:
             self._with_songs(tab.tracks, rows, self.edit_tags)
 
     def edit_tags(self, tracks: list[Track]):
-        if not self._tag_editing() or not tracks:
+        if not tracks:
             return
         if self._tag_window is not None and self._tag_window.win.winfo_exists():
             if self._tag_window.saving is not None:
@@ -3068,8 +3063,6 @@ class PlayerWindow:
 
     def edit_album_tags(self, album: Path):
         """From the Library: edit a whole album's tags."""
-        if not self._tag_editing():
-            return
         result: dict = {}
 
         def work():
@@ -3084,8 +3077,6 @@ class PlayerWindow:
         self.work.run(work, finish, name="tag-album")
 
     def show_tag_history(self):
-        if not self._tag_editing():
-            return
         if self._tag_history is not None and self._tag_history.win.winfo_exists():
             self._tag_history.reload()
             self._tag_history.lift()

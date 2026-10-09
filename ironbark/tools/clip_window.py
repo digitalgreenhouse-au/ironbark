@@ -33,13 +33,12 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
-from .. import controls, experiments, placement, theme, toolwin
+from .. import controls, placement, theme, toolwin
 from . import audition, clipping
 from ..engine import State
 
 log = logging.getLogger(__name__)
 
-EXPERIMENT = "clip_audition"
 REFRESH_MS = 100
 HOLD_S = 1.0             # an over stays on show this long before a smaller moment replaces it
 RECENT_S = 3.0           # sound kept for drawing (heard and about to be heard)
@@ -160,7 +159,7 @@ class ClipWindow(toolwin.ToolWindow):
             lambda: self.stop() if self.playing else self.hear(self._last or "A")))
 
         theme.on_change(self._palette_changed)
-        self._sync_listen()
+        self._build_listen()
         self.start_ticking()
 
     # -- live --------------------------------------------------------------------------------
@@ -530,23 +529,17 @@ class ClipWindow(toolwin.ToolWindow):
                     self._toggle_freeze()
         self._prepare_versions()
 
-    # -- hear it (Experimental) ----------------------------------------------------------------
-    @property
-    def listening_on(self) -> bool:
-        return experiments.enabled(self.prefs, EXPERIMENT)
-
+    # -- hear it ------------------------------------------------------------------------------
     @property
     def playing(self) -> bool:
         return self.audition is not None and self.audition.playing
 
-    def _sync_listen(self):
-        """Build the Hear it section when the experiment is on; take it away (and stop any sound)
-        when it's off. Off = no listening controls and nothing ever played."""
-        on = self.listening_on
-        if on and self.listen_frame is None:
+    def _build_listen(self):
+        """The Hear it section: A / B / the difference, built once."""
+        if self.listen_frame is None:
             frame = ttk.Frame(self.listen_holder)
             frame.pack(fill="x")
-            controls.section(frame, "Hear it (Experimental)")
+            controls.section(frame, "Hear it")
             row = ttk.Frame(frame)
             row.pack(fill="x")
             self.listen_buttons = {}
@@ -577,11 +570,6 @@ class ClipWindow(toolwin.ToolWindow):
             self._rewrap()
             self._prepare_versions()
             self._refresh_listen()
-        elif not on and self.listen_frame is not None:
-            self._stop_audition()
-            self.audition, self.versions, self._versions_for = None, None, None
-            self.listen_frame.destroy()
-            self.listen_frame = None
 
     def _prepare_versions(self):
         """Make A / B / difference for the chosen over (the worst, until another is chosen), on a thread."""
@@ -737,7 +725,7 @@ class ClipWindow(toolwin.ToolWindow):
             if self.readout.cget("text") != readout:
                 self.readout.configure(text=readout)
             self._draw_strip()
-        self._sync_listen()
+        self._build_listen()
         self._prepare_versions()     # (does nothing unless the experiment is on and the loop needs making)
         if self._loaded is not None:
             self._take_versions()

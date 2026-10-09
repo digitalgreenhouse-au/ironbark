@@ -90,6 +90,7 @@ DEFAULTS = {
     "repeat": "off",             # "off", "all" (the album / playlist) or "one" (the same song)
     "experiments": None,         # Settings → Experimental switches: {key: bool} (see experiments.py)
     "allow_network": False,      # Settings → Network: rip verification may look up checksums online
+    "local_network": False,      # Settings → Library: the network playback cache may run (music on a NAS, a share)
     "check_updates": False,      # Settings → Network: once a day, ask whether a newer version is out (updates.py)
     "update_checked": 0.0,       # when that was last asked (seconds since 1970; 0 = never)
     "media_controls": True,      # Settings → Window: media keys, Windows' media panel, taskbar buttons

@@ -334,9 +334,9 @@ def test_the_creation_time_is_kept(tmp_path):
     assert abs(os.stat(path).st_birthtime_ns - created) < 1000
 
 
-def test_tag_editing_is_an_experiment_off_by_default():
-    assert tag_editor.EXPERIMENT in experiments.known()
-    assert not experiments.enabled({}, tag_editor.EXPERIMENT)
+def test_tag_editing_is_no_longer_an_experiment():
+    assert "tag_editor" not in experiments.known()            # rolled in at 0.37.0
+    assert not experiments.enabled({"experiments": {"tag_editor": True}}, "tag_editor")   # an old switch: ignored
 
 
 def test_the_old_tags_are_in_the_history_before_the_file_is_replaced(tmp_path, monkeypatch):

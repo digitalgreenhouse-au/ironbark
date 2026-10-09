@@ -138,17 +138,17 @@ class StubCache:
         return done
 
 
-def test_the_settings_section_comes_with_its_switch_and_saves_its_choices(make_window, monkeypatch):
+def test_the_settings_section_comes_with_local_network_access_and_saves_its_choices(make_window, monkeypatch):
     stub = StubCache()
     installed = []
     monkeypatch.setattr(netcache, "install", lambda prefs, player: installed.append(prefs) or stub)
     window, root, player, errors = make_window()
-    assert window._netcache is None and not installed           # off: nothing starts
+    assert window._netcache is None and not installed           # Local network access off: nothing starts
     assert window.netplay_box.winfo_manager() == ""
-    window.experiment_vars["network_cache"].set(True)
-    window._toggle_experiment("network_cache")
+    window.local_network.set(True)
+    window._local_network_changed()
     assert window.netplay_box.winfo_manager() == "pack"
-    assert experiments.enabled(window.prefs, "network_cache") and "next starts" in window._notice
+    assert window.prefs["local_network"] and "next starts" in window._notice
     assert window.cache_text.cget("text") == "Cache: starts when Ironbark next starts"
     window.net_mode_box.current(1)
     window.net_mode_box.event_generate("<<ComboboxSelected>>")
@@ -180,8 +180,8 @@ def test_the_settings_section_comes_with_its_switch_and_saves_its_choices(make_w
     monkeypatch.setattr("ironbark.popups.confirm", lambda *a, **k: True)
     window._empty_cache()
     assert stub.emptied == 1
-    window.experiment_vars["network_cache"].set(False)
-    window._toggle_experiment("network_cache")
+    window.local_network.set(False)
+    window._local_network_changed()
     assert window.netplay_box.winfo_manager() == ""
     assert errors == []
 
@@ -190,7 +190,7 @@ def test_copies_left_on_this_computer_while_the_cache_isnt_running_are_shown_and
         make_window, monkeypatch):
     from ironbark.netcache.store import OwnerLock
     monkeypatch.setattr(netcache, "install", lambda prefs, player: None)   # (it didn't start this time)
-    window, root, player, errors = make_window(experiments={"network_cache": True})
+    window, root, player, errors = make_window(local_network=True)
     _pump(root, 0.2)
     folder = netcache.folder()
     (folder / "Tracks").mkdir(parents=True)
@@ -232,7 +232,7 @@ def test_switched_on_the_cache_starts_once_the_window_is_up_and_stops_with_it(ma
     monkeypatch.setattr(netcache, "install", lambda prefs, player: real_install(
         prefs, player, where=tmp_path / "NetCache", classifier=FakeClassifier(), fetcher=share.fetcher,
         probe_host=lambda name: True))
-    window, root, player, errors = make_window(experiments={"network_cache": True})
+    window, root, player, errors = make_window(local_network=True)
     assert wait_until(lambda: (root.update(), window._netcache is not None)[1], 5)
     assert netcache.manager() is window._netcache and player._preparer is window._netcache
     assert audiofile._resolver is not None
@@ -459,7 +459,7 @@ class NetStub(StubCache):
 def test_settings_offers_every_pre_download_keep_and_size_choice(make_window, monkeypatch):
     stub = NetStub({})
     monkeypatch.setattr(netcache, "install", lambda prefs, player: stub)
-    window, root, player, errors = make_window(experiments={"network_cache": True})
+    window, root, player, errors = make_window(local_network=True)
     window._start_cache()
     assert [*window.net_predownload_box.cget("values")] == ["Off", "Next track", "Next 2 tracks", "Up to 200 songs ahead"]
     assert [*window.net_keep_box.cget("values")] == ["Don't keep", "Until playback finishes", "For 1 day",

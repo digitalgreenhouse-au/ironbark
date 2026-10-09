@@ -163,14 +163,14 @@ def test_licence_files_from_source_and_from_the_installed_program(tmp_path, monk
 
 
 def test_version_info_says_what_a_bug_report_needs():
-    text = help_window.version_info(prefs={"experiments": {"tag_editor": True}})
+    text = help_window.version_info(prefs={"experiments": {"tape_reels": True}})
     lines = text.splitlines()
     from ironbark import __version__
 
     assert lines[0].startswith(f"Ironbark {__version__}")
     for start in ("Python ", "Tk ", "libsndfile", "PortAudio"):
         assert any(line.startswith(start) for line in lines), start
-    assert lines[-1] == "Experiments on: tag_editor"
+    assert lines[-1] == "Experiments on: tape_reels"
     assert help_window.version_info(prefs={}).splitlines()[-1] == "Experiments on: none"
 
 
@@ -200,7 +200,7 @@ def _focus(root, widget):
 
 
 def test_every_window_answers_every_key_in_its_scope(make_window, monkeypatch):
-    window, root, player, errors = make_window(experiments={"tag_editor": True})
+    window, root, player, errors = make_window()
     window.show_details()
     window.show_meters()
     window.show_pcm()
@@ -285,7 +285,7 @@ def test_a_windows_own_keys_win(make_window):
     _pump(root, 0.05)
     assert heard == ["B", "X", "A"]                        # (Space: hear the last letter, or A)
     assert window._pcm is None and player.calls == []      # not the PCM stream, not play / pause
-    # Clipping: A / B / D / Space are its own only while Hear it is showing.
+    # Clipping: A / B / D / Space are its own (Hear it is always showing since 0.37.0).
     window.show_clipping()
     _pump(root, 0.2)
     clip = window._clip
@@ -293,15 +293,7 @@ def test_a_windows_own_keys_win(make_window):
     _focus(root, clip.win)
     clip.win.event_generate("<KeyPress-b>")
     _pump(root, 0.1)
-    assert window._pcm is not None                          # Hear it is off: B is the app's
-    window._pcm.close()
-    window._pcm = None
-    _focus(root, clip.win)
-    clip.listen_frame = SimpleNamespace()                    # (stands in for the Hear it panel, just for
-    clip.win.event_generate("<KeyPress-b>")                  #  the key: it's handled before this returns)
-    clip.listen_frame = None
-    _pump(root, 0.1)
-    assert heard[-1] == "clip B" and window._pcm is None
+    assert heard[-1] == "clip B" and window._pcm is None      # B is the window's, not the app's PCM stream
     assert not errors
 
 
@@ -541,7 +533,7 @@ def test_about_window(make_window):
 def test_edit_tags_enter_moves_on_ctrl_s_saves_esc_asks(make_window):
     from ironbark.tag_window import TagWindow
 
-    window, root, player, errors = make_window(experiments={"tag_editor": True})
+    window, root, player, errors = make_window()
     asked, discard = [], {"answer": False}
     tags = TagWindow(root, window.tabs[0].tracks, window.prefs, on_saved=lambda save: None, busy=set,
                      confirm=lambda message, detail: asked.append(message) or False,
@@ -721,7 +713,7 @@ def test_an_undo_that_cant_be_written_can_be_tried_again(make_window, tmp_path, 
 def test_discarding_tag_edits_asks_first_even_when_quitting(make_window):
     from ironbark import popups
 
-    window, root, player, errors = make_window(experiments={"tag_editor": True})
+    window, root, player, errors = make_window()
     # The real question: Enter keeps editing (only a click on Discard drops the edits).
     tags = _loaded_tag_window(window, root)
     assert tags.may_discard()                               # nothing typed: no question

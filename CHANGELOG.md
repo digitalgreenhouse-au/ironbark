@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.37.0 — 09/10/2026
+
+**Three features are now standard**, no switch needed: **tag editing** (right-click a song → Edit
+tags…, or press E; Tag history undoes), **Hear it** in the Clipping window (A: an ordinary converter,
+B: clean, D: just the difference), and the **network playback cache** for music on a NAS or a shared
+folder. Tape reels stays Experimental.
+
+- New in Settings → Library: **Local network access** (off by default). Switch it on and the cache
+  runs: songs on network drives play from a copy on this computer and keep playing if the network
+  drops; Settings → Network playback shows its choices. Off, nothing of the cache runs. Never the
+  internet.
+- An older settings file that had the three experiments switched off is simply ignored.
+
 ## 0.36.0 — 09/10/2026
 
 **Under the bonnet.** Nothing new to see; the code is in better shape for what comes next.
