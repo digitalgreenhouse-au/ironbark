@@ -1,10 +1,10 @@
 import numpy as np
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
-from ironbark.tagio.vorbis import Picture
 from PIL import Image
 
 from ironbark.artwork import cover_for, folder_art
+from ironbark.tagio.flac import FLACFile
+from ironbark.tagio.vorbis import Picture
 
 
 def image(path, size=(40, 40), colour=(200, 50, 50)):

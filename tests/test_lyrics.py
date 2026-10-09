@@ -6,19 +6,18 @@ import gc
 import struct
 import time
 import tkinter as tk
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import soundfile as sf
+from mp4_maker import write_m4a
+from tagging import write_id3, write_vorbis
 
 from ironbark import audiofile, lyrics, tagio, theme
 from ironbark.library import Track
 from ironbark.lyrics import Line, Lyrics, parse_lrc
 from ironbark.tagio import id3, mp4
-from mp4_maker import write_m4a
-from tagging import write_id3, write_vorbis
 
 RNG = np.random.default_rng(31)
 
@@ -173,7 +172,7 @@ def test_files_beside_the_song_and_their_order(tmp_path):
     assert lyrics.find(song).source == "Song.txt beside the song"
     write_vorbis(song, LYRICS="From the tags")
     assert lyrics.find(song).lines[0].text == "From the tags"           # the file's own tags before a .txt
-    (tmp_path / "Song.lrc").write_bytes("﻿[00:03.00]Synced ✓\n".encode("utf-8"))
+    (tmp_path / "Song.lrc").write_bytes("﻿[00:03.00]Synced ✓\n".encode())
     found = lyrics.find(song)
     assert found.synced and found.lines[0].text == "Synced ✓" and found.source == "Song.lrc beside the song"
 

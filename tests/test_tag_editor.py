@@ -7,23 +7,22 @@ import io
 import os
 import shutil
 import sys
-import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
 import soundfile as sf
-from PIL import Image
-
 from mp4_maker import write_m4a
+from PIL import Image
 from tagging import text, write_id3
+
 from ironbark import artwork, audiofile, experiments, library, settings, tag_editor, tagio
+from ironbark.tag_editor import VARIOUS, Edit, TagSave
 from ironbark.tagio import id3
 from ironbark.tagio import mp4 as mp4tags
 from ironbark.tagio.flac import FLACFile
 from ironbark.tagio.mpeg import MP3File
 from ironbark.tagio.vorbis import Picture
-from ironbark.tag_editor import VARIOUS, Edit, TagSave
 
 RNG = np.random.default_rng(11)
 

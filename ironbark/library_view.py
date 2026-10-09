@@ -65,22 +65,33 @@ import threading
 import time
 import tkinter as tk
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 from tkinter import font as tkfont
-from tkinter import ttk
-from typing import Callable
 
-from . import (audiofile, browse, controls, indexer, keys, library_check, library_db, library_index, places, popups,
-               searchfold, theme)
+from . import (
+    audiofile,
+    browse,
+    controls,
+    indexer,
+    keys,
+    library_check,
+    library_db,
+    library_index,
+    places,
+    popups,
+    searchfold,
+    theme,
+)
 from .browse import album_label
 from .favourites import HEART
 from .library import Album, Track, sort_name
 from .library_db import SongHit
 from .playlist_view import TreeDrag, fit_columns
-from .searchfold import fold
 from .quick_search import Actions, add_song_items, album_text, count_text, shared_catalogue, song_name, song_values
+from .searchfold import fold
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
 
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)

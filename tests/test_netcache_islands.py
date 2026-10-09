@@ -14,12 +14,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
+from netfakes import FakePlayer, FakeShare, make_manager, wait_until
 
 from ironbark import audiofile
 from ironbark.netcache.growing import GrowingFile
 from ironbark.netcache.store import DOWNLOADING, PARTIAL, READY, Island, Item, Store
-
-from netfakes import FakePlayer, FakeShare, make_manager, unc, wait_until
 
 manager_mod = importlib.import_module("ironbark.netcache.manager")
 
@@ -133,8 +132,9 @@ def test_joining_an_island_appends_it_to_the_part_and_a_reader_holding_it_reads_
 
 
 def test_the_database_claims_only_fsynced_island_bytes_and_the_tidy_cuts_back(tmp_path):
-    from ironbark.netcache.manager import Manager
     from netfakes import FakeClassifier
+
+    from ironbark.netcache.manager import Manager
     made = Manager(tmp_path / "NetCache", {}, classifier=FakeClassifier(), watch_network=None)
     store = made.store
     store.open()

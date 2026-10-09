@@ -12,14 +12,13 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import conftest
 import pytest
+from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import playlists, popups, tabbar, theme
-from ironbark.popups import Prompt, PopupMenu
+from ironbark.popups import PopupMenu, Prompt
 from ironbark.tabbar import glyph
-
-import conftest
-from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
 PACKAGE = Path(__file__).resolve().parents[1] / "ironbark"
 

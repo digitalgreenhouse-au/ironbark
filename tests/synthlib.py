@@ -17,11 +17,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from legacy_index import JsonIndex
+
 from ironbark import library_db
 from ironbark.audiofile import CuePath, CueRange
 from ironbark.library import Track
 from ironbark.library_index import Entry
-from legacy_index import JsonIndex
 
 WORDS = ("love night day heart fire rain blue black white dream light dark gold river road home song "
          "time world life soul moon star sun sea wind storm summer winter city street train ghost angel "

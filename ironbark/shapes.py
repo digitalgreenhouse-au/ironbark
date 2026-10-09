@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
-from typing import Callable
+from collections.abc import Callable
 
 from PIL import Image, ImageDraw, ImageTk
 

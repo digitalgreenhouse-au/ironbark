@@ -15,19 +15,18 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import mp4_maker
 import numpy as np
 import pytest
 import sounddevice as sd
 import soundfile as sf
+from test_gapless import FakeStream, pull, wav  # noqa: F401 (the stand-in sound card)
 
-import mp4_maker
 from ironbark import analysis, audiofile, devices, engine, m4a, mp3frames
-from ironbark.tools import audition
 from ironbark.engine import BLOCK_FRAMES, Player, State, _Session
 from ironbark.library import Track
 from ironbark.proof import SentRecord, apply_gain
-
-from test_gapless import FakeStream, pull, wav  # noqa: F401 (the stand-in sound card)
+from ironbark.tools import audition
 
 RATE = 44100
 RNG = np.random.default_rng(11)

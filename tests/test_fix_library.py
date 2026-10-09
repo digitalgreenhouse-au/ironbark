@@ -14,9 +14,18 @@ import pytest
 import soundfile as sf
 from tagging import text, write_id3
 
-from ironbark import (APP_NAME, OLD_APP_NAME, audiofile, cuesheet, dragdrop, library, library_db, library_index,
-                     playlists)
-from ironbark import settings, watcher
+from ironbark import (
+    APP_NAME,
+    OLD_APP_NAME,
+    audiofile,
+    cuesheet,
+    dragdrop,
+    library,
+    library_db,
+    playlists,
+    settings,
+    watcher,
+)
 from ironbark.audiofile import CuePath
 from ironbark.library import Track, title_from_filename
 from ironbark.library_index import LibraryIndex

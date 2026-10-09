@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
-from typing import Callable
+from collections.abc import Callable
 
 from . import chrome, controls, keys, shapes, theme
 from .tabbar import RoundIconButton, Tooltip

@@ -21,7 +21,8 @@ import logging
 import sys
 import threading
 import weakref
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 import sounddevice as sd
 

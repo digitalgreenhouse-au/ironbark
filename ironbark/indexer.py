@@ -67,8 +67,16 @@ from pathlib import Path
 
 from . import audiofile, library_db
 from .library import Track, is_music_name, skip_folder
-from .library_db import (FileState, FolderResult, FolderState, LibraryDB, cue_signature_of, folder_result, outermost,
-                         read_folder)
+from .library_db import (
+    FileState,
+    FolderResult,
+    FolderState,
+    LibraryDB,
+    cue_signature_of,
+    folder_result,
+    outermost,
+    read_folder,
+)
 
 log = logging.getLogger(__name__)
 

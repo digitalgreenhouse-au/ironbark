@@ -16,16 +16,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from netfakes import FakeClassifier, FakeShare, wait_until
+from test_light_mini import _pump, make_window  # noqa: F401 — (make_window is a fixture)
 
-from ironbark import audiofile, experiments, netcache, settings
-from ironbark.tools.details import describe_proof, source_rows
-from ironbark.statustext import COPY_FAILED, network_hover, network_line
+from ironbark import audiofile, netcache, settings
 from ironbark.engine import NetworkView, State, Status
 from ironbark.library import Track
 from ironbark.proof import Proof
-
-from netfakes import FakeClassifier, FakeShare, wait_until
-from test_light_mini import _pump, make_window  # noqa: F401 — (make_window is a fixture)
+from ironbark.statustext import COPY_FAILED, network_hover, network_line
+from ironbark.tools.details import describe_proof, source_rows
 
 
 @pytest.fixture(autouse=True)
@@ -411,8 +410,8 @@ def test_every_decode_and_index_call_is_in_the_reviewed_register():
 
 # -- what's downloaded, the network's quality, Up next's marks (v2a) ---------------------------------------
 def test_the_network_now_line_up_next_marks_and_the_quality_row():
-    from ironbark.statustext import cache_mark, network_now_line
     from ironbark.netcache import NetworkNow, Progress
+    from ironbark.statustext import cache_mark, network_now_line
     assert network_now_line(None) == "Network now: nothing fetched yet"
     assert network_now_line(NetworkNow("192.168.80.173", "up", "good", 12.8e6, 0.4e6)) == (
         "Network now: Good — 12.8 MB/s (megabytes per second); this song needs 0.4 MB/s")

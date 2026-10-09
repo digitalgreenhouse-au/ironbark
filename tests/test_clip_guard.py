@@ -5,9 +5,9 @@ import numpy as np
 import soundfile as sf
 
 from ironbark.analysis import true_peak
-from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo, Player
 from ironbark.library import Track
+from ironbark.statustext import output_line
 
 
 def test_true_peak_finds_overs_between_samples(tmp_path):

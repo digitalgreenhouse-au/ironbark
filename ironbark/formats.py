@@ -50,8 +50,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .audiofile import FLOAT_SUBTYPES, SUBTYPE_BITS, read_blocks
 from . import audiofile, cuesheet, tagio
+from .audiofile import FLOAT_SUBTYPES, SUBTYPE_BITS, read_blocks
 
 # -- HDCD ---------------------------------------------------------------------------
 HDCD_PREFIX_A = 0x7E0FA005

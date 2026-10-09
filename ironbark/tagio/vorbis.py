@@ -39,7 +39,7 @@ class VComment:
         self.items: list[tuple[str, str]] = list(items or [])
 
     @classmethod
-    def parse(cls, data: bytes, at: int = 0) -> tuple["VComment", int]:
+    def parse(cls, data: bytes, at: int = 0) -> tuple[VComment, int]:
         """(the comments, where they end in `data`). Comments without "=" are skipped."""
         (length,) = struct.unpack_from("<I", data, at) if at + 4 <= len(data) else (-1,)
         vendor, at = _take(data, at + 4, length)
@@ -63,7 +63,7 @@ class VComment:
         vendor = self.vendor.encode("utf-8")
         out = [struct.pack("<I", len(vendor)), vendor, struct.pack("<I", len(self.items))]
         for name, value in self.items:
-            entry = f"{name}={value}".encode("utf-8")
+            entry = f"{name}={value}".encode()
             out += [struct.pack("<I", len(entry)), entry]
         return b"".join(out)
 
@@ -119,7 +119,7 @@ class Picture:
     data: bytes = b""
 
     @classmethod
-    def parse(cls, block: bytes) -> "Picture":
+    def parse(cls, block: bytes) -> Picture:
         try:
             kind, length = struct.unpack_from(">II", block, 0)
             mime, at = _take(block, 8, length)

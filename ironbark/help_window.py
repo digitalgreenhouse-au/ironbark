@@ -18,10 +18,10 @@ import platform
 import sys
 import tkinter as tk
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import ttk
-from typing import Callable
 
 from . import APP_NAME, __version__, controls, experiments, keys, placement, theme
 from .playlist_view import fit_columns

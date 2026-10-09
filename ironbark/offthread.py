@@ -20,7 +20,7 @@ import logging
 import queue
 import threading
 import tkinter as tk
-from typing import Callable
+from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 

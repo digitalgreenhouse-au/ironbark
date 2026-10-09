@@ -19,9 +19,9 @@ still read by what it really is, and flagged, exactly as when it's opened any ot
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from .artwork import first_audio_file
 from .cuesheet import read
@@ -168,4 +168,3 @@ def move_item(items: list, source: int, target: int) -> list:
         target -= 1  # the list closed up behind the item that was lifted out
     result.insert(target, item)
     return result
-

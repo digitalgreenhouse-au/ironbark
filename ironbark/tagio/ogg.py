@@ -55,7 +55,7 @@ class Page:
     __slots__ = ("offset", "flags", "granule", "serial", "sequence", "lacing", "data", "size")
 
     @classmethod
-    def read(cls, f, offset: int, size: int) -> "Page":
+    def read(cls, f, offset: int, size: int) -> Page:
         head = read_at(f, offset, 27)
         if head[:4] != b"OggS" or head[4] != 0:
             raise TagError("an Ogg page is damaged (no \"OggS\" where one should be)")

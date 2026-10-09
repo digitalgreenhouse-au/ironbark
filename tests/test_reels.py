@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from ironbark import experiments, keys, theme
-from ironbark.tools import reels
 from ironbark.engine import State
+from ironbark.tools import reels
 
 TEN = reels.REELS["10.5"]
 SEVEN = reels.REELS["7"]

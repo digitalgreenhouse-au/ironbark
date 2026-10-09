@@ -5,7 +5,6 @@ import gc
 import io
 import socket
 import struct
-import threading
 import time
 import tkinter as tk
 import zlib
@@ -13,12 +12,23 @@ import zlib
 import numpy as np
 import pytest
 import soundfile as sf
-from ironbark.tagio.flac import FLACFile
 
-from ironbark import settings, theme
+from ironbark import theme
+from ironbark.tagio.flac import FLACFile
 from ironbark.tools import ripcheck
-from ironbark.tools.ripcheck import (AR_SKIP, CTDB_SKIP, SECTOR, Checksums, NotARip, Toc, checksums,
-                                 find_rip, toc_from_cdtoc, toc_from_lengths, tocs_from_log)
+from ironbark.tools.ripcheck import (
+    AR_SKIP,
+    CTDB_SKIP,
+    SECTOR,
+    Checksums,
+    NotARip,
+    Toc,
+    checksums,
+    find_rip,
+    toc_from_cdtoc,
+    toc_from_lengths,
+    tocs_from_log,
+)
 
 RNG = np.random.default_rng(6)
 
@@ -399,5 +409,3 @@ class FakePlayer:
 
     def status(self):
         return self._status
-
-

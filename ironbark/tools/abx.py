@@ -34,8 +34,8 @@ import numpy as np
 import soundfile as sf
 
 from .. import APP_NAME, __version__, audiofile, loudness, settings
-from . import compare
 from ..proof import QUIET, resample
+from . import compare
 
 TRIAL_CHOICES = (8, 10, 12, 16, 20, 25)
 TRIALS = 16

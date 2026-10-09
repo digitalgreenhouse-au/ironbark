@@ -17,7 +17,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from . import audiofile, controls, lyrics, placement, theme, toolwin
+from . import audiofile, controls, lyrics, theme, toolwin
 
 REFRESH_MS = 200     # how often the window follows the play position
 SIZE = (360, 520)    # px at 100%: the window's first size
@@ -209,4 +209,3 @@ class LyricsWindow(toolwin.ToolWindow):
     def _song_shown(self, title: str, line: str):
         self.title_label.configure(text=title)
         self.source_label.configure(text=line)
-

@@ -3,13 +3,14 @@ import shutil
 import numpy as np
 import soundfile as sf
 from tagging import text, write_id3
+
 from ironbark.analysis import analyse
-from ironbark.tools.details import describe_analysis
-from ironbark.statustext import output_line
 from ironbark.engine import OutputInfo
 from ironbark.library import find_albums, read_track, scan_album
 from ironbark.mp3frames import build_index
+from ironbark.statustext import output_line
 from ironbark.tagio.mpeg import MP3File
+from ironbark.tools.details import describe_analysis
 
 
 def make_mp3(path, mode="CONSTANT", seconds=3.0, rate=44100, tags=()):

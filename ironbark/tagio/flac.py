@@ -55,7 +55,7 @@ class StreamInfo:
     bitrate: int = 0           # average over the audio frames, bits per second
 
     @classmethod
-    def parse(cls, data: bytes) -> "StreamInfo":
+    def parse(cls, data: bytes) -> StreamInfo:
         if len(data) < 34:
             raise TagError("the FLAC STREAMINFO block is too short")
         min_block, max_block = struct.unpack_from(">HH", data, 0)
@@ -95,7 +95,7 @@ class CueSheet:
     tracks: list[CueSheetTrack] = field(default_factory=list)
 
     @classmethod
-    def parse(cls, data: bytes) -> "CueSheet":
+    def parse(cls, data: bytes) -> CueSheet:
         try:
             catalog = data[:128].rstrip(b"\0").decode("ascii", "replace")
             lead_in = struct.unpack_from(">Q", data, 128)[0]
@@ -240,7 +240,7 @@ class FLACFile:
             out.insert(1, (CUESHEET, self.cuesheet.render()))
         if not picture_done:
             out += [(PICTURE, p.render()) for p in self.pictures]
-        for kind, data in out:
+        for _kind, data in out:
             if len(data) > _MAX_BLOCK:
                 raise TagError("a FLAC metadata block can't be over 16 MB (the picture is too big)")
         return out

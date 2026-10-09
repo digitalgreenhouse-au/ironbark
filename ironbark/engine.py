@@ -158,10 +158,10 @@ class Status:
     buffer: float = 0.0               # decoded audio waiting, as a fraction of the buffer
     dropouts: int = 0                 # times the sound card ran dry this track
     proof: Proof | None = None        # what was sent, checked against the file (see proof.py)
-    health: "Health | None" = None    # how close playback came to running dry, this track
+    health: Health | None = None    # how close playback came to running dry, this track
     events: list = field(default_factory=list)  # recent dropouts / near misses / damage (PlaybackEvent), newest last
     transition: str = ""              # how this track began: "gapless", "started", or why there was a gap
-    network: "NetworkView | None" = None  # a song from the network playback cache (None for a local one)
+    network: NetworkView | None = None  # a song from the network playback cache (None for a local one)
 
 
 @dataclass
@@ -1087,6 +1087,27 @@ class _Session:
 
     # -- audio thread --------------------------------------------------------
     def _callback(self, outdata, frames, time_info, status):
+        """Fill one request from the sound card. This is the audio thread.
+
+        The driver calls this on a high-priority thread of its own and wants the samples back
+        before the next request falls due; anything slow here is heard as a click. So this
+        method, and everything it calls, keeps to the rules of real-time audio:
+
+        - nothing that waits: no blocking queue get (get_nowait only), no sleep, no Event.wait,
+          no lock another thread might hold for long;
+        - no file, console or network access, and no logging: the player's own log is written
+          from the other threads, and what happens here is noted in `_events` instead;
+        - nothing that touches the window (tkinter): news for the player's thread goes through
+          `_on_advance`, and the meters' feeds are queues that take a block with put_nowait and
+          drop it when full, so a slow viewer never slows the music;
+        - as little new work per block as possible: the levels and the track peak are the one
+          measurement made here, because they must see exactly the samples that were sent.
+
+        Python can't make this truly lock-free (every object is an allocation, and the
+        interpreter has a lock of its own), so the safety margin is the depth of the block
+        queue, and `health` records how close that margin came to running out.
+        tests/test_callback_rules.py holds the callback to these rules.
+        """
         now = time.perf_counter()
         if self._last_callback is not None and self._primed:
             self.health.longest_wait = max(self.health.longest_wait, now - self._last_callback)

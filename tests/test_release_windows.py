@@ -14,14 +14,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
+from test_library_songs import song_window, wait_for_songs
+from test_library_view import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
 
 from ironbark import help_window, keys, library_check, library_index, library_view, placement, theme
 from ironbark.indexer import Indexer
 from ironbark.library_db import LibraryDB
 from ironbark.library_view import LibraryView
-
-from test_library_songs import song_window, wait_for_songs
-from test_library_view import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
 
 
 def pump(root, until, seconds=20.0):

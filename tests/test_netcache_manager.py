@@ -3,6 +3,7 @@ resuming, a source that changes, hosts that stop answering, eviction, and the pr
 the player uses."""
 from __future__ import annotations
 
+import importlib
 import os
 import socket
 import threading
@@ -12,15 +13,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
+from netfakes import FakePlayer, FakeShare, Usage, make_manager, unc, wait_until
 
 from ironbark import audiofile, netcache
-import importlib
-
 from ironbark.netcache import policy
 from ironbark.netcache.manager import CURRENT, NEXT, NotReady, Unavailable
 from ironbark.netcache.store import FAILED, PARTIAL, READY, STALE, Item
-
-from netfakes import FakePlayer, FakeShare, Usage, make_manager, unc, wait_until
 
 manager_mod = importlib.import_module("ironbark.netcache.manager")   # (netcache.manager() is a function)
 

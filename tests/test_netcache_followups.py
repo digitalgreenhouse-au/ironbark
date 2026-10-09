@@ -16,21 +16,34 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from netfakes import FakeCopy, FakePlayer, FakePreparer, FakeShare, make_manager, unc, wait_until
+from test_light_mini import make_window  # noqa: F401 — (a fixture)
+from test_netcache_engine import (  # noqa: F401
+    RATE,
+    Card,
+    fake_card,
+    music,
+    preparing_player,
+    pump,
+    quick_watch,
+    session_on,
+    silent_frames,
+    stall_and_cut,
+)
+from test_stereo import FakePlayer as MeterPlayer  # noqa: F401 — (root is a fixture)
+from test_stereo import (
+    root,  # noqa: F401 (a fixture, named only as an argument)
+    tick,
+)
 
 from ironbark import audiofile, engine
-from ironbark.tools.details import describe_proof, source_rows
-from ironbark.statustext import COPY_FAILED, COPY_SKIPPED, copy_failed_text, network_hover
 from ironbark.engine import NetworkView, Player, WaitInfo, _Stall
 from ironbark.library import Track
 from ironbark.netcache.fetch import Changed
 from ironbark.netcache.store import FAILED, QUEUED, READY, Item
 from ironbark.proof import Proof
-
-from netfakes import FakeCopy, FakePlayer, FakePreparer, FakeShare, make_manager, unc, wait_until
-from test_light_mini import make_window  # noqa: F401 — (a fixture)
-from test_stereo import FakePlayer as MeterPlayer, root, tick  # noqa: F401 — (root is a fixture)
-from test_netcache_engine import (RATE, Card, fake_card, music, preparing_player, pump, quick_watch,  # noqa: F401
-                                  session_on, silent_frames, stall_and_cut)
+from ironbark.statustext import COPY_FAILED, COPY_SKIPPED, copy_failed_text, network_hover
+from ironbark.tools.details import describe_proof, source_rows
 
 manager_mod = importlib.import_module("ironbark.netcache.manager")
 
@@ -384,8 +397,9 @@ def test_pauses_carry_over_when_the_device_is_let_go_and_taken_back(tmp_path, fa
 
 # -- an MP3's "cut short" note once its copy is complete --------------------------------------------------
 def test_an_mp3_cut_short_note_comes_when_its_copy_completes_mid_song(tmp_path, fake_card):
-    from ironbark import mp3frames
     from test_fix_playback import write_chunked
+
+    from ironbark import mp3frames
     rng = np.random.default_rng(3)
     full = tmp_path / "vbr.mp3"
     signal = np.concatenate([rng.standard_normal((RATE * 6, 2)) * 0.3, np.zeros((RATE * 30, 2))])
@@ -473,6 +487,7 @@ def test_vu_auto_measures_a_network_album_once_its_songs_have_downloaded(root, t
 def test_now_playings_frame_index_is_built_once_the_copy_completes_mid_song(monkeypatch):
     import threading
     from types import SimpleNamespace
+
     from ironbark.tools import details
     song, other = Path("//nas/s/song.flac"), Path("//nas/s/other.flac")
     complete: set = set()
@@ -496,8 +511,9 @@ def test_now_playings_frame_index_is_built_once_the_copy_completes_mid_song(monk
 
 # -- the track list's Cached column --------------------------------------------------------------------------
 def test_the_track_list_marks_network_songs_when_the_tab_has_some(make_window):
-    from ironbark.netcache import Progress
     from test_netcache_ui import NetStub
+
+    from ironbark.netcache import Progress
     window, root, player, errors = make_window(geometry="420x1100+120+120")
     local = player.track
     assert window.playlist.cache_column is False
@@ -563,8 +579,9 @@ def test_only_the_rows_on_screen_are_marked(make_window):
 
 
 def test_a_whole_librarys_paths_are_classified_by_drive_letter():
-    from ironbark.netcache import sources
     from netfakes import FakeClassifier
+
+    from ironbark.netcache import sources
     looked = []
 
     class Letters(FakeClassifier):
@@ -682,6 +699,7 @@ def test_a_lost_copy_while_paused_by_hand_waits_for_play(tmp_path, fake_card):
 # -- VU Auto's wait copes with an album folder it can't list for a moment -----------------------------------
 def test_vu_autos_wait_lists_the_album_once_and_again_only_if_it_couldnt(monkeypatch, tmp_path):
     import threading
+
     from ironbark.tools import meter_window
     track = tmp_path / "01.flac"
     listed, here = [], []

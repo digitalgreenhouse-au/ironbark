@@ -25,7 +25,7 @@ class Identity:
     last_modified: str | None = None
     ranges: bool = True
 
-    def same_file(self, other: "Identity | None") -> bool:
+    def same_file(self, other: Identity | None) -> bool:
         return other is not None and self.size == other.size and self.mtime_ns == other.mtime_ns
 
 

@@ -44,8 +44,8 @@ def test_pad_figures_keeps_a_number_s_width():
 
 
 def test_tone_of_colours_lines_as_the_main_window_does():
-    from ironbark.tools.details import TONE_STYLE
     from ironbark.statustext import tone_of
+    from ironbark.tools.details import TONE_STYLE
     assert tone_of("✓ Verified") == "good" and TONE_STYLE["good"] == "GoodValue.TLabel"
     assert tone_of("✗ MD5 mismatch") == "warn" and tone_of("⚠ Only 16 of 24 bits") == "warn"
     assert tone_of("DR5") == "plain" and tone_of("") == "plain"
@@ -258,10 +258,10 @@ class ShownPlayer:
 
 
 def test_now_playing_lines_up_colours_and_fits(root, tmp_path):
-    from ironbark.analysis import analyse
-    from ironbark.tools.details import NowPlayingWindow
-    from ironbark.library import read_track
     from ironbark import placement
+    from ironbark.analysis import analyse
+    from ironbark.library import read_track
+    from ironbark.tools.details import NowPlayingWindow
 
     path = _flac(tmp_path)
     track = read_track(path)
@@ -301,9 +301,10 @@ def test_now_playing_lines_up_colours_and_fits(root, tmp_path):
 
 def test_now_playing_check_stays_greyed_out_while_it_runs(root, tmp_path, monkeypatch):
     import threading
+
+    from ironbark.library import read_track
     from ironbark.tools import details
     from ironbark.tools.details import NowPlayingWindow
-    from ironbark.library import read_track
 
     track = read_track(_flac(tmp_path))
     release, calls = threading.Event(), []
@@ -334,9 +335,9 @@ def test_now_playing_check_stays_greyed_out_while_it_runs(root, tmp_path, monkey
 
 
 def test_now_playing_work_that_fails_gives_its_button_back(root, tmp_path, monkeypatch):
+    from ironbark.library import read_track
     from ironbark.tools import details
     from ironbark.tools.details import NowPlayingWindow
-    from ironbark.library import read_track
 
     track = read_track(_flac(tmp_path))
 
@@ -360,8 +361,8 @@ def test_now_playing_work_that_fails_gives_its_button_back(root, tmp_path, monke
 
 
 def test_now_playing_follows_light(root, tmp_path):
-    from ironbark.tools.details import NowPlayingWindow
     from ironbark.library import read_track
+    from ironbark.tools.details import NowPlayingWindow
 
     track = read_track(_flac(tmp_path))
     win = NowPlayingWindow(root, ShownPlayer(track), prefs={}, on_meters=lambda: None)

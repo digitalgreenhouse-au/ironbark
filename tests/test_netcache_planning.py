@@ -8,18 +8,15 @@ from __future__ import annotations
 import importlib
 import socket
 import sys
-import threading
 import time
 
-import numpy as np
 import pytest
+from netfakes import FakePlayer, FakeShare, make_manager, unc, wait_until
 
 from ironbark import flacframes
 from ironbark.netcache import netwatch, policy
 from ironbark.netcache.policy import EXCELLENT, GOOD, POOR, UNSTABLE, QualityScore
 from ironbark.netcache.store import READY, Item
-
-from netfakes import FakePlayer, FakeShare, make_manager, unc, wait_until
 
 manager_mod = importlib.import_module("ironbark.netcache.manager")
 
@@ -87,7 +84,7 @@ def test_the_rule_never_uses_a_better_class_than_the_servers_own(tmp_path, manag
     m = make_manager(tmp_path / "NetCache", FakeShare(), clock=clock)
     managers.append(m)
     host = m._add_host("nas", "share")
-    for second in range(30):                                  # 4 MB/s steady: excellent for a CD-quality FLAC
+    for _second in range(30):                                  # 4 MB/s steady: excellent for a CD-quality FLAC
         clock.now += 1
         host.speed.add(clock.now, 4_000_000, 1.0)
     assert m._quality(host, 30.0, 0.0, 0, clock.now) == EXCELLENT
@@ -229,7 +226,6 @@ def _flac_item(m, name: str, size: int = 30_000_000, seconds: int = 300) -> Item
 
 
 def test_once_what_plays_from_the_seek_on_is_here_the_stretch_behind_waits_its_turn(tmp_path):
-    from ironbark.netcache.store import Island
     clock = Clock()
     player = FakePlayer([unc("now.flac"), unc("next.flac")])
     m = make_manager(tmp_path / "NetCache", FakeShare(), player, clock=clock, start=False)
@@ -404,8 +400,8 @@ def test_seconds_in_an_island_and_how_much_of_what_is_needed_is_here():
 
 
 def test_a_wait_while_the_server_is_just_slow_says_so(tmp_path, managers):
-    from ironbark.statustext import network_line
     from ironbark.engine import NetworkView
+    from ironbark.statustext import network_line
     clock = Clock()
     m = make_manager(tmp_path / "NetCache", FakeShare(), clock=clock)
     managers.append(m)

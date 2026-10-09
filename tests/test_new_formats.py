@@ -11,11 +11,12 @@ import pytest
 import soundfile as sf
 from mp4_maker import write_aac_m4a, write_m4a
 from tagging import text, write_id3, write_vorbis
+
+from ironbark import analysis, artwork, audiofile, library, m4a
 from ironbark.tagio import id3
 from ironbark.tagio.mp4 import PNG as PNG_TYPE
 from ironbark.tagio.mp4 import Cover, MP4File
 from ironbark.tagio.vorbis import Picture
-from ironbark import analysis, artwork, audiofile, library, m4a
 from ironbark.tools.details import describe_analysis
 
 RNG = np.random.default_rng(9)

@@ -59,7 +59,7 @@ class FrameHeader:
                  "samples")
 
     @classmethod
-    def parse(cls, data: bytes) -> "FrameHeader | None":
+    def parse(cls, data: bytes) -> FrameHeader | None:
         if len(data) < 4 or data[0] != 0xFF or data[1] & 0xE0 != 0xE0:
             return None
         version = _VERSIONS.get((data[1] >> 3) & 3)
@@ -82,7 +82,7 @@ class FrameHeader:
             h.length = h.samples // 8 * h.bitrate // h.sample_rate + h.padding
         return h
 
-    def same_stream(self, other: "FrameHeader") -> bool:
+    def same_stream(self, other: FrameHeader) -> bool:
         return (other.version, other.layer, other.sample_rate) == (self.version, self.layer, self.sample_rate)
 
 

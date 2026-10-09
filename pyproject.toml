@@ -23,8 +23,11 @@ dg-flac-player = "ironbark.__main__:main"   # the old command still works
 
 [dependency-groups]
 dev = [
+    "import-linter>=2.15",
+    "pre-commit>=4.6.2",
     "pyinstaller>=6.22.3",
     "pytest>=8",
+    "ruff>=0.16.10",
 ]
 
 [build-system]
@@ -45,4 +48,69 @@ addopts = "-p no:cacheprovider"
 markers = [
     "ui: makes a window (tkinter): the slow tier; `-m \"not ui\"` is the quick one",
     "perf: a performance benchmark (slow); runs only with --perf",
+]
+
+[tool.ruff]
+# `uv run ruff check` (the linter only; the formatter is not switched on yet). Line length matches
+# the code as written; long lines are not an error (E501), since the wording in prompts and
+# messages is more important than the column.
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP"]   # pycodestyle, pyflakes, bugbear, import order, pyupgrade
+ignore = [
+    "E501",   # line too long: see above
+    "E741",   # ambiguous names like `l`: left as written for now
+    "B023",   # a function that uses a loop variable: common in Tk callbacks, bound on purpose
+    "B905",   # zip() without strict=: not wanted everywhere
+    "UP031", "UP032",   # %-formatting and .format(): left where they read better
+]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest fixtures are imported and then named as arguments (F811); a bare expression inside
+# pytest.raises is the point of the test (B018); a constant default like math.sqrt(2) is fine (B008)
+"tests/*" = ["F811", "B018", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ironbark"]
+
+# Which module may import which: `uv run lint-imports` (import-linter; CI runs it on every push).
+# tests/test_architecture.py checks the same rules, with the full list of modules that may use the
+# window toolkit, in the quick tier.
+[tool.importlinter]
+root_package = "ironbark"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "The Check tools import from the core, never the main window"
+type = "forbidden"
+source_modules = ["ironbark.tools"]
+forbidden_modules = ["ironbark.ui"]
+
+[[tool.importlinter.contracts]]
+name = "The main window is imported only by the entry point and the self-check"
+type = "protected"
+protected_modules = ["ironbark.ui"]
+allowed_importers = ["ironbark.__main__", "ironbark.selfcheck"]
+
+[[tool.importlinter.contracts]]
+name = "The engine, the readers, the library database and the network cache know nothing of the window, the tools or the toolkit"
+type = "forbidden"
+source_modules = [
+    "ironbark.engine", "ironbark.audiofile", "ironbark.library", "ironbark.library_db", "ironbark.indexer",
+    "ironbark.tagio", "ironbark.netcache", "ironbark.analysis", "ironbark.loudness", "ironbark.proof",
+    "ironbark.devices", "ironbark.settings", "ironbark.places", "ironbark.musicfiles",
+]
+forbidden_modules = [
+    "ironbark.ui", "ironbark.tools", "ironbark.toolwin", "ironbark.controls", "ironbark.tabbar",
+    "ironbark.popups", "ironbark.theme", "tkinter",
+]
+
+[[tool.importlinter.contracts]]
+name = "The tag code is self-contained"
+type = "forbidden"
+source_modules = ["ironbark.tagio"]
+forbidden_modules = [
+    "ironbark.engine", "ironbark.audiofile", "ironbark.library", "ironbark.library_db", "ironbark.settings",
+    "ironbark.netcache", "ironbark.analysis", "ironbark.ui", "ironbark.tools",
 ]

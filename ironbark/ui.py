@@ -83,44 +83,98 @@ import sys
 import threading
 import time
 import tkinter as tk
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
-from typing import Callable
 
-from PIL import Image, ImageTk
+from PIL import ImageTk
 
-from . import (APP_NAME, __version__, analysis, appicon, artwork, audiofile, browse, chrome, controls, crash, devices, diagnostics,
-               dragdrop, experiments, keys, levelling, offthread, library_check, library_db, library_index,
-               library_tracks, logs, loudness, mediakeys, placement, places, playlists, popups,
-               quick_search, recycle, settings, settings_view, shapes, sleep, tag_editor, theme, tkgc, watcher)
-from .tools.abx_window import AbxWindow
+from . import (
+    APP_NAME,
+    __version__,
+    analysis,
+    appicon,
+    artwork,
+    audiofile,
+    browse,
+    chrome,
+    controls,
+    crash,
+    devices,
+    diagnostics,
+    dragdrop,
+    experiments,
+    keys,
+    levelling,
+    library_check,
+    library_db,
+    library_index,
+    library_tracks,
+    logs,
+    loudness,
+    mediakeys,
+    offthread,
+    placement,
+    places,
+    playlists,
+    popups,
+    quick_search,
+    recycle,
+    settings,
+    settings_view,
+    shapes,
+    sleep,
+    tag_editor,
+    theme,
+    tkgc,
+    watcher,
+)
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
-from .tools.compare_window import CompareWindow
-from .tools.testsignals_window import TestSignalsWindow
-from .tools.details import NowPlayingWindow
-from .statustext import (cache_mark, copy_failed_text, copy_note, network_hover, network_line, network_now_line,
-                         output_line)
-from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
 from .favourites import Favourites
-from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
-                      title_from_filename)
+from .help_window import AboutWindow, HelpWindow
+from .library import (
+    Track,
+    album_folder,
+    cue_track_path,
+    find_albums,
+    read_track,
+    scan_album,
+    scan_folder,
+    title_from_filename,
+)
 from .library_view import LibraryView, adding_folder, unsearched_note, view_menu
 from .lyrics_window import LyricsWindow
-from .tools.meter_window import MeterWindow
-from .tools.meters import album_files
-from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
-from .tools.pcm_window import PcmWindow
-from .tools.clip_window import ClipWindow
-from .tools.reels_window import EXPERIMENT as TAPE_REELS, ReelsWindow
-from .tools.scope_window import ScopeWindow
-from .tools.spectrogram_window import SpectrogramWindow
-from .tag_window import TagHistoryWindow, TagWindow
+from .mini_view import DEFAULT_SIZE as MINI_DEFAULT_SIZE
+from .mini_view import MIN_SIZE as MINI_MIN_SIZE
+from .mini_view import MiniView, click_or_double
 from .playlist_view import PlaylistView
 from .searchfold import fold
+from .statustext import (
+    cache_mark,
+    copy_failed_text,
+    copy_note,
+    network_hover,
+    network_line,
+    network_now_line,
+    output_line,
+)
 from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
+from .tag_window import TagHistoryWindow, TagWindow
+from .tools.abx_window import AbxWindow
+from .tools.clip_window import ClipWindow
+from .tools.compare_window import CompareWindow
+from .tools.details import NowPlayingWindow
+from .tools.meter_window import MeterWindow
+from .tools.meters import album_files
+from .tools.pcm_window import PcmWindow
+from .tools.reels_window import EXPERIMENT as TAPE_REELS
+from .tools.reels_window import ReelsWindow
+from .tools.scope_window import ScopeWindow
+from .tools.spectrogram_window import SpectrogramWindow
+from .tools.testsignals_window import TestSignalsWindow
 
 log = logging.getLogger(__name__)
 
@@ -1955,7 +2009,7 @@ class PlayerWindow:
                     albums = self._library_albums(root)
                     if tab.query:  # the same search as the Library window's
                         words = [fold(w) for w in tab.query.split()]
-                        albums = [a for a in albums if browse.matches(a, words, _fold)]
+                        albums = [a for a in albums if browse.matches(a, words, fold)]
                     progress["total"] = len(albums)
                     self.work.post(self._say_loading, tab, progress)
                     tracks = self._library_tracks(albums)

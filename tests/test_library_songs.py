@@ -4,10 +4,11 @@ N albums in a tab" asking first when it's big, and "Show in Library". Tk tests, 
 display."""
 import time
 
+from test_library_view import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
+
 from ironbark import library_index, settings, theme
 from ironbark.library_view import LibraryView, added_text
 
-from test_library_view import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
 
 def wait_for_songs(window, root):
     """Until the song view's songs (and the rows on show) have come from the query thread."""
@@ -151,7 +152,7 @@ def test_show_in_library_selects_the_album(root, music, monkeypatch):
 
 
 def test_a_song_played_under_two_spellings_of_its_path_is_listed_once(root, music, monkeypatch, tk_thread_rule):
-    """Plays are kept by the path played from — a playlist may write "C:\…" as "c:\…". The song is
+    r"""Plays are kept by the path played from — a playlist may write "C:\…" as "c:\…". The song is
     listed once (two rows with one key used to stop the list), its plays added up."""
     import os
 
@@ -222,8 +223,8 @@ def test_a_page_the_songs_list_has_moved_away_from_is_not_read():
     again if they're on show after all."""
     from types import SimpleNamespace
 
-    from ironbark.library_view import PAGE, SongPages, _read_page
     from ironbark.indexer import Answer
+    from ironbark.library_view import PAGE, SongPages, _read_page
 
     pages = SongPages(list(range(100_000)), lambda hit, extra: ("k", (), ()), lambda page, ids: None)
     db = SimpleNamespace(songs=lambda ids: [f"read {len(ids)}"])

@@ -770,4 +770,3 @@ def test_no_tk_call_off_tks_thread_while_the_library_is_built_and_rescanned(tk_t
         gc.collect()   # on this thread (Tk objects freed on another thread abort Python)
     library_index.close_shared()
     assert tk_thread_rule == []
-

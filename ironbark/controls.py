@@ -31,16 +31,24 @@ row of choices, and a DG-green ring shows where the keyboard is).
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import font as tkfont
 from tkinter import ttk
-from typing import Callable
 
 from PIL import Image, ImageDraw, ImageTk
 
 from . import keyfocus, shapes, theme
 from .keyfocus import Focusable
-from .tabbar import (DISABLED_FADE, IconButton, RoundIconButton, Toggle, Tooltip, glyph, icon_font,  # noqa: F401
-                     released_over)
+from .tabbar import (  # noqa: F401
+    DISABLED_FADE,
+    IconButton,
+    RoundIconButton,
+    Toggle,
+    Tooltip,
+    glyph,
+    icon_font,
+    released_over,
+)
 
 SUPERSAMPLE = shapes.SUPERSAMPLE
 

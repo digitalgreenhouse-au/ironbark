@@ -47,7 +47,7 @@ from concurrent.futures import FIRST_COMPLETED, BrokenExecutor, ProcessPoolExecu
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import analysis, audiofile, indexer, library_db
+from . import analysis, audiofile, indexer
 from .analysis import Analysis
 from .formats import FormatFlags, HdcdResult, MqaResult, PreEmphasis
 from .library import Track

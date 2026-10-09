@@ -16,10 +16,8 @@ import tkinter as tk
 
 import pytest
 
-from ironbark import crash, diagnostics, instance, keys, logs, settings
-from ironbark.tools import ripcheck
 from ironbark import __main__ as start
-from ironbark import places
+from ironbark import crash, diagnostics, instance, keys, logs, places, settings
 from ironbark.netcache import sources
 
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")

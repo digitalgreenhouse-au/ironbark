@@ -16,10 +16,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
-from PIL import Image
-
 from mp4_maker import write_m4a
+from PIL import Image
 from tagging import text, write_id3
+
 from ironbark import audiofile, library, settings, tag_editor, tagio
 from ironbark.tagio import genres, id3, mp4, ogg
 from ironbark.tagio.flac import CUESHEET, CueSheet, CueSheetIndex, CueSheetTrack, FLACFile

@@ -8,12 +8,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
+from test_gapless import FakeStream, pull, wav  # noqa: F401 (the stand-in sound card)
 
 from ironbark import engine
 from ironbark.engine import Player, Queued, State
 from ironbark.library import Track
-
-from test_gapless import FakeStream, pull, wav  # noqa: F401 (the stand-in sound card)
 
 
 @pytest.fixture
