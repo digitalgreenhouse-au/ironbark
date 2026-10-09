@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from . import APP_NAME, __version__, controls, experiments, keys, placement, theme
+from . import APP_NAME, __version__, controls, experiments, keys, placement, platforms, theme
 from .playlist_view import fit_columns
 from .searchfold import fold
 from .virtual_list import CELL_ROOM, ELLIPSIS
@@ -138,7 +138,7 @@ def read_document(path: Path | None) -> str:
 def version_info(widget: tk.Misc | None = None, prefs: dict | None = None) -> str:
     """What a bug report needs, one item per line."""
     lines = [f"{APP_NAME} {__version__}" + (" (installed)" if getattr(sys, "frozen", False) else " (from source)")]
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         release, version, _service_pack, _kind = platform.win32_ver()
         lines.append(f"Windows {release} ({version})")
     else:

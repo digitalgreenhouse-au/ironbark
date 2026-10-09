@@ -22,12 +22,12 @@ worst a second copy, never a wrong one.
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import time
 from collections import OrderedDict
 from enum import Enum
 
+from . import platforms
 from .audiofile import UrlPath
 
 DRIVE_REMOTE = 4
@@ -47,7 +47,7 @@ class Kind(Enum):
 # -- Windows calls (replaced in tests) ----------------------------------------------------
 def _drive_type(root: str) -> int:
     """GetDriveTypeW for a drive root ("Z:\\"). Only ever called with a drive letter."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return 0
     import ctypes
     return int(ctypes.WinDLL("kernel32").GetDriveTypeW(ctypes.c_wchar_p(root)))
@@ -55,7 +55,7 @@ def _drive_type(root: str) -> int:
 
 def _connection(letter: str) -> str | None:
     """The `\\\\server\\share` a mapped drive letter ("Z:") points at (WNetGetConnectionW), or None."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return None
     import ctypes
     from ctypes import wintypes
@@ -69,7 +69,7 @@ def _connection(letter: str) -> str | None:
 
 def _dos_device(letter: str) -> str | None:
     """What a `subst` drive letter ("Z:") stands for (QueryDosDeviceW), as a path, or None."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return None
     import ctypes
     buffer = ctypes.create_unicode_buffer(1024)
@@ -84,7 +84,7 @@ def _dos_device(letter: str) -> str | None:
 
 
 def _logical_drives() -> list[str]:
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return []
     import ctypes
     mask = int(ctypes.WinDLL("kernel32").GetLogicalDrives())

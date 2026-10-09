@@ -25,6 +25,8 @@ the player           engine (the Player) + session (one open stream: decoder, qu
                      devices, library + library_db + library_sql + indexer (the library),
                      analysis, loudness, levelling, proof (measurement the player itself needs),
                      settings, experiments, placement, logs, crash, diagnostics (the app platform),
+                     platforms (which platform this is and what it provides: the one place
+                     the differences are named; nothing else tests sys.platform),
                      places + netcache/ (where files live; the network playback cache)
         │
         ▼

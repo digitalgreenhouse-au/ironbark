@@ -28,11 +28,10 @@ so no button looks drawn with a thicker pen than its neighbours.
 
 from __future__ import annotations
 
-import sys
 import tkinter as tk
 from collections.abc import Callable
 
-from . import chrome, controls, keys, shapes, theme
+from . import chrome, controls, keys, platforms, shapes, theme
 from .tabbar import RoundIconButton, Tooltip
 
 DEFAULT_SIZE = (380, 76)    # px at 100%: the strip's size the first time it's opened
@@ -50,7 +49,7 @@ def double_click_ms() -> int:
     """Windows' own double-click time (Settings → Mouse), so a single click on the cover waits
     no longer than it must before acting. 500 ms when it can't be asked: Windows' default (Microsoft
     Learn, SetDoubleClickTime: "the default double-click time of 500 milliseconds")."""
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         try:
             import ctypes
 

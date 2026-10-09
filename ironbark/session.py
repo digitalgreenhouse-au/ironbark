@@ -20,7 +20,6 @@ import collections
 import logging
 import math
 import queue
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -28,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import sounddevice as sd
 
-from . import audiofile, devices
+from . import audiofile, devices, platforms
 from .library import format_rate
 from .proof import SentRecord, apply_gain
 
@@ -157,7 +156,7 @@ class PlaybackEvent:
 def _init_com_for_this_thread() -> None:
     """WASAPI exclusive streams opened from a thread without COM set up fail with
     "Invalid device" — and leave PortAudio refusing exclusive mode on every thread after."""
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         import ctypes
 
         ctypes.windll.ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED

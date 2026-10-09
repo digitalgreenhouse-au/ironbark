@@ -35,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, platforms
 
 log = logging.getLogger(__name__)
 
@@ -286,7 +286,7 @@ def show_native(title: str, message: str, details: str, folder: Path) -> None:
 
 def tell_native(title: str, message: str, warning: bool = True) -> None:
     """A plain message with an OK button, for when there's no window (or no console) to say it in."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         if sys.stderr is not None:
             sys.stderr.write(f"{title}\n{message}\n")
         return
@@ -315,7 +315,7 @@ def native_box(title: str, text: str) -> str:
     """Show the box; COPY, FOLDER or CLOSE. Windows' box only offers Yes / No / Cancel, so the
     buttons are renamed (and widened to fit) as it opens; if that can't be done, the text says
     which button does what."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         if sys.stderr is not None:
             sys.stderr.write(f"{title}\n{text}\n")
         return CLOSE
@@ -442,7 +442,7 @@ def copy_text(text: str, root=None) -> bool:
         except Exception:  # noqa: BLE001
             log.warning("couldn't copy to the clipboard", exc_info=True)
             return False
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return False
     return _copy_native(text)
 
@@ -491,10 +491,10 @@ def open_folder(folder: Path) -> bool:
     """Open a folder in Explorer (Finder, the file manager)."""
     try:
         Path(folder).mkdir(parents=True, exist_ok=True)
-        if sys.platform == "win32":
+        if platforms.IS_WINDOWS:
             os.startfile(str(folder))   # noqa: S606 — a folder of our own, opened for the user
         else:
-            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(folder)])
+            subprocess.Popen(["open" if platforms.IS_MAC else "xdg-open", str(folder)])
     except OSError:
         log.warning("couldn't open the folder %s", folder, exc_info=True)
         return False

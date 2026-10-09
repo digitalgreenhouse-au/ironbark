@@ -21,12 +21,11 @@ import logging
 import math
 import os
 import shutil
-import sys
 import threading
 import time
 from pathlib import Path
 
-from . import APP_NAME, OLD_APP_NAME
+from . import APP_NAME, OLD_APP_NAME, platforms
 
 log = logging.getLogger(__name__)
 
@@ -117,9 +116,9 @@ DEFAULTS = {
 
 
 def _base() -> Path:
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-    if sys.platform == "darwin":
+    if platforms.IS_MAC:
         return Path.home() / "Library" / "Application Support"
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 
@@ -133,9 +132,9 @@ def _standard_settings_path() -> Path:
 
 
 def _cache_base() -> Path:
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    if sys.platform == "darwin":
+    if platforms.IS_MAC:
         return Path.home() / "Library" / "Caches"
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
 

@@ -11,8 +11,9 @@ Elsewhere the system title bar stays and our bar sits under it.
 
 from __future__ import annotations
 
-import sys
 import tkinter as tk
+
+from . import platforms
 
 GWL_STYLE = -16
 WS_CAPTION = 0x00C00000
@@ -24,7 +25,7 @@ SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020  # NOSIZE | NOMOVE | NOZORDER | FR
 WM_NCLBUTTONDOWN = 0x00A1
 HTCAPTION = 2
 
-CUSTOM = sys.platform == "win32"  # draw our own title bar?
+CUSTOM = platforms.CUSTOM_TITLE_BAR  # draw our own title bar?
 
 
 def _hwnd(window: tk.Misc) -> int:

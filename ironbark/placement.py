@@ -8,8 +8,9 @@ unplugged a restored window would open somewhere nobody can see it.
 from __future__ import annotations
 
 import re
-import sys
 import tkinter as tk
+
+from . import platforms
 
 _GEOMETRY = re.compile(r"^(?:(\d+)x(\d+))?\+(-?\d+)\+(-?\d+)$")
 TITLE_BAR = 40  # px of the window's top edge that must be on a screen, so it can be dragged
@@ -36,7 +37,7 @@ def shows_enough(strip: tuple[int, int, int, int], work: tuple[int, int, int, in
 def on_screen(x: int, y: int, width: int) -> bool:
     """Is enough of the top strip of a window at (x, y) on a connected monitor, clear of its
     taskbar, to grab it and drag it back?"""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return True  # other platforms keep windows on-screen themselves
     import ctypes
     import ctypes.wintypes as wt
@@ -90,7 +91,7 @@ def current(window: tk.Misc) -> str | None:
 def work_height(window: tk.Misc) -> int:
     """(0.22.0) The usable height (without the taskbar) of the monitor `window` is on, in pixels —
     for a window that grows with its content but must still fit on the screen (Now Playing)."""
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         try:
             import ctypes
             import ctypes.wintypes as wt

@@ -79,7 +79,6 @@ import logging
 import math
 import os
 import queue
-import sys
 import threading
 import time
 import tkinter as tk
@@ -118,6 +117,7 @@ from . import (
     offthread,
     placement,
     places,
+    platforms,
     playlists,
     popups,
     quick_search,
@@ -181,7 +181,7 @@ SEEK_STEP = 5.0
 LONG_SEEK_STEP = 30.0  # Shift+← / →
 VOLUME_STEP = 0.05   # per mouse-wheel notch over the transport, and per Ctrl+↑ / ↓
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
-WHEEL_NOTCH = 120 if sys.platform == "win32" else 1   # Tk's wheel delta for one notch (Windows: 120)
+WHEEL_NOTCH = 120 if platforms.IS_WINDOWS else 1   # Tk's wheel delta for one notch (Windows: 120)
 ALBUM_AGAIN_S = 30.0   # a network album not all downloaded yet: its loudness is measured again after this long
 SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: its drive or server isn't answering
 # Settings -> Network playback (the network playback cache): (saved value, what the choice says)
@@ -288,7 +288,7 @@ def _known_music_folder() -> Path | None:
     """Windows' own Music folder (SHGetKnownFolderPath, FOLDERID_Music): it may have been moved
     (Properties → Location, e.g. to D:\\Music) or redirected by backup or policy. None elsewhere,
     or if Windows can't say."""
-    if sys.platform != "win32":
+    if not platforms.IS_WINDOWS:
         return None
     import ctypes
     import ctypes.wintypes as wt

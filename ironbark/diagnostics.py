@@ -32,7 +32,7 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
-from . import APP_NAME, __version__, experiments, logs
+from . import APP_NAME, __version__, experiments, logs, platforms
 
 # A full path: a drive (C:\ or C:/), a network share (\\server\share) or, off Windows, from the root.
 _PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/]|/(?!/))")
@@ -255,7 +255,7 @@ def about(prefs: dict) -> str:
              f"Made {datetime.datetime.now():%d/%m/%Y %H:%M:%S}",
              f"Experiments on: {', '.join(e.key for e in experiments.switched_on(prefs)) or 'none'}",
              f"System: {platform.platform()} ({platform.machine()})"]
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         version = sys.getwindowsversion()
         lines.append(f"Windows: {platform.win32_ver()[0]} build {version.build} "
                      f"({platform.win32_edition() or 'edition unknown'})")

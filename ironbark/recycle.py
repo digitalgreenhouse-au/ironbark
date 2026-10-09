@@ -11,11 +11,12 @@ loop of its own, and a Tk callback inside it would break the program.
 from __future__ import annotations
 
 import os
-import sys
 import time
 from pathlib import Path
 
-BIN_NAME = "Bin" if sys.platform == "darwin" else "Recycle Bin"
+from . import platforms
+
+BIN_NAME = platforms.RECYCLE_BIN
 
 _DRIVE_FIXED = 3
 _FO_DELETE = 3
@@ -29,7 +30,7 @@ _FOF_WANTNUKEWARNING = 0x4000  # …except when it would be deleted for good aft
 def can_recycle(path) -> bool:
     """Whether deleting `path` can send it to the Recycle Bin: on Windows, a file on a fixed drive
     (not a network drive or a removable one, which have none); on a Mac, when there's a Bin."""
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         import ctypes
 
         full = os.path.abspath(os.fspath(path))
@@ -40,7 +41,7 @@ def can_recycle(path) -> bool:
         kernel32.GetDriveTypeW.argtypes = [ctypes.c_wchar_p]
         kernel32.GetDriveTypeW.restype = ctypes.c_uint
         return kernel32.GetDriveTypeW(drive + "\\") == _DRIVE_FIXED
-    if sys.platform == "darwin":
+    if platforms.IS_MAC:
         return (Path.home() / ".Trash").is_dir()
     return False
 
@@ -51,9 +52,9 @@ def recycle(path) -> None:
     full = os.path.abspath(os.fspath(path))
     if not os.path.exists(full):
         raise FileNotFoundError(f"“{full}” isn't there")
-    if sys.platform == "win32":
+    if platforms.IS_WINDOWS:
         _shell_delete(full)
-    elif sys.platform == "darwin":
+    elif platforms.IS_MAC:
         _to_mac_bin(full)
     else:
         raise OSError(f"there's no {BIN_NAME} here to move it to")

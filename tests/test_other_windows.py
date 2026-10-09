@@ -79,7 +79,7 @@ def test_mac_build_gets_menlo():
     """Menlo ships with macOS (Apple's font list); the code picks it there (checked by reading the
     rule, since this test runs on Windows)."""
     source = (PACKAGE / "theme.py").read_text(encoding="utf-8")
-    assert '"Menlo" if sys.platform == "darwin"' in source
+    assert '"Menlo" if platforms.IS_MAC' in source
     if sys.platform == "win32":
         assert theme.MONO == "Consolas"
 
