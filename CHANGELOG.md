@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.41.1 — 09/10/2026
+
+- **Library folders on the network stay listed.** With *Local network access* off, a network
+  folder in Settings → Library is greyed rather than read. *Add folder…* used to build the new list
+  from the folders being read, so the greyed one was dropped for the one added (a second folder
+  seemed to replace it); *Remove* could drop it the same way. Both now keep every listed folder.
+- **A whole-library search says what it leaves out.** With the Whole library switch on, the first
+  search of a session notes, in the status line, any library folder on the network that isn't
+  searched while Local network access is off — the switch is the fix, in Settings → Library.
+- **Mini strip:** the buttons' glyphs are weighed against each other — previous / next a little
+  smaller beside the strip's play button, and the gear, full player and close at the strip's icon
+  size — so no button looks drawn with a thicker pen than its neighbours.
+
 ## 0.41.0 — 09/10/2026
 
 **The Library's views live in the Library tab.** What used to be a separate Library window — Albums,

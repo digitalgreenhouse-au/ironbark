@@ -260,7 +260,7 @@ class RoundIconButton(Focusable, IconButton):
     on changed (a menu row lighting up).
 
     `drawn="prev"` / `"next"`: the glyph is drawn into the picture (shapes.skip, filled, TEXT)
-    instead of taken from the icon font. `set_on(True)`: the glyph in ACCENT_TEXT with a small dot
+    instead of taken from the icon font, `glyph` px tall at 100% (SKIP_SIZE when not given). `set_on(True)`: the glyph in ACCENT_TEXT with a small dot
     under it (shuffle / repeat on), so "on" isn't told by colour alone."""
 
     ON_DOT = 3          # px at 100%: the "on" dot…
@@ -268,12 +268,14 @@ class RoundIconButton(Focusable, IconButton):
     SKIP_SIZE = 12      # px at 100%: a drawn previous / next glyph's height
 
     def __init__(self, parent, root, name: str, command: Callable[[], None], diameter: int = 36,
-                 width: int = 40, hover: str = "HOVER", pressed: str = "SURFACE_DOWN", drawn: str = "", **options):
+                 width: int = 40, hover: str = "HOVER", pressed: str = "SURFACE_DOWN", drawn: str = "",
+                 glyph: int | None = None, **options):
         self._diameter = max(12, theme.px(diameter))
         self._pressed = False
         self._hovering = False
         self._pressed_role = pressed
         self._drawn = drawn
+        self._glyph = theme.px(glyph or self.SKIP_SIZE)   # a drawn glyph's height (px)
         self.on = False
         super().__init__(parent, root, name, command, width=width, hover=hover, **options)
         side = max(0, (theme.px(width) - self._diameter) // 2)
@@ -330,7 +332,7 @@ class RoundIconButton(Focusable, IconButton):
         ink = self.glyph_colour(hover)
         dot = theme.ACCENT_TEXT if self.on and not hover else None
         ring = (theme.ACCENT, keyfocus.ring_width()) if self.focused else None
-        drawn = self._drawn
+        drawn, glyph = self._drawn, self._glyph
         s = theme.scale()
 
         def draw() -> Image.Image:
@@ -343,12 +345,12 @@ class RoundIconButton(Focusable, IconButton):
                 r, cy = self.ON_DOT * s * k / 2, (d / 2 + self.ON_DOT_BELOW * s) * k
                 g.ellipse((d * k / 2 - r, cy - r, d * k / 2 + r, cy + r), fill=dot)
             if drawn:
-                shapes.skip(theme.px(self.SKIP_SIZE), ink, drawn == "next", image, (d / 2, d / 2))
+                shapes.skip(glyph, ink, drawn == "next", image, (d / 2, d / 2))
             if ring:
                 g.ellipse((0, 0, d * k - 1, d * k - 1), outline=ring[0], width=ring[1] * k)
             return shapes.down(image, (d, d))
 
-        self._photo = shapes.photo(self, ("round button", d, bg, disc, ink if drawn else None, dot, drawn, ring),
+        self._photo = shapes.photo(self, ("round button", d, bg, disc, ink if drawn else None, dot, drawn, glyph, ring),
                                    draw)
         self.configure(image=self._photo, bg=bg, fg=ink)
 
