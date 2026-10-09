@@ -16,10 +16,12 @@ Output goes to the device the user picked (or the system default) — see device
 Two output modes:
 - shared (default): float32 through the OS mixer, which resamples to its own
   rate and mixes with other apps. On Windows this is WASAPI shared mode.
-- exclusive (Windows/WASAPI): the player takes the device at the file's own
-  rate and sends left-justified int32 samples with dithering off, so at 100%
-  volume the device receives the file's samples untouched ("bit-perfect").
-  Other apps go silent while it plays. Falls back to shared if the device
+- exclusive: the player takes the device at the file's own rate and sends
+  left-justified int32 samples with dithering off, so at 100% volume the device
+  receives the file's samples untouched ("bit-perfect"). Other apps go silent
+  while it plays. On Windows that's WASAPI exclusive mode; on a Mac the device is
+  hogged and switched to the file's rate and its deepest format first (see
+  devices.claim). Falls back to shared if the device
   refuses — but never to another device: if the chosen one isn't connected, it
   doesn't play (full scale on a device with no volume control of its own could
   be far too loud).
@@ -390,6 +392,7 @@ class _Session:
         self._pending = None       # the rest of a queued block, carried into the next request
         self._draining = False     # the decoder has queued the end of the chain
         self.note = ""             # e.g. why exclusive mode wasn't possible
+        self._claim: devices.Claim | None = None  # the device held for bit-perfect (see devices.claim)
         self.levels: tuple[float, ...] = (0.0,) * self.channels
         self.track_peak = 0.0
         self.dropouts = 0
@@ -424,8 +427,12 @@ class _Session:
         self.dtype = "int32" if self.exclusive else "float32"
         self.device_name = self._lookup_device_name()
         self.mixer_rate = devices.mixer_rate(index)
-        # What the device really takes in exclusive mode: PortAudio converts to a narrower format by itself.
-        self.device_bits = devices.exclusive_bits(self._stream) if self.exclusive else None
+        # What the device really takes in exclusive mode: on a Mac, the format bit-perfect set it to;
+        # on Windows, PortAudio converts to a narrower format by itself.
+        self.device_bits = None
+        if self.exclusive:
+            self.device_bits = (self._claim.bits if self._claim and self._claim.bits
+                                else devices.exclusive_bits(self._stream))
         self.health.usual_wait = BLOCK_FRAMES / self.samplerate
         try:
             self._latency = float(self._stream.latency)
@@ -476,27 +483,34 @@ class _Session:
             if not devices.exclusive_supported() or index is None:
                 self.note = "Bit-perfect mode isn't available on this system"
             else:
-                stream = None
+                stream = claim = None
                 try:
+                    claim = devices.claim(index, self.samplerate)
                     stream = sd.OutputStream(
                         device=index,
-                        extra_settings=sd.WasapiSettings(exclusive=True),
+                        extra_settings=devices.exclusive_settings(),
                         dither_off=True,
                         clip_off=True,
                         **self._stream_kwargs("int32"),
                     )
                     stream.start()
                     devices.holding(stream)
+                    self._claim = claim
                     return stream, True
+                except devices.Refused as exc:
+                    log.info("bit-perfect refused: %s", exc)
+                    self.note = f"Bit-perfect isn't possible here ({exc}) — playing shared"
                 except sd.PortAudioError as exc:
                     log.info("exclusive mode refused: %s", exc)
                     if stream is not None:
                         stream.close(ignore_errors=True)
                     self.note = (f"Device won't take {format_rate(self.samplerate)} in bit-perfect mode "
                                  f"(or another app holds it) — playing shared")
+                if claim is not None:
+                    claim.release()
         # Shared. On Windows: WASAPI with auto-convert, so Windows resamples to its mixer rate.
-        extra = sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS and index is not None else None
-        stream = sd.OutputStream(device=index, extra_settings=extra, **self._stream_kwargs("float32"))
+        stream = sd.OutputStream(device=index, extra_settings=devices.shared_settings(index),
+                                 **self._stream_kwargs("float32"))
         try:
             stream.start()
         except BaseException:
@@ -1402,6 +1416,9 @@ class _Session:
             log.exception("closing output stream")
         finally:
             devices.released(self._stream)
+        if self._claim is not None:
+            self._claim.release()
+            self._claim = None
         if not self._decoder_started:
             with self._lock:
                 sources, self._sources = self._sources, []
@@ -2194,7 +2211,11 @@ class Player:
 
     def _start_now(self, index, start_at: float, transition: str, force: bool, resume: bool,
                    deadline: float | None = None):
-        self._close_session()
+        self._close_session(restore=False)
+        if devices.formats_changed():
+            # Bit-perfect changed a device's rate and format: put it back unless it's about to be
+            # used bit-perfect again (no relocking the DAC twice between tracks).
+            devices.restore_formats(keep=devices.core_audio_device(self._device) if self._exclusive else None)
         self._message = ""
         self._fade = self._resume_with = None
         self.transition = transition
@@ -2270,7 +2291,8 @@ class Player:
         self.queued_now = None
         self._message = self._message or "End of album"
 
-    def _close_session(self):
+    def _close_session(self, restore: bool = True):
+        """Close the stream; `restore` also puts back any device format bit-perfect changed."""
         self._suspended_at = None
         self.queued_now = None
         prep, self._preparing = self._preparing, None
@@ -2279,6 +2301,8 @@ class Player:
         if self._session:
             self._session.close()
             self._session = None
+        if restore:
+            devices.restore_formats()
         self._plan_changed()   # (the cache lets go of what this was downloading, unless it plays on)
 
     # -- songs waiting for the network (the network playback cache) ------------------------

@@ -100,8 +100,8 @@ from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headro
 from .tools.compare_window import CompareWindow
 from .tools.testsignals_window import TestSignalsWindow
 from .tools.details import NowPlayingWindow
-from .statustext import (cache_mark, copy_failed_text, copy_note, network_hover, network_line, network_now_line,
-                         output_line)
+from .statustext import (MIXER, cache_mark, copy_failed_text, copy_note, network_hover, network_line,
+                         network_now_line, output_line)
 from .help_window import AboutWindow, HelpWindow
 from .engine import Player, State
 from .favourites import Favourites
@@ -131,6 +131,7 @@ READ_HERE_MOST = 2_000   # songs of a library tab read on Tk's thread for an act
 MEDIA_POLL_MS = 60   # how often presses from media keys / Windows' media panel are picked up
 AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
+VOLUME_CONTROL = "Mac's volume keys" if sys.platform == "darwin" else "Windows volume slider"
 SEEK_STEP = 5.0
 LONG_SEEK_STEP = 30.0  # Shift+← / →
 VOLUME_STEP = 0.05   # per mouse-wheel notch over the transport, and per Ctrl+↑ / ↓
@@ -4016,7 +4017,7 @@ class PlayerWindow:
         self.exclusive.set(not self.exclusive.get())
         self._toggle_exclusive()
         self._set_notice("Bit-perfect on: other apps go quiet while this plays" if self.exclusive.get()
-                         else "Bit-perfect off: sound goes through the Windows mixer", 3000)
+                         else f"Bit-perfect off: sound goes through the {MIXER} mixer", 3000)
 
     def _paint_lock(self):
         if self.lock_button is not None:
@@ -4035,7 +4036,7 @@ class PlayerWindow:
                      else "Windows' mixer is bypassed")
             return (f"Bit-perfect is locked on: {exact}, and other apps go quiet while this plays."
                     f"{guard}{levelled} Click to turn Bit-perfect off.")
-        return (f"Bit-perfect is off: Windows mixes the sound and may resample it.{levelled} "
+        return (f"Bit-perfect is off: sound goes through the {MIXER} mixer, which may resample it.{levelled} "
                 "Click to lock Bit-perfect on.")
 
     def _refresh_outputs(self):
@@ -4064,7 +4065,8 @@ class PlayerWindow:
 
     def _protect_ears(self, hardware_volume: bool | None):
         """Bit-perfect bypasses the Windows mixer. If the device can't turn itself down,
-        the system volume slider stops working — so drop the player volume first."""
+        the system volume slider stops working — so drop the player volume first. (A Mac never
+        turns such a device down at all, but bit-perfect needs the player at 100%: same care.)"""
         if hardware_volume or self.player.volume <= SAFE_VOLUME:
             return
         self.player.set_volume(SAFE_VOLUME)
@@ -4076,7 +4078,7 @@ class PlayerWindow:
         # background, amber edge and warning sign. It waits for OK.
         self._for_prompt()
         popups.tell(self.root, "Volume turned down to protect your ears",
-                    f"{reason}, so the Windows volume slider may not work in bit-perfect mode. "
+                    f"{reason}, so the {VOLUME_CONTROL} may not work in bit-perfect mode. "
                     f"The player's volume is now {SAFE_VOLUME:.0%}.",
                     detail="Raise it slowly, or use your headphone or amp volume.",
                     tone="warn", cover=True, ok="I understand")

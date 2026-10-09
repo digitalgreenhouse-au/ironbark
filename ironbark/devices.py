@@ -1,7 +1,10 @@
-"""Output devices: list them, turn a chosen name into a PortAudio device, ask what they can do.
+"""Output devices: list them, turn a chosen name into a PortAudio device, ask what they can do,
+and hold one for bit-perfect playback.
 
 On Windows everything goes through WASAPI, so one device list serves both shared
-and exclusive (bit-perfect) mode. Windows' own device list (read through Core Audio)
+and exclusive (bit-perfect) mode. On a Mac it's Apple's Core Audio, with bit-perfect done by
+hand (coreaudio.py): hog mode, and the device switched to the file's rate and its deepest
+format. Windows' own device list (read through Windows' Core Audio)
 is live; PortAudio's is scanned once at start-up. When Windows lists a device that
 PortAudio hasn't seen — a USB DAC plugged in after launch — we re-scan PortAudio. A
 re-scan pulls every open PortAudio stream out from under its owner, so it only happens
@@ -28,6 +31,7 @@ import sounddevice as sd
 log = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
 T = TypeVar("T")
 
 _FRIENDLY_NAME = ("{A45C254E-DF1C-4EFD-8020-67D146A850E0}", 14)   # PKEY_Device_FriendlyName
@@ -192,7 +196,107 @@ def _system_lists(name: str) -> bool:
 
 # -- public ---------------------------------------------------------------------
 def exclusive_supported() -> bool:
-    return IS_WINDOWS and _host_api() is not None
+    return (IS_WINDOWS or IS_MAC) and _host_api() is not None
+
+
+def exclusive_settings():
+    """PortAudio's settings for a bit-perfect stream: WASAPI exclusive on Windows; on a Mac,
+    run the device at the stream's own rate and refuse to open rather than resample."""
+    if IS_WINDOWS:
+        return sd.WasapiSettings(exclusive=True)
+    return sd.CoreAudioSettings(change_device_parameters=True, fail_if_conversion_required=True)
+
+
+def shared_settings(index: int | None):
+    """PortAudio's settings for a shared stream. On Windows: WASAPI with auto-convert, so
+    Windows resamples to its mixer rate."""
+    return sd.WasapiSettings(auto_convert=True) if IS_WINDOWS and index is not None else None
+
+
+class Refused(Exception):
+    """The device can't be held for bit-perfect playback; the message says why, for the user."""
+
+
+class Claim:
+    """A device held for bit-perfect playback, before its stream opens; `release` once the
+    stream is closed. On Windows exclusive mode itself is the hold, so there's nothing to do.
+    `bits`: bits per sample the device keeps (None = not known: on Windows, exclusive_bits
+    reads it from the open stream instead)."""
+
+    def __init__(self, ca_claim=None):
+        self._ca = ca_claim
+        self.bits = ca_claim.bits if ca_claim else None
+        self.device = ca_claim.device if ca_claim else None
+
+    def release(self):
+        if self._ca is not None:
+            self._ca.release()
+            self._ca = None
+
+
+def _core_audio_id(index: int) -> int | None:
+    """The Core Audio device behind PortAudio output `index`."""
+    from . import coreaudio
+
+    outputs = _portaudio_outputs()
+    name = next((n for i, n in outputs if i == index), None)
+    if name is None:
+        return None
+    nth = [i for i, n in outputs if n == name].index(index)   # displays can share a name
+    return coreaudio.find_device(name, nth)
+
+
+def claim(index: int, rate: int) -> Claim:
+    """Hold output `index` for bit-perfect playback at `rate`, before opening its stream.
+    Raises Refused if it can't be done."""
+    if not IS_MAC:
+        return Claim()
+    from . import coreaudio
+
+    try:
+        device = _core_audio_id(index)
+        if device is None:
+            raise Refused("Core Audio doesn't list this device")
+        return Claim(coreaudio.Claim(device, rate))
+    except (coreaudio.Busy, coreaudio.Unsupported) as exc:
+        raise Refused(str(exc)) from None
+    except OSError as exc:   # the framework itself failed to load or answer
+        log.info("core audio claim failed", exc_info=True)
+        raise Refused(f"Core Audio error: {exc}") from None
+
+
+def formats_changed() -> bool:
+    """Has bit-perfect changed a device's rate or format (and not put it back yet)?"""
+    if not IS_MAC:
+        return False
+    from . import coreaudio
+
+    return coreaudio.changed()
+
+
+def restore_formats(keep: int | None = None) -> None:
+    """Put devices back to the rate and format they had before bit-perfect changed them — all
+    but Core Audio device `keep` (the one bit-perfect is about to use again). No stream may be
+    open on them. Nothing to do off a Mac (Windows exclusive mode never changes the device)."""
+    if not IS_MAC:
+        return
+    from . import coreaudio
+
+    try:
+        coreaudio.restore(keep)
+    except OSError:
+        log.info("restoring device formats failed", exc_info=True)
+
+
+def core_audio_device(name: str | None) -> int | None:
+    """The Core Audio id of output `name` (None = system default), or None (not a Mac, not found)."""
+    if not IS_MAC:
+        return None
+    try:
+        index = find_device(name, rescan_ok=False)
+        return _core_audio_id(index) if index is not None else None
+    except (OSError, sd.PortAudioError):
+        return None
 
 
 def output_names() -> list[str]:
@@ -259,7 +363,18 @@ def find_device(name: str | None, rescan_ok: bool = True) -> int | None:
 
 
 def mixer_rate(index: int | None) -> int | None:
-    """The rate the OS mixes this device at (for WASAPI devices: the shared-mode format)."""
+    """The rate the OS mixes this device at (for WASAPI devices: the shared-mode format; on a
+    Mac the device's own rate, read live: PortAudio's is from start-up)."""
+    if IS_MAC:
+        from . import coreaudio
+
+        try:
+            device = _core_audio_id(index if index is not None else _portaudio_default())
+            rate = coreaudio.nominal_rate(device) if device is not None else None
+            if rate:
+                return rate
+        except (OSError, sd.PortAudioError, ValueError):
+            pass
     try:
         info = sd.query_devices(kind="output") if index is None else sd.query_devices(index)
         return int(info["default_samplerate"])
@@ -282,10 +397,20 @@ _volume_answers: dict = {}   # name (None = the default) -> the last answer has_
 def has_hardware_volume(name: str | None) -> bool | None:
     """Can the device turn itself down? In exclusive mode the Windows mixer is bypassed, so
     the system volume slider only works if it can drive the device's own volume control.
-    None = couldn't tell (or not Windows). A query that fails or times out gives the last
-    answer for that device, so a slow moment never turns a known "yes" into "don't know"."""
+    (A Mac never turns a device down in software: without a volume control of its own, the
+    volume keys do nothing in either mode.) None = couldn't tell. A query that fails or times
+    out gives the last answer for that device, so a slow moment never turns a known "yes" into
+    "don't know"."""
     if not IS_WINDOWS:
-        return None
+        if not IS_MAC:
+            return None
+        from . import coreaudio
+
+        device = core_audio_device(name)
+        try:
+            return coreaudio.has_volume(device) if device is not None else None
+        except OSError:
+            return None
 
     def query():
         if name is None:
