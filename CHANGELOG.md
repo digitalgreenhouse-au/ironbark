@@ -4,6 +4,22 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.38.0 — 09/10/2026
+
+**Ironbark never uses the internet, and nothing runs in the background.**
+
+- The update check and the online rip look-ups (AccurateRip, CUETools DB) are gone, and with them
+  Settings → Network. The rip-log check stays: it proves a disc against the checksums the ripper's
+  own EAC / XLD log recorded, with nothing sent anywhere.
+- **Local network access** (Settings → Library, off by default) now covers music on your home
+  network too: with it off, a library folder on a NAS, a shared folder or a mapped drive is left out
+  (listed greyed in Settings), and opening or dropping one says so. On, everything is as before.
+- Nothing polls: Theme is Dark or Light (a saved "Follow Windows" becomes one or the other once);
+  the library is looked at once at start-up and when you press Rescan, not every few minutes (the
+  "Watch for new music" switch is gone; new-album dots and the "New music" line still work); the
+  whole-library quality check runs only while you leave it on, and is paused at the next start
+  until you press Resume.
+
 ## 0.37.0 — 09/10/2026
 
 **Three features are now standard**, no switch needed: **tag editing** (right-click a song → Edit

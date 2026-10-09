@@ -320,7 +320,7 @@ def test_now_playing_check_stays_greyed_out_while_it_runs(root, tmp_path, monkey
     win.check_button.invoke()
     _pump(root, 0.3)
     assert win.check_button.instate(["disabled"])
-    win.network_changed()                             # the Check section is rebuilt while it runs
+    win._show_check()                                 # the Check section is rebuilt while it runs
     _pump(root, 0.3)
     assert win.check_button.instate(["disabled"]) and "37%" in win.check_progress.cget("text")
     win.check_button.invoke()

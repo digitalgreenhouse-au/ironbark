@@ -37,8 +37,8 @@ popups.PopupMenu (popups.py), so they follow Dark / Light; a prompt leaves the m
 Opening from outside: files, folders, playlists and CUE sheets named on the command line, or handed
 over by a later launch (instance.py — "Open with", a double-click on a file while the player is
 open) are opened like a drop on the window (`open_paths`); a file asked for this way plays at once.
-Also: Settings → Help → Save diagnostics… (diagnostics.py), Detailed logging (logs.py) and Check for
-updates (updates.py); Python's cycle collector runs on this thread (tkgc.py).
+Also: Settings → Help → Save diagnostics… (diagnostics.py) and Detailed logging (logs.py); Python's
+cycle collector runs on this thread (tkgc.py). Ironbark never uses the internet (0.38.0).
 
 The keyboard: every shortcut is in one table (keys.py) — `_bind_keys` says what each does here, and
 every window the player opens is attached to it (`_with_keys`), so the keys work wherever the
@@ -64,9 +64,9 @@ and Ctrl+. / Ctrl+Shift+S, for this session only (`stop_after_current`, `set_sle
 Lyrics: key L (lyrics_window.py).
 
 The whole-library quality check (library_check.py, opt-in from the Library's Needs a look) runs on
-its own thread and worker processes; it carries on CHECK_AFTER_MS after start-up when it was left
-on, looks again when the watcher finds changed music, holds off while a blind test or test signals
-run, and stops with the player. Its stored results serve Now Playing's Check and the clipping
+its own thread and worker processes only while you leave it on: a check left on is paused at the
+next start until you press Resume (0.38.0: nothing runs in the background by itself); it holds off
+while a blind test or test signals run, and stops with the player. Its stored results serve Now Playing's Check and the clipping
 guard's true peaks (`_stored_peak`)."""
 
 from __future__ import annotations
@@ -81,7 +81,6 @@ import sys
 import threading
 import time
 import tkinter as tk
-import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, ttk
@@ -92,8 +91,8 @@ from PIL import Image, ImageTk
 
 from . import (APP_NAME, __version__, analysis, appicon, artwork, audiofile, browse, chrome, controls, crash, devices, diagnostics,
                dragdrop, experiments, keys, levelling, offthread, library_check, library_db, library_index,
-               library_tracks, logs, loudness, mediakeys, placement, playlists, popups,
-               quick_search, recycle, settings, shapes, sleep, tag_editor, theme, tkgc, updates, watcher)
+               library_tracks, logs, loudness, mediakeys, placement, places, playlists, popups,
+               quick_search, recycle, settings, shapes, sleep, tag_editor, theme, tkgc, watcher)
 from .tools.abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .tools.compare_window import CompareWindow
@@ -148,13 +147,11 @@ NET_SIZES = ((1, "1 GB"), (5, "5 GB"), (10, "10 GB"), (25, "25 GB"), (50, "50 GB
 QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
-CHECK_AFTER_MS = 60000  # a library quality check left on carries on this long after start-up
 FAVOURITES_WAIT_S = 6.0  # longest closing waits for a ♥ to be stored (the database can be busy for 5 s)
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
 UP_NEXT_CHARS = 44     # an Up next row's words are cut with "…" past this many characters…
 UP_NEXT_MARK_CHARS = 8 # …this many fewer while a column of network-download marks shares the row
-THEME_POLL_MS = 2000   # Theme: Follow Windows looks at Windows' light/dark setting this often
 FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the mini strip has its own)
 # The full window is a side player: a tall strip beside whatever else is on the screen. It can be made
 # a little narrower or wider than usual (about 420 px) but never wide, and it can't be maximised or
@@ -168,26 +165,14 @@ HEAD_ICON_SLOT = 24        # px at 100%: the lock's and ⓘ's slots (and round h
 INFO_INK_INSET = 6         # px at 100%: the ⓘ glyph's ink stops this far inside its slot (measured from Segoe
                            # Fluent Icons / MDL2 Assets at 10 pt), so the slot reaches this far into the margin
 STATUS_DOT = 8             # px at 100%: the status dot
-UPDATE_FIRST_MS = 30000    # Check for updates: the first look this long after start-up…
-UPDATE_EVERY_MS = 3600000  # …then this often (updates.due decides whether a day has passed)
-UPDATE_NOTE_MS = 30000     # how long "Ironbark X.Y.Z is available" stays in the status line
 COVER_SETTLE_MS = 120      # while the window is resized, the cover is fetched afresh once it pauses this long
 CRASH_NOTE_MS = 60000      # how long "Ironbark closed unexpectedly last time" stays in the status line
 CRASH_NOTICE = f"{APP_NAME} closed unexpectedly last time"
 
-# What the two internet switches say they do (Settings → Network, Settings → Help): what goes out, and
-# what doesn't need them.
-NETWORK_ACCESS_TEXT = ("Lets Ironbark use the internet itself: rip verification's look-ups (AccurateRip and "
-                       "CUETools DB; the CUETools DB look-up isn't encrypted, so others on your network can see "
-                       "which disc is looked up) and Check for updates (Help, below). Music on network drives "
-                       "(\\\\server\\share, or a mapped drive like Z:) and OneDrive plays without it: Windows "
-                       "fetches those files, as it does for any program.")
-LOCAL_NETWORK_TEXT = ("Lets Ironbark keep copies of music on your home network (a NAS, a shared folder, a mapped "
-                      "drive) on this computer, so it plays through a short \"Preparing…\" and keeps playing if "
-                      "the network drops (Network playback, below). Never the internet.")
-UPDATE_CHECK_TEXT = (f"Once a day, asks digitalgreenhouse.com.au whether a newer {APP_NAME} is out. The request "
-                     f"names this {APP_NAME}'s version, and the website sees your computer's internet address, as "
-                     "any website does; nothing else goes with it. Needs Allow network access (Network, above).")
+LOCAL_NETWORK_TEXT = ("Lets Ironbark read music on your home network (a NAS, a shared folder, a mapped drive) "
+                      "and keep copies here, so songs keep playing if the network drops (Network playback, below). "
+                      "Off, nothing on the network is read. Never the internet.")
+
 
 
 def split_status(text: str, width: int, measure: Callable[[str], int]) -> tuple[str, str]:
@@ -295,12 +280,11 @@ def library_folders(prefs: dict) -> list[Path]:
     return found or [default_music_folder()]
 
 
-def _refresh_library(index: library_index.LibraryIndex) -> None:
-    """Bring the library database up to date (a worker thread's work: nothing of the window's)."""
+def _look_once(look: watcher.Watcher, index: library_index.LibraryIndex) -> None:
+    """One look at the library folders (a worker thread's work: nothing of the window's): what
+    changed is read, the new albums worked out, and the report left for _watch_reports."""
     try:
-        index.refresh()
-    except Exception:
-        log.exception("couldn't bring the library up to date")
+        look.results.put(look.check(new_albums=True))
     finally:
         index.db.release()
 
@@ -427,6 +411,7 @@ class Tab:
     extras: list[str] = field(default_factory=list)  # album folders (Library, drops) or single files added, played after
     play_when_loaded: bool = False     # play was pressed while it was loading
     unavailable: bool = False          # its folder / file wasn't there at the last load (a drive not connected)
+    needs_network: bool = False        # …because it's on the network and Local network access is off
     load_progress: dict | None = field(default=None, repr=False, compare=False)  # the load under way
     summary: tuple | None = field(default=None, repr=False, compare=False)  # (tracks, key, text) of the album line
     numbers: tuple | None = field(default=None, repr=False, compare=False)  # (tracks, count, (songs, albums, seconds))
@@ -511,7 +496,9 @@ class PlayerWindow:
         self.favourites = Favourites(lambda: self._index().db)
         self.favourites.changed.append(self._favourites_changed)
         # The whole-library quality check: off until chosen in the Library; the choice is kept.
-        self.checker = library_check.Checker(lambda: self._index().db, state=self.prefs.get("library_check", "off"),
+        # (A check left "on" is "paused" at the next start: nothing runs until Resume is pressed.)
+        saved_check = self.prefs.get("library_check", "off")
+        self.checker = library_check.Checker(lambda: self._index().db, state="paused" if saved_check == "on" else saved_check,
                                              on_state=lambda state: self.prefs.update(library_check=state))
         self._tag_window: TagWindow | None = None
         self._tag_history: TagHistoryWindow | None = None
@@ -539,10 +526,10 @@ class PlayerWindow:
         self._mini_settings_from: str | None = None
         self._keys_before_mini: str | None = None   # what had the keyboard in the full window (see _show_mini)
         # The theme comes first, so everything is built in its colours. (Dark by default.)
-        if self.prefs.get("theme") not in dict(theme.THEME_CHOICES):
+        self.prefs["theme"] = theme.settled_choice(self.prefs.get("theme", ""))   # (a "Follow Windows" from before 0.38.0)
+        if self.prefs["theme"] not in dict(theme.THEME_CHOICES):
             self.prefs["theme"] = theme.DEFAULT_THEME
-        self._windows_light = theme.windows_uses_light() if self.prefs["theme"] == "system" else None
-        theme.use(theme.palette_for(self.prefs["theme"], self._windows_light))
+        theme.use(theme.palette_for(self.prefs["theme"]))
 
         root.withdraw()  # set the window up out of sight, then show it once
         root.title(APP_NAME)
@@ -562,19 +549,16 @@ class PlayerWindow:
         self.open_at_home = tk.BooleanVar(value=bool(self.prefs["open_at_home"]))
         self.clip_guard = tk.BooleanVar(value=bool(self.prefs["clip_guard"]))
         self.show_art = tk.BooleanVar(value=bool(self.prefs["show_art"]))
-        self.allow_network = tk.BooleanVar(value=bool(self.prefs["allow_network"]))
         self.local_network = tk.BooleanVar(value=bool(self.prefs["local_network"]))
         self.media_controls = tk.BooleanVar(value=bool(self.prefs["media_controls"]))
-        self.watch_music = tk.BooleanVar(value=bool(self.prefs["watch_music"]))
-        self.check_updates = tk.BooleanVar(value=bool(self.prefs["check_updates"]))
         self.detailed_logging = tk.BooleanVar(value=bool(self.prefs["detailed_logging"]))
-        self._update_found: updates.Release | None = None   # set by the update check's thread
-        self._update_checking = False
-        self.update_available: updates.Release | None = None
-        self._update_job = None
         # Spotting new music (0.17.0): a thread looks at the library folder every few minutes;
         # its reports are picked up by _poll (never handled on the watcher's thread).
         self.watcher = watcher.Watcher(self._index)
+        since = self._new_music_state()
+        if not isinstance(since.get("since"), (int, float)):
+            since["since"] = time.time()   # nothing already in the library counts as new
+        self.watcher.since = since["since"]   # (its reports then carry the new albums)
         self._new_albums: list[Path] = []        # the new albums, newest first (watcher.new_albums)
         self._listening: _Listening | None = None   # the song being heard, for its play count
         self._plays_seen = 0   # plays stored (_plays_stored) when the Plays columns last read their counts
@@ -653,7 +637,6 @@ class PlayerWindow:
         if self.media_controls.get():
             self._start_media()
         self._media_job = root.after(MEDIA_POLL_MS, self._media_poll)
-        self._theme_job = root.after(THEME_POLL_MS, self._follow_windows)
 
         self._polls = 0
         self._saved_snapshot = json.dumps(self.prefs, sort_keys=True)
@@ -674,15 +657,10 @@ class PlayerWindow:
             self._set_notice(CRASH_NOTICE, CRASH_NOTE_MS)
         self._poll_job = self.root.after(POLL_MS, self._poll)
         self.favourites.load()
-        if self.watch_music.get():
-            self._start_watching(INDEX_AFTER_MS / 1000)
-        else:
-            self.root.after(INDEX_AFTER_MS, self._refresh_index)
+        self.root.after(INDEX_AFTER_MS, self._refresh_index)   # one look: what changed since last time
         self._update_new_albums()
-        self._update_job = self.root.after(UPDATE_FIRST_MS, self._update_tick)
         if self.local_network.get():
             self.root.after_idle(self._start_cache)   # (once the window is up: no I/O to speak of)
-        self._check_job = self.root.after(CHECK_AFTER_MS, self.checker.kick)   # (nothing unless it was left on)
         # Up and running: from here Python's cycle collector runs only on this thread (tkgc.py).
         self.collector = tkgc.Collector(root)
         self.collector.start()
@@ -1000,8 +978,6 @@ class PlayerWindow:
         self.theme_box = self._choice_box(b, "Theme", [label for _, label in theme.THEME_CHOICES], gap=0)
         self.theme_box.current([key for key, _ in theme.THEME_CHOICES].index(self.prefs["theme"]))
         self.theme_box.bind("<<ComboboxSelected>>", self._theme_chosen)
-        Tooltip(self.theme_box, "Follow Windows: light or dark, as Windows' own app setting is "
-                                "(Personalisation → Colours)")
         self._setting(b, "Album art", "Off gives the track list more room.", self.show_art, self._toggle_art)
         self._setting(b, "Keep on top", "Stay in front of other windows. The mini player has its own (on at first).",
                       self.on_top, self._toggle_on_top)
@@ -1027,8 +1003,6 @@ class PlayerWindow:
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self._pop_button(row, "Add folder…", self._add_library_folder,
                          "Add another folder of music to the Library").pack(side="right")
-        self._setting(b, "Watch for new music", "Checks the folders every few minutes.",
-                      self.watch_music, self._toggle_watch)
         local_row = self._setting(b, "Local network access", LOCAL_NETWORK_TEXT,
                                   self.local_network, self._local_network_changed)
         # Network playback (only while Local network access is on): how songs on network drives are
@@ -1038,9 +1012,6 @@ class PlayerWindow:
         self._build_netplay(self.netplay_box)
         if self.local_network.get():
             self.netplay_box.pack(fill="x", after=local_row)
-
-        self._caption(b, "Network")
-        self._setting(b, "Allow network access", NETWORK_ACCESS_TEXT, self.allow_network, self._network_changed)
 
         if experiments.EXPERIMENTS:
             self._caption(b, "Experimental")
@@ -1267,8 +1238,7 @@ class PlayerWindow:
 
     def _add_help_buttons(self, box: ttk.Frame):
         """The rest of Settings → Help, under Keyboard shortcuts / About: what to reach for when
-        something's wrong (Save diagnostics…, Open log folder, Detailed logging), and Check for
-        updates."""
+        something's wrong (Save diagnostics…, Open log folder, Detailed logging)."""
         row = ttk.Frame(box, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self.diagnostics_button = self._pop_button(row, "Save diagnostics…", self.save_diagnostics,
@@ -1281,7 +1251,6 @@ class PlayerWindow:
                          "Where crash.log and app.log are kept").pack(side="right")
         self._setting(box, "Detailed logging", "Notes more of what the player does in its log, to help track "
                       "down a problem. Off normally.", self.detailed_logging, self._detailed_logging_changed)
-        self._setting(box, "Check for updates", UPDATE_CHECK_TEXT, self.check_updates, self._updates_changed)
 
     def _from_settings(self, show):
         """A Settings button that opens a window: Settings closes first (the mini strip's grown
@@ -1313,29 +1282,15 @@ class PlayerWindow:
         if not self._ears_at_risk() or self._louder_ok(level):
             self._volume_slid(level * 100)
 
-    def _network_changed(self):
-        """Off by default; read live by rip verification (ripcheck.network_allowed) and the update
-        check, the only parts of the player that go online."""
-        self.prefs["allow_network"] = self.allow_network.get()
-        if self._now_playing is not None and self._now_playing.win.winfo_exists():
-            self._now_playing.network_changed()
-        self._check_for_update_if_due()
-
-    def _updates_changed(self):
-        """Check for updates: off by default, and only switched on while network access is allowed."""
-        if self.check_updates.get() and not self.allow_network.get():
-            self.check_updates.set(False)
-            self._set_notice("Check for updates needs network access: switch on Allow network access first", 8000)
-        self.prefs["check_updates"] = self.check_updates.get()
-        self._check_for_update_if_due()
-
     def _detailed_logging_changed(self):
         self.prefs["detailed_logging"] = self.detailed_logging.get()
         logs.set_detailed(self.detailed_logging.get())
 
     def _local_network_changed(self):
-        """Settings → Library → Local network access: the network playback cache may run. Its settings
-        show with it; the cache itself starts or stops when Ironbark next starts."""
+        """Settings → Library → Local network access: music on the home network may be read (the
+        library folders there are looked at now; a tab on one reads when next chosen) and the network
+        playback cache may run — its settings show with it; the cache itself starts or stops when
+        Ironbark next starts."""
         on = self.local_network.get()
         self.prefs["local_network"] = on
         if on:
@@ -1343,6 +1298,10 @@ class PlayerWindow:
         else:
             self.netplay_box.pack_forget()
         self._paint_cache()
+        self._paint_library_folders()
+        index = self._index()   # (the library folders the switch allows: a look under way at others stops)
+        if not (self._library is not None and self._library.win.winfo_exists()):
+            self.work.run(lambda: _look_once(self.watcher, index), name="library-folders")
         self._set_notice(f"The network playback cache {'starts' if on else 'stops'} when Ironbark next starts", 5000)
 
     def _toggle_experiment(self, key: str):
@@ -1359,8 +1318,6 @@ class PlayerWindow:
         behaves differently from the release."""
         on = len(experiments.switched_on(self.prefs))
         extra = f" · {on} experiment{'' if on == 1 else 's'} on" if on else ""
-        if self.update_available is not None:
-            extra += f" · {self.update_available.version} available"
         self.version_label.configure(text=f"{APP_NAME} {__version__}{extra}")
 
     def _build_new_menu(self) -> Popover:
@@ -1906,7 +1863,7 @@ class PlayerWindow:
         if tab.loading:
             return
         tab.loading = True
-        progress = {"done": 0, "total": 0, "tracks": None, "missing": 0, "unavailable": False}
+        progress = {"done": 0, "total": 0, "tracks": None, "missing": 0, "unavailable": False, "needs_network": False}
         tab.load_progress = progress
         index = self._index()
         if tab.kind in ("album", "folder") and index.indexer.running:
@@ -1915,11 +1872,14 @@ class PlayerWindow:
         def work():
             try:
                 root = Path(tab.path)
-                if not (root.is_file() if tab.kind == "playlist" else root.is_dir()):
+                if not places.allowed(root, self.prefs):
+                    progress["unavailable"] = progress["needs_network"] = True   # on the network; the switch is off
+                    tracks = []
+                elif not (root.is_file() if tab.kind == "playlist" else root.is_dir()):
                     progress["unavailable"] = True   # a drive that isn't connected (or since moved)
                     tracks = []
                 elif tab.kind == "playlist":
-                    tracks = self._read_playlist(root)
+                    tracks = self._read_playlist(root, allowed=lambda song: places.allowed(song, self.prefs))
                     progress["missing"] = sum(1 for t in tracks if t.missing)
                 elif tab.kind == "library":
                     albums = self._library_albums(root)
@@ -1999,11 +1959,15 @@ class PlayerWindow:
         index = self._tab_index(tab)
         tab.loading, tab.load_progress = False, None
         play, tab.play_when_loaded = tab.play_when_loaded, False
-        tab.unavailable = progress["unavailable"]
+        tab.unavailable, tab.needs_network = progress["unavailable"], progress["needs_network"]
         if tab.unavailable:
             # Kept as it was, place and all (nothing is saved over it), and read again when it's
-            # next chosen — by then its drive may be connected.
-            self._set_notice(f"“{tab.title}” isn't connected right now: {tab.path}", 8000)
+            # next chosen — by then its drive may be connected, or the switch on.
+            if tab.needs_network:
+                self._set_notice(f"“{tab.title}” is on your network: switch on Settings → Library → Local network "
+                                 "access to read it", 8000)
+            else:
+                self._set_notice(f"“{tab.title}” isn't connected right now: {tab.path}", 8000)
             if index == self.current:
                 self._show_current_tab()
             return
@@ -2514,18 +2478,19 @@ class PlayerWindow:
 
     # -- playlists -------------------------------------------------------------
     @staticmethod
-    def _read_playlist(path: Path) -> list[Track]:
+    def _read_playlist(path: Path, allowed=lambda song: True) -> list[Track]:
         """A playlist's songs, in order. Files that aren't there stay listed (marked missing),
         so a playlist never loses songs just because a drive was unplugged. A drive or server
         that doesn't answer is asked once: when looking for one of its songs fails slowly (a NAS
         switched off can take half a minute a look), its other songs are listed as missing without
-        asking again."""
+        asking again. `allowed(song)`: False for a song on the network while Local network access is
+        off — listed as missing, never looked for."""
         silent: set[str] = set()   # drives / servers (path anchors) that didn't answer
         tracks = []
         for song in playlists.read(path):
             anchor = song.anchor.lower()
             here = False
-            if anchor not in silent:
+            if anchor not in silent and allowed(song):
                 started = time.monotonic()
                 here = song.is_file()
                 if not here and time.monotonic() - started > SLOW_LOOK_S:
@@ -2885,7 +2850,9 @@ class PlayerWindow:
         return library_folders(self.prefs)[0]
 
     def _library_roots(self) -> list[Path]:
-        return library_folders(self.prefs)
+        """The library folders the player reads now: all of them, or with Local network access off,
+        the ones on this computer (the others stay listed in Settings → Library, greyed)."""
+        return [folder for folder in library_folders(self.prefs) if places.allowed(folder, self.prefs)]
 
     def _current_tab_title(self) -> str | None:
         return self.tabs[self.current].title if 0 <= self.current < len(self.tabs) else None
@@ -2989,7 +2956,7 @@ class PlayerWindow:
         index = self._index()
         if index.refreshed:
             return
-        self.work.run(lambda: _refresh_library(index), name="library-start")
+        self.work.run(lambda: _look_once(self.watcher, index), name="library-start")
 
     def _library_albums(self, root: Path) -> list:
         """Every album in the library, from the database, when `root` is one of the library
@@ -3375,10 +3342,8 @@ class PlayerWindow:
         self.root.after_idle(self._paint_library_folders)   # (not now: the Remove clicked is one of the rows)
         if self._library is not None and self._library.win.winfo_exists():
             self._library.set_roots(folders)
-        if self.watcher.running:
-            self.watcher.look_now()
-        elif not (self._library is not None and self._library.win.winfo_exists()):
-            self.work.run(lambda: _refresh_library(index), name="library-folders")
+        if not (self._library is not None and self._library.win.winfo_exists()):
+            self.work.run(lambda: _look_once(self.watcher, index), name="library-folders")
         self._update_new_albums()
 
     # -- spotting new music (watcher.py) -----------------------------------------------------------
@@ -3389,20 +3354,6 @@ class PlayerWindow:
             state = {"since": None, "opened": {}}
             self.prefs["new_music"] = state
         return state
-
-    def _start_watching(self, delay_s: float = 0.0):
-        state = self._new_music_state()
-        if not isinstance(state.get("since"), (int, float)):
-            state["since"] = time.time()   # nothing already in the library counts as new
-        self.watcher.since = state["since"]   # (its reports then carry the new albums)
-        self.watcher.start(delay_s)
-
-    def _toggle_watch(self):
-        self.prefs["watch_music"] = self.watch_music.get()
-        if self.watch_music.get():
-            self._start_watching()
-        else:
-            self.watcher.stop()
 
     def _update_new_albums(self):
         """Work the new albums out afresh — on a worker thread, as it reads the database;
@@ -3431,8 +3382,6 @@ class PlayerWindow:
         changed = False
         for report in reports:
             changed = changed or not report.diff.nothing
-        if changed:
-            self.checker.kick()   # (new or changed music: checked as it arrives, when the check is on)
         for report in reports:
             text = watcher.note(report, len(watcher.arrived(report, self._new_albums)))
             if text:
@@ -3466,8 +3415,6 @@ class PlayerWindow:
             self.reopen_tab()
         elif self._notice.startswith("New music"):
             self.open_library(view="recent")
-        elif self.update_available is not None and self._notice == self._update_text(self.update_available):
-            self.open_download_page()
 
     def _paint_library_folders(self):
         """Settings → Library: a row per library folder — Change… while there's one, Remove when
@@ -3477,14 +3424,16 @@ class PlayerWindow:
             return
         for child in self.library_rows.winfo_children():
             child.destroy()
-        folders = self._library_roots()
+        folders = library_folders(self.prefs)
         for folder in folders:
             row = ttk.Frame(self.library_rows, style="Pop.TFrame")
             row.pack(fill="x", pady=theme.pad(0, theme.GAP_HAIR))
             text = str(folder)
-            label = ttk.Label(row, text=text if len(text) <= 30 else "…" + text[-29:], style="Pop.TLabel")
+            allowed = places.allowed(folder, self.prefs)
+            label = ttk.Label(row, text=text if len(text) <= 30 else "…" + text[-29:],
+                              style="Pop.TLabel" if allowed else "PopMuted.TLabel")
             label.pack(side="left", fill="x", expand=True)
-            Tooltip(label, text)
+            Tooltip(label, text if allowed else f"{text} · on your network: needs Local network access (below)")
             if len(folders) == 1:
                 self._pop_button(row, "Change…", self._change_library_folder,
                                  "Choose the folder your music is in").pack(side="right")
@@ -4025,6 +3974,9 @@ class PlayerWindow:
 
         def work():
             try:
+                if places.refused(paths, self.prefs):
+                    result["plan"], result["needs_network"] = dragdrop.DropPlan(missing=paths), True
+                    return
                 result["plan"] = dragdrop.plan_drop(paths)
                 if tab is not None:  # adding to a tab: read the songs here too
                     result["songs"] = self._read_dropped(result["plan"])
@@ -4064,6 +4016,9 @@ class PlayerWindow:
             return
         plan = result["plan"]
         note = plan.note()
+        if result.get("needs_network"):
+            self._set_notice("That's on your network: switch on Settings → Library → Local network access first", 8000)
+            return
         if plan.nothing:
             self._set_notice(f"Nothing to open · {note}" if note else "Nothing to open", 8000)
             return
@@ -4144,6 +4099,9 @@ class PlayerWindow:
 
         def work():
             try:
+                if places.refused(named, self.prefs):
+                    result["plan"], result["needs_network"] = dragdrop.DropPlan(missing=named), True
+                    return
                 result["plan"] = dragdrop.plan_drop(named)
             except Exception:
                 log.exception("couldn't sort out the files named")
@@ -4157,6 +4115,9 @@ class PlayerWindow:
             return
         plan = result["plan"]
         note = plan.note()
+        if result.get("needs_network"):
+            self._set_notice("That's on your network: switch on Settings → Library → Local network access first", 8000)
+            return
         if plan.nothing:
             self._set_notice(f"Nothing to open · {note}" if note else "Nothing to open", 8000)
             return
@@ -4250,46 +4211,6 @@ class PlayerWindow:
 
         Popover.close_open()
         crash.open_folder(settings.settings_path().parent)
-
-    # -- Check for updates (updates.py) ----------------------------------------------------------------
-    def _update_tick(self):
-        try:
-            self._check_for_update_if_due()
-        finally:
-            self._update_job = self.root.after(UPDATE_EVERY_MS, self._update_tick)
-
-    def _check_for_update_if_due(self):
-        """Start a check on a thread when one is due (switched on, network allowed, a day since)."""
-        if self._update_checking or not updates.due(self.prefs):
-            return
-        self._update_checking = True
-        self.prefs["update_checked"] = time.time()   # noted now: a failed check also waits a day
-        prefs = {key: self.prefs.get(key) for key in ("check_updates", "allow_network")}
-
-        def work():
-            try:
-                self._update_found = updates.check(prefs)
-            finally:
-                self._update_checking = False
-
-        self.work.run(work, name="update-check")
-
-    def _take_update(self):
-        found, self._update_found = self._update_found, None
-        if found is None:
-            return
-        self.update_available = found
-        self._paint_version()
-        self._set_notice(self._update_text(found), UPDATE_NOTE_MS)
-
-    @staticmethod
-    def _update_text(release: updates.Release) -> str:
-        return f"{APP_NAME} {release.version} is available · click here for the download page"
-
-    def open_download_page(self):
-        """Opens the page in the web browser; nothing is downloaded by the player."""
-        release = self.update_available
-        webbrowser.open(release.url if release is not None else updates.DOWNLOAD_PAGE)
 
     def _add_tracks_to_current(self, tracks: list[Track]) -> str:
         """Songs (from the Library's song views) onto the bottom of the tab on show, or a new tab of
@@ -4404,20 +4325,9 @@ class PlayerWindow:
 
     def _apply_theme(self):
         """Switch to the palette the Theme setting asks for now (nothing happens if it's on show)."""
-        choice = self.prefs["theme"]
-        self._windows_light = theme.windows_uses_light() if choice == "system" else None
-        palette = theme.palette_for(choice, self._windows_light)
+        palette = theme.palette_for(self.prefs["theme"])
         if palette is not theme.current:
             theme.use(palette, self.root)
-
-    def _follow_windows(self):
-        """Theme: Follow Windows notices Windows switching light / dark while the player runs — a
-        quick registry read every couple of seconds on Tk's own timer (nothing blocks or waits)."""
-        try:
-            if self.prefs["theme"] == "system" and theme.windows_uses_light() != self._windows_light:
-                self._apply_theme()
-        finally:
-            self._theme_job = self.root.after(THEME_POLL_MS, self._follow_windows)
 
     # -- mini mode (0.19.0) ---------------------------------------------------------------------
     def toggle_mini(self):
@@ -4722,7 +4632,7 @@ class PlayerWindow:
         track = tab.view_track()
         if track is None:
             if tab.unavailable:
-                return f"Not connected: {tab.path}"
+                return "Needs Local network access (Settings → Library)" if tab.needs_network else f"Not connected: {tab.path}"
             return "Loading…" if tab.loading else ("Empty playlist" if tab.kind == "playlist" else "")
         key = (len(tab.tracks), tab.last_index)
         if tab.summary is not None and tab.summary[0] is tab.tracks and tab.summary[1] == key:
@@ -4771,7 +4681,6 @@ class PlayerWindow:
                 self._guarded(self.favourites.take_loaded)
             self._guarded(self._take_requests)
             self._guarded(self._take_cache_notices)
-            self._guarded(self._take_update)
         finally:
             self._poll_job = self.root.after(POLL_MS, self._poll)
 
@@ -5011,10 +4920,7 @@ class PlayerWindow:
             repeat=self.player.repeat,
             clip_guard=self.clip_guard.get(),
             show_art=self.show_art.get(),
-            allow_network=self.allow_network.get(),
             media_controls=self.media_controls.get(),
-            watch_music=self.watch_music.get(),
-            check_updates=self.check_updates.get(),
             detailed_logging=self.detailed_logging.get(),
         )
         self.prefs["mini_on_top" if self.mini_mode else "always_on_top"] = self.on_top.get()
@@ -5065,7 +4971,7 @@ class PlayerWindow:
             self.root.after(100, self._close_when_saved, deadline)
             return
         try:
-            for step in (self._save_on_close, self._stop_timers, self._stop_media, self.watcher.stop,
+            for step in (self._save_on_close, self._stop_timers, self._stop_media,
                          self._record_last_play, self._stop_indexing, self._stop_checking, self._store_favourites,
                          self.player.close, self._stop_cache, self._last_tag_tries):
                 try:
@@ -5096,8 +5002,7 @@ class PlayerWindow:
 
     def _stop_timers(self):
         self.work.close()
-        for job in (self._poll_job, self._media_job, self._theme_job, self._update_job, self._check_job,
-                    self._art_job):
+        for job in (self._poll_job, self._media_job, self._art_job):
             if job is not None:
                 self.root.after_cancel(job)
 

@@ -9,8 +9,7 @@ Checks: libsndfile loads and round-trips a tiny FLAC made in memory (bit for bit
 (in the packaged program, the copy that comes with it) and lists the system's audio (WASAPI on
 Windows) — no stream is opened, so nothing is heard; on
 Windows, pycaw/comtypes read Windows' own list of outputs, and Windows' media controls and taskbar
-buttons can be reached (nothing is shown); secure connections (ssl, with root certificates) and the
-XML reader the rip check needs; the library database works — SQLite with its write-ahead log
+buttons can be reached (nothing is shown); XML reader the rip check needs; the library database works — SQLite with its write-ahead log
 (WAL) and the song search index (FTS5), which a different Python's SQLite might lack; the indexer
 reads a library through a worker process (in the packaged program that's Ironbark.exe started
 again, which must run the task and not open a second player — or load Tk); the icon files are in
@@ -57,7 +56,7 @@ def run(report_path: str | None = None, hidden: bool = False) -> int:
     failed = False
     for name, check in (("libsndfile", _check_sndfile), ("PortAudio", _check_portaudio),
                         ("Windows audio", _check_windows_audio), ("media controls", _check_media_controls),
-                        ("secure connections", _check_network), ("library database", _check_library_db),
+                        ("library database", _check_library_db),
                         ("library indexer", _check_indexer), ("library check", _check_library_check),
                         ("icon files", _check_icons),
                         ("licences", _check_licences), ("single instance", _check_single_instance),
@@ -200,21 +199,6 @@ def _check_media_controls() -> str:
         if entered:
             comtypes.CoUninitialize()
     return "media controls (WinRT) and taskbar buttons (ITaskbarList3) available"
-
-
-def _check_network() -> str:
-    """What the rip check's lookups need: ssl with root certificates to check servers against,
-    and the XML reader (expat) for the CUETools DB's answer. Nothing goes online."""
-    import pyexpat
-    import ssl
-    import xml.etree.ElementTree as ET
-
-    roots = ssl.create_default_context().cert_store_stats()["x509_ca"]
-    if not roots:
-        raise RuntimeError("no root certificates were loaded, so no server could be checked")
-    if ET.fromstring('<ctdb><entry confidence="2"/></ctdb>')[0].get("confidence") != "2":
-        raise RuntimeError("the XML reader misread a test document")
-    return f"{ssl.OPENSSL_VERSION}, {roots} root certificates; {pyexpat.EXPAT_VERSION}"
 
 
 def _check_library_db() -> str:
@@ -394,7 +378,7 @@ def _check_window() -> str:
         music = home / "Music"
         music.mkdir()
         (home / "settings.json").write_text(
-            json.dumps({"media_controls": False, "watch_music": False, "library_folders": [str(music)],
+            json.dumps({"media_controls": False, "library_folders": [str(music)],
                         "library_folder": str(music), "library_check": "off", "local_network": False}),
             encoding="utf-8")
         appicon.set_app_id()

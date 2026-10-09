@@ -1,6 +1,6 @@
 """The app platform: one player at a time (a later launch hands its files over), files named on
 the command line or through "Open with", the crash box, diagnostics, the rotating log, the settings
-file's format, the opt-in update check, and Python's cycle collector kept on Tk's thread."""
+file's format, and Python's cycle collector kept on Tk's thread."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from types import SimpleNamespace
 import pytest
 
 from ironbark import (APP_NAME, __version__, crash, diagnostics, dragdrop, instance, logs, settings, tag_editor,
-                      tkgc, updates)
-from ironbark import __main__ as start, network
+                      tkgc)
+from ironbark import __main__ as start
 from ironbark.engine import State
 from ironbark.ui import PlayerWindow, Tab
 
@@ -779,121 +779,6 @@ def test_a_newer_versions_file_is_copied_aside_before_it_is_saved_over(settings_
     assert settings.save(prefs)
     assert json.loads(settings_file.read_text(encoding="utf-8"))["settings_version"] == settings.SETTINGS_VERSION
     assert copy.read_text(encoding="utf-8") == text
-
-
-# -- the update check ------------------------------------------------------------------------------
-def feed(version="99.0.0", **extra) -> bytes:
-    return json.dumps({"version": version, "date": "15/11/2026",
-                       "url": "https://www.digitalgreenhouse.com.au/ironbark/download", "notes": "New.", **extra}).encode()
-
-
-ON = {"check_updates": True, "allow_network": True, "update_checked": 0.0}
-
-
-def test_a_newer_release_is_found_and_nothing_else_is():
-    asked = []
-
-    def fetch(url, prefs):
-        asked.append(url)
-        return feed()
-    release = updates.check(dict(ON), fetch=fetch)
-    assert asked == [updates.UPDATE_URL]
-    assert release == updates.Release("99.0.0", "15/11/2026", "https://www.digitalgreenhouse.com.au/ironbark/download",
-                                      "New.")
-    assert updates.check(dict(ON), fetch=lambda url, prefs: feed(__version__)) is None    # up to date
-    assert updates.check(dict(ON), fetch=lambda url, prefs: feed("0.0.1")) is None        # older
-    assert updates.check(dict(ON), fetch=lambda url, prefs: None) is None                 # 404: no file yet
-    assert updates.check(dict(ON), fetch=lambda url, prefs: b"<html>") is None            # not the feed
-
-
-def test_timeouts_and_errors_are_quiet():
-    def slow(url, prefs):
-        raise TimeoutError("no answer in 30 s")
-    assert updates.check(dict(ON), fetch=slow) is None
-
-    def broken(url, prefs):
-        raise OSError("no route to host")
-    assert updates.check(dict(ON), fetch=broken) is None
-
-
-def test_nothing_is_fetched_unless_both_switches_are_on(monkeypatch):
-    from ironbark.tools import ripcheck
-
-    monkeypatch.setattr(network, "_urlopen", lambda *a, **k: pytest.fail("went online"))
-    for prefs in ({"check_updates": True, "allow_network": False}, {"check_updates": False, "allow_network": True}):
-        assert updates.check(prefs, fetch=lambda url, p: pytest.fail("fetched")) is None
-        assert not updates.due(prefs, now=10 ** 9)
-    # Even if asked directly, the one place that goes online refuses while network access is off.
-    assert updates.check({"check_updates": True, "allow_network": False}) is None
-
-
-def test_at_most_once_a_day():
-    day = updates.CHECK_EVERY_S
-    assert updates.due({**ON, "update_checked": 0.0}, now=10 * day)
-    assert not updates.due({**ON, "update_checked": 10 * day}, now=10 * day + day - 1)
-    assert updates.due({**ON, "update_checked": 10 * day}, now=11 * day)
-    assert updates.due({**ON, "update_checked": 20 * day}, now=10 * day)   # the clock went backwards
-
-
-def test_the_download_link_must_be_digital_greenhouses():
-    for url in ("http://www.digitalgreenhouse.com.au/x", "https://evil.example/ironbark",
-                "https://digitalgreenhouse.com.au.evil.example/", "javascript:alert(1)", 42):
-        assert updates.parse(feed(url=url)).url == updates.DOWNLOAD_PAGE
-    assert updates.parse(feed(url="https://digitalgreenhouse.com.au/ironbark")).url == \
-        "https://digitalgreenhouse.com.au/ironbark"
-    assert updates.parse(feed(version="v1.2.3")).version == "v1.2.3" and updates.newer("v1.2.3", "1.2.2")
-    assert updates.parse(feed(notes="x " * 500)).notes == ("x " * 150).strip()[:updates.NOTES_LIMIT]
-    assert updates.parse(b'{"version": "soon"}') is None
-
-
-def test_the_switch_needs_network_access_and_a_find_shows_in_the_status_line(make_window, monkeypatch):
-    opened = []
-    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
-    window, root, player, errors = make_window()
-    window.check_updates.set(True)
-    window._updates_changed()                         # network access is off: switched back off
-    assert window.check_updates.get() is False and window.prefs["check_updates"] is False
-    assert "Allow network access" in window._notice
-    started = []
-    monkeypatch.setattr(updates, "check", lambda prefs: started.append(dict(prefs)) or updates.Release("99.0.0"))
-    window.allow_network.set(True)
-    window._network_changed()
-    window.check_updates.set(True)
-    window._updates_changed()
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline and window.update_available is None:
-        _pump(root, 0.1)
-    assert started == [{"check_updates": True, "allow_network": True}]   # only the switches go to the thread
-    assert window.prefs["update_checked"] > 0
-    assert window._notice == f"{APP_NAME} 99.0.0 is available · click here for the download page"
-    assert "99.0.0 available" in window.version_label.cget("text")
-    window._status_clicked()
-    assert opened == [updates.DOWNLOAD_PAGE]
-    window._check_for_update_if_due()                  # checked just now: not again today
-    assert len(started) == 1 and errors == []
-
-
-def test_detailed_logging_switch_takes_effect_at_once(make_window):
-    window, root, player, errors = make_window()
-    window.detailed_logging.set(True)
-    window._detailed_logging_changed()
-    assert logs.detailed() and window.prefs["detailed_logging"] is True
-    window.detailed_logging.set(False)
-    window._detailed_logging_changed()
-    assert not logs.detailed()
-
-
-def test_save_diagnostics_from_the_window(make_window, tmp_path):
-    window, root, player, errors = make_window()
-    target = tmp_path / "diag.zip"
-    window.save_diagnostics(str(target))
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not window._notice.startswith("Diagnostics saved"):
-        _pump(root, 0.1)
-    assert target.is_file() and "nothing has been sent" in window._notice
-    with zipfile.ZipFile(target) as archive:
-        assert "settings.json" in archive.namelist()
-    assert errors == []
 
 
 # -- leftover tag copies after an unfinished save --------------------------------------------------

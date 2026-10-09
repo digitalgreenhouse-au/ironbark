@@ -17,6 +17,7 @@ import pytest
 import soundfile as sf
 
 from ironbark import audiofile, netcache
+from ironbark import places
 from ironbark.netcache import policy, sources, verify
 from ironbark.netcache import store as store_mod
 from ironbark.netcache.manager import Manager
@@ -56,11 +57,11 @@ def windows(monkeypatch):
         calls.append(("stat", path))
         return SimpleNamespace(st_file_attributes=0x00400020 if "online" in path else 0x20)
 
-    monkeypatch.setattr(sources, "_drive_type", drive_type)
-    monkeypatch.setattr(sources, "_connection", connection)
-    monkeypatch.setattr(sources, "_dos_device", dos_device)
-    monkeypatch.setattr(sources, "_logical_drives", lambda: ["C:", "S:", "Z:"])
-    monkeypatch.setattr(sources, "_stat", stat)
+    monkeypatch.setattr(places, "_drive_type", drive_type)
+    monkeypatch.setattr(places, "_connection", connection)
+    monkeypatch.setattr(places, "_dos_device", dos_device)
+    monkeypatch.setattr(places, "_logical_drives", lambda: ["C:", "S:", "Z:"])
+    monkeypatch.setattr(places, "_stat", stat)
     real_stat = os.stat
 
     def guarded_stat(path, *args, **kwargs):

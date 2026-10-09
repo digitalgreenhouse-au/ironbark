@@ -216,22 +216,6 @@ def test_settling_rules():
     assert set(settling.last) == {"b"}                            # c wasn't asked about: forgotten
 
 
-def test_the_thread_reports_and_stops(music):
-    index = LibraryIndex(music)
-    look = Watcher(lambda: index, every_s=0.05, recheck_s=0.05)
-    look.start()
-    deadline = time.monotonic() + 20
-    reports: list[Report] = []
-    while len(reports) < 2 and time.monotonic() < deadline:
-        reports += look.drain()
-        time.sleep(0.02)
-    look.stop()
-    assert reports[0].first_build and len(reports[0].diff.added) == 3
-    assert reports[1].diff.nothing
-    time.sleep(0.2)
-    assert not look.running
-
-
 def test_a_missing_library_folder_is_reported_not_raised(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
     look = Watcher(lambda: LibraryIndex(tmp_path / "nowhere"))
@@ -259,10 +243,6 @@ def test_an_unplugged_library_folder_doesnt_silence_the_others(music, tmp_path):
     assert report.first_build and not report.error and len(report.diff.added) == 1 and not report.news
     assert index.unbuilt() == [] and watcher.new_albums(index, since, {}) == [music / "Fresh"]
     library_index.close_shared()
-
-
-def test_watching_is_on_by_default():
-    assert settings.DEFAULTS["watch_music"] is True
 
 
 # -- the player and the Library window (Tk smoke tests, skipped without a display) ----------------
@@ -350,20 +330,3 @@ def test_the_player_notes_new_albums_and_forgets_them_once_opened(music, tk_root
     library.close()
 
 
-def test_watch_for_new_music_is_in_settings_library(tk_root, tmp_path, monkeypatch):
-    """Settings → Library has the slider, on by default; switching it off stops the watcher."""
-    monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
-    import inspect
-    source = inspect.getsource(PlayerWindow._build_settings)
-    assert '"Watch for new music"' in source and 'self._caption(b, "Library")' in source
-    from types import SimpleNamespace
-    import tkinter as tk
-    look = Watcher(lambda: LibraryIndex(tmp_path / "Music"), every_s=60)
-    w = SimpleNamespace(prefs={"new_music": None}, watcher=look, watch_music=tk.BooleanVar(value=True))
-    for name in ("_new_music_state", "_start_watching", "_toggle_watch"):
-        setattr(w, name, getattr(PlayerWindow, name).__get__(w))
-    w._toggle_watch()
-    assert look.running and isinstance(w.prefs["new_music"]["since"], float) and w.prefs["watch_music"] is True
-    w.watch_music.set(False)
-    w._toggle_watch()
-    assert not look.running and w.prefs["watch_music"] is False

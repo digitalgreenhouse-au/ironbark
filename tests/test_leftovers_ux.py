@@ -192,19 +192,6 @@ def test_removing_a_library_folder_asks_first_and_keep_is_the_safe_answer(make_w
 
 
 # -- what the internet switches say ---------------------------------------------------------------------
-def test_the_update_check_says_what_it_sends():
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    privacy = re.search(r"^## Privacy\n\n(.*?)\n+## ", readme, flags=re.S | re.M).group(1)
-    for text in (ui.UPDATE_CHECK_TEXT, help_window.PRIVACY, " ".join(privacy.split())):
-        assert "internet address" in text and "version" in text
-        assert "nothing is sent" not in text.lower() and "send anything" not in text
-    # Rip verification's look-ups go out the same way: what they show is said there too.
-    rip = next(line for line in help_window.PRIVACY.splitlines() if line.startswith("• Rip verification"))
-    assert "internet address" in rip and "Ironbark version" in rip
-    assert "network drives" in ui.NETWORK_ACCESS_TEXT and "plays without it" in ui.NETWORK_ACCESS_TEXT
-    assert "Check for updates" in ui.NETWORK_ACCESS_TEXT and "CUETools DB" in ui.NETWORK_ACCESS_TEXT
-
-
 # -- diagnostics: names left out ------------------------------------------------------------------------
 def test_diagnostics_leave_out_tab_playlist_and_output_names(tmp_path):
     folder = tmp_path / "Ironbark"

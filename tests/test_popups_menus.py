@@ -494,7 +494,7 @@ def test_settings_scroll_to_the_bottom_in_a_short_window(make_window):
     assert not area.visible(window.version_label)
     # Every section can be brought into view, the last line (the version) included.
     captions = [w for w in _all(pop.body) if getattr(w, "cget", None) and _text(w).isupper() and len(_text(w)) > 3]
-    assert {_text(c) for c in captions} >= {"SOUND", "WINDOW", "LIBRARY", "NETWORK", "EXPERIMENTAL"}
+    assert {_text(c) for c in captions} >= {"SOUND", "WINDOW", "LIBRARY", "EXPERIMENTAL"}
     for widget in captions + [window.version_label]:
         area.see(widget)
         assert area.visible(widget), _text(widget)
