@@ -603,7 +603,7 @@ def test_diagnostics_zip_holds_the_logs_and_versions_with_folders_left_out(tmp_p
     (folder / "app.log.1").write_text("older\n", encoding="utf-8")
     prefs = {**settings.DEFAULTS, "library_folder": "D:\\Music", "last_folder": "D:\\Music\\Abba",
              "tabs": [{"kind": "folder", "path": "D:\\Music\\Abba", "extras": ["E:\\Rips\\x.flac"]}],
-             "vu_auto": {"D:\\Music\\Abba": -18.0}, "experiments": {"tag_editor": True}}
+             "vu_auto": {"D:\\Music\\Abba": -18.0}, "experiments": {"tape_reels": True}}
     zip_path = diagnostics.write_zip(tmp_path / "out" / "d.zip", prefs, folder,
                                      outputs=lambda: ("Speakers", ["Speakers"]), home=home)
     with zipfile.ZipFile(zip_path) as archive:
@@ -620,7 +620,7 @@ def test_diagnostics_zip_holds_the_logs_and_versions_with_folders_left_out(tmp_p
     assert "Music" not in json.dumps(saved) and "Abba" not in json.dumps(saved)
     assert "<folder 1>\\01.flac" in crash_log and "<home>\\AppData" in crash_log and "Jane" not in crash_log
     assert "<folder 2>" in app_log                                   # (written with other slashes and case)
-    assert f"{APP_NAME} {__version__}" in about and "tag_editor" in about and "Python" in about
+    assert f"{APP_NAME} {__version__}" in about and "tape_reels" in about and "Python" in about
     assert not (tmp_path / "out" / "d.zip.partial").exists()
 
 

@@ -12,7 +12,7 @@ chops it flat — heard, if at all, as a slight crackle or edge on the loudest m
   passes full scale; passes closer together than OVER_GAP_S count as one over. The whole-song
   strip (`scan`) and the live view's "overs per second" both use it.
 - `simulate_dac` / `listening_versions` make the "hear it" versions (Experimental
-  `clip_audition`): A = an ordinary DAC (rebuild at 8x, chop at full scale, back down),
+  "Hear it"): A = an ordinary DAC (rebuild at 8x, chop at full scale, back down),
   B = the same loop, untouched apart from being turned down just below its true peak, and
   the difference between them (what the chop takes away).
 """

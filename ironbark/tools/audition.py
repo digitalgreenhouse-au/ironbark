@@ -1,7 +1,7 @@
 """Listening side by side: loop a short stretch and switch between versions of it. No UI code.
 
 Built once, for every "hear the difference" feature: the ABX blind test (abx.py) now, and the
-Clipping window's "ordinary DAC vs clean" listening (clip_audition, Experimental). Whoever uses it
+Clipping window's "ordinary DAC vs clean" listening ("Hear it"). Whoever uses it
 hands over the versions as arrays already in memory — the same length, sample rate and channel
 count, lined up sample for sample — and a loop range.
 

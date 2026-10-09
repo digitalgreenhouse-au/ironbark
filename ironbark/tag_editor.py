@@ -64,7 +64,6 @@ from .tagio.vorbis import Picture
 
 log = logging.getLogger(__name__)
 
-EXPERIMENT = "tag_editor"   # the key in experiments.EXPERIMENTS
 VARIOUS = "(various)"       # shown for a field that differs between the songs being edited
 FIELDS = (("title", "Title"), ("artist", "Artist"), ("album_artist", "Album artist"), ("album", "Album"),
           ("track", "Track"), ("disc", "Disc"), ("year", "Year"), ("genre", "Genre"),

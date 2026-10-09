@@ -269,8 +269,8 @@ def test_the_self_checks_window_never_reads_the_users_music(monkeypatch):
     real = library_index.shared
     monkeypatch.setattr(library_index, "shared", lambda roots: looked.append(list(roots)) or real(roots))
     monkeypatch.setattr(PlayerWindow, "_start_cache", lambda self: started.append(self))
-    # Even with the network cache's switch on by default, the check window keeps it off.
-    monkeypatch.setitem(settings.DEFAULTS, "experiments", {"network_cache": True})
+    # Even with Local network access on by default, the check window keeps the cache off.
+    monkeypatch.setitem(settings.DEFAULTS, "local_network", True)
     try:
         detail = selfcheck._check_window()
     except Exception as error:

@@ -395,8 +395,8 @@ def _check_window() -> str:
         music.mkdir()
         (home / "settings.json").write_text(
             json.dumps({"media_controls": False, "watch_music": False, "library_folders": [str(music)],
-                        "library_folder": str(music), "library_check": "off",
-                        "experiments": {"network_cache": False}}), encoding="utf-8")
+                        "library_folder": str(music), "library_check": "off", "local_network": False}),
+            encoding="utf-8")
         appicon.set_app_id()
         root = tk.Tk()
         errors = []    # errors in the window code (Tk would only print them)

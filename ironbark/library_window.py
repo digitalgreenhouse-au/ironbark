@@ -421,7 +421,6 @@ class LibraryWindow:
                  on_queue: Callable[[Path, bool], None] | None = None,
                  view: str = "albums", on_view: Callable[[str], None] = lambda view: None,
                  on_edit_tags: Callable[[Path], None] | None = None,
-                 can_edit_tags: Callable[[], bool] = lambda: False,
                  new_albums: Callable[[], list[Path]] = lambda: [],
                  actions: Actions | None = None,
                  on_add_tracks: Callable[[list[Track]], str] | None = None,
@@ -439,8 +438,7 @@ class LibraryWindow:
         self.on_add = on_add
         self.on_queue = on_queue
         self.on_view = on_view
-        self.on_edit_tags = on_edit_tags    # (0.16.0) Experimental tag editing: offered only while
-        self.can_edit_tags = can_edit_tags  # its switch is on (read fresh at every right-click)
+        self.on_edit_tags = on_edit_tags    # the window's tag editor (None: not offered here)
         self.add_target = add_target  # the title of the player's tab on show, read fresh each time
         self.new_albums = new_albums  # the new albums' folders (0.17.0), read fresh at every fill
         self.actions = actions or Actions()   # what a song's Play / Add to Up next / … do (the player's)
@@ -1626,7 +1624,7 @@ class LibraryWindow:
             menu.add_separator()
             menu.add("Play next", lambda: self._queue(album, True), keys.hint("library_play_next"))
             menu.add("Add to Up next", lambda: self._queue(album, False), keys.hint("library_queue"))
-        if self.on_edit_tags is not None and self.can_edit_tags():
+        if self.on_edit_tags is not None:
             menu.add_separator()
             menu.add("Edit tags…", lambda: self.on_edit_tags(album.path))
         menu.add_separator()
