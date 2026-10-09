@@ -23,7 +23,7 @@ import sounddevice as sd
 import soundfile as sf
 from netfakes import FakeCopy, FakePreparer, FakeShare, make_manager, manager_mod, wait_until
 
-from ironbark import audiofile, engine
+from ironbark import audiofile, engine, session
 from ironbark.engine import BLOCK_FRAMES, Player, State, _Session
 from ironbark.library import Track
 from ironbark.netcache import policy
@@ -575,7 +575,7 @@ def test_a_device_lost_during_a_pause_for_the_network_is_still_noticed(tmp_path,
     p.play(0)
     card = Card(p._session)
     stall_and_cut(card, copy)
-    monkeypatch.setattr(engine, "STALL_SECONDS", 0.15)
+    monkeypatch.setattr(session, "STALL_SECONDS", 0.15)
     card.request()                                               # the last request the card makes
     assert wait_until(lambda: p._session is None, 3)           # the card stopped asking: the device has gone
     assert "stopped playing" in p.status().message and p._preparing is None

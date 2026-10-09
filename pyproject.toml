@@ -98,7 +98,8 @@ allowed_importers = ["ironbark.__main__", "ironbark.selfcheck"]
 name = "The engine, the readers, the library database and the network cache know nothing of the window, the tools or the toolkit"
 type = "forbidden"
 source_modules = [
-    "ironbark.engine", "ironbark.audiofile", "ironbark.library", "ironbark.library_db", "ironbark.indexer",
+    "ironbark.engine", "ironbark.session", "ironbark.audiofile", "ironbark.library", "ironbark.library_db",
+    "ironbark.library_sql", "ironbark.library_import", "ironbark.indexer",
     "ironbark.tagio", "ironbark.netcache", "ironbark.analysis", "ironbark.loudness", "ironbark.proof",
     "ironbark.devices", "ironbark.settings", "ironbark.places", "ironbark.musicfiles",
 ]
