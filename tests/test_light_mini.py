@@ -441,7 +441,7 @@ def test_settings_open_from_the_mini_strip_and_the_strip_comes_back(make_window)
     before = _where(root)
     window.mini.settings_button.command()                          # the strip's gear
     _pump(root, 0.3)
-    assert window.mini_mode and window.settings_pop.is_open        # still the strip, Settings open
+    assert window.mini_mode and window.settings.is_open        # still the strip, Settings open
     grown = _where(root)
     assert grown[1] > before[1] + theme.px(150)                    # the window grew for the panel
     assert window.mini.winfo_height() == before[1]                 # the strip itself didn't change
@@ -451,12 +451,12 @@ def test_settings_open_from_the_mini_strip_and_the_strip_comes_back(make_window)
     assert window.prefs["mini_geometry"].startswith("380x76")
     window.mini.settings_button.command()                          # gear again: closes
     _pump(root, 0.3)
-    assert not window.settings_pop.is_open and _where(root) == before
+    assert not window.settings.is_open and _where(root) == before
     # From Settings opened in the strip, "Full player" goes to the full window.
     window.mini.settings_button.command()
     _pump(root, 0.2)
     window.mini_button.command()
     _pump(root, 0.3)
-    assert not window.mini_mode and not window.settings_pop.is_open
+    assert not window.mini_mode and not window.settings.is_open
     assert window.prefs["mini_geometry"].startswith("380x76") and window.mini_button.text_value == "Mini player"
     assert errors == [] and player.calls == []

@@ -32,7 +32,9 @@ shows an "Open your library" button (Ctrl+L) instead of the empty layout.
 
 Pop-ups (0.21.0): every question box is an in-app prompt and every right-click menu a
 popups.PopupMenu (popups.py), so they follow Dark / Light; a prompt leaves the mini strip first
-(`_for_prompt`). Settings scrolls when it's taller than the window (tabbar.Popover(scroll=True)).
+(`_for_prompt`). Settings (0.39.0) is a view the full width of the window in place of the column
+(settings_view.py): a Simple page and an Advanced page, Done at the bottom; the window builds its
+controls (`_build_settings`) and packs the view (`_show_settings_view`).
 
 Opening from outside: files, folders, playlists and CUE sheets named on the command line, or handed
 over by a later launch (instance.py — "Open with", a double-click on a file while the player is
@@ -92,7 +94,7 @@ from PIL import Image, ImageTk
 from . import (APP_NAME, __version__, analysis, appicon, artwork, audiofile, browse, chrome, controls, crash, devices, diagnostics,
                dragdrop, experiments, keys, levelling, offthread, library_check, library_db, library_index,
                library_tracks, logs, loudness, mediakeys, placement, places, playlists, popups,
-               quick_search, recycle, settings, shapes, sleep, tag_editor, theme, tkgc, watcher)
+               quick_search, recycle, settings, settings_view, shapes, sleep, tag_editor, theme, tkgc, watcher)
 from .tools.abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
 from .tools.compare_window import CompareWindow
@@ -856,8 +858,13 @@ class PlayerWindow:
         self._empty_shown = False
         self._paint_empty_mark()
 
-        self.settings_pop = self._build_settings()
-        self.settings_pop.on_hide = self._settings_closed
+        # Settings: a view in place of the column (settings_view.py). Its frame belongs to the root, so
+        # it can be packed in the body (the full window) or under the mini strip.
+        self.settings = settings_view.SettingsView(self.root, self.root, on_done=lambda: self._show_settings_view(False))
+        self.settings.on_hide = self._settings_closed
+        self._build_settings(self.settings)
+        self.settings.finish()
+        self.root.bind("<Escape>", lambda e: self._escape_settings(), add="+")
         self.new_menu = self._build_new_menu()
 
         # Mini mode: built now, shown in place of the strip + body by toggle_mini.
@@ -909,23 +916,22 @@ class PlayerWindow:
         holder.pack_propagate(False)
         return box
 
-    def _build_settings(self) -> Popover:
-        """Grouped into Sound / Window / Library / Network / Experimental / Help, every on/off choice
-        a slider switch with one plain line saying what it does.
-
-        (0.21.0) It scrolls when it doesn't fit the window (it's ~1300 px tall at 150%
-        scaling) — mouse wheel anywhere over it, and a slim scrollbar that shows only then. Its
-        buttons are flat pills and the volume is the same drawn slider as the seek bar."""
-        pop = Popover(self.root, width=theme.px(SETTINGS_WIDTH), scroll=True, controls=True, at_edge=True)
-        self.settings_area = pop.area
-        b = pop.body
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x")
+    def _build_settings(self, view: settings_view.SettingsView):
+        """The controls, on the view's two pages. **Simple** (what shows first): Output, Bit-perfect,
+        Volume · Theme, Album art, Keep on top · the library folders, Local network access · Keyboard
+        shortcuts, About, the version. **Advanced**: Clipping guard and its headroom, Volume levelling
+        and its pre-amp · Media keys, Home · Network playback (while Local network access is on) ·
+        Experimental · Help (Save diagnostics…, Open log folder, Detailed logging). Every on/off choice
+        is a slider switch with one plain line saying what it does."""
+        self.settings_area = view.area
+        b, a = view.simple, view.advanced
+        row = view.head
         ttk.Label(row, text="Settings", style="PopTitle.TLabel").pack(side="left")
         self.mini_button = self._pop_button(row, "Mini player", self.toggle_mini,   # (it closes Settings first)
                                             "Shrink the player to a small strip. Also Z, or double-click the cover")
         self.mini_button.pack(side="right")
 
+        # -- Simple --
         self._caption(b, "Sound", first=True)
         self._output_choices: list[str | None] = []
         self.output_box = self._choice_box(b, "", (), full=True)
@@ -936,32 +942,6 @@ class PlayerWindow:
         if self.can_exclusive:
             self._setting(b, "Bit-perfect", "Sound exactly as recorded. Other apps go quiet.",
                           self.exclusive, self._toggle_exclusive)
-        self._setting(b, "Clipping guard", "Lowers only tracks that would crackle, by just enough.",
-                      self.clip_guard, self._guard_changed)
-        # (0.24.0) "My DAC has headroom": room some converters have above full scale. Off by default.
-        self.headroom_box = self._choice_box(b, "My DAC has headroom",
-                                             [headroom_label(v) for v in GUARD_HEADROOM_CHOICES])
-        self.headroom_box.current(headroom_index(self.prefs.get("clip_headroom", 0.0)))
-        self.headroom_box.bind("<<ComboboxSelected>>", self._headroom_chosen)
-        Tooltip(self.headroom_box, "Only if your converter is known to take overs: the clipping guard then lets "
-                                   "the wave go this far past full scale before it turns a track down. "
-                                   "Measured converters range from none to about 3.5 dB. Off = none.")
-        # Volume levelling: off by default (any change of level means the device no longer gets the
-        # file's own samples); the pre-amp goes with it.
-        self.levelling_box = self._choice_box(b, "Volume levelling", [label for _, label in levelling.MODES])
-        self.levelling_box.current([key for key, _ in levelling.MODES].index(self._levelling_setting()))
-        self.levelling_box.bind("<<ComboboxSelected>>", self._levelling_chosen)
-        Tooltip(self.levelling_box, "Plays songs at about the same loudness, from their ReplayGain tags (or "
-                                    "Ironbark measures them). Track: each song on its own. Album: an album's "
-                                    "songs keep their own balance. Smart: Album while an album plays in order, "
-                                    "else Track. Not bit-perfect while it's on.")
-        self.preamp_box = self._choice_box(b, "Levelling pre-amp",
-                                           [levelling.preamp_label(v) for v in levelling.PREAMP_CHOICES],
-                                           state="disabled" if self._levelling_setting() == "off" else "readonly")
-        self.preamp_box.current(levelling.PREAMP_CHOICES.index(self._preamp_db()))
-        self.preamp_box.bind("<<ComboboxSelected>>", self._preamp_chosen)
-        Tooltip(self.preamp_box, "Added to every levelling gain. A song is only turned up as far as its "
-                                 "peak allows (it stays under −0.1 dB true peak).")
         row = ttk.Frame(b, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
         ttk.Label(row, text="Volume", style="Pop.TLabel").pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM))
@@ -981,19 +961,6 @@ class PlayerWindow:
         self._setting(b, "Album art", "Off gives the track list more room.", self.show_art, self._toggle_art)
         self._setting(b, "Keep on top", "Stay in front of other windows. The mini player has its own (on at first).",
                       self.on_top, self._toggle_on_top)
-        self._setting(b, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
-                      self.media_controls, self._toggle_media)
-        row = ttk.Frame(b, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-        self.home_text = ttk.Label(row, text="", style="Pop.TLabel")
-        self.home_text.pack(side="left", fill="x", expand=True)
-        self.snap_button = self._pop_button(row, "Snap to home", lambda: (Popover.close_open(), self.snap_home()),
-                                            "Also Ctrl+Shift+H, or double-click the empty strip at the top")
-        self.snap_button.pack(side="right")
-        self._pop_button(row, "Use current", self.make_home, "Make the window's current spot and size its home").pack(
-            side="right", padx=theme.pad(0, theme.GAP))
-        self._setting(b, "Open at home", "Start up at the home position.", self.open_at_home)
-        self._update_home_text()
 
         self._caption(b, "Library")
         self.library_rows = ttk.Frame(b, style="Pop.TFrame")   # one row per library folder
@@ -1003,31 +970,8 @@ class PlayerWindow:
         row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self._pop_button(row, "Add folder…", self._add_library_folder,
                          "Add another folder of music to the Library").pack(side="right")
-        local_row = self._setting(b, "Local network access", LOCAL_NETWORK_TEXT,
-                                  self.local_network, self._local_network_changed)
-        # Network playback (only while Local network access is on): how songs on network drives are
-        # fetched into the copy on this computer they play from.
-        self.netplay_box = ttk.Frame(b, style="Pop.TFrame")
-        self._netplay_after = local_row
-        self._build_netplay(self.netplay_box)
-        if self.local_network.get():
-            self.netplay_box.pack(fill="x", after=local_row)
+        self._setting(b, "Local network access", LOCAL_NETWORK_TEXT, self.local_network, self._local_network_changed)
 
-        if experiments.EXPERIMENTS:
-            self._caption(b, "Experimental")
-        else:  # one line, to keep the panel short: the switches appear when there's something to try
-            tk.Frame(b, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
-            row = ttk.Frame(b, style="Pop.TFrame")
-            row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
-            ttk.Label(row, text="EXPERIMENTAL", style="PopCaption.TLabel").pack(side="left")
-            note = ttk.Label(row, text="none right now", style="PopMuted.TLabel")
-            note.pack(side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
-            Tooltip(note, "New features appear here first, off until you switch them on")
-        for experiment in experiments.EXPERIMENTS:
-            var = tk.BooleanVar(value=experiments.enabled(self.prefs, experiment.key))
-            self.experiment_vars[experiment.key] = var
-            self._setting(b, experiment.title, experiment.description, var,
-                          lambda key=experiment.key: self._toggle_experiment(key))
         self._caption(b, "Help")
         self.help_box = ttk.Frame(b, style="Pop.TFrame")
         self.help_box.pack(fill="x")
@@ -1037,11 +981,81 @@ class PlayerWindow:
                          "Every key, with a filter box. Also F1 or ? in any Ironbark window").pack(side="left")
         self._pop_button(row, "About Ironbark", lambda: self._from_settings(self.show_about),
                          "Version, licences, privacy and the website").pack(side="right")
-        self._add_help_buttons(self.help_box)
         self.version_label = ttk.Label(b, text="", style="PopMuted.TLabel")
         self.version_label.pack(anchor="e", pady=theme.pad(theme.GAP_LARGE, 0))
         self._paint_version()
-        return pop
+
+        # -- Advanced --
+        self._caption(a, "Sound", first=True)
+        self._setting(a, "Clipping guard", "Lowers only tracks that would crackle, by just enough.",
+                      self.clip_guard, self._guard_changed)
+        # (0.24.0) "My DAC has headroom": room some converters have above full scale. Off by default.
+        self.headroom_box = self._choice_box(a, "My DAC has headroom",
+                                             [headroom_label(v) for v in GUARD_HEADROOM_CHOICES])
+        self.headroom_box.current(headroom_index(self.prefs.get("clip_headroom", 0.0)))
+        self.headroom_box.bind("<<ComboboxSelected>>", self._headroom_chosen)
+        Tooltip(self.headroom_box, "Only if your converter is known to take overs: the clipping guard then lets "
+                                   "the wave go this far past full scale before it turns a track down. "
+                                   "Measured converters range from none to about 3.5 dB. Off = none.")
+        # Volume levelling: off by default (any change of level means the device no longer gets the
+        # file's own samples); the pre-amp goes with it.
+        self.levelling_box = self._choice_box(a, "Volume levelling", [label for _, label in levelling.MODES])
+        self.levelling_box.current([key for key, _ in levelling.MODES].index(self._levelling_setting()))
+        self.levelling_box.bind("<<ComboboxSelected>>", self._levelling_chosen)
+        Tooltip(self.levelling_box, "Plays songs at about the same loudness, from their ReplayGain tags (or "
+                                    "Ironbark measures them). Track: each song on its own. Album: an album's "
+                                    "songs keep their own balance. Smart: Album while an album plays in order, "
+                                    "else Track. Not bit-perfect while it's on.")
+        self.preamp_box = self._choice_box(a, "Levelling pre-amp",
+                                           [levelling.preamp_label(v) for v in levelling.PREAMP_CHOICES],
+                                           state="disabled" if self._levelling_setting() == "off" else "readonly")
+        self.preamp_box.current(levelling.PREAMP_CHOICES.index(self._preamp_db()))
+        self.preamp_box.bind("<<ComboboxSelected>>", self._preamp_chosen)
+        Tooltip(self.preamp_box, "Added to every levelling gain. A song is only turned up as far as its "
+                                 "peak allows (it stays under −0.1 dB true peak).")
+
+        self._caption(a, "Window")
+        self._setting(a, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
+                      self.media_controls, self._toggle_media)
+        row = ttk.Frame(a, style="Pop.TFrame")
+        row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
+        self.home_text = ttk.Label(row, text="", style="Pop.TLabel")
+        self.home_text.pack(side="left", fill="x", expand=True)
+        self.snap_button = self._pop_button(row, "Snap to home", lambda: (self._close_settings(), self.snap_home()),
+                                            "Also Ctrl+Shift+H, or double-click the empty strip at the top")
+        self.snap_button.pack(side="right")
+        self._pop_button(row, "Use current", self.make_home, "Make the window's current spot and size its home").pack(
+            side="right", padx=theme.pad(0, theme.GAP))
+        self._setting(a, "Open at home", "Start up at the home position.", self.open_at_home)
+        self._update_home_text()
+
+        # Network playback (only while Local network access is on): how songs on network drives are
+        # fetched into the copy on this computer they play from.
+        self.netplay_box = ttk.Frame(a, style="Pop.TFrame")
+        self._netplay_after = None
+        self._build_netplay(self.netplay_box)
+        if self.local_network.get():
+            self.netplay_box.pack(fill="x")
+
+        if experiments.EXPERIMENTS:
+            self._caption(a, "Experimental")
+        else:  # one line, to keep the page short: the switches appear when there's something to try
+            tk.Frame(a, bg=theme.BORDER, height=1).pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
+            row = ttk.Frame(a, style="Pop.TFrame")
+            row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+            ttk.Label(row, text="EXPERIMENTAL", style="PopCaption.TLabel").pack(side="left")
+            note = ttk.Label(row, text="none right now", style="PopMuted.TLabel")
+            note.pack(side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
+            Tooltip(note, "New features appear here first, off until you switch them on")
+        for experiment in experiments.EXPERIMENTS:
+            var = tk.BooleanVar(value=experiments.enabled(self.prefs, experiment.key))
+            self.experiment_vars[experiment.key] = var
+            self._setting(a, experiment.title, experiment.description, var,
+                          lambda key=experiment.key: self._toggle_experiment(key))
+        self._caption(a, "Help")
+        self.help_more = ttk.Frame(a, style="Pop.TFrame")
+        self.help_more.pack(fill="x")
+        self._add_help_buttons(self.help_more)
 
     def _choice(self, parent, label: str, choices, key: str, tip: str, on_change=None,
                 width: int | None = None) -> ttk.Combobox:
@@ -1237,10 +1251,10 @@ class PlayerWindow:
         self._set_notice(text, 8000)
 
     def _add_help_buttons(self, box: ttk.Frame):
-        """The rest of Settings → Help, under Keyboard shortcuts / About: what to reach for when
-        something's wrong (Save diagnostics…, Open log folder, Detailed logging)."""
+        """The rest of Settings → Help (the Advanced page): what to reach for when something's wrong
+        (Save diagnostics…, Open log folder, Detailed logging)."""
         row = ttk.Frame(box, style="Pop.TFrame")
-        row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+        row.pack(fill="x")
         self.diagnostics_button = self._pop_button(row, "Save diagnostics…", self.save_diagnostics,
                                                    "Save a .zip to send with a problem report: versions, sound "
                                                    "outputs, logs and settings. Your folders, tabs, playlists and "
@@ -1256,6 +1270,7 @@ class PlayerWindow:
         """A Settings button that opens a window: Settings closes first (the mini strip's grown
         window goes back to the strip)."""
         Popover.close_open()
+        self._close_settings()
         show()
 
     def _volume_slid(self, value: float):
@@ -1294,7 +1309,7 @@ class PlayerWindow:
         on = self.local_network.get()
         self.prefs["local_network"] = on
         if on:
-            self.netplay_box.pack(fill="x", after=self._netplay_after)
+            self.netplay_box.pack(fill="x")
         else:
             self.netplay_box.pack_forget()
         self._paint_cache()
@@ -1775,6 +1790,7 @@ class PlayerWindow:
     def select_tab(self, index: int, then_play: bool = False):
         if not 0 <= index < len(self.tabs):
             return
+        self._close_settings()   # (a tab clicked while Settings is on show: back to the player)
         if index != self.current and self.playlist.searching and self.playlist.scope == "tab":
             self.playlist.query.set("")  # a search belongs to the tab it was typed in (not the whole library's)
         self.current = index
@@ -3165,6 +3181,8 @@ class PlayerWindow:
         self._paint_up_next()
 
     def _paint_up_next(self):
+        if self.settings.is_open:
+            return   # (painted again when the column is back)
         queue = self.player.queue   # (the player's own list, read every poll: never copied here)
         key = (len(queue), id(queue[0]) if queue else None)
         if key == self._up_next_key:
@@ -3505,7 +3523,45 @@ class PlayerWindow:
         if self.mini_mode:   # (0.25.0) the strip's own gear: Settings opens under the strip
             self._open_mini_settings()
             return
-        self.settings_pop.toggle(self.bar.settings_btn, self._below_strip())
+        if self.settings.is_open:
+            self.settings.close()
+        else:
+            self._show_settings_view(True)
+
+    def _close_settings(self):
+        if self.settings.is_open:
+            self.settings.close()
+
+    def _escape_settings(self):
+        """Esc in the window: Settings closes (after any pop-over, which Esc closes first)."""
+        if Popover.open_one is None and self.settings.is_open:
+            self.settings.close()
+
+    def _show_settings_view(self, on: bool):
+        """(0.39.0) The Settings view in place of the column — cover, seek bar, transport, track
+        list, Up next line and status line — or the column back. From the mini strip the view sits
+        under the strip instead (`_open_mini_settings`), and the strip's own close puts things back."""
+        if on:
+            Popover.close_open()
+            for w in (self.head, self.seek_row, self.transport, self.up_next_label, self.playlist.frame,
+                      self.empty_view, self.status_row):
+                w.pack_forget()
+            self.status_more.place_forget()
+            self.settings.frame.pack(in_=self.body, fill="both", expand=True)
+            self.root.tk.call("raise", str(self.settings.frame))
+            self.settings.opened()
+            return
+        self.settings.frame.pack_forget()
+        if self.mini_mode:
+            return
+        self.status_row.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP, 0))
+        if self._empty_shown:
+            self.empty_view.pack(fill="both", expand=True, after=self.status_row)
+        else:
+            self._pack_column()
+            self.art_size = 0   # size the cover afresh
+            self.root.after_idle(self._fit_art)
+        self._up_next_key = None   # (the Up next line is painted again)
 
     def _below_strip(self) -> int:
         """Where a pop-over from the strip's buttons opens: DROP_GAP below the strip."""
@@ -3516,8 +3572,8 @@ class PlayerWindow:
         the panel under the strip — downwards, or upwards when the strip sits low on the screen —
         and `_settings_closed` puts the strip back to its own size and place. The strip keeps its
         height meanwhile (pack_propagate off), so nothing in it moves."""
-        if self.settings_pop.is_open:
-            self.settings_pop.hide()
+        if self.settings.is_open:
+            self.settings.close()
             return
         Popover.close_open()
         here = placement.current(self.root)
@@ -3532,11 +3588,11 @@ class PlayerWindow:
         self.mini.pack(side="top", fill="x")
         self.root.update_idletasks()
         margin = theme.px(Popover.MARGIN)
-        panel = self.settings_pop.natural_height()
-        if panel < theme.px(200):   # not measured yet: the panel then scrolls in whatever it gets
+        panel = self.settings.natural_height()
+        if panel < theme.px(200):   # not measured yet: the view then scrolls in whatever it gets
             panel = theme.px(640)
         left, top, right, bottom = chrome.work_area(self.root)
-        want_w = min(max(width, self.settings_pop.width + 2 * margin), right - left)
+        want_w = min(max(width, theme.px(SETTINGS_WIDTH) + 2 * margin), right - left)
         want_h = min(strip + panel + 2 * margin, bottom - top)
         x = max(left, min(x, right - want_w))
         y = max(top, min(y, bottom - want_h))
@@ -3544,7 +3600,8 @@ class PlayerWindow:
         self.root.geometry(f"{want_w}x{want_h}+{x}+{y}")
         self.root.update_idletasks()
         self.mini_button.set_text("Full player")
-        self.settings_pop.toggle(self.mini.settings_button, strip + theme.px(DROP_GAP))
+        self.settings.frame.pack(fill="both", expand=True)   # under the strip, in the grown window
+        self.settings.opened()
 
     def _settings_closed(self):
         """(0.25.0) Settings closed. If it was opened from the mini strip, the window goes back to
@@ -4336,6 +4393,7 @@ class PlayerWindow:
         to this one window) keep working. Each mode returns to where it was last left."""
         grown_from = self._mini_settings_from   # Settings open from the strip: the strip's own place
         Popover.close_open()
+        self._close_settings()
         here = grown_from or placement.current(self.root)
         if here:   # remember where the mode we're leaving was
             self.prefs["mini_geometry" if self.mini_mode else "geometry"] = here
@@ -4601,6 +4659,8 @@ class PlayerWindow:
         if empty == self._empty_shown:
             return
         self._empty_shown = empty
+        if self.settings.is_open:
+            return   # (the column isn't on show: packed for this when Settings closes)
         if empty:
             for w in (self.head, self.seek_row, self.transport, self.playlist.frame):
                 w.pack_forget()
@@ -4889,7 +4949,7 @@ class PlayerWindow:
                 self.volume_badge.place(relx=1.0, rely=0.5, anchor="e")
         else:
             self.volume_badge.place_forget()
-        if self.settings_pop.is_open:
+        if self.settings.is_open:
             self._update_volume_text()
             if self._netcache is not None and self.netplay_box.winfo_manager():
                 self._paint_cache()   # (the network's speed and the cache's size move on while it's open)

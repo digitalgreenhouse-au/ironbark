@@ -487,17 +487,23 @@ def test_settings_scroll_to_the_bottom_in_a_short_window(make_window):
     window, root, player, errors = make_window(geometry="420x460+120+120")
     window._open_settings()
     _pump(root, 0.3)
-    pop, area = window.settings_pop, window.settings_area
-    assert pop.is_open
+    view, area = window.settings, window.settings_area
+    pop = view.frame
+    assert view.is_open
     assert pop.winfo_y() + pop.winfo_height() <= root.winfo_height()       # never past the window's bottom
     assert area.needed() and area.scrollbar.winfo_ismapped()               # …so it scrolls, scrollbar shown
     assert not area.visible(window.version_label)
-    # Every section can be brought into view, the last line (the version) included.
-    captions = [w for w in _all(pop.body) if getattr(w, "cget", None) and _text(w).isupper() and len(_text(w)) > 3]
-    assert {_text(c) for c in captions} >= {"SOUND", "WINDOW", "LIBRARY", "EXPERIMENTAL"}
-    for widget in captions + [window.version_label]:
-        area.see(widget)
-        assert area.visible(widget), _text(widget)
+    # Every section of both pages can be brought into view, the version line included.
+    found = set()
+    for page, body in (("advanced", view.advanced), ("simple", view.simple)):
+        view.show_page(page)
+        _pump(root, 0.1)
+        captions = [w for w in _all(body) if getattr(w, "cget", None) and _text(w).isupper() and len(_text(w)) > 3]
+        found |= {_text(c) for c in captions}
+        for widget in captions + ([window.version_label] if page == "simple" else []):
+            area.see(widget)
+            assert area.visible(widget), _text(widget)
+    assert found >= {"SOUND", "WINDOW", "LIBRARY", "EXPERIMENTAL", "HELP"}
     # The mouse wheel over a setting scrolls the panel (and stops there: the Output box doesn't change).
     area.scroll_to(0)
     _pump(root, 0.05)
