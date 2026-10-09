@@ -4,6 +4,16 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.44.0 — 10/10/2026
+
+- **Two big modules split along the seams they already had**, with nothing moved but the lines:
+  `session.py` is now the open output stream (the decoder thread, the block queue and the sound
+  card's callback, with the constants and small classes only it uses); `engine.py` keeps the
+  `Player` the rest of the program talks to and re-exports every name, so imports elsewhere are
+  unchanged. `library_sql.py` holds the library database's schema (the tables, their upgrades, the
+  SQL the queries are built from); `library_import.py` the one-off move from the old JSON index.
+  `library_db.py` keeps the database itself. Nothing about how the player behaves changed.
+
 ## 0.43.0 — 10/10/2026
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md):** a map of the code — the four layers, the threads and

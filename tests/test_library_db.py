@@ -19,7 +19,7 @@ import soundfile as sf
 import synthlib
 from tagging import write_vorbis
 
-from ironbark import audiofile, browse, library, library_db, library_index, searchfold, settings, watcher
+from ironbark import audiofile, browse, library, library_db, library_index, library_sql, searchfold, settings, watcher
 from ironbark.audiofile import CuePath, CueRange
 from ironbark.library import Track
 from ironbark.library_db import FolderResult, LibraryDB
@@ -113,7 +113,7 @@ def test_an_upgrade_step_runs_and_keeps_everything(tmp_path, monkeypatch):
         ran.append(True)
         con.execute("ALTER TABLE albums ADD COLUMN rating INTEGER")
 
-    monkeypatch.setattr(library_db, "SCHEMA_VERSION", now + 1)
+    monkeypatch.setattr(library_sql, "SCHEMA_VERSION", now + 1)   # (the schema lives in library_sql)
     monkeypatch.setitem(library_db._UPGRADES, now, to_next)
     with LibraryDB.open(path) as db:
         assert ran == [True]

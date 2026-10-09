@@ -23,6 +23,7 @@ import soundfile as sf
 from test_gapless import FakeStream, pull, wav  # noqa: F401 (the stand-in sound card)
 
 from ironbark import analysis, audiofile, devices, engine, m4a, mp3frames
+from ironbark import session as session_mod  # (tests name their own `session`)
 from ironbark.engine import BLOCK_FRAMES, Player, State, _Session
 from ironbark.library import Track
 from ironbark.proof import SentRecord, apply_gain
@@ -202,7 +203,7 @@ def test_a_file_opened_ahead_as_the_session_closes_is_closed_too(tmp_path, fake_
             super().__init__(*args)
             opened.append(self)
 
-    monkeypatch.setattr(engine, "_Source", Recorded)
+    monkeypatch.setattr(session_mod, "_Source", Recorded)
     asked, go_on = threading.Event(), threading.Event()
 
     def follow(index):   # slow to answer: the session is closed meanwhile
@@ -326,7 +327,7 @@ def test_repeat_one_on_a_file_with_no_music_stops(tmp_path, fake_card, monkeypat
             super().__init__(*args)
             opened.append(self)
 
-    monkeypatch.setattr(engine, "_Source", Counted)
+    monkeypatch.setattr(session_mod, "_Source", Counted)
     p = Player()
     p.set_tracks([Track(empty, "empty")])
     p.set_repeat("one")
@@ -384,7 +385,7 @@ def test_a_lost_device_leaves_the_player_paused_at_the_spot(tmp_path, fake_card)
 
 
 def test_a_device_that_stops_asking_for_audio_is_noticed(tmp_path, fake_card, monkeypatch):
-    monkeypatch.setattr(engine, "STALL_SECONDS", 0.3)
+    monkeypatch.setattr(session_mod, "STALL_SECONDS", 0.3)
     path, _ = wav(tmp_path, "t.wav", RATE * 10)
     p = Player()
     p.set_tracks([Track(path, "t", duration=10.0)])
