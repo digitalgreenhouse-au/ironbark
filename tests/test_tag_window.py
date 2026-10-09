@@ -13,7 +13,7 @@ import pytest
 import soundfile as sf
 from ironbark.tagio.flac import FLACFile
 
-from ironbark import experiments, layout, library, settings, tag_editor, theme
+from ironbark import experiments, library, settings, tag_editor, theme
 from ironbark.engine import State
 from ironbark.library_window import LibraryWindow
 from ironbark.playlist_view import PlaylistView
@@ -74,7 +74,7 @@ def labels(menu) -> list[str]:
 
 def window(root, prefs, tracks, **extra):
     """Just enough of a PlayerWindow for the track menu and the tag-editing methods."""
-    w = SimpleNamespace(root=root, prefs=prefs, tabs=[Tab("album", "C:/Music/Album")], current=0, _tier=layout.COLUMN,
+    w = SimpleNamespace(root=root, prefs=prefs, tabs=[Tab("album", "C:/Music/Album")], current=0,
                         playlist=SimpleNamespace(columns=(), wanted=lambda: (), shown=(),
                                                  selected_rows=lambda: [0, 1]),
                         opened=[], _tag_window=None, _tag_history=None, sleep_timer=None,

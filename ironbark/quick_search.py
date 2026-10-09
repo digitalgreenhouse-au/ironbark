@@ -30,11 +30,6 @@ Artist and Album, then Year and Quality. It looks like the app's other pop-overs
 its list like the track list (frameless, the selected row a rounded green plate, section rows
 semibold, the slim scrollbar in the panel's right margin).
 
-A wide main window can also show the results docked in its right pane, under the track list's own
-search box (its "This tab | Whole library" choice): `QuickSearch(..., host=…)` makes such a panel,
-which has no box of its own — it searches what's typed in the box it's given (`query`, `entry`),
-only while it's open, and takes no space of the window's but its host's.
-
 `Actions` is what the panel (and the Library's song views) ask the player to do.
 """
 
@@ -277,23 +272,14 @@ def add_song_items(menu, actions: Actions, hits: Sequence[SongHit], hints: dict[
 class QuickSearch:
     """The search panel (see the module notes). `index_of()` gives the library index
     (library_index.shared: its database is searched); `top()` is where the panel's top edge goes in
-    the window (under the tab strip). Made once, then opened and closed (`open`, `close`).
-
-    Docked (`host`: the frame it sits in — the window packs it): no box of its own; it follows
-    `query` (another search box's text) and gives the keyboard back to `entry`; `scroll_parent` is
-    the padded frame its scrollbar sits in the margin of; `on_close()` when an action closes it (a
-    song played, an album opened)."""
+    the window (under the tab strip). Made once, then opened and closed (`open`, `close`)."""
 
     def __init__(self, root: tk.Misc, index_of: Callable[[], object], actions: Actions,
-                 top: Callable[[], int] = lambda: 0, *, host: tk.Misc | None = None,
-                 query: tk.StringVar | None = None, entry: tk.Misc | None = None,
-                 scroll_parent: tk.Misc | None = None, on_close: Callable[[], None] | None = None):
+                 top: Callable[[], int] = lambda: 0):
         self.root = root
         self.index_of = index_of
         self.actions = actions
         self.top = top
-        self.docked = host is not None
-        self.on_close = on_close
         self.is_open = False
         self.results: Results | None = None
         # per row of the list: ("section", name) / ("song", SongHit) / ("album", Album) / ("artist", name)
@@ -308,22 +294,16 @@ class QuickSearch:
         self._note = ""                              # said in the status line until the next search
         self._pending: tuple[str, str] | None = None   # ↓ / Enter pressed in the box before its search came back
 
-        rim = 0 if self.docked else 1
-        self.panel = tk.Frame(host if self.docked else root, bg=theme.BG, highlightthickness=rim,
+        self.panel = tk.Frame(root, bg=theme.BG, highlightthickness=1,
                               highlightbackground=theme.EDGE, highlightcolor=theme.EDGE)
-        inner = ttk.Frame(self.panel, padding=0 if self.docked else theme.pad(theme.GAP_LARGE, theme.GAP_LARGE,
-                                                                              theme.GAP_LARGE, theme.GAP_MEDIUM))
+        inner = ttk.Frame(self.panel, padding=theme.pad(theme.GAP_LARGE, theme.GAP_LARGE, theme.GAP_LARGE, theme.GAP_MEDIUM))
         inner.pack(fill="both", expand=True)
-        if self.docked:
-            self.search = None
-            self.query, self.entry = query, entry
-        else:
-            self.search = controls.SearchBox(inner, "Search every song, album and artist", on_clear=self._escape)
-            self.search.pack(fill="x")
-            self.query, self.entry = self.search.query, self.search.entry
-            self.entry.bind("<Down>", lambda e: self._into_results() or "break")
-            for key, how in self._enter_keys():
-                self.entry.bind(key, lambda e, h=how: self._act(h, first=True) or "break")
+        self.search = controls.SearchBox(inner, "Search every song, album and artist", on_clear=self._escape)
+        self.search.pack(fill="x")
+        self.query, self.entry = self.search.query, self.search.entry
+        self.entry.bind("<Down>", lambda e: self._into_results() or "break")
+        for key, how in self._enter_keys():
+            self.entry.bind(key, lambda e, h=how: self._act(h, first=True) or "break")
         self._trace = self.query.trace_add("write", lambda *_: self._changed())
 
         # Section rows are semibold (a named font: the list measures its words with it).
@@ -331,8 +311,8 @@ class QuickSearch:
         self._bold = bold
         self.list = VirtualTree(inner, COLUMNS, show="tree headings", on_activate=lambda i: self._act("play"),
                                 on_toggle=self._toggle, on_top_edge=self._back_to_box, fonts={"group": bold},
-                                margin=True, scroll_parent=scroll_parent, multiple=True)
-        self.list.frame.pack(fill="both", expand=True, pady=theme.pad(0 if self.docked else theme.GAP_MEDIUM, 0))
+                                margin=True, multiple=True)
+        self.list.frame.pack(fill="both", expand=True, pady=theme.pad(theme.GAP_MEDIUM, 0))
         tree = self.list.tree
         self.tree = tree
         tree.configure(displaycolumns=LAYOUTS[self.layout])
@@ -359,9 +339,8 @@ class QuickSearch:
         self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(1, e.width)), add="+")
         self.panel.bind("<Configure>", self._resized, add="+")
         self.panel.bind("<Destroy>", self._destroyed, add="+")
-        if not self.docked:
-            root.bind("<ButtonPress-1>", self._click_anywhere, add="+")
-            root.bind("<Configure>", lambda e: self._place() if e.widget is root and self.is_open else None, add="+")
+        root.bind("<ButtonPress-1>", self._click_anywhere, add="+")
+        root.bind("<Configure>", lambda e: self._place() if e.widget is root and self.is_open else None, add="+")
         if actions.favourites is not None:
             actions.favourites.changed.append(self._favourites_changed)
         self._say_idle()
@@ -410,14 +389,7 @@ class QuickSearch:
     # -- open and close ------------------------------------------------------------------------------
     def open(self, query: str | None = None):
         """Show the panel, the keyboard in its box (what's typed there selected, so typing replaces
-        it). `query`: search for this (the track list's "Search the whole library"). Docked: start
-        following the box it was given (the window has packed the panel), the keyboard left where it is."""
-        if self.docked:
-            self.is_open = True
-            if query is not None and query != self.query.get():
-                self.query.set(query)
-            self._search_now()
-            return
+        it). `query`: search for this (the track list's "Search the whole library")."""
         if not self.is_open:
             try:
                 focus = self.root.focus_get()
@@ -435,20 +407,11 @@ class QuickSearch:
         self.entry.select_range(0, "end")
         self.entry.icursor("end")
 
-    def close(self, tell: bool = True):
-        """Put the panel away. Docked: stop following the box, and (`tell`) let the window know, which
-        takes the panel away and goes back to the tab's list."""
+    def close(self):
+        """Put the panel away."""
         if not self.is_open:
             return
         self.is_open = False
-        if self.docked:
-            if self._search_job is not None:
-                self.root.after_cancel(self._search_job)
-                self._search_job = None
-            self._asked = self._pending = None
-            if tell and self.on_close is not None:
-                self.on_close()
-            return
         self.panel.place_forget()
         if self._search_job is not None:
             self.root.after_cancel(self._search_job)
@@ -491,9 +454,6 @@ class QuickSearch:
             self.query.set("")
             self.entry.focus_set()
             return "break"
-        if self.docked:   # (nothing typed: the keyboard back to the box; the panel stays)
-            self.entry.focus_set()
-            return "break"
         self.close()
         return "break"
 
@@ -511,8 +471,6 @@ class QuickSearch:
 
     # -- searching ----------------------------------------------------------------------------------
     def _changed(self):
-        if self.docked and not self.is_open:   # (the box is searching its own tab meanwhile)
-            return
         if self._search_job is not None:
             self.root.after_cancel(self._search_job)
         self._search_job = self.root.after(SEARCH_DELAY_MS, self._search_now)

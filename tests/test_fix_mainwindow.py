@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import analysis, artwork, audiofile, layout, library, placement, playlists, settings, ui
+from ironbark import analysis, artwork, audiofile, library, placement, playlists, settings, ui
 from ironbark.engine import State, Status
 from ironbark.library import Track
 from ironbark.ui import SAFE_VOLUME, PlayerWindow, Tab
@@ -479,17 +479,17 @@ def test_a_tag_save_that_never_stops_doesnt_keep_the_player_open(make_window, mo
 
 # -- cover art: a slow, older request never replaces a newer one ----------------------------------
 def test_a_slow_cover_never_replaces_a_newer_one(monkeypatch):
-    def cover_for(path, size, upscale=True):
+    def cover_for(path, size):
         time.sleep(0.3 if path.name == "a.flac" else 0.0)
         return path.name
     monkeypatch.setattr(artwork, "cover_for", cover_for)
     w = SimpleNamespace(show_art=SimpleNamespace(get=lambda: True), art_size=100, _art_key=None, _art_result=None,
-                        _art_track=None, _show_art=lambda image: None, _tier=layout.COLUMN, _art_job=None)
+                        _art_track=None, _show_art=lambda image: None, _art_job=None)
     PlayerWindow._request_art(w, Path("a.flac"))
     PlayerWindow._request_art(w, Path("b.flac"))
     for thread in [t for t in threading.enumerate() if t.name == "cover-art"]:
         thread.join(2)
-    assert w._art_result == ((Path("b.flac"), 100, True), "b.flac")
+    assert w._art_result == ((Path("b.flac"), 100), "b.flac")
 
 
 # -- the clipping guard measures what's playing and next, and never stops ------------------------------

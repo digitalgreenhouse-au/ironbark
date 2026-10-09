@@ -99,8 +99,6 @@ DEFAULTS = {
     "library_check": "off",      # the whole-library quality check: "off", "on" (keeps new music checked) or "paused"
     "library_song_columns": [],  # the Library's song views' optional columns on show: "plays", "last" (last played)
     "track_columns": [],         # optional track-list columns on show: "artist", "album", "plays"
-    "wide_track_columns": ["artist", "album", "quality"],   # …in a wide window (each shown only when
-                                                            # its value varies between the tab's songs)
     "tags_geometry": "",         # the Edit tags window (Experimental: Tag editing)
     "tag_history_geometry": "",  # the Tag history window
     "help_geometry": "",         # the Keyboard shortcuts sheet (F1)
@@ -449,8 +447,6 @@ _CHECKS = {
     "vu_auto": _dict_or_none,
     "vu_auto_loudness": _dict_or_none,
     "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
-    "wide_track_columns": lambda value: ([v for v in value if isinstance(v, str)] if isinstance(value, list)
-                                         else _BAD),
     "library_folders": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
                                       else _BAD),
     "net_mode": _one_of("intelligent", "fast", "complete"),

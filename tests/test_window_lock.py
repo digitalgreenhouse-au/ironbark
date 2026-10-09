@@ -7,9 +7,15 @@ import sys
 
 import pytest
 
-from ironbark import chrome, keys, layout, placement, settings, theme
+from ironbark import chrome, keys, placement, settings, theme
 from ironbark.ui import FULL_MAX_WIDTH, FULL_MIN_SIZE, NO_LIMIT
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
+
+
+def _a_column(window) -> bool:
+    """The one layout: the track list packed under the transport in the window's body."""
+    return (window.playlist.frame.winfo_manager() == "pack"
+            and str(window.playlist.frame.pack_info()["in"]) == str(window.body))
 
 
 def _about(got: int, want: int) -> bool:
@@ -18,8 +24,8 @@ def _about(got: int, want: int) -> bool:
 
 
 def test_the_cap_keeps_the_window_a_column():
-    """The widest the window can be is under the width where the split layouts would start."""
-    assert FULL_MIN_SIZE[0] < 420 < FULL_MAX_WIDTH < layout.SPLIT_MIN
+    """The widest the window can be is a column: well under the width a two-pane layout would need."""
+    assert FULL_MIN_SIZE[0] < 420 < FULL_MAX_WIDTH < 780
     assert "full_screen" not in keys.BY_ID and "maximised" not in settings.DEFAULTS
     assert settings._checked({"maximised": True}) == {"maximised": True}   # an older file: kept, ignored
     for name in ("enter_fullscreen", "exit_fullscreen", "is_fullscreen", "toggle_maximise",
@@ -34,7 +40,7 @@ def test_the_full_window_keeps_to_its_width_band_and_any_height(make_window):
     assert root.maxsize() == (theme.px(FULL_MAX_WIDTH), NO_LIMIT)
     root.geometry("1400x640+0+0")          # dragged or snapped wider: it stops at the cap, still a column
     _pump(root, 0.5)
-    assert _about(root.winfo_width(), theme.px(FULL_MAX_WIDTH)) and window._tier == layout.COLUMN
+    assert _about(root.winfo_width(), theme.px(FULL_MAX_WIDTH)) and _a_column(window)
     root.geometry("420x900+0+0")           # taller is fine
     _pump(root, 0.5)
     assert root.winfo_height() >= 850 and _about(root.winfo_width(), 420)
@@ -47,7 +53,7 @@ def test_the_full_window_keeps_to_its_width_band_and_any_height(make_window):
 def test_a_saved_size_wider_than_the_cap_opens_at_the_cap_in_the_column(make_window):
     window, root, player, errors = make_window(geometry="1200x700+0+0")   # left wide by an older version
     _pump(root, 0.6)
-    assert _about(root.winfo_width(), theme.px(FULL_MAX_WIDTH)) and window._tier == layout.COLUMN
+    assert _about(root.winfo_width(), theme.px(FULL_MAX_WIDTH)) and _a_column(window)
     assert window.bar.winfo_ismapped() and window.playlist.frame.winfo_ismapped()
     assert window.head.winfo_ismapped() and not window.split.winfo_ismapped()
     assert not errors

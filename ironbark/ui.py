@@ -47,17 +47,10 @@ keyboard is. F1 (or ?) lists them all (help_window.py); Settings → Help has th
 A playlist change (Delete, a move, Up next cleared) can be undone once: Ctrl+Z, or Undo in the
 status line.
 
-Wide windows (layout.py): from 780–880 logical px wide the window splits in two — the cover, the
-now-playing text, the seek bar and the transport stacked on the left, the track list the window's full
-height on the right — with larger type from 1280 and 1920. The same widgets are packed into other
-frames (`_apply_layout`), never rebuilt; the narrow window is laid out exactly as before. A wide window
-shows the cover at its own size at most (a smaller one on a mat), a caption over the title, a count in
-the list's header row. (0.34.0) The window is a side player locked to the column: its width stops at
-FULL_MAX_WIDTH, under SPLIT_MIN, so the split tiers are never chosen; there is no maximise or full screen.
-The right pane's view switch (Tracks · Up next · Lyrics, remembered for the session) shows the tab's
-list, Up next docked (up_next_view.py) or the playing song's lyrics (lyrics_window's view and
-follower, as in the Lyrics window); beside the search box, This tab | Whole library: the whole
-library's results (quick_search.py, docked) show in the list's place as you type (`_show_view`).
+The window is a side player (0.34.0): a tall column beside whatever else is on the screen. Its width
+stays between FULL_MIN_SIZE and FULL_MAX_WIDTH (Tk passes the cap to Windows, so dragging, Snap and
+a saved size all stop there), its height is free, and it can't be maximised or made full screen.
+One layout, packed once (`_pack_column`).
 
 The status line (`_show_status`) never moves anything above it: it keeps one line's height. A message
 too wide for it is split at a space (never inside a word) and its first part shown on a second line
@@ -99,8 +92,8 @@ from typing import Callable
 from PIL import Image, ImageTk
 
 from . import (APP_NAME, __version__, appicon, artwork, audiofile, browse, chrome, controls, devices, diagnostics,
-               dragdrop, experiments, keys, layout, levelling, library_check, library_db, library_index,
-               library_tracks, logs, loudness, mediakeys, placement, playlist_view, playlists, popups,
+               dragdrop, experiments, keys, levelling, library_check, library_db, library_index,
+               library_tracks, logs, loudness, mediakeys, placement, playlists, popups,
                quick_search, recycle, settings, shapes, sleep, tag_editor, theme, tkgc, updates, watcher)
 from .abx_window import AbxWindow
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim, headroom_index, headroom_label
@@ -114,7 +107,7 @@ from .favourites import Favourites
 from .library import (Track, album_folder, cue_track_path, find_albums, read_track, scan_album, scan_folder,
                       title_from_filename)
 from .library_window import LibraryWindow, adding_folder
-from .lyrics_window import LyricsFollower, LyricsView, LyricsWindow
+from .lyrics_window import LyricsWindow
 from .meter_window import MeterWindow
 from .meters import album_files
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE, DEFAULT_SIZE as MINI_DEFAULT_SIZE, MiniView, click_or_double
@@ -127,7 +120,6 @@ from .tag_window import TagHistoryWindow, TagWindow
 from .playlist_view import PlaylistView, _fold
 from .quick_search import QuickSearch
 from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
-from .up_next_view import UpNextView, count_text as up_next_count
 
 log = logging.getLogger(__name__)
 
@@ -183,17 +175,6 @@ COVER_SETTLE_MS = 120      # while the window is resized, the cover is fetched a
 CRASH_NOTE_MS = 60000      # how long "Ironbark closed unexpectedly last time" stays in the status line
 CRASH_NOTICE = f"{APP_NAME} closed unexpectedly last time"
 
-# The now-playing text in each layout (layout.py): larger in the wider windows.
-TITLE_STYLES = {layout.COLUMN: "Display.TLabel", layout.SPLIT: "Display.TLabel",
-                layout.SPLIT_M: "DisplayWide.TLabel", layout.SPLIT_L: "DisplayLarge.TLabel"}
-SUB_STYLES = {layout.COLUMN: "Subtitle.TLabel", layout.SPLIT: "Subtitle.TLabel",
-              layout.SPLIT_M: "SubtitleLarge.TLabel", layout.SPLIT_L: "SubtitleLarge.TLabel"}
-INFO_STYLES = {layout.COLUMN: "Info.TLabel", layout.SPLIT: "Info.TLabel", layout.SPLIT_M: "Info.TLabel",
-               layout.SPLIT_L: "InfoLarge.TLabel"}
-# The caption over the title in a wide window: what the top of the window is showing.
-NOW_PLAYING = "NOW PLAYING"
-CAPTIONS = {"album": "ALBUM", "folder": "FOLDER", "library": "LIBRARY", "playlist": "PLAYLIST", "files": "FILES"}
-KIND_NAMES = {"album": "Album", "folder": "Folder", "library": "Library", "playlist": "Playlist", "files": "Files"}
 # What the two internet switches say they do (Settings → Network, Settings → Help): what goes out, and
 # what doesn't need them.
 NETWORK_ACCESS_TEXT = ("Lets Ironbark use the internet itself: rip verification's look-ups (AccurateRip and "
@@ -204,12 +185,6 @@ NETWORK_ACCESS_TEXT = ("Lets Ironbark use the internet itself: rip verification'
 UPDATE_CHECK_TEXT = (f"Once a day, asks digitalgreenhouse.com.au whether a newer {APP_NAME} is out. The request "
                      f"names this {APP_NAME}'s version, and the website sees your computer's internet address, as "
                      "any website does; nothing else goes with it. Needs Allow network access (Network, above).")
-
-
-def _layout_scale() -> float:
-    """Windows' display scaling for working out the layout: theme.scale() to the nearest percent
-    (Tk measures 96.05 dots an inch at 100%, which would put a 1920 px window just under 1920)."""
-    return round(theme.scale(), 2)
 
 
 def split_status(text: str, width: int, measure: Callable[[str], int]) -> tuple[str, str]:
@@ -644,30 +619,8 @@ class PlayerWindow:
             hardware_volume = player.refresh_hardware_volume()
             player.set_exclusive(True)
 
-        # The layout (layout.py): the narrow column until the window's size says otherwise.
-        self._tier = layout.COLUMN
-        self._layout_job = None
-        self._plan: layout.Plan | None = None
-        self._heights: layout.Heights | None = None   # measured once per layout (_measure_heights)
-        self._measured: dict[str, layout.Heights] = {}   # each wide layout's heights when last measured
-        self._opening_size: tuple[int, int] | None = None   # (real px) the size it opens at, before it shows
-        self._head_full = ("Nothing playing", "Open your library: Ctrl+L")   # title and artist line, uncut
-        self._head_texts = ("", "")    # the caption and the format line
-        self._head_cut = (False, False)  # whether a wide window shows the title / artist line shortened
-        self._fits: dict[tuple, str] = {}   # shortened text, by (text, style, width)
-        self._cover_tip = ""           # a wide window's cover tooltip: its own size, and how it's shown
-        self._art_image = None         # the last cover fetched, for a quick stand-in while resizing
-        self._art_hidden = False       # a wide window too short for a cover: the cover box is put away
-        # A wide window's right pane, for this session: its view ("tracks", "up_next", "lyrics") and
-        # what the search box searches ("tab" or "library"); the docked views are made when first shown.
-        self.view = "tracks"
-        self.search_scope = "tab"
-        self._up_next_view: UpNextView | None = None
-        self._lyrics_view: LyricsView | None = None
-        self._lyrics_follower: LyricsFollower | None = None
-        self._lyrics_line = ""         # where the docked lyrics came from (the pane's count line)
-        self._up_next_counted: tuple | None = None   # (the queue counted, its count line): see _view_count
-        self._inline: QuickSearch | None = None   # the whole library's results, docked under the search box
+        self._head_full = ("Nothing playing", "Open your library: Ctrl+L")   # title and artist line
+        self._head_fmt = ""           # the format line
         # The status line: the whole message, and what's on show (see _show_status).
         self._status_text = ""
         self._status_fitted: tuple | None = None
@@ -686,9 +639,6 @@ class PlayerWindow:
             start = self._mini_geometry(start)
         if not placement.restore(root, start) and placement.parse(start) is None and self.mini_mode:
             root.geometry(f"{theme.px(MINI_DEFAULT_SIZE[0])}x{theme.px(MINI_DEFAULT_SIZE[1])}")
-        parsed = placement.parse(start) if start else None
-        if parsed and parsed[0]:   # laid out for its size before it's shown (a width past the cap is capped)
-            self._check_layout(size=(min(parsed[0], theme.px(FULL_MAX_WIDTH)), parsed[1]))
         root.deiconify()
         self._settle_size(start)
         theme.dark_title_bar(root)
@@ -746,21 +696,9 @@ class PlayerWindow:
         body = ttk.Frame(self.root, padding=theme.pad(theme.GAP_WIDE, theme.GAP_LARGE, theme.GAP_WIDE, theme.GAP_MEDIUM))
         body.pack(fill="both", expand=True)
         self.body = body
-        # A wide window's two panes (layout.py), not packed in the narrow window: on the left the
-        # now-playing stack (cover, text, seek bar, transport) centred in its pane, on the right the
-        # track list. Made before the widgets they hold: a widget packed into a frame other than its
-        # parent must be above that frame in Tk's stacking order.
-        self.split = ttk.Frame(body)
-        self.left = tk.Frame(self.split, bg=theme.BG, width=1)
-        self.left.pack_propagate(False)
-        self.left.pack(side="left", fill="y")
-        self.stack = ttk.Frame(self.left)
-        self.right = ttk.Frame(self.split)
-        self.right.pack(side="left", fill="both", expand=True)
-
         # Now playing: a square cover the full width of the window, the details underneath.
         # It follows the window's width, but never takes more than half its height, so the
-        # track list always keeps room. (Packed by _pack_column / _pack_split.)
+        # track list always keeps room. (Packed by _pack_column.)
         head = ttk.Frame(body)
         self.head = head
         self.art_box = tk.Frame(head, bg=theme.BG, height=1)
@@ -771,14 +709,11 @@ class PlayerWindow:
         self.art_label.place(relx=0.5, rely=0, anchor="n")
         # Click: Now Playing; double-click: the mini strip (0.19.0).
         click_or_double(self.art_label, self.show_details, self.toggle_mini)
-        Tooltip(self.art_label, lambda: self._cover_tip)   # (a wide window: the cover's size)
         self.art_box.bind("<Configure>", lambda e: self._fit_art())
         self.root.bind("<Configure>", self._on_resize, add="+")
         text = ttk.Frame(head)
         text.pack(fill="x", pady=theme.pad(theme.GAP_LARGE, 0))
         self.head_text = text
-        # A wide window's caption over the title: NOW PLAYING, or what the tab is (ALBUM, PLAYLIST, …).
-        self.kind_label = ttk.Label(text, text="", style="Section.TLabel", anchor="w")
         if not self.show_art.get():
             self.art_box.pack_forget()
             text.pack_configure(pady=0)
@@ -787,9 +722,6 @@ class PlayerWindow:
         self.sub_label = ttk.Label(text, text="Open your library: Ctrl+L", style="Subtitle.TLabel",
                                    anchor="w")
         self.sub_label.pack(fill="x")
-        # Shortened with "…" (a wide window): the whole text in a tooltip.
-        Tooltip(self.title_label, lambda: self._head_full[0] if self._head_cut[0] else "")
-        Tooltip(self.sub_label, lambda: self._head_full[1] if self._head_cut[1] else "")
         info_row = ttk.Frame(text)
         info_row.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
         # Right of the format line, one group in one size and style: the status dot, the
@@ -906,13 +838,10 @@ class PlayerWindow:
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu,
-                                     on_search_library=lambda query: self._search_whole_library(query),
+                                     on_search_library=self.find_in_library,
                                      is_favourite=lambda track: track in self.favourites,
-                                     plays_db=lambda: self._index().db,
-                                     on_view=self.set_view, on_scope=self.set_search_scope,
-                                     on_library_key=self._library_key)
+                                     plays_db=lambda: self._index().db)
         self.playlist.set_columns(self.prefs.get("track_columns") or ())
-        self.playlist.set_wide_columns(self.prefs.get("wide_track_columns") or ())
         # "Up next (3) · Song": shown above the status line only while songs are queued; click
         # for the list. (Packed from the bottom, ahead of the track list, like the status line.)
         self.up_next_label = ttk.Label(body, text="", style="UpNext.TLabel", anchor="w", cursor="hand2")
@@ -1526,12 +1455,9 @@ class PlayerWindow:
         self.new_menu.toggle(self.bar.add_btn, self._below_strip())
 
     def search_this_tab(self):
-        """Ctrl+F: the track list's search box (a wide window: its Tracks view, searching this tab)."""
+        """Ctrl+F: the track list's search box."""
         if self.mini_mode:
             self.toggle_mini()
-        if self._tier != layout.COLUMN and (self.view != "tracks" or self.search_scope != "tab"):
-            self.search_scope = "tab"
-            self.set_view("tracks")
         self.playlist.focus_search()
 
     def settings_from_key(self):
@@ -1883,12 +1809,6 @@ class PlayerWindow:
         interrupt: play it even so (it was asked for by name: "Open with", a double-click)."""
         if kind == "album":
             self._mark_opened(Path(str(path)))
-        if self._tier != layout.COLUMN and (self.view != "tracks" or self.search_scope != "tab"):
-            # The tab asked for: its list on show, not Up next, the lyrics or the whole library's results.
-            if self.search_scope != "tab":
-                self.search_scope = "tab"
-                self.playlist.query.set("")   # (the library's search words would filter the tab)
-            self.set_view("tracks")
         if play and not interrupt and self.player.status().state is not State.STOPPED:
             play = False
             self._set_notice(f"Opened “{Path(str(path)).name}” · the music playing carries on: press play "
@@ -2866,20 +2786,11 @@ class PlayerWindow:
 
     def _columns_menu(self, menu):
         """Artist / Album / Plays columns in the track list (off by default: the window is narrow).
-        Fills `menu` (a PopupMenu, or a submenu of one) with a tick item per column. A wide window has
-        its own setting, with Format too (the columns its layout has room for); a column ticked but
-        hidden because its value is the same on every row of the tab says so."""
-        if self._tier == layout.COLUMN:
-            choices = (("artist", "Artist"), ("album", "Album"), ("plays", "Plays"))
-        else:
-            allowed = layout.ALLOWED[self._tier]
-            choices = tuple(c for c in (("artist", "Artist"), ("album", "Album"), ("quality", "Format"),
-                                        ("plays", "Plays")) if c[0] in allowed)
+        Fills `menu` (a PopupMenu, or a submenu of one) with a tick item per column."""
+        choices = (("artist", "Artist"), ("album", "Album"), ("plays", "Plays"))
         wanted = self.playlist.wanted()
         for column, label in choices:
             on = column in wanted
-            if on and self._tier != layout.COLUMN and column not in self.playlist.shown:
-                label += " (same on every row)"
             menu.add_check(label, on, lambda c=column, on=on: self._set_track_column(c, not on))
         return menu
 
@@ -2890,12 +2801,8 @@ class PlayerWindow:
 
     def _set_track_column(self, column: str, on: bool):
         columns = [c for c in self.playlist.wanted() if c != column] + ([column] if on else [])
-        if self._tier == layout.COLUMN:
-            self.playlist.set_columns(columns)
-            self.prefs["track_columns"] = list(self.playlist.columns)
-        else:
-            self.playlist.set_wide_columns(columns)
-            self.prefs["wide_track_columns"] = list(self.playlist.wide_columns)
+        self.playlist.set_columns(columns)
+        self.prefs["track_columns"] = list(self.playlist.columns)
 
     def _tab_menu(self, index: int, event):
         if not 0 <= index < len(self.tabs):
@@ -3335,9 +3242,7 @@ class PlayerWindow:
                 self._fill_up_next()   # (a network song's download moved on)
             return
         self._up_next_key = key
-        if queue and self._up_next_docked():   # (the list itself is on show in the right pane)
-            self.up_next_label.pack_forget()
-        elif queue:
+        if queue:
             first = queue[0].track
             artist = f" — {first.artist}" if first.artist else ""
             self.up_next_label.configure(text=f"Up next ({len(queue):,}) · {first.title}{artist}")
@@ -4581,7 +4486,6 @@ class PlayerWindow:
                 self.mini.show(**self._mini_state)
         else:
             self.art_size = 0   # size the cover afresh for the full window
-            self._check_layout(force=True)
             self.root.after_idle(self._fit_art)
 
     def _limit_size(self, full: bool):
@@ -4645,362 +4549,48 @@ class PlayerWindow:
         parsed = placement.parse(full) if full else None
         return f"{size}+{parsed[2]}+{parsed[3]}" if parsed else size
 
-    # -- wide windows (layout.py) -------------------------------------------------------------------
+    # -- packing the column ---------------------------------------------------------------------------
     def _pack_column(self):
-        """The narrow window's layout: the one place it's packed (at start, after a wide window, and
-        when a tab opens in an empty window)."""
+        """The window's one layout: the now-playing head, the seek bar, the transport and the track
+        list between the strip and the status line. The one place it's packed (at start, and when a
+        tab opens in an empty window)."""
         self.head.pack(fill="x", before=self.status_row)
         self.seek_row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0), before=self.status_row)
         self.transport.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, theme.GAP), before=self.status_row)
         self.playlist.frame.pack(fill="both", expand=True, after=self.status_row)
         self._place_up_next()
 
-    def _pack_split(self):
-        """A wide window's layout: the two panes between the strip and the status line, the
-        now-playing parts in the left one's stack, the track list in the right one."""
-        self.split.pack(fill="both", expand=True, after=self.status_row)
-        self.head.pack(in_=self.stack, fill="x")
-        self.seek_row.pack(in_=self.stack, fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-        self.transport.pack(in_=self.stack, fill="x", pady=theme.pad(theme.GAP_SMALL, theme.GAP))
-        self.playlist.frame.pack(in_=self.right, fill="both", expand=True)
-        self._place_up_next()
-        # Each above the frame it's packed in (raised in the order they were made, which is also the
-        # order Tab goes through them; the pieces placed over them come after).
-        for widget in (self.head, self.head_icons, self.seek_row, self.seek, self.transport, self.playlist.frame,
-                       self.playlist.scrollbar, self.up_next_label):
-            self.root.tk.call("raise", str(widget))   # (a canvas's own lift() raises its items instead)
-
     def _place_up_next(self):
         """The Up next line (only while songs are queued): above the track list, or with no tab open,
         just above the status line."""
-        if not self.player.queue or self._up_next_docked():
+        if not self.player.queue:
             return
         place = (dict(before=self.playlist.frame) if self.playlist.frame.winfo_manager()
                  else dict(after=self.status_row))
         self.up_next_label.pack(side="bottom", fill="x", pady=theme.pad(theme.GAP_SMALL, 0), **place)
 
-    def _choose_tier(self, size: tuple[int, int] | None = None) -> str:
-        width, height = size or (self.root.winfo_width(), self.root.winfo_height())
-        scale = _layout_scale()
-        return layout.choose(width / scale, height / scale, self._tier, self.show_art.get())
-
     def _on_resize(self, event):
-        """The window's size changed: another layout (once, when Tk is next idle), or the same one
-        fitted to the new size."""
-        if event.widget is not self.root:
-            return
-        self._opening_size = None   # (shown: its own size from now on)
-        if self.mini_mode or self._mini_settings_from is not None:
-            return
-        if self._choose_tier() != self._tier:
-            if self._layout_job is None:
-                self._layout_job = self.root.after_idle(self._apply_layout)
+        """The window's size changed: the cover follows it."""
+        if event.widget is not self.root or self.mini_mode or self._mini_settings_from is not None:
             return
         self._fit_art()
-
-    def _check_layout(self, force: bool = False, size: tuple[int, int] | None = None):
-        """Put the window in the layout its size calls for now, rather than at the next resize.
-        force: a wide window staying wide is measured and fitted afresh (the cover switched on or off,
-        back from the mini strip). size: the window's size to go by (real px), before it's shown."""
-        if self.mini_mode or self._mini_settings_from is not None:
-            return
-        if size is not None:
-            self._opening_size = size   # (fitted to it while the window can't be measured yet)
-        tier = self._choose_tier(size)
-        if tier != self._tier:
-            self._apply_layout(tier)
-        elif force and tier != layout.COLUMN:
-            self._heights, self._plan, self.art_size = None, None, 0
-            self._fit_split()
-
-    def _apply_layout(self, tier: str | None = None):
-        """Move into another layout, in one go so Tk lays out and paints once. Nothing is rebuilt —
-        the same widgets are packed into other frames — so the search, the selection, the list's
-        scroll position and the keyboard's place all stay."""
-        if self._layout_job is not None:
-            self.root.after_cancel(self._layout_job)
-            self._layout_job = None
-        if self.mini_mode or self._mini_settings_from is not None:
-            return
-        tier = tier or self._choose_tier()
-        if tier == self._tier:
-            return
-        try:
-            focus = self.root.focus_get()
-        except (KeyError, tk.TclError):   # (a part of Tk's own, e.g. an open drop-down's list)
-            focus = None
-        was, self._tier = self._tier, tier
-        wide = tier != layout.COLUMN
-        if wide != (was != layout.COLUMN):
-            moved = (self.head, self.seek_row, self.transport, self.up_next_label, self.playlist.frame)
-            self.split.pack_forget()
-            for widget in moved:
-                widget.pack_forget()
-            if not wide:
-                self._art_hidden = False
-                if self.show_art.get():
-                    self.art_box.pack(fill="x", before=self.head_text)
-                    self.head_text.pack_configure(pady=theme.pad(theme.GAP_LARGE, 0))
-            if self._empty_shown:
-                self._place_up_next()
-            elif wide:
-                self._pack_split()
-            else:
-                self._pack_column()
-        self._style_for(tier)
-        self._heights, self._plan, self.art_size = None, None, 0
-        self._fits.clear()
-        self._fit_art()
-        self._paint_head()
-        if focus is not None and focus.winfo_exists():
-            focus.focus_set()
-
-    def _style_for(self, tier: str):
-        """A layout's type sizes, caption, list style and columns, and the strip's extras."""
-        wide = tier != layout.COLUMN
-        self.title_label.configure(style=TITLE_STYLES[tier])
-        self.sub_label.configure(style=SUB_STYLES[tier])
-        self.format_label.configure(style=INFO_STYLES[tier])
-        info_row = self.format_label.master
-        if wide:
-            self.kind_label.pack(anchor="w", pady=theme.pad(0, theme.GAP_SMALL), before=self.title_label)
-            info_row.pack_configure(fill="none", anchor="w")   # the dot, lock and ⓘ right after the text
-        else:
-            self.kind_label.pack_forget()
-            info_row.pack_configure(fill="x", anchor="center")
-        self.playlist.set_tier(tier)
-        if self._up_next_view is not None:
-            self._up_next_view.set_tier(tier)
-        self.bar.set_wide(wide, layout.TAB_MAX[tier])
-        self._cover_tip = ""
-        self._show_view()
-
-    def _measure_heights(self) -> layout.Heights:
-        """The heights a wide layout is planned from (logical px), measured with its styles on."""
-        self.root.update_idletasks()
-        scale = _layout_scale()
-        tree = self.playlist.tree
-        row = ttk.Style(self.root).lookup(str(tree.cget("style")) or "Treeview", "rowheight")
-        base = layout.DEFAULT_HEIGHTS[self._tier]
-
-        def logical(real: float) -> int:
-            return math.ceil(real / scale)
-
-        chrome_h = (self.bar.winfo_reqheight() + theme.px(theme.GAP_LARGE) + theme.px(theme.GAP_MEDIUM)
-                    + self.status_row.winfo_reqheight() + theme.px(theme.GAP))
-        return layout.Heights(
-            text=logical(self.head_text.winfo_reqheight()),
-            seek=logical(self.seek_row.winfo_reqheight() + theme.px(theme.GAP_MEDIUM)),
-            transport=logical(self.transport.winfo_reqheight() + theme.px(theme.GAP_SMALL) + theme.px(theme.GAP)),
-            chrome=logical(chrome_h),
-            list_head=logical(self.playlist.header.winfo_reqheight() + theme.px(theme.GAP)
-                              + (self.playlist.search_row.winfo_reqheight() + theme.px(theme.GAP)
-                                 if self.playlist.search_row.winfo_manager() else 0)),
-            heading=base.heading,
-            row=logical(float(row)) if row else base.row)
-
-    def _fit_split(self):
-        """Fit a wide layout to the window: the panes' widths, the margins past CONTENT_MAX, the
-        cover's slot (snapped to whole steps; while resizing, the last cover is scaled quickly as a
-        stand-in until the window settles) and the shortened title. Reads only the window's size and
-        the measured heights — never the panes themselves — so nothing feeds back."""
-        if self.mini_mode or self._tier == layout.COLUMN:
-            return
-        # Until the window has been shown and told its size, Tk calls it 200 px square: go by the
-        # size it opens at instead (or its first paint would be laid out for that).
-        width, height = self._opening_size or (self.root.winfo_width(), self.root.winfo_height())
-        if width < 10 or height < 10:
-            return
-        if self._heights is None:
-            # Measuring makes Tk lay out and paint the window as it is at that moment, so it's first
-            # fitted with the heights this layout had last time (or typical ones): that paint already
-            # shows the panes in place, not a list across the whole window with nothing beside it.
-            self._heights = self._measured.get(self._tier) or layout.DEFAULT_HEIGHTS[self._tier]
-            self._fit_plan(width, height)
-            self._heights = self._measured[self._tier] = self._measure_heights()
-        self._fit_plan(width, height)
-
-    def _fit_plan(self, width: int, height: int):
-        """Fit the panes, the cover's slot and the title to a window `width` × `height` real px, planned
-        from the heights in hand."""
-        scale = _layout_scale()
-        plan = layout.plan(width / scale, height / scale, self._tier, self.show_art.get(), self._heights)
-        old, self._plan = self._plan, plan
-        px = theme.px
-
-        def moved(name: str) -> bool:
-            return old is None or abs(px(getattr(old, name)) - px(getattr(plan, name))) > 2
-
-        if moved("margin"):
-            self.split.pack_configure(padx=px(plan.margin))
-        if moved("left_w"):
-            self.left.configure(width=px(plan.left_w))
-        if moved("stack_w"):
-            self.stack.place(relx=0.5, rely=0.5, anchor="center", width=px(plan.stack_w))
-            self._fits.clear()
-        self._fit_info_row()
-        if self.show_art.get():
-            hide = plan.slot == 0
-            if hide != self._art_hidden:   # too short for a cover: text, seek bar and transport only
-                self._art_hidden = hide
-                if hide:
-                    self.art_box.pack_forget()
-                    self.head_text.pack_configure(pady=0)
-                else:
-                    self.art_box.pack(fill="x", before=self.head_text)
-                    self.head_text.pack_configure(pady=theme.pad(theme.GAP_LARGE, 0))
-            slot = px(plan.slot)
-            if slot and slot != self.art_size:
-                self.art_size = slot
-                self.art_box.configure(height=slot)
-                self._stand_in_art()
-                if self._art_job:
-                    self.root.after_cancel(self._art_job)
-                self._art_job = self.root.after(COVER_SETTLE_MS, self._art_settled)
-        self._paint_head()
-
-    def _fit_info_row(self):
-        """The format line with the status dot, lock and ⓘ right after it — unless it's wider than the
-        stack, when the row takes the stack's width (the icons at its end, the text cut)."""
-        if self._plan is None:
-            return
-        info_row = self.format_label.master
-        fill = "x" if info_row.winfo_reqwidth() > theme.px(self._plan.stack_w) else "none"
-        if str(info_row.pack_info().get("fill")) != fill:
-            info_row.pack_configure(fill=fill)
-
-    def _stand_in_art(self):
-        """The last cover scaled quickly (bilinear, about a millisecond) to the new slot while the
-        window is being resized; the proper one is fetched once it settles. Never past the picture's
-        own size."""
-        image = self._art_image
-        if image is None or not self.art_size:
-            return
-        source = image.info.get("source_size", image.size)
-        side = max(1, min(self.art_size, *source))
-        quick = image if image.width == side else image.resize((side, side), Image.Resampling.BILINEAR)
-        quick.info["source_size"] = source
-        self._show_art(quick, fetched=False)
 
     def _art_settled(self):
         self._art_job = None
         self._request_art(self._art_track, force=True)
 
-    def _set_head(self, caption: str, title: str, sub: str, fmt: str):
-        """The top of the window: the caption (a wide window only), title, artist line and format line.
-        The whole title and artist line are kept — the mini strip and the tooltips show them — and a
-        wide window shortens them with "…" to its stack's width."""
+    def _set_head(self, title: str, sub: str, fmt: str):
+        """The top of the window: the title, the artist line and the format line. The whole title and
+        artist line are kept (the mini strip shows them too)."""
         self._head_full = (title, sub)
-        self._head_texts = (caption, fmt)
+        self._head_fmt = fmt
         self._paint_head()
 
     def _paint_head(self):
-        (title, sub), (caption, fmt) = self._head_full, self._head_texts
-        shown_title, shown_sub = title, sub
-        if self._tier != layout.COLUMN and self._plan is not None:
-            width = theme.px(self._plan.stack_w)
-            shown_title = self._fit_text(title, TITLE_STYLES[self._tier], width)
-            shown_sub = self._fit_text(sub, SUB_STYLES[self._tier], width)
-        self._head_cut = (shown_title != title, shown_sub != sub)
-        for label, text in ((self.kind_label, caption), (self.title_label, shown_title),
-                            (self.sub_label, shown_sub), (self.format_label, fmt)):
+        title, sub = self._head_full
+        for label, text in ((self.title_label, title), (self.sub_label, sub), (self.format_label, self._head_fmt)):
             if str(label.cget("text")) != text:
                 label.configure(text=text)
-
-    def _fit_text(self, text: str, style: str, width: int) -> str:
-        """`text` shortened with "…" to `width` px in a label style's font (remembered)."""
-        key = (text, style, width)
-        shown = self._fits.get(key)
-        if shown is None:
-            if len(self._fits) > 400:
-                self._fits.clear()
-            font = controls._measuring_font(self.root, ttk.Style(self.root).lookup(style, "font"))
-            shown = text
-            if font.measure(text) > width:
-                while shown and font.measure(shown + "…") > width:
-                    shown = shown[:-1]
-                shown = shown.rstrip() + "…" if shown.strip() else text[:1] + "…"
-            self._fits[key] = shown
-        return shown
-
-    def _tab_count(self, tab: Tab) -> str:
-        """A wide window's count over the list, e.g. "Album · 13 songs · 51:57", or for a tab of many
-        albums "Library · 655 songs · 50 albums · 41:22:10"."""
-        if tab.tracks is None:
-            return "Loading…" if tab.loading else ""
-        songs, albums, seconds = tab_numbers(tab)
-        if not songs:
-            return ""
-        parts = [KIND_NAMES.get(tab.kind, ""), plural(songs, "song")]
-        if albums > 1 and tab.kind != "playlist":
-            parts.append(plural(albums, "album"))
-        parts.append(fmt_time(seconds))
-        return " · ".join(p for p in parts if p)
-
-    # -- a wide window's right pane: Tracks · Up next · Lyrics ----------------------------------------------
-    def set_view(self, view: str):
-        """The right pane's view switch: "tracks" (the tab's list, or the whole library's results),
-        "up_next" or "lyrics". Kept for the session: the narrow window always shows the list, and a
-        wide one goes back to this view."""
-        if view not in dict(playlist_view.VIEWS):
-            return
-        self.view = view
-        self.playlist.set_view(view)
-        self._show_view()
-
-    def set_search_scope(self, scope: str):
-        """This tab | Whole library, beside the search box (a wide window)."""
-        if scope in dict(playlist_view.SCOPES):
-            self.search_scope = scope
-            self._show_view()
-
-    def _up_next_docked(self) -> bool:
-        """The docked Up next is on show (with no tabs open the right pane is put away: the Up next
-        line shows the queue instead)."""
-        return self._tier != layout.COLUMN and self.view == "up_next" and not self._empty_shown
-
-    def _show_view(self):
-        """Put the right pane's view on show, and the others away: the tab's list, the whole library's
-        results (under the search box), Up next or the lyrics. The narrow window: the list, always."""
-        playlist = self.playlist
-        wide = self._tier != layout.COLUMN
-        view = self.view if wide else "tracks"
-        library = wide and view == "tracks" and self.search_scope == "library"
-        playlist.set_view(self.view)
-        playlist.set_scope("library" if library else "tab")
-        if wide:
-            playlist.show_search_row(view == "tracks")
-        if wide and view == "up_next" and self._up_next_view is None:
-            self._up_next_view = self._make_up_next_view()
-        if wide and view == "lyrics" and self._lyrics_view is None:
-            self._make_lyrics_view()
-        if library and self._inline is None:
-            self._inline = QuickSearch(self.root, self._index, self.song_actions(), host=playlist.frame,
-                                       query=playlist.query, entry=playlist.entry, scroll_parent=self.body,
-                                       on_close=self._inline_closed)
-        inline = self._inline.panel if self._inline is not None else None
-        shown = {"up_next": self._up_next_view, "lyrics": self._lyrics_view}.get(view) or (
-            inline if library else playlist.table)
-        keys_at = self._keyboard_in()
-        put_away = [widget for widget in (playlist.table, inline, self._up_next_view, self._lyrics_view)
-                    if widget is not None and widget is not shown and widget.winfo_manager()]
-        for widget in put_away:
-            widget.pack_forget()
-        if not shown.winfo_manager():
-            shown.pack(fill="both", expand=True)
-        if self._inline is not None and library != self._inline.is_open:
-            if library:
-                self._inline.open()
-            else:
-                self._inline.close(tell=False)
-        # The keyboard was in what was just put away (a result played, a click on the view switch,
-        # the window made narrow): it goes to what's on show, or keys would act on a hidden list.
-        if any(keys_at == str(w) or keys_at.startswith(f"{w}.") for w in put_away):
-            self._keyboard_to(playlist.tree if shown is playlist.table else playlist.entry if shown is inline
-                              else shown.tree if shown is self._up_next_view else self.root)
-        self._up_next_key = None   # (the Up next line: not while the list itself is docked)
-        self._paint_up_next()
-        self._paint_docks()
 
     def _keyboard_in(self) -> str:
         """The Tk name of the widget in this window that has the keyboard, or gets it back when the
@@ -5022,92 +4612,6 @@ class PlayerWindow:
                 target.focus_set()
         except tk.TclError:
             pass
-
-    def _make_up_next_view(self) -> UpNextView:
-        def play(entry):
-            self.player.play_queued(entry)
-            self._paint_up_next()
-            self._paint_docks()
-
-        def remove(entries):
-            self._unqueue_entries(entries)
-            self._paint_docks()   # (at once: the list selects the song now in their place)
-
-        def sleep_menu(widget):
-            self._sleep_menu(self._menu()).popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
-
-        dock = UpNextView(self.playlist.frame, scroll_parent=self.body, on_play=play,
-                          on_remove=remove, on_clear=self.clear_up_next,
-                          on_stop_after=self.stop_after_current, on_sleep_menu=sleep_menu)
-        dock.set_tier(self._tier)
-        return dock
-
-    def _make_lyrics_view(self):
-        """The lyrics docked: the Lyrics window's own view and follower, the text lined up with the pane."""
-        view = LyricsView(self.playlist.frame)
-        view.text.configure(padx=0, pady=theme.px(theme.GAP_SMALL))
-        self._lyrics_view = view
-        self._lyrics_follower = LyricsFollower(view, self.player, on_song=self._lyrics_shown)
-
-    def _lyrics_shown(self, _title: str, line: str):
-        """The docked lyrics' song changed, or its lyrics came: where they came from, for the count line."""
-        self._lyrics_line = line if line.startswith("From ") else ""
-
-    def _paint_docks(self):
-        """Up next or the lyrics, while docked, as they are now."""
-        if self._tier == layout.COLUMN:
-            return
-        if self.view == "up_next" and self._up_next_view is not None:
-            queue = self.player.queue   # (the player's own list, replaced whole on every change)
-            timer = self.sleep_timer if self.sleep_timer is not None and self.sleep_timer.active else None
-            sleep_label = f"Sleep timer: {sleep.choice_label(timer.target).lower()}" if timer else "Sleep timer…"
-            self._up_next_view.show(queue, self._up_next_marks([q.track for q in queue[:200]], shown=200),
-                                    self.player.stop_after == "song", sleep_label)
-        elif self.view == "lyrics" and self._lyrics_follower is not None:
-            self._lyrics_follower.follow(True)
-
-    def _view_count(self, shown: Tab | None) -> str:
-        """The right pane's count line: the tab's ("Album · 13 songs · 51:57"), Up next's, or where the
-        lyrics came from. (The whole library's results say their own count under them.)"""
-        if self.view == "up_next":
-            queue = self.player.queue   # (replaced whole on every change: counted once per change)
-            counted = self._up_next_counted
-            if counted is None or counted[0] is not queue:
-                counted = (queue, up_next_count(len(queue), sum(q.track.duration or 0 for q in queue)))
-                self._up_next_counted = counted
-            return counted[1]
-        if self.view == "lyrics":
-            return self._lyrics_line
-        if self.search_scope == "library":
-            return ""
-        return self._tab_count(shown) if shown is not None else ""
-
-    def _search_whole_library(self, query: str):
-        """The track list's "Search the whole library" row: a wide window's own box searches the library
-        (the results in the list's place); the narrow one opens the search panel."""
-        if self._tier != layout.COLUMN and self.view == "tracks":
-            self.set_search_scope("library")   # (the box keeps the words: they're searched at once)
-            self.playlist.entry.focus_set()
-        else:
-            self.find_in_library(query)
-
-    def _library_key(self, how: str):
-        """A key in the track list's box while it searches the whole library: ↓ into the results, Enter
-        (and Shift / Ctrl / Alt+Enter) on the first one, as in the search panel."""
-        inline = self._inline
-        if inline is None or not inline.is_open:
-            return
-        if how == "down":
-            inline._into_results()
-        else:
-            inline._act(how, first=True)
-
-    def _inline_closed(self):
-        """A song played or an album opened from the docked results: back to the tab's list, the box
-        emptied (the tab asked for is the one on show now)."""
-        self.playlist.query.set("")
-        self.search_scope = "tab"
-        self._show_view()
 
     # -- the status line -----------------------------------------------------------------------------
     def _show_status(self, text: str):
@@ -5149,10 +4653,7 @@ class PlayerWindow:
     # -- cover art -------------------------------------------------------------
     def _fit_art(self):
         """Size the cover square to the window: the full width, but never so tall that the
-        track list drops below a few rows. (A wide window: _fit_split.)"""
-        if self._tier != layout.COLUMN:
-            self._fit_split()
-            return
+        track list drops below a few rows."""
         width = self.art_box.winfo_width()
         if width < 10 or not self.show_art.get() or self.mini_mode:
             return
@@ -5181,25 +4682,19 @@ class PlayerWindow:
             self.art_box.pack(fill="x", before=self.head_text)
             self.head_text.pack_configure(pady=theme.pad(theme.GAP_LARGE, 0))
             self.art_size = 0  # size it afresh; _fit_art then fetches the cover
-            self._art_hidden = False
             self.root.after_idle(self._fit_art)
         else:
             self.art_box.pack_forget()
             self.head_text.pack_configure(pady=0)
-        self._check_layout(force=True)   # (a 780–879 px window splits only with a cover to show)
 
     def _request_art(self, path: Path | None, force: bool = False):
         """Find and shrink the cover off the UI thread; _poll picks the result up."""
         self._art_track = path
         if not self.show_art.get():
             return  # remembered, so switching the cover back on shows the right one
-        # The narrow window enlarges a small cover to fill its square; a wide one never does.
-        upscale = self._tier == layout.COLUMN
-        key = (path, self.art_size, upscale)
+        key = (path, self.art_size)
         if (key == self._art_key and not force) or not self.art_size:
             return
-        if not upscale and self._art_job is not None and not force:
-            return   # being resized: the stand-in shows until it settles (_art_settled)
         self._art_key = key
         if path is None:
             self._show_art(None)
@@ -5208,7 +4703,7 @@ class PlayerWindow:
 
         def work():
             try:
-                image = artwork.cover_for(path, size, upscale=upscale)
+                image = artwork.cover_for(path, size)
             except Exception:   # (a damaged picture: the placeholder instead)
                 log.exception("couldn't read the cover for %s", path)
                 image = None
@@ -5217,17 +4712,9 @@ class PlayerWindow:
 
         threading.Thread(target=work, name="cover-art", daemon=True).start()
 
-    def _show_art(self, image, fetched: bool = True):
+    def _show_art(self, image):
         """Put a cover up with softly rounded corners (0.20.0); no cover: a quiet ♫ placeholder
-        the same size, so nothing shifts. A wide window shows a cover at most at its own size: a
-        smaller one sits on a mat the size of the slot (and the cover's tooltip says so).
-        fetched=False: a quick stand-in while the window is resized."""
-        if fetched:
-            self._art_image = image
-        if self._tier != layout.COLUMN:
-            self._show_wide_art(image)
-            return
-        self._cover_tip = ""
+        the same size, so nothing shifts."""
         size = image.width if image is not None else self.art_size
         if size < 2:
             return
@@ -5235,24 +4722,6 @@ class PlayerWindow:
             image = controls.placeholder(size)
         image = controls.round_corners(image, controls.corner_radius(size), "BG")
         self._art_photo = ImageTk.PhotoImage(image, master=self.root)  # keep a reference or Tk drops it
-        self.art_label.configure(image=self._art_photo, text="")
-
-    def _show_wide_art(self, image):
-        slot = self.art_size
-        if slot < 2:
-            return
-        if image is None:
-            self._cover_tip = ""
-            picture = controls.round_corners(controls.placeholder(slot), controls.corner_radius(slot), "BG")
-        else:
-            width, height = image.info.get("source_size", image.size)
-            if image.width < slot:
-                picture = controls.matted(image, slot)
-                self._cover_tip = f"Cover {width} × {height} px · shown 1:1, not enlarged"
-            else:
-                picture = controls.round_corners(image, controls.corner_radius(image.width), "BG")
-                self._cover_tip = f"Cover {width} × {height} px · shown at {image.width}"
-        self._art_photo = ImageTk.PhotoImage(picture, master=self.root)
         self.art_label.configure(image=self._art_photo, text="")
 
     def _paint_empty_mark(self):
@@ -5264,29 +4733,19 @@ class PlayerWindow:
 
     def _show_empty(self, empty: bool):
         """No tabs open: the empty view in place of the cover, transport and track list (the status
-        line stays), in any layout. A tab opening packs them back for the layout of the moment."""
+        line stays). A tab opening packs them back."""
         if empty == self._empty_shown:
             return
         self._empty_shown = empty
         if empty:
-            for w in (self.split, self.head, self.seek_row, self.transport, self.playlist.frame):
+            for w in (self.head, self.seek_row, self.transport, self.playlist.frame):
                 w.pack_forget()
-            if self.up_next_label.winfo_manager() and str(self.up_next_label.pack_info()["in"]) != str(self.body):
-                self._place_up_next()   # (it was in the wide window's list pane)
             self.empty_view.pack(fill="both", expand=True, after=self.status_row)
         else:
             self.empty_view.pack_forget()
-            if self._tier == layout.COLUMN:
-                self._pack_column()
-            else:
-                self._pack_split()
+            self._pack_column()
             self.art_size = 0   # size the cover afresh
             self.root.after_idle(self._fit_art)
-        if self._tier != layout.COLUMN and self.view == "up_next":
-            # A docked Up next is put away with the pane (and back with it): meanwhile the Up next line
-            # shows the queue.
-            self._up_next_key = None
-            self._paint_up_next()
 
     def _palette_changed(self, _palette):
         """After a palette change (theme.use): redraw what keeps its colours — the cover's
@@ -5295,7 +4754,7 @@ class PlayerWindow:
         self._refresh_tabs()
         self._paint_status_dot(self._status_colour)
         if self._art_track is not None or self.art_size:
-            self.art_size = 0   # (a wide window's mat, too, is drawn again in the new colours)
+            self.art_size = 0   # (the placeholder is drawn again in the new colours)
             self._fit_art()
         self._paint_order_buttons()
         self._paint_lock()
@@ -5458,7 +4917,7 @@ class PlayerWindow:
         # the song; flick to another album and you see that album (press play to start it).
         if viewing_playing and track:
             self._request_art(track.path)
-            self._set_head(NOW_PLAYING, track.title, track.display_artist_album or track.path.parent.name,
+            self._set_head(track.title, track.display_artist_album or track.path.parent.name,
                            track.format_line)
             text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
                                      track.bits, track.codec, status.levelling, status.fading)
@@ -5482,17 +4941,16 @@ class PlayerWindow:
         elif shown is not None:
             view = shown.view_track()
             self._request_art(view.path if view else shown.first_file)
-            caption = CAPTIONS.get(shown.kind, "")
             if view is not None and shown.last_index >= 0 and shown.resume_at >= 1:
                 # Left paused part-way through a song: show where, ready to carry on.
-                self._set_head(caption, view.title, view.display_artist_album or view.path.parent.name,
+                self._set_head(view.title, view.display_artist_album or view.path.parent.name,
                                f"Paused at {fmt_time(shown.resume_at)} of {fmt_time(view.duration)} · press play "
                                "to carry on")
             elif shown.kind == "library" and shown.last_index < 0:   # (its first album's artist would mislead)
-                self._set_head(caption, shown.title, "Press play to start", self._album_summary(shown))
+                self._set_head(shown.title, "Press play to start", self._album_summary(shown))
             else:
                 artist = (view.artist if view else shown.artist) or ""
-                self._set_head(caption, shown.title, artist or "Press play to start this album",
+                self._set_head(shown.title, artist or "Press play to start this album",
                                self._album_summary(shown))
             text, tone = "", "plain"
             showing_playing = False
@@ -5500,7 +4958,7 @@ class PlayerWindow:
                          if track else "")
         else:
             self._request_art(None)
-            self._set_head("", "Nothing playing", "Open your library: Ctrl+L", "")
+            self._set_head("Nothing playing", "Open your library: Ctrl+L", "")
             text, tone = "", "plain"
             showing_playing = False
             elsewhere = ""
@@ -5555,9 +5013,6 @@ class PlayerWindow:
             self._show_times(position, duration)
         self._paint_undo_link()
         self._show_status(self._notice or status.message or network_text or self._sleep_line(status) or elsewhere)
-        if self._tier != layout.COLUMN:
-            self._paint_docks()
-            self.playlist.set_count(self._view_count(shown))
         # The mini strip shows the same as the top of the full window.
         self._mini_state = dict(title=self._head_full[0], artist=self._head_full[1],
                                 position=position, duration=duration, playing=playing_now,
@@ -5688,7 +5143,7 @@ class PlayerWindow:
 
     def _stop_timers(self):
         for job in (self._poll_job, self._media_job, self._theme_job, self._update_job, self._check_job,
-                    self._layout_job, self._art_job):
+                    self._art_job):
             if job is not None:
                 self.root.after_cancel(job)
 
