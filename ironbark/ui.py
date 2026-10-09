@@ -163,18 +163,10 @@ from .statustext import (
 )
 from .tabbar import MenuRow, Popover, SettingRow, TabBar, Tooltip, glyph
 from .tag_window import TagHistoryWindow, TagWindow
-from .tools.abx_window import AbxWindow
-from .tools.clip_window import ClipWindow
-from .tools.compare_window import CompareWindow
 from .tools.details import NowPlayingWindow
-from .tools.meter_window import MeterWindow
 from .tools.meters import album_files
-from .tools.pcm_window import PcmWindow
-from .tools.reels_window import EXPERIMENT as TAPE_REELS
-from .tools.reels_window import ReelsWindow
-from .tools.scope_window import ScopeWindow
-from .tools.spectrogram_window import SpectrogramWindow
-from .tools.testsignals_window import TestSignalsWindow
+from .tools.registry import BY_ACTION, TAPE_REELS, TOOLS, Tool
+from .toolwin import ToolWindow
 
 log = logging.getLogger(__name__)
 
@@ -550,15 +542,8 @@ class PlayerWindow:
         self._seek_target_playing = True  # does the seek bar show the playing song? (set by _poll)
         self._shown_key = None
         self._now_playing: NowPlayingWindow | None = None
-        self._meters: MeterWindow | None = None
-        self._pcm: PcmWindow | None = None
-        self._clip: ClipWindow | None = None
-        self._spectrogram: SpectrogramWindow | None = None
-        self._scope: ScopeWindow | None = None
-        self._reels: ReelsWindow | None = None
-        self._compare: CompareWindow | None = None
-        self._abx: AbxWindow | None = None
-        self._testsignals: TestSignalsWindow | None = None
+        # The Check tools' windows, one at a time each, by key action (tools/registry.py).
+        self._tools: dict[str, ToolWindow | None] = {tool.action: None for tool in TOOLS}
         self._library: LibraryView | None = None     # the Library's views (library_view.py), made when first opened
         self._library_shown = False                  # …and on show in place of the track list
         self._picking_for: Tab | None = None         # the playlist songs are being picked for in the Library tab
@@ -1399,8 +1384,8 @@ class PlayerWindow:
         if key == TAPE_REELS:
             if self.experiment_vars[key].get():
                 self._set_notice(f"Tape reels: press {keys.hint('reels')} to open the deck", 5000)
-            elif self._reels is not None and self._reels.win.winfo_exists():
-                self._reels.close()
+            else:
+                self._close_tool("reels")
 
     def _paint_version(self):
         """The version, and how many experiments are on — so it's never a mystery why the player
@@ -1460,14 +1445,7 @@ class PlayerWindow:
             "list_play_next": lambda: self._queue_selected(front=True),
             "select_all": lambda: self.playlist.select_all(),
             "now_playing": call("show_details"),
-            "meters": call("show_meters"),
-            "pcm": call("show_pcm"),
-            "clipping": call("show_clipping"),
-            "spectrogram": call("show_spectrogram"),
-            "scope": call("show_scope"),
-            "compare": call("show_compare"),
-            "abx": call("show_abx"),
-            "test_signals": call("show_testsignals"),
+            **{tool.action: functools.partial(self.show_tool, tool.action) for tool in TOOLS},
             "mini": call("toggle_mini"),
             "settings": call("settings_from_key"),
             "snap_home": call("snap_home"),
@@ -1481,7 +1459,6 @@ class PlayerWindow:
             "rename": call("rename_current"),
             "edit_tags": call("edit_selected_tags"),
             "lyrics": call("show_lyrics"),
-            "reels": call("show_reels"),
             "stop_after": lambda: void(self.stop_after_current()),   # (False only means "carry on" now)
             "sleep_timer": call("open_sleep_menu"),
         }, held=lambda: bool(popups.Prompt.stack))   # (no key acts while a question box waits)
@@ -4156,36 +4133,6 @@ class PlayerWindow:
                 on_testsignals=self.show_testsignals, on_lyrics=self.show_lyrics,
                 prefs=self.prefs, stored=self._stored_check, remember=self._remember_check))
 
-    def show_meters(self):
-        """VU, PPM, RMS and true-peak meters (one window at a time)."""
-        if self._meters is not None and self._meters.win.winfo_exists():
-            self._meters.lift()
-        else:
-            self._meters = self._with_keys(MeterWindow(self.root, self.player, self.prefs))
-
-    def show_pcm(self):
-        """The sample values being played, in decimal, hex or binary (one window at a time)."""
-        if self._pcm is not None and self._pcm.win.winfo_exists():
-            self._pcm.lift()
-        else:
-            self._pcm = self._with_keys(PcmWindow(self.root, self.player, self.prefs,
-                                                  analysis_for=NowPlayingWindow.cached_analysis))
-
-    def show_clipping(self):
-        """(0.24.0) Inter-sample overs: live, the whole song, and (Experimental) hear them."""
-        if self._clip is not None and self._clip.win.winfo_exists():
-            self._clip.lift()
-        else:
-            self._clip = self._with_keys(ClipWindow(self.root, self.player, self.prefs))
-
-    def show_spectrogram(self):
-        """A picture of the sound, live or the whole track (one window at a time)."""
-        if self._spectrogram is not None and self._spectrogram.win.winfo_exists():
-            self._spectrogram.lift()
-        else:
-            self._spectrogram = self._with_keys(SpectrogramWindow(self.root, self.player, self.prefs,
-                                                                  analysis_for=NowPlayingWindow.cached_analysis))
-
     def show_lyrics(self):
         """The playing song's lyrics, from its file or the .lrc / .txt beside it (one window at a time)."""
         if self._lyrics is not None and self._lyrics.win.winfo_exists():
@@ -4193,22 +4140,69 @@ class PlayerWindow:
         else:
             self._lyrics = self._with_keys(LyricsWindow(self.root, self.player, self.prefs))
 
+    def show_tool(self, action: str):
+        """Open one of the Check tools (tools/registry.py) by its key action, or lift it if it's open."""
+        tool = BY_ACTION[action]
+        if tool.experiment and not experiments.enabled(self.prefs, tool.experiment):
+            self._set_notice(f"{tool.label} is Experimental: switch it on in Settings → Experimental", 5000)
+            return
+        window = self._tools[action]
+        if window is not None and window.win.winfo_exists():
+            window.lift()
+            return
+        window = self._with_keys(self._make_tool(tool))
+        self._tools[action] = window
+        if tool.holds_check:
+            self._hold_check_while(window.win, action)
+
+    def _make_tool(self, tool: Tool):
+        """The window with what it needs: the player, a cached analysis, or the song playing."""
+        if tool.needs == "analysis":
+            return tool.window(self.root, self.player, self.prefs, analysis_for=NowPlayingWindow.cached_analysis)
+        if tool.needs == "file":
+            return tool.window(self.root, self.prefs, path_a=self._playing_file()[0])
+        if tool.needs == "file_at":
+            path, position = self._playing_file()
+            return tool.window(self.root, self.player, self.prefs, path_a=path, start_s=position)
+        return tool.window(self.root, self.player, self.prefs)
+
+    def tool_window(self, action: str) -> ToolWindow | None:
+        """A Check tool's window while it's open (made or lifted by show_tool), else None."""
+        window = self._tools.get(action)
+        return window if window is not None and window.win.winfo_exists() else None
+
+    def _close_tool(self, action: str):
+        window = self.tool_window(action)
+        if window is not None:
+            window.close()
+
+    # The named openers, for the Now Playing window's buttons and anything else that calls them.
+    def show_meters(self):
+        self.show_tool("meters")
+
+    def show_pcm(self):
+        self.show_tool("pcm")
+
+    def show_clipping(self):
+        self.show_tool("clipping")
+
+    def show_spectrogram(self):
+        self.show_tool("spectrogram")
+
     def show_scope(self):
-        """The stereo scope: vectorscope, correlation, balance, DC offset (one window at a time)."""
-        if self._scope is not None and self._scope.win.winfo_exists():
-            self._scope.lift()
-        else:
-            self._scope = self._with_keys(ScopeWindow(self.root, self.player, self.prefs))
+        self.show_tool("scope")
+
+    def show_compare(self):
+        self.show_tool("compare")
+
+    def show_abx(self):
+        self.show_tool("abx")
+
+    def show_testsignals(self):
+        self.show_tool("test_signals")
 
     def show_reels(self):
-        """(Experimental) A reel-to-reel deck playing along: the reels follow the song (one window at a time)."""
-        if not experiments.enabled(self.prefs, TAPE_REELS):
-            self._set_notice("Tape reels is Experimental: switch it on in Settings → Experimental", 5000)
-            return
-        if self._reels is not None and self._reels.win.winfo_exists():
-            self._reels.lift()
-        else:
-            self._reels = self._with_keys(ReelsWindow(self.root, self.player, self.prefs))
+        self.show_tool("reels")
 
     def _playing_file(self) -> tuple[Path | None, float]:
         """The song playing (or paused) and how far in, to start Compare / ABX from."""
@@ -4216,30 +4210,6 @@ class PlayerWindow:
         if status.track is None or status.state is State.STOPPED:
             return None, 0.0
         return status.track.path, status.position
-
-    def show_compare(self):
-        """Are two files the same music, sample for sample? (one window at a time)"""
-        if self._compare is not None and self._compare.win.winfo_exists():
-            self._compare.lift()
-        else:
-            self._compare = self._with_keys(CompareWindow(self.root, self.prefs, path_a=self._playing_file()[0]))
-
-    def show_abx(self):
-        """The ABX blind test (one window at a time); A starts as the song playing."""
-        if self._abx is not None and self._abx.win.winfo_exists():
-            self._abx.lift()
-        else:
-            path, position = self._playing_file()
-            self._abx = self._with_keys(AbxWindow(self.root, self.player, self.prefs, path_a=path, start_s=position))
-            self._hold_check_while(self._abx.win, "abx")
-
-    def show_testsignals(self):
-        """Hardware test: test signals, THD+N, J-test, frequency response (one window at a time)."""
-        if self._testsignals is not None and self._testsignals.win.winfo_exists():
-            self._testsignals.lift()
-        else:
-            self._testsignals = self._with_keys(TestSignalsWindow(self.root, self.player, self.prefs))
-            self._hold_check_while(self._testsignals.win, "testsignals")
 
     def _hold_check_while(self, window: tk.Misc, reason: str):
         """The library quality check holds off while a blind test or a measurement has this window open

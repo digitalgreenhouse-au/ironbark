@@ -255,7 +255,7 @@ class FLACFile:
             padding = NEW_PADDING
         metadata = body + bytes([0x80 | PADDING]) + padding.to_bytes(3, "big") + bytes(padding)
         replace_region(self.path, self.prefix + 4, self.audio_start, metadata)
-        self.__init__(self.path)
+        type(self).__init__(self, self.path)   # re-read in place
 
 
 def _readable_picture(data: bytes) -> bool:

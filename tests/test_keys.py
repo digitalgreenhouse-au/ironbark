@@ -217,9 +217,11 @@ def test_every_window_answers_every_key_in_its_scope(make_window, monkeypatch):
     window.show_tag_history()
     _pump(root, 0.5)
     windows = {"main": root}
-    for name in ("_now_playing", "_meters", "_pcm", "_clip", "_spectrogram", "_scope", "_compare", "_abx",
-                 "_testsignals", "_lyrics", "_help", "_about", "_tag_window", "_tag_history"):
+    for name in ("_now_playing", "_lyrics", "_help", "_about", "_tag_window", "_tag_history"):
         windows[name] = getattr(window, name).win
+    for name, action in (("_meters", "meters"), ("_pcm", "pcm"), ("_clip", "clipping"), ("_spectrogram", "spectrogram"),
+                         ("_scope", "scope"), ("_compare", "compare"), ("_abx", "abx"), ("_testsignals", "test_signals")):
+        windows[name] = window.tool_window(action).win   # the Check tools, by key action (tools/registry.py)
     for name, win in windows.items():
         assert window.keys.attached(win), name
         tags = win.bindtags()
@@ -258,7 +260,7 @@ def test_keys_reach_other_windows_and_wait_while_typing(make_window):
     window, root, player, errors = make_window()
     window.show_meters()
     _pump(root, 0.2)
-    meters = window._meters.win
+    meters = window.tool_window("meters").win
     _focus(root, meters)
     meters.event_generate("<KeyPress-n>")
     meters.event_generate("<KeyPress-S>")                  # Shift+S / Caps Lock: still shuffle
@@ -280,7 +282,7 @@ def test_a_windows_own_keys_win(make_window):
     window, root, player, errors = make_window()
     window.show_abx()
     _pump(root, 0.2)
-    abx = window._abx
+    abx = window.tool_window("abx")
     heard = []
     abx.hear = lambda letter: heard.append(letter)
     abx.stop = lambda: heard.append("stop")
@@ -289,16 +291,16 @@ def test_a_windows_own_keys_win(make_window):
         abx.win.event_generate(sequence)
     _pump(root, 0.05)
     assert heard == ["B", "X", "A"]                        # (Space: hear the last letter, or A)
-    assert window._pcm is None and player.calls == []      # not the PCM stream, not play / pause
+    assert window.tool_window("pcm") is None and player.calls == []      # not the PCM stream, not play / pause
     # Clipping: A / B / D / Space are its own (Hear it is always showing since 0.37.0).
     window.show_clipping()
     _pump(root, 0.2)
-    clip = window._clip
+    clip = window.tool_window("clipping")
     clip.hear = lambda letter: heard.append(f"clip {letter}")
     _focus(root, clip.win)
     clip.win.event_generate("<KeyPress-b>")
     _pump(root, 0.1)
-    assert heard[-1] == "clip B" and window._pcm is None      # B is the window's, not the app's PCM stream
+    assert heard[-1] == "clip B" and window.tool_window("pcm") is None      # B is the window's, not the app's PCM stream
     assert not errors
 
 
@@ -618,11 +620,11 @@ def test_read_only_boxes_dont_stop_the_keys(make_window):
     _pump(root, 0.3)
     # The PCM stream's columns are a read-only text area: clicked, it has the keyboard, but nothing
     # can be typed there, so Space still plays / pauses and ← still seeks.
-    text = window._pcm.text
+    text = window.tool_window("pcm").text
     assert str(text.cget("state")) == "disabled" and not keys.is_text_box(text)
     assert _resolved(window, text, "Space") == "play" and _resolved(window, text, "Left") == "seek"
     # A choice list (a read-only combobox) likewise.
-    boxes, stack = [], [window._meters.win]
+    boxes, stack = [], [window.tool_window("meters").win]
     while stack:
         widget = stack.pop()
         stack.extend(widget.winfo_children())
@@ -668,10 +670,10 @@ def test_no_key_acts_while_a_question_box_waits(make_window):
     box = popups.Prompt(root, "A question", "Over the player window", buttons=(("OK", True), ("Cancel", False)))
     _pump(root, 0.05)
     for text in ("N", "Ctrl+Q", "Ctrl+Shift+Up", "Delete"):
-        assert not _run(window, window._meters.win, text), text   # (not even in another window)
+        assert not _run(window, window.tool_window("meters").win, text), text   # (not even in another window)
     assert player.calls == [] and not window._closing
     box.answer(True)
-    assert _run(window, window._meters.win, "N") and player.calls == ["next"]
+    assert _run(window, window.tool_window("meters").win, "N") and player.calls == ["next"]
     assert not errors
 
 

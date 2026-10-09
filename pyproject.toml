@@ -24,6 +24,7 @@ dg-flac-player = "ironbark.__main__:main"   # the old command still works
 [dependency-groups]
 dev = [
     "import-linter>=2.15",
+    "mypy>=2.4",
     "pre-commit>=4.6.2",
     "pyinstaller>=6.22.3",
     "pytest>=8",
@@ -114,3 +115,20 @@ forbidden_modules = [
     "ironbark.engine", "ironbark.audiofile", "ironbark.library", "ironbark.library_db", "ironbark.settings",
     "ironbark.netcache", "ironbark.analysis", "ironbark.ui", "ironbark.tools",
 ]
+
+# Type checking: `uv run mypy` (CI runs it on every push). Gradual: `files` lists the modules that are
+# clean; add a module once it is. Next in line (errors at 0.42.0): tagio/mpeg.py (43), tagio/ogg.py (29),
+# netcache/manager.py (52). Modules a listed one imports are read but not reported (follow_imports).
+[tool.mypy]
+python_version = "3.11"
+files = [
+    "ironbark/tagio/__init__.py", "ironbark/tagio/_files.py", "ironbark/tagio/flac.py", "ironbark/tagio/genres.py",
+    "ironbark/tagio/id3.py", "ironbark/tagio/mp4.py", "ironbark/tagio/riff.py", "ironbark/tagio/vorbis.py",
+    "ironbark/netcache/__init__.py", "ironbark/netcache/fetch.py", "ironbark/netcache/growing.py",
+    "ironbark/netcache/netwatch.py", "ironbark/netcache/policy.py", "ironbark/netcache/sources.py",
+    "ironbark/netcache/store.py", "ironbark/netcache/verify.py",
+]
+follow_imports = "silent"
+ignore_missing_imports = true
+warn_unused_ignores = true
+disable_error_code = ["annotation-unchecked"]   # (notes about unannotated functions: gradual means gradual)

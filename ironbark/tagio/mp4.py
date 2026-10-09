@@ -71,6 +71,8 @@ def box(kind: bytes, body: bytes) -> bytes:
 class Cover(bytes):
     """A picture from "covr" (the image file's bytes); `imageformat` = 13 JPEG / 14 PNG / 27 BMP."""
 
+    imageformat: int
+
     def __new__(cls, data: bytes, imageformat: int = JPEG):
         value = super().__new__(cls, data)
         value.imageformat = imageformat
@@ -79,6 +81,8 @@ class Cover(bytes):
 
 class FreeForm(bytes):
     """A free-form ("----") value's bytes; `dataformat` = its data type (1 = UTF-8 text)."""
+
+    dataformat: int
 
     def __new__(cls, data: bytes, dataformat: int = TEXT_UTF8):
         value = super().__new__(cls, data)
@@ -465,7 +469,7 @@ class MP4File:
         if delta and any(kind == b"mdat" and start > self.moov_start for kind, start, _ in self.top):
             self._shift_chunks(moov, delta)
         replace_region(self.path, self.moov_start, self.moov_end, bytes(moov))
-        self.__init__(self.path)
+        type(self).__init__(self, self.path)   # re-read in place
 
     def _shift_chunks(self, moov: bytearray, delta: int) -> None:
         """Every chunk offset that points past moov moves by delta (stco: 32-bit, co64: 64-bit)."""
