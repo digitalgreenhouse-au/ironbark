@@ -67,7 +67,8 @@ def test_shift_counts_only_where_the_table_says_so():
 
     assert ids("S") == ids("S", shift=True) == ["shuffle"]                     # S and Shift+S both shuffle
     assert ids("Ctrl+T") == ["new_tab"] and ids("Ctrl+Shift+T") == ["reopen_tab"]
-    assert ids("Ctrl+O") == ["open_folder"] and ids("Ctrl+Shift+O") == ["open_playlist"]
+    assert ids("Ctrl+O") == ["open_folder"] and ids("Ctrl+Alt+O") == ["open_playlist"]
+    assert ids("Ctrl+Shift+O") == ["open_album_tab"]                        # (0.40.0: the Library tab's)
     assert ids("?", shift=True) == ["help"]                                    # ? is Shift+/
     assert ids("5", shift=True) == []                                          # Shift+5 is "%", not a jump
     assert ids("Left", shift=True) == ["seek_long"] and ids("Left") == ["seek"]

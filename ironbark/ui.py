@@ -397,8 +397,9 @@ class Tab:
     kind: str                         # "album" (from the Library), "folder" (everything under it), "library",
                                       # "playlist" (an .m3u8 file; path is the file) or "files" (music files
                                       # dropped from Explorer: they're its extras; path = the first one's folder)
-    path: str
+    path: str                         # "" = the main Library tab (every library folder; 0.40.0)
     query: str = ""                   # Library search, for a "library" tab
+    name: str = ""                    # a name given with Rename… (shown on the strip in place of the album's)
     tracks: list[Track] | None = None  # None until loaded
     loading: bool = False
     album_name: str = ""               # a one-album tab's name from the tags, looked up in the background
@@ -425,7 +426,16 @@ class Tab:
         return self.tracks[self.last_index] if 0 <= self.last_index < len(self.tracks) else self.tracks[0]
 
     @property
+    def main(self) -> bool:
+        """The main Library tab: every library folder, always there, never closed."""
+        return self.kind == "library" and self.path == ""
+
+    @property
     def title(self) -> str:
+        if self.name:
+            return self.name
+        if self.main:
+            return "Library"
         if self.kind == "playlist":
             return Path(self.path).stem
         if self.album_name:
@@ -439,6 +449,8 @@ class Tab:
 
     def source(self) -> dict:
         saved = {"kind": self.kind, "path": self.path, "query": self.query}
+        if self.name:
+            saved["name"] = self.name
         if self.extras:
             saved["extras"] = list(self.extras)
         track =self.view_track() if self.last_index >= 0 else None
@@ -450,6 +462,8 @@ class Tab:
         return saved
 
     def same(self, kind: str, path, query: str = "") -> bool:
+        if self.main or (kind == "library" and str(path) == ""):
+            return self.main and kind == "library" and str(path) == ""
         return self.kind == kind and Path(self.path) == Path(path) and self.query == query
 
 
@@ -825,8 +839,12 @@ class PlayerWindow:
                                      on_heading_menu=self._heading_menu,
                                      on_search_library=self.find_in_library,
                                      is_favourite=lambda track: track in self.favourites,
-                                     plays_db=lambda: self._index().db)
+                                     plays_db=lambda: self._index().db,
+                                     on_library_search=self._search_library_for_list,
+                                     on_library_hit=self._library_hit, on_open_album=self._open_album_of,
+                                     on_scope=self._scope_changed)
         self.playlist.set_columns(self.prefs.get("track_columns") or ())
+        self.playlist.set_whole_library(bool(self.prefs.get("search_whole_library", True)))
         # "Up next (3) · Song": shown above the status line only while songs are queued; click
         # for the list. (Packed from the bottom, ahead of the track list, like the status line.)
         self.up_next_label = ttk.Label(body, text="", style="UpNext.TLabel", anchor="w", cursor="hand2")
@@ -1369,6 +1387,8 @@ class PlayerWindow:
             "full_volume": call("full_volume"),
             "new_tab": call("open_new_menu"),
             "close_tab": lambda: self.close_tab(self.current) if self.tabs else None,
+            "open_album_tab": lambda: self.playlist.open_selected_album(),
+            "add_to_this_playlist": lambda: self.playlist.add_selected_library_song(),
             "reopen_tab": call("reopen_tab"),
             "next_tab": lambda: self._cycle_tab(1),
             "previous_tab": lambda: self._cycle_tab(-1),
@@ -1402,7 +1422,7 @@ class PlayerWindow:
             "remove": call("_remove_selected"),
             "move_song": lambda key: self._move_selected(1 if key.endswith("Down") else -1),
             "undo": call("undo"),
-            "rename": call("rename_playlist_on_show"),
+            "rename": call("rename_current"),
             "edit_tags": call("edit_selected_tags"),
             "lyrics": call("show_lyrics"),
             "reels": call("show_reels"),
@@ -1749,15 +1769,22 @@ class PlayerWindow:
         for source in saved if isinstance(saved, list) else []:
             try:
                 path, kind = source.get("path", ""), source.get("kind")
-                if not (path and isinstance(path, str) and kind in ("album", "folder", "library", "playlist", "files")):
+                main = kind == "library" and path == ""
+                if not (main or (path and isinstance(path, str)
+                                 and kind in ("album", "folder", "library", "playlist", "files"))):
                     continue
+                if main and any(t.main for t in self.tabs):
+                    continue   # (one main Library tab)
                 tab = Tab(kind, path, str(source.get("query") or ""))
+                tab.name = str(source.get("name") or "")
                 resume = source.get("resume") or {}
                 tab.resume_path, tab.resume_at = str(resume.get("path", "")), float(resume.get("at", 0))
                 tab.extras = [p for p in source.get("extras", []) if isinstance(p, str)]
             except (AttributeError, TypeError, ValueError):   # (a hand-edited settings file)
                 continue
             self.tabs.append(tab)
+        if not any(t.main for t in self.tabs):   # the main Library tab is always there (first, the first time)
+            self.tabs.insert(0, Tab("library", ""))
         if folder:
             self.open_tab("folder", folder, play=True)
         elif self.tabs:
@@ -1805,6 +1832,9 @@ class PlayerWindow:
         if not 0 <= index < len(self.tabs):
             return
         closing = self.tabs[index]
+        if closing.main:
+            self._set_notice("The Library tab stays open: it's your whole library (drag it to move it)", 5000)
+            return
         if closing.loading:   # the load under way is forgotten: reopened, the tab is read afresh
             self._forget_songs(closing)
         closing.play_when_loaded = False
@@ -1887,11 +1917,11 @@ class PlayerWindow:
 
         def work():
             try:
-                root = Path(tab.path)
-                if not places.allowed(root, self.prefs):
+                root = Path(tab.path) if not tab.main else None   # (the main Library tab: every library folder)
+                if root is not None and not places.allowed(root, self.prefs):
                     progress["unavailable"] = progress["needs_network"] = True   # on the network; the switch is off
                     tracks = []
-                elif not (root.is_file() if tab.kind == "playlist" else root.is_dir()):
+                elif root is not None and not (root.is_file() if tab.kind == "playlist" else root.is_dir()):
                     progress["unavailable"] = True   # a drive that isn't connected (or since moved)
                     tracks = []
                 elif tab.kind == "playlist":
@@ -1973,6 +2003,9 @@ class PlayerWindow:
         if tab.load_progress is not progress:
             return  # closed while loading (it's read afresh if reopened)
         index = self._tab_index(tab)
+        if index < 0:
+            tab.loading, tab.load_progress = False, None
+            return  # the tab was closed (or the tabs replaced) meanwhile: nothing to show
         tab.loading, tab.load_progress = False, None
         play, tab.play_when_loaded = tab.play_when_loaded, False
         tab.unavailable, tab.needs_network = progress["unavailable"], progress["needs_network"]
@@ -1988,6 +2021,8 @@ class PlayerWindow:
                 self._show_current_tab()
             return
         tab.tracks = progress["tracks"]
+        if tab.main and getattr(self, "_play_from_main", None):
+            self.root.after_idle(self._play_from_main_now)
         if tab.resume_path and tab.last_index < 0:  # where it got to last time
             tab.last_index = progress["resume"] if "resume" in progress else _index_of_key(tab.tracks, tab.resume_path)
             if tab.last_index < 0:
@@ -2009,7 +2044,14 @@ class PlayerWindow:
             else:
                 self._play_tab(index, 0)
 
+    def _list_modes(self, tab: Tab | None):
+        """What the track list shows for this tab: the open-album marks (the Library tab), the "+" on
+        library rows (a playlist)."""
+        self.playlist.set_open_column(tab is not None and tab.main)
+        self.playlist.set_adds(tab is not None and tab.kind == "playlist")
+
     def _show_current_tab(self):
+        self._list_modes(self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None)
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         self.playlist.set_tracks(tab.tracks if tab and tab.tracks else [],
                                  flat=bool(tab and tab.kind == "playlist"))
@@ -2052,7 +2094,8 @@ class PlayerWindow:
         for tab in self.tabs:
             if not tab.info_requested:
                 self._load_tab_info(tab)
-        self.bar.set_tabs([t.title for t in self.tabs], self.current, self.playing_tab)
+        mains = {i for i, t in enumerate(self.tabs) if t.main}
+        self.bar.set_tabs([t.title for t in self.tabs], self.current, self.playing_tab, locked=mains, tinted=mains)
         self._show_empty(not self.tabs)
 
     def _load_tab_info(self, tab: Tab):
@@ -2780,14 +2823,45 @@ class PlayerWindow:
             menu.add("Rename playlist…", lambda: self.rename_playlist(index), keys.hint("rename") if on_show else "")
             menu.add("Delete playlist…", lambda: self.delete_playlist(index))
             menu.add_separator()
+        else:
+            menu.add("Rename tab…", lambda: self.rename_tab(index), keys.hint("rename") if on_show else "")
+            if tab.name:
+                menu.add("Use the album's name", lambda: self.rename_tab(index, ""))
+            menu.add_separator()
         if len(self.tabs) > 1:
             menu.add("Move left", lambda: self.move_tab(index, index - 1), keys.hint("move_tab", 0) if on_show else "",
                      enabled=index > 0)
             menu.add("Move right", lambda: self.move_tab(index, index + 1), keys.hint("move_tab", 1) if on_show else "",
                      enabled=index < len(self.tabs) - 1)
             menu.add_separator()
-        menu.add("Close tab", lambda: self.close_tab(index), keys.hint("close_tab") if on_show else "")
+        if not tab.main:
+            menu.add("Close tab", lambda: self.close_tab(index), keys.hint("close_tab") if on_show else "")
         menu.popup(event.x_root, event.y_root)
+
+    def rename_tab(self, index: int, name: str | None = None):
+        """Rename… on an album / folder / files / Library tab: a name of its own, saved with the tab
+        (the now-playing head keeps the album's real title). `name` "" puts the album's name back;
+        None asks. A playlist tab renames its file instead (rename_playlist)."""
+        if not 0 <= index < len(self.tabs):
+            return
+        tab = self.tabs[index]
+        if tab.kind == "playlist":
+            self.rename_playlist(index)
+            return
+        if name is None:
+            self._for_prompt()
+            name = popups.ask_text(self.root, "Rename tab", "A name for this tab:", initial=tab.title, ok="Rename")
+            if name is None or tab not in self.tabs:
+                return
+        tab.name = name.strip()
+        self._refresh_tabs()
+        if index == self.current:
+            self._show_current_tab()
+
+    def rename_current(self):
+        """F2: rename the tab on show (a playlist: its file)."""
+        if 0 <= self.current < len(self.tabs):
+            self.rename_tab(self.current)
 
     def rename_playlist(self, index: int):
         tab = self.tabs[index]
@@ -2974,12 +3048,12 @@ class PlayerWindow:
             return
         self.work.run(lambda: _look_once(self.watcher, index), name="library-start")
 
-    def _library_albums(self, root: Path) -> list:
+    def _library_albums(self, root: Path | None) -> list:
         """Every album in the library, from the database, when `root` is one of the library
-        folders (a "library" tab: the Library's "Open all albums in a tab"); else every album found
-        under `root`. (A worker thread's work.)"""
+        folders (a "library" tab: the Library's "Open all albums in a tab") or None (the main Library
+        tab: every folder); else every album found under `root`. (A worker thread's work.)"""
         index = self._index()
-        if Path(root) in index.roots:
+        if root is None or Path(root) in index.roots:
             if not index.built:
                 index.refresh()   # the first look isn't finished: wait for it (it may be under way)
             return index.albums()
@@ -3009,6 +3083,79 @@ class PlayerWindow:
         if tracks is not None:
             return tracks
         return scan_folder(folder) if whole_tree else scan_album(folder)
+
+    # -- the search box's Whole library toggle (0.40.0) --------------------------------------------------
+    def _scope_changed(self, on: bool):
+        self.prefs["search_whole_library"] = bool(on)
+
+    def _search_library_for_list(self, words: list[str]):
+        """The track list's box, Whole library on: the library's matches for these words, from the
+        database on the worker, handed back to the list (stale answers are dropped there)."""
+        index = self._index()
+        query = " ".join(words)
+
+        def work():
+            try:
+                return index.db.search_songs(query, 200).rows
+            except Exception:
+                log.exception("the library search for the track list failed")
+                return []
+            finally:
+                index.db.release()
+
+        self.work.run(work, lambda hits: self.playlist.set_library_hits(words, hits if isinstance(hits, list) else []),
+                      name="list-library-search")
+
+    def _library_hit(self, hit, how: str):
+        """A library row in the track list: "play" — a song outside this tab plays from the Library
+        tab (selected, scrolled to it); "add" — into this playlist tab, with Undo."""
+        tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
+        if how == "add" and tab is not None and tab.kind == "playlist":
+            self.add_to_playlist(Path(tab.path), [hit.track])
+            self._set_notice(f"Added “{hit.track.title}” to “{tab.title}”", 4000)
+            return
+        self.play_in_library(hit.track)
+
+    def play_in_library(self, track: Track):
+        """Play this song from the main Library tab: the tab is selected and plays from it (or, while
+        it's still loading, once it has loaded)."""
+        main = next((i for i, t in enumerate(self.tabs) if t.main), None)
+        if main is None:
+            self.tabs.insert(0, Tab("library", ""))
+            main = 0
+            if self.playing_tab is not None:
+                self.playing_tab += 1
+        self._play_from_main = audiofile.key(track.path)
+        self.select_tab(main)
+        self._play_from_main_now()
+
+    def _play_from_main_now(self):
+        """The song asked for from the Library tab, once its list is there."""
+        key = getattr(self, "_play_from_main", None)
+        main = next((i for i, t in enumerate(self.tabs) if t.main), None)
+        if key is None or main is None:
+            return
+        tab = self.tabs[main]
+        if tab.tracks is None:
+            return   # (_finish_load calls again)
+        self._play_from_main = None
+        index = _index_of_key(tab.tracks, key)
+        if index is None or index < 0:
+            self._set_notice("That song isn't in the Library's list yet (it's being read)", 5000)
+            return
+        self._play_tab(main, index)
+        self.playlist.show_current(index)
+
+    def _open_album_of(self, index: int):
+        """The open-album mark on a Library tab row (or Ctrl+Shift+O): the song's album in a new tab,
+        the music untouched."""
+        tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
+        if tab is None or tab.tracks is None or not 0 <= index < len(tab.tracks):
+            return
+        track = tab.tracks[index]
+        if track is None:
+            return
+        self.open_tab("album", album_folder(Path(audiofile.real_path(track.path))))
 
     def _scan_or_nothing(self, album: Path) -> list[Track]:
         """An album's tracks, for a worker thread that must always answer: none if it can't be read."""
@@ -4288,6 +4435,8 @@ class PlayerWindow:
         skips songs it already has. Music playing from the tab carries on uninterrupted."""
         if not tracks:
             return f"Nothing to add to “{tab.title}”"
+        if tab.main:
+            return "The Library tab is every library folder already: add folders in Settings → Library"
         if tab.kind == "playlist":
             self.add_to_playlist(Path(tab.path), tracks)
             count = len(tracks)

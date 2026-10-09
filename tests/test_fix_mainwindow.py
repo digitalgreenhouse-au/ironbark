@@ -369,8 +369,8 @@ def test_tabs_on_a_missing_drive_are_kept_with_their_place(tmp_path):
     w.select_tab = lambda index, then_play=False: w.selected.append(index)
     w._refresh_tabs = lambda: None
     PlayerWindow._restore_tabs(w, None)
-    assert [t.path for t in w.tabs] == [str(missing)] and w.selected == [0]
-    assert w.tabs[0].source()["resume"] == {"path": str(missing / "01.wav"), "at": 125}
+    assert [t.path for t in w.tabs] == ["", str(missing)] and w.selected == [0]   # (the Library tab first, 0.40.0)
+    assert w.tabs[0].main and w.tabs[1].source()["resume"] == {"path": str(missing / "01.wav"), "at": 125}
 
 
 def test_a_missing_drives_tab_loads_once_it_is_connected(make_window, tmp_path):
