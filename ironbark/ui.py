@@ -1036,17 +1036,20 @@ class PlayerWindow:
                                  "peak allows (it stays under −0.1 dB true peak).")
 
         self._caption(a, "Window")
-        self._setting(a, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
-                      self.media_controls, self._toggle_media)
+        if mediakeys.AVAILABLE:   # (media keys reach the player on Windows only)
+            self._setting(a, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
+                          self.media_controls, self._toggle_media)
         row = ttk.Frame(a, style="Pop.TFrame")
         row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-        self.home_text = ttk.Label(row, text="", style="Pop.TLabel")
-        self.home_text.pack(side="left", fill="x", expand=True)
+        # The buttons take their room first, so a narrow window shortens the text instead of
+        # drawing it over them.
         self.snap_button = self._pop_button(row, "Snap to home", lambda: (self._close_settings(), self.snap_home()),
                                             "Also Ctrl+Shift+H, or double-click the empty strip at the top")
         self.snap_button.pack(side="right")
         self._pop_button(row, "Use current", self.make_home, "Make the window's current spot and size its home").pack(
             side="right", padx=theme.pad(0, theme.GAP))
+        self.home_text = ttk.Label(row, text="", style="Pop.TLabel")
+        self.home_text.pack(side="left", fill="x", expand=True)
         self._setting(a, "Open at home", "Start up at the home position.", self.open_at_home)
         self._update_home_text()
 
