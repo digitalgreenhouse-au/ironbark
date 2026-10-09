@@ -171,7 +171,7 @@ def startable(*, open_ready: bool, ready: bool, complete: bool, A: float, need: 
         return False
     if forced:
         return complete or A >= MIN_START_S
-    return complete or A >= need
+    return complete or (need is not None and A >= need)
 
 
 def needed_bytes(p: float, need: float | None, *, S: int, H: int, D: float, open_end: int | None,
@@ -377,9 +377,12 @@ class Speed:
             if self._warm is not None and self._clock() < self._warm_until:
                 return self._warm
             return None
+        ewma = self._ewma
+        if ewma is None:
+            return None
         rates = sorted(b[1] / max(b[2], 1e-4) for b in self._buckets)
-        p20 = rates[int(0.2 * (len(rates) - 1))] if rates else self._ewma
-        return min(self._ewma, p20)
+        p20 = rates[int(0.2 * (len(rates) - 1))] if rates else ewma
+        return min(ewma, p20)
 
     def asking(self, now: float) -> None:
         """A request is outstanding (bytes are wanted)."""

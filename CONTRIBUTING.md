@@ -14,6 +14,9 @@ Security problems: please **don't** open a public issue — see [SECURITY.md](SE
 
 ## Fixing something
 
+[ARCHITECTURE.md](ARCHITECTURE.md) is the map: the layers, the threads and the rules the checks
+enforce. Read it before a change that touches more than one module.
+
 Bug fixes are welcome as pull requests. For a **new feature**, please open an issue first so we can
 agree on it before you spend time on it — Ironbark is deliberately small, and not every good idea
 fits.

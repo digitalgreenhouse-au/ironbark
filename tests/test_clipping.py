@@ -463,6 +463,6 @@ def test_player_guard_follows_the_headroom_setting_and_key_c_opens_the_window(ma
     window._apply_guard(player.track, 0)
     assert player.trim_for(path) == 1.0
     window.show_clipping()
-    assert window._clip is not None and window._clip.win.title() == "Clipping"
-    window._clip.close()
+    assert window.tool_window("clipping") is not None and window.tool_window("clipping").win.title() == "Clipping"
+    window.tool_window("clipping").close()
     assert not errors

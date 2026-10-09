@@ -67,6 +67,7 @@ def _where(path) -> str:
 def _classify(error: OSError, path=None) -> Exception:
     """Gone or refused (Permanent, said in plain words), or anything else (Transient: the network)."""
     winerror = getattr(error, "winerror", None)
+    found: Permanent | Transient
     if winerror in _GONE or (winerror is None and isinstance(error, (FileNotFoundError, NotADirectoryError))):
         found = Permanent(f"it's no longer on {_where(path or error.filename)}")
     elif winerror in _REFUSED or (winerror is None and isinstance(error, PermissionError)):

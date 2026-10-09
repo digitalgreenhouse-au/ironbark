@@ -40,6 +40,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import IO
 
 from .. import audiofile
 from ..library_db import is_damage
@@ -365,7 +366,7 @@ class OwnerLock:
 
     def __init__(self, path: Path):
         self.path = Path(path)
-        self._file = None
+        self._file: IO[bytes] | None = None
 
     def acquire(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -657,7 +658,8 @@ class Store:
     def _tidy_islands(self, item: Item) -> int:
         """Cut each island back to its stored length; drop one whose file has gone, or that the
         run from the start (or an earlier island) already reaches. Returns how many were cut back."""
-        cut, kept = 0, []
+        cut = 0
+        kept: list[Island] = []
         for island in item.islands:
             path = self.island_path(item, island.start)
             size = _size(path)
