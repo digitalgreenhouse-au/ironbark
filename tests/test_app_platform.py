@@ -23,7 +23,7 @@ import pytest
 
 from ironbark import (APP_NAME, __version__, crash, diagnostics, dragdrop, instance, logs, settings, tag_editor,
                       tkgc, updates)
-from ironbark import __main__ as start
+from ironbark import __main__ as start, network
 from ironbark.engine import State
 from ironbark.ui import PlayerWindow, Tab
 
@@ -817,9 +817,9 @@ def test_timeouts_and_errors_are_quiet():
 
 
 def test_nothing_is_fetched_unless_both_switches_are_on(monkeypatch):
-    from ironbark import ripcheck
+    from ironbark.tools import ripcheck
 
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda *a, **k: pytest.fail("went online"))
+    monkeypatch.setattr(network, "_urlopen", lambda *a, **k: pytest.fail("went online"))
     for prefs in ({"check_updates": True, "allow_network": False}, {"check_updates": False, "allow_network": True}):
         assert updates.check(prefs, fetch=lambda url, p: pytest.fail("fetched")) is None
         assert not updates.due(prefs, now=10 ** 9)

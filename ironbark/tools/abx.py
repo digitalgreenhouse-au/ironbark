@@ -33,8 +33,9 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import APP_NAME, __version__, audiofile, compare, loudness, settings
-from .proof import QUIET, resample
+from .. import APP_NAME, __version__, audiofile, loudness, settings
+from . import compare
+from ..proof import QUIET, resample
 
 TRIAL_CHOICES = (8, 10, 12, 16, 20, 25)
 TRIALS = 16
@@ -102,7 +103,8 @@ class Pair:
         return abs(self.difference_db) <= LEVEL_WARN_DB
 
 
-def _level(x: np.ndarray, rate: int) -> tuple[float | None, str]:
+def level_of(x: np.ndarray, rate: int) -> tuple[float | None, str]:
+    """(level, unit) of some sound: its integrated loudness in LUFS, or for very short sound its RMS in dB."""
     meter = loudness.Loudness(rate, x.shape[1])
     for start in range(0, len(x), rate):   # a second at a time: one filter pass over a long hi-res
         meter.add(x[start: start + rate])  # excerpt would take hundreds of MB
@@ -161,8 +163,8 @@ def prepare(path_a, path_b, start_s: float, length_s: float = LENGTH,
         b = np.concatenate([b, np.zeros((n - len(b), channels), np.float32)])
     pair = Pair(Path(path_a), Path(path_b), np.ascontiguousarray(a), np.ascontiguousarray(b), rate, start_s,
                 offset_s=(lag - margin) / rate, lined_up=lined_up, notes=notes)
-    pair.level_a, unit_a = _level(pair.a, rate)
-    pair.level_b, unit_b = _level(pair.b, rate)
+    pair.level_a, unit_a = level_of(pair.a, rate)
+    pair.level_b, unit_b = level_of(pair.b, rate)
     pair.level_unit = unit_a if unit_a == unit_b else "dB RMS"
     if unit_a != unit_b:
         pair.level_a, pair.level_b = (_level_rms(pair.a), _level_rms(pair.b))

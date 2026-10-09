@@ -10,10 +10,11 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import abx, analysis, audiofile, clipping, compare, loudness, meters
-from ironbark.analysis import (_TAPS_PER_PHASE, TruePeak, _oversampling_phases, album_measure, analyse,
+from ironbark import analysis, audiofile, loudness
+from ironbark.tools import abx, clipping, compare, meters
+from ironbark.analysis import (TAPS_PER_PHASE, TruePeak, oversampling_phases, album_measure, analyse,
                                true_peak, wall_verdict)
-from ironbark.details import describe_analysis
+from ironbark.tools.details import describe_analysis
 from ironbark.mp3frames import _frame, _skip_id3v2
 
 RATE = 44100
@@ -97,7 +98,7 @@ def test_reading_stopped_early_on_purpose_is_not_damage(tmp_path):
     path = flac(tmp_path / "a.flac", noise(12))
     damaged: list = []
     with sf.SoundFile(path) as f:
-        for _ in analysis._blocks(f, damaged, blocksize=RATE, dtype="int32", always_2d=True):
+        for _ in audiofile.read_blocks(f, damaged, blocksize=RATE, dtype="int32", always_2d=True):
             break
     assert damaged == []
 
@@ -107,8 +108,8 @@ class EveryPoint:
     """The 8x true peak working out every point of every phase: what TruePeak must equal."""
 
     def __init__(self, channels):
-        self.phases = _oversampling_phases(8)
-        self.previous = np.zeros((_TAPS_PER_PHASE - 1, channels))
+        self.phases = oversampling_phases(8)
+        self.previous = np.zeros((TAPS_PER_PHASE - 1, channels))
         self.peak = 0.0
 
     def add(self, block):
@@ -118,10 +119,10 @@ class EveryPoint:
                 y = np.convolve(x[:, ch], phase, mode="valid")
                 if len(y):
                     self.peak = max(self.peak, float(np.abs(y).max()))
-        self.previous = x[-(_TAPS_PER_PHASE - 1):]
+        self.previous = x[-(TAPS_PER_PHASE - 1):]
 
     def finish(self):
-        self.add(np.zeros((_TAPS_PER_PHASE, self.previous.shape[1])))
+        self.add(np.zeros((TAPS_PER_PHASE, self.previous.shape[1])))
 
 
 def signals():

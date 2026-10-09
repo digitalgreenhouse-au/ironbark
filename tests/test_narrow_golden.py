@@ -160,7 +160,7 @@ def walk_states(window, root, player, logical: tuple[int, int], scaling: float):
     _settle(root)
     root.geometry(here)
     _settle(root)
-    yield "after a wide size", snapshot(window, root)
+    yield "after a wide size", snapshot(window, root)   # (the name the golden file keys it by)
 
     window.prefs["theme"] = "light"
     window._apply_theme()

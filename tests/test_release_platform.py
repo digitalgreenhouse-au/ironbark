@@ -16,7 +16,8 @@ import tkinter as tk
 
 import pytest
 
-from ironbark import crash, diagnostics, instance, keys, logs, ripcheck, settings, updates
+from ironbark import crash, diagnostics, instance, keys, logs, network, settings, updates
+from ironbark.tools import ripcheck
 from ironbark import __main__ as start
 from ironbark.netcache import sources
 
@@ -303,14 +304,14 @@ class Answer(io.BytesIO):
 
 def test_the_update_feed_is_never_taken_from_a_plain_http_redirect(monkeypatch):
     on = {"check_updates": True, "allow_network": True}
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(
+    monkeypatch.setattr(network, "_urlopen", lambda request, timeout: Answer(
         json.dumps({"version": "99.0.0"}).encode(), "http://www.digitalgreenhouse.com.au/ironbark/version.json"))
     assert updates.check(on) is None
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(
+    monkeypatch.setattr(network, "_urlopen", lambda request, timeout: Answer(
         json.dumps({"version": "99.0.0"}).encode(), "https://www.digitalgreenhouse.com.au/ironbark/version.json"))
     assert updates.check(on).version == "99.0.0"
     # Rip verification's own plain-http look-ups are unchanged.
-    monkeypatch.setattr(ripcheck, "_urlopen", lambda request, timeout: Answer(b"ok", "http://db.cuetools.net/x"))
+    monkeypatch.setattr(network, "_urlopen", lambda request, timeout: Answer(b"ok", "http://db.cuetools.net/x"))
     assert ripcheck.fetch("http://db.cuetools.net/x", on) == b"ok"
 
 
@@ -332,7 +333,7 @@ def test_test_signal_settings_out_of_range_fall_back_to_their_defaults(tmp_path,
 
 
 def test_every_level_the_test_signals_window_offers_is_a_level_settings_keep():
-    from ironbark import testsignals
+    from ironbark.tools import testsignals
 
     check = settings._CHECKS["testsignals_level"]
     assert all(check(level) == level for level in testsignals.LEVEL_CHOICES)
@@ -340,7 +341,7 @@ def test_every_level_the_test_signals_window_offers_is_a_level_settings_keep():
     for bad in (0.0, -2.0, 20.0, -81.0, True, "-20", float("nan")):
         assert check(bad) is settings._BAD
     kinds = settings._CHECKS["testsignals_kind"]
-    from ironbark.testsignals_window import KINDS
+    from ironbark.tools.testsignals_window import KINDS
 
     assert all(kinds(kind) == kind for kind, _ in KINDS)
 

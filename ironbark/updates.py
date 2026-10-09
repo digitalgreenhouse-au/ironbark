@@ -2,7 +2,7 @@
 
 Off unless Settings → Help → "Check for updates" is switched on, and then only while "Allow
 network access" is on too (the one switch every use of the internet answers to: the fetch is
-ripcheck.fetch, which checks it). At most once a day it reads one small file, UPDATE_URL, which
+network.fetch, which checks it). At most once a day it reads one small file, UPDATE_URL, which
 says what the latest version is. What goes out is the request itself: it names the player and its
 version (the User-Agent), and the website sees the computer's internet address, as any website
 does; nothing else is sent. No file there yet, no connection, a slow server: all quietly mean
@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import urlsplit
 
-from . import __version__, ripcheck
+from . import __version__, network
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ class Release:
 
 def enabled(prefs: dict | None) -> bool:
     """Both switches on: Check for updates, and Allow network access."""
-    return bool(prefs and prefs.get("check_updates")) and ripcheck.network_allowed(prefs)
+    return bool(prefs and prefs.get("check_updates")) and network.network_allowed(prefs)
 
 
 def due(prefs: dict | None, now: float | None = None) -> bool:
@@ -109,7 +109,7 @@ def parse(data: bytes | None) -> Release | None:
 def _fetch(url: str, prefs: dict) -> bytes | None:
     """The feed, only ever over https: a redirect to a plain http:// address (which anyone on the
     way could answer) is refused."""
-    return ripcheck.fetch(url, prefs, https_only=True)
+    return network.fetch(url, prefs, https_only=True)
 
 
 def check(prefs: dict, fetch: Callable | None = None) -> Release | None:

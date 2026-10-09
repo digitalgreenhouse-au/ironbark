@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ironbark import details, diagnostics, help_window, keys, library_window, quick_search, ui
+from ironbark import diagnostics, help_window, keys, library_window, quick_search, statustext, ui
+from ironbark.tools import details
 from ironbark.library import Track
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
@@ -40,7 +41,7 @@ def test_the_proof_line_names_the_button_under_it():
     text, _tone = details.describe_proof(Proof(sent=60, checked=60), OutputInfo("Speakers", 48000, 48000, False),
                                          1.0, 1.0, bits=16, codec="FLAC")
     assert f"“{details.CHECK_MIXER}”" in text
-    assert details.CHECK_MIXER == f"Check what {details.MIXER} does to the sound"
+    assert details.CHECK_MIXER == f"Check what {statustext.MIXER} does to the sound"
 
 
 def test_the_about_box_doesnt_call_a_paid_build_free():

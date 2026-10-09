@@ -12,7 +12,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from ironbark import audition, testsignals as ts, theme
+from ironbark import theme
+from ironbark.tools import testsignals as ts
+from ironbark.tools import audition
 from ironbark.engine import State
 
 RATE = 48000
@@ -296,7 +298,7 @@ class FakePlayer:
 
 @pytest.fixture
 def fake_devices(monkeypatch):
-    from ironbark import testsignals_window as tw
+    from ironbark.tools import testsignals_window as tw
     FakeStream.made = []
     connected = {"Test out": 3}
     monkeypatch.setattr(tw.devices, "find_device", lambda name, rescan_ok=True: connected.get(name))
@@ -311,7 +313,7 @@ def fake_devices(monkeypatch):
 
 
 def test_window_asks_first_then_plays_records_and_measures(root, fake_devices):
-    from ironbark.testsignals_window import LOOPBACK, TestSignalsWindow
+    from ironbark.tools.testsignals_window import LOOPBACK, TestSignalsWindow
     asked, recorded = [], []
 
     def recorder(source, output, rate, seconds):
@@ -351,7 +353,7 @@ def test_window_asks_first_then_plays_records_and_measures(root, fake_devices):
 
 
 def test_window_never_plays_on_a_device_that_isnt_there(root, fake_devices):
-    from ironbark.testsignals_window import TestSignalsWindow
+    from ironbark.tools.testsignals_window import TestSignalsWindow
     asked = []
     win = TestSignalsWindow(root, FakePlayer(), {"testsignals_output": "Gone"}, stream_factory=FakeStream,
                             confirm=lambda *a: asked.append(a) or True)
@@ -380,7 +382,7 @@ def test_window_never_plays_on_a_device_that_isnt_there(root, fake_devices):
 
 def test_stop_works_while_measuring_and_drops_that_measurement(root, fake_devices):
     import threading
-    from ironbark.testsignals_window import TestSignalsWindow
+    from ironbark.tools.testsignals_window import TestSignalsWindow
     release = threading.Event()
 
     def slow_recorder(source, output, rate, seconds):
@@ -406,7 +408,7 @@ def test_stop_works_while_measuring_and_drops_that_measurement(root, fake_device
 
 
 def test_a_dac_plugged_in_after_start_up_is_found(root, fake_devices, monkeypatch):
-    from ironbark import testsignals_window as tw
+    from ironbark.tools import testsignals_window as tw
     events = []
 
     def find_device(name, rescan_ok=True):
@@ -430,7 +432,7 @@ def test_a_dac_plugged_in_after_start_up_is_found(root, fake_devices, monkeypatc
 
 
 def test_a_dac_windows_doesn_t_know_still_plays_nothing(root, fake_devices, monkeypatch):
-    from ironbark import testsignals_window as tw
+    from ironbark.tools import testsignals_window as tw
     rescans = []
     monkeypatch.setattr(tw.devices, "find_device",
                         lambda name, rescan_ok=True: rescans.append(name) if rescan_ok else fake_devices.get(name))

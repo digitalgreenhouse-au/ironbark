@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import compare, theme
+from ironbark import theme
+from ironbark.tools import compare
 from ironbark.proof import resample
 
 RATE = 44100
@@ -158,7 +159,7 @@ def root():
 
 def test_compare_window_shows_the_result(root, tmp_path):
     import time
-    from ironbark.compare_window import CompareWindow
+    from ironbark.tools.compare_window import CompareWindow
     x = as16(music(seconds=4))
     a, b = write16(tmp_path / "a.flac", x), write16(tmp_path / "b.flac", np.concatenate([np.zeros((10, 2)), x]))
     prefs = {}
@@ -178,7 +179,7 @@ def test_compare_window_shows_the_result(root, tmp_path):
 def test_compare_window_keeps_a_cue_track(root, tmp_path):
     import time
     from ironbark.audiofile import CuePath, CueRange
-    from ironbark.compare_window import CompareWindow
+    from ironbark.tools.compare_window import CompareWindow
     x = as16(music(seconds=4))
     image = write16(tmp_path / "image.flac", np.concatenate([np.zeros((RATE, 2)), x]))
     single = write16(tmp_path / "02.flac", x)
@@ -195,7 +196,7 @@ def test_compare_window_keeps_a_cue_track(root, tmp_path):
 
 
 def test_file_chooser_lists_every_kind_of_file_the_player_plays():
-    from ironbark.compare_window import AUDIO_TYPES
+    from ironbark.tools.compare_window import AUDIO_TYPES
     from ironbark.library import AUDIO_EXTENSIONS
     patterns = AUDIO_TYPES[0][1].split()
     assert AUDIO_TYPES[0][0] == "Audio files"

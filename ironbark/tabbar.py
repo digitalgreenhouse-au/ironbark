@@ -377,7 +377,7 @@ class TabBar(tk.Frame):
     a few item changes, not a strip. Nothing is drawn per width: plates and rings are two cached end
     pictures with plain rectangles between them (shapes.ends).
 
-    `set_wide` only sets how wide a tab may grow; the strip's buttons are the same at every width."""
+    The strip's buttons are the same at every width."""
 
     DRAG_GAP = theme.DRAG_GAP   # (the strip's tokens live in theme; kept here for older callers)
     MIN_TAB = theme.MIN_TAB
@@ -403,7 +403,7 @@ class TabBar(tk.Frame):
         self._drag: dict | None = None
         self._slot = 1        # one tab's width plus its gap, set by _layout
         self._per = 1         # one tab's width
-        self.tab_max = theme.TAB_MAX   # a tab's widest (px at 100%), see set_wide
+        self.tab_max = theme.TAB_MAX   # a tab's widest (px at 100%)
         self.top_row = tk.Frame(self, bg=theme.STRIP, height=self.row_height)
         self.top_row.pack(fill="x")
         self.top_row.pack_propagate(False)
@@ -490,12 +490,6 @@ class TabBar(tk.Frame):
         if not chrome.CUSTOM:
             return 0
         return 2 * theme.px(theme.CAPTION_W)   # minimise and close
-
-    def set_wide(self, wide: bool, tab_max: int = theme.TAB_MAX):
-        """Tabs may be up to `tab_max` px (at 100%) wide. (`wide` is what the layout code passes;
-        the strip's buttons are the same at every width.)"""
-        self.tab_max = tab_max
-        self._layout()
 
     def _disc_top(self) -> int:
         return theme.px(theme.ROW_Y) - theme.px(theme.DISC) // 2

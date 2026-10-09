@@ -25,8 +25,8 @@ from typing import Callable
 
 import numpy as np
 
-from . import audiofile, theme
-from .analysis import find_cutoff, wall_verdict
+from .. import audiofile, theme
+from ..analysis import find_cutoff, wall_verdict
 
 LIVE_FFT = 4096
 LIVE_COLUMNS_PER_SECOND = 25   # one live slice every 40 ms

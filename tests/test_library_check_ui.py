@@ -172,7 +172,7 @@ class ShownPlayer:
 
 def test_now_playing_shows_a_stored_check_at_once_and_keeps_its_own(root, music, monkeypatch):
     from ironbark.analysis import analyse
-    from ironbark.details import NowPlayingWindow
+    from ironbark.tools.details import NowPlayingWindow
 
     loud = read_track(music / "Loud" / "01.flac")
     result = analyse(loud.path, loud.bits, loud.md5)

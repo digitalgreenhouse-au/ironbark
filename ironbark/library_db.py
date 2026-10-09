@@ -58,13 +58,15 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, audiofile, searchfold, settings
 from .audiofile import CuePath, CueRange
 from .browse import make_album
-from .library import (_DISC_FOLDER, Album, Track, is_music_name, natural_key, play_order, read_track, skip_folder,
+from .musicfiles import DISC_FOLDER
+from .library import (Album, Track, is_music_name, natural_key, play_order, read_track, skip_folder,
                       sort_name, split_cue_images)
 
 FILE_NAME = "library.db"
@@ -506,7 +508,7 @@ def _album_rel(rel: str) -> str:
     folder inside an album, else itself. (A disc folder right at the top of a library folder is
     an album of its own: the library folder's parent isn't part of the library.)"""
     parent, name = os.path.split(rel)
-    return parent if parent and _DISC_FOLDER.match(name) else rel
+    return parent if parent and DISC_FOLDER.match(name) else rel
 
 
 def _rel(root: str, folder: str) -> str:
@@ -554,6 +556,22 @@ def _keys_in(con: sqlite3.Connection, sql: str, keys: list[str]) -> list[tuple]:
 
 
 # -- the database ----------------------------------------------------------------------------------------
+# The old index's JSON form of a Track (library_index.py wrote it; the importer below reads it).
+_JSON_SKIP = {"path", "embedded_cue", "missing", "unreadable"}
+_JSON_FIELDS = [f for f in dataclasses.fields(Track) if f.name not in _JSON_SKIP]
+_DEFAULTS = {f.name: f.default for f in _JSON_FIELDS if f.default is not dataclasses.MISSING}
+
+
+def track_from_dict(path: Path, data: dict) -> Track:
+    values = {k: v for k, v in data.items() if k in _DEFAULTS or k == "title"}
+    values["details"] = tuple(tuple(pair) for pair in data.get("details", ()))
+    cue = data.get("cue")
+    if cue:
+        path = CuePath(path, cue=CueRange(str(cue[0]), int(cue[1]), int(cue[2]),
+                                          None if cue[3] is None else int(cue[3])))
+    return Track(path=path, **values)
+
+
 class LibraryDB:
     """The library database (see the module notes). Open with `LibraryDB.open(path, roots)`."""
 
@@ -1642,7 +1660,7 @@ class LibraryDB:
         return gone
 
     # -- moving over from library_index.json --
-    def import_json_index(self, path: str | Path | None = None,
+    def import_json_index(self, path: str | Path,
                           progress: Callable[[int, int], None] | None = None) -> bool:
         """Bring a saved library_index.json (library_index.py) across: every file with exactly its
         size, modified time, `added` and `seen`, and the library folder's first-look time, so
@@ -1651,9 +1669,7 @@ class LibraryDB:
         counting the rows; then the JSON is renamed library_index.json.migrated (a backup).
         Returns whether it was brought across — if not (none, damaged, another folder, an older
         format), the library is simply looked through from scratch. `progress(done, total)`."""
-        from . import library_index   # (it uses this module: imported here, not at the top)
-
-        path = Path(path) if path is not None else library_index.index_path()
+        path = Path(path)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if data.get("format") != READ_FORMAT:
@@ -1662,7 +1678,7 @@ class LibraryDB:
             entries = []
             for name, item in data["files"].items():
                 entries.append((name, int(item["size"]), int(item["mtime"]), float(item["added"]), float(item["seen"]),
-                                [library_index.track_from_dict(Path(name), t) for t in item["tracks"]]))
+                                [track_from_dict(Path(name), t) for t in item["tracks"]]))
             cues = {str(folder): list(sheet) for folder, sheet in data.get("cues", {}).items()}
             json_root = Path(data["root"])
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -1842,7 +1858,7 @@ def _folders_under(con: sqlite3.Connection, root_id: int, rel: str, whole_tree: 
     if whole_tree:
         return rows
     return [row for row in rows if row[1] == rel
-            or (os.path.dirname(row[1]) == rel and _DISC_FOLDER.match(os.path.basename(row[1])))]
+            or (os.path.dirname(row[1]) == rel and DISC_FOLDER.match(os.path.basename(row[1])))]
 
 
 def _folder_paths(con: sqlite3.Connection, folder_ids: list[int]) -> dict[int, str]:
@@ -1940,7 +1956,7 @@ def _music_on_disk(folder: Path, whole_tree: bool) -> list[str] | None:
             for entry in folder.iterdir():
                 if entry.is_file() and is_music_name(entry.name):
                     paths.append(str(entry))
-                elif entry.is_dir() and _DISC_FOLDER.match(entry.name):
+                elif entry.is_dir() and DISC_FOLDER.match(entry.name):
                     paths += [str(p) for p in entry.iterdir() if p.is_file() and is_music_name(p.name)]
     except OSError:
         return None

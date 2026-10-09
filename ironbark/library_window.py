@@ -69,7 +69,8 @@ from .browse import album_label
 from .favourites import HEART
 from .library import Album, Track, sort_name
 from .library_db import SongHit
-from .playlist_view import TreeDrag, _fold, fit_columns
+from .playlist_view import TreeDrag, fit_columns
+from .searchfold import fold
 from .quick_search import Actions, add_song_items, album_text, count_text, shared_catalogue, song_name, song_values
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
 
@@ -136,7 +137,7 @@ def added_text(seconds: float) -> str:
 
 def _jump_text(text) -> str:
     """A name as type-to-jump compares it: folded, "The " left off (as names sort)."""
-    folded = _fold(str(text)).strip()
+    folded = fold(str(text)).strip()
     return folded[4:] if folded.startswith("the ") else folded
 
 
@@ -258,7 +259,7 @@ def _album_rows(albums: list[Album], texts: dict[int, str], view: str, words: li
     rows_map: dict[str, Album] = {}
     groups: dict[str, str] = {}
     for group in browse.group_albums(albums, view):
-        if words and grouped and all(w in _fold(group.name) for w in words):
+        if words and grouped and all(w in fold(group.name) for w in words):
             listed = group.albums  # the artist / genre / year itself matches: all of it
         elif words:
             listed = [a for a in group.albums if all(w in (texts.get(id(a)) or album_text(a)) for w in words)]
@@ -918,7 +919,7 @@ class LibraryWindow:
         staying until the new one is here — unless `now` (Enter or ↓ straight after typing, Show in
         Library: they act on the list at once)."""
         self._songs_listed = None   # (the list holds albums now)
-        words = [_fold(w) for w in self.search_var.get().split()]
+        words = [fold(w) for w in self.search_var.get().split()]
         column, reverse = self.sort
         grouped = self.view not in ("albums", "recent")
         self.tree.configure(show="tree headings" if grouped else "headings")

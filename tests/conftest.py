@@ -7,6 +7,9 @@
 - Every test gets its own empty cache folder (settings.cache_folder: where the library database
   lives), so no test can touch the real one. (A test that points the settings somewhere else
   takes the cache with them anyway: settings.cache_folder follows settings_path.)
+- Two tiers: a test module that makes windows (it names tkinter, or one of the player's windows)
+  is marked `ui` here at collection, so `uv run pytest -q -m "not ui"` is the quick tier (no
+  window; a few minutes) and the plain run is the whole suite.
 - Performance benchmarks are marked `perf` and only run with `--perf`
   (`uv run pytest -q -p no:cacheprovider --perf -m perf`): they build big synthetic libraries
   and take a while.
@@ -28,6 +31,7 @@ import gc
 import itertools
 import logging
 import os
+import re
 import sys
 import threading
 import uuid
@@ -90,11 +94,41 @@ def pytest_addoption(parser):
                      help="also run the performance benchmarks (marked 'perf')")
 
 
-def pytest_configure(config):
-    config.addinivalue_line("markers", "perf: a performance benchmark (slow); runs only with --perf")
+# A test module that makes windows: it names tkinter, the player's ui module or one of its
+# windows (…Window / …View), or a window fixture — itself, or through a test module it imports
+# fixtures from (`from test_light_mini import make_window`).
+_MAKES_WINDOWS = re.compile(r"\btkinter\b|\bui\b|_window\b|[A-Z][A-Za-z]*(?:Window|View)\b|make_window"
+                            r"|\bTk\(|Toplevel|winfo_|update_idletasks|mainloop")
+_IMPORTS_TEST = re.compile(r"^from (test_\w+) import", re.MULTILINE)
+_window_modules: dict[str, bool] = {}
 
 
+def _makes_windows(path, seen: frozenset = frozenset()) -> bool:
+    path = os.path.abspath(str(path))
+    if path in _window_modules:
+        return _window_modules[path]
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        text = ""
+    found = bool(_MAKES_WINDOWS.search(text))
+    if not found:
+        folder = os.path.dirname(path)
+        for name in _IMPORTS_TEST.findall(text):
+            other = os.path.join(folder, name + ".py")
+            if other not in seen and _makes_windows(other, seen | {path}):
+                found = True
+                break
+    _window_modules[path] = found
+    return found
+
+
+@pytest.hookimpl(tryfirst=True)   # (before pytest's own -m filter looks at the marks)
 def pytest_collection_modifyitems(config, items):
+    ui = pytest.mark.ui
+    for item in items:
+        if _makes_windows(item.path):
+            item.add_marker(ui)
     if config.getoption("--perf"):
         return
     skip = pytest.mark.skip(reason="performance benchmark: run with --perf")

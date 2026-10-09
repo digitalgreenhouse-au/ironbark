@@ -5,8 +5,7 @@ import pytest
 import soundfile as sf
 
 from ironbark.analysis import ClipCounter, album_measure, analyse, bits_in_use, find_cutoff
-from ironbark.details import (describe_album, describe_analysis, describe_bits, describe_clipping,
-                                describe_range, describe_stereo)
+from ironbark.tools.details import describe_album, describe_analysis, describe_bits, describe_clipping, describe_range, describe_stereo
 
 RATE = 44100
 

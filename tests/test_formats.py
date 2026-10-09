@@ -11,7 +11,7 @@ from ironbark.tagio.flac import CueSheetIndex as CueSheetTrackIndex
 
 from ironbark import formats
 from ironbark.analysis import analyse
-from ironbark.details import describe_analysis, describe_flags
+from ironbark.tools.details import describe_analysis, describe_flags
 from ironbark.formats import (HdcdScanner, MqaScanner, find_mqa, hdcd_gain_db, mqa_original_rate,
                                 pre_emphasis, scan)
 

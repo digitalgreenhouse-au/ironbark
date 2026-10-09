@@ -4,6 +4,20 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.36.0 — 09/10/2026
+
+**Under the bonnet.** Nothing new to see; the code is in better shape for what comes next.
+
+- The side player's unreachable wide layout (two panes, full screen, the docked Up next and Lyrics
+  views, the whole-library search beside the box) is gone from the code, not just locked away.
+- The Check tools (Now Playing, Meters, PCM stream, Spectrogram, Stereo scope, Clipping, Compare, ABX,
+  Test signals, rip verification, Tape reels) live in their own package, `ironbark/tools/`, and share
+  one window base. The player itself is smaller and never depends on them.
+- Everything the player reads off its own thread goes through one worker with one way back, instead
+  of twenty-one threads each polling for its answer.
+- One place goes online (`network.py`), behind the one switch.
+- Tests: `uv run pytest -q -m "not ui"` runs the window-free tests in a few minutes.
+
 ## 0.35.0 — 08/10/2026
 
 **Tape reels** (Experimental — switch it on in Settings → Experimental, then press W). A reel-to-reel

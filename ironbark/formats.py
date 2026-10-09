@@ -50,7 +50,8 @@ from pathlib import Path
 
 import numpy as np
 
-from . import audiofile, cuesheet
+from .audiofile import FLOAT_SUBTYPES, SUBTYPE_BITS, read_blocks
+from . import audiofile, cuesheet, tagio
 
 # -- HDCD ---------------------------------------------------------------------------
 HDCD_PREFIX_A = 0x7E0FA005
@@ -277,7 +278,6 @@ def _tag_values(path: Path) -> tuple[dict[str, list[str]], int | None]:
     number, read by tagio (by the file's contents). ({}, None) if unreadable."""
     import struct
 
-    from . import tagio
 
     try:
         audio = tagio.open_any(path)
@@ -395,7 +395,6 @@ def scan(path: str | Path, seconds: float | None = None) -> FormatFlags:
     """All the flags for one file, reading it on its own (the player does this inside the
     Check's one pass instead). `seconds` limits the read (MQA needs only the first 3 s; HDCD
     packets repeat throughout an HDCD disc, so a stretch of each track finds them)."""
-    from .analysis import FLOAT_SUBTYPES, SUBTYPE_BITS, _blocks
 
     with audiofile.open(path) as f:
         bits = SUBTYPE_BITS.get(f.subtype)
@@ -404,7 +403,7 @@ def scan(path: str | Path, seconds: float | None = None) -> FormatFlags:
         frames = None if seconds is None else max(int(f.samplerate * seconds), f.samplerate * 4)
         read = 0
         damaged: list = []   # a file that stops decoding part-way: flags from what decodes
-        for block in _blocks(f, damaged, blocksize=f.samplerate * 3, dtype="int32", always_2d=True):
+        for block in read_blocks(f, damaged, blocksize=f.samplerate * 3, dtype="int32", always_2d=True):
             formats.add(block)
             read += len(block)
             if frames is not None and read >= frames:

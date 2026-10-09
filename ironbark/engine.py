@@ -98,6 +98,26 @@ _AWAIT = object()     # _next_source: the next song is still downloading (the de
 _UNCHECKED = object()  # Player._checked_default before the system default's volume control was checked
 
 
+QUIET_WINDOW_S = 0.05   # s: how far back from a cut the quietest sample is looked for
+
+
+def quiet_point(block, rate: int, window_s: float = QUIET_WINDOW_S) -> int:
+    """Index k in `block` (frames × channels, integer or float) within its last `window_s` where the
+    loudest channel is nearest zero — where to cut before a pause, so the last sample heard is
+    a quiet one. The latest such sample, to re-decode as little as possible."""
+    frames = len(block)
+    if frames == 0:
+        return 0
+    span = max(1, min(frames, int(round(window_s * rate))))
+    tail = np.asarray(block[frames - span:])
+    level = np.abs(tail.astype(np.float64))
+    if level.ndim > 1:
+        level = level.max(axis=1)
+    lowest = level.min()
+    k = int(np.flatnonzero(level == lowest)[-1])
+    return frames - span + k
+
+
 class State(Enum):
     STOPPED = "stopped"
     PLAYING = "playing"
@@ -958,8 +978,6 @@ class _Session:
         quietest sample (within QUIET_WINDOW_S), and queue a stall marker after it. The frames
         after the cut are decoded again when it carries on, so nothing is skipped or repeated.
         If the sound card already has that block, the cut is simply the end of what was queued."""
-        from .netcache.policy import quiet_point   # (only ever reached with the cache installed)
-
         wait = self.waiting
         cut = wait.frame
         with self._queue.mutex:

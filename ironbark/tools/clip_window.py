@@ -33,8 +33,9 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
-from . import audition, clipping, controls, experiments, placement, theme, toolwin
-from .engine import State
+from .. import controls, experiments, placement, theme, toolwin
+from . import audition, clipping
+from ..engine import State
 
 log = logging.getLogger(__name__)
 
@@ -67,18 +68,17 @@ def fmt_db(value: float, unit: str) -> str:
     return theme.figures(f"{value:+.2f} {unit}")
 
 
-class ClipWindow:
+class ClipWindow(toolwin.ToolWindow):
+    TITLE = "Clipping"
+    SIZE = (900, 720)
+    MIN_SIZE = (520, 440)
+    GEOMETRY_KEY = "clip_geometry"
+    REFRESH_MS = REFRESH_MS
+
     def __init__(self, parent: tk.Misc, player, prefs: dict, on_close=lambda: None, stream_factory=None):
-        self.player, self.prefs, self.on_close = player, prefs, on_close
+        self.player = player
         self._stream_factory = stream_factory      # tests: a stand-in for the sound device
-        self.win = tk.Toplevel(parent, bg=theme.BG)
-        self.win.title("Clipping")
-        self.win.geometry(f"{theme.px(900)}x{theme.px(720)}")
-        self.win.minsize(theme.px(520), theme.px(440))
-        placement.restore(self.win, prefs.get("clip_geometry", ""))
-        theme.dark_title_bar(self.win)
-        self.win.protocol("WM_DELETE_WINDOW", self.close)
-        self.win.bind("<Escape>", lambda e: self.close())
+        super().__init__(parent, prefs, on_close)
 
         outer = ttk.Frame(self.win, padding=theme.pad(10, 8, 10, 10))
         outer.pack(fill="both", expand=True)
@@ -159,11 +159,9 @@ class ClipWindow:
         self.win.bind("<space>", lambda e: self._own_key(
             lambda: self.stop() if self.playing else self.hear(self._last or "A")))
 
-        self._keep_going = toolwin.KeepGoing(self.win)
         theme.on_change(self._palette_changed)
-        self.win.bind("<Configure>", self._moved, add="+")
         self._sync_listen()
-        self._job = self.win.after(REFRESH_MS, self._tick)
+        self.start_ticking()
 
     # -- live --------------------------------------------------------------------------------
     def _drain(self) -> bool:
@@ -727,14 +725,6 @@ class ClipWindow:
         self.hearing.configure(text=hearing)
 
     # -- the loop ------------------------------------------------------------------------------
-    def _tick(self):
-        self._job = None
-        if not self.win.winfo_exists():
-            return
-        with self._keep_going:
-            self._step()
-        self._job = self.win.after(REFRESH_MS, self._tick)
-
     def _step(self):
         self._drain()
         status = self.player.status()
@@ -770,26 +760,12 @@ class ClipWindow:
         for label in labels:
             label.configure(wraplength=width)
 
-    def _moved(self, event):
-        if event.widget is self.win:
-            geometry = placement.current(self.win)
-            if geometry:
-                self.prefs["clip_geometry"] = geometry
-
-    def lift(self):
-        self.win.deiconify()
-        self.win.lift()
-
-    def close(self):
+    def _closing(self):
         self._scan_cancel.set()
-        if self._job:
-            self.win.after_cancel(self._job)
         self._stop_audition()
         toolwin.give_back_sound(self)
         self.player.unmonitor(self.feed)
         self._live_photo = self._strip_photo = None   # its pictures go with the window, on this thread
-        self.win.destroy()
-        self.on_close()
 
 
 def clipping_float(source: np.ndarray) -> np.ndarray:

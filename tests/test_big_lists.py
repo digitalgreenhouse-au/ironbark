@@ -369,7 +369,7 @@ def test_the_track_list_shows_a_light_tab_and_searches_it_in_the_database(root, 
         root.update()
         assert _wait(root, lambda: all(not view.tree.set(iid, "title").startswith("…")
                                        for iid in view.tree.get_children()))
-        assert view.tree.get_children()[0] == "a0" and "artist" in view.varies
+        assert view.tree.get_children()[0] == "a0"
         view.query.set("love")
         view._render()
         everything = list(tracks)
