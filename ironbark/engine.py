@@ -887,7 +887,7 @@ class Player:
     def check_default(self) -> str | None:
         """Bit-perfect on the system default: the device to play on — the one whose volume control
         was checked (refresh_hardware_volume), by name — as long as it's still Windows' default.
-        If Windows has made another device the default since, this raises devices.DefaultChanged,
+        If the system has made another device the default since, this raises devices.DefaultChanged,
         and nothing plays in bit-perfect until that device has been checked too (`volume_check_due`):
         it may have no volume control of its own, and bit-perfect sends the file at full scale."""
         name = devices.default_output_name()
@@ -897,7 +897,7 @@ class Player:
             self.hardware_volume = None   # (not known for this device: the ear checks treat it as none)
             self.amp_volume = False
             self.volume_check_due = True
-        raise devices.DefaultChanged(f"Windows' default output is now {name or 'another device'}")
+        raise devices.DefaultChanged(f"The system's default output is now {name or 'another device'}")
 
     @property
     def output_device(self) -> str | None:

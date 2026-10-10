@@ -4,11 +4,12 @@ and hold one for bit-perfect playback.
 On Windows everything goes through WASAPI, so one device list serves both shared
 and exclusive (bit-perfect) mode. On a Mac it's Apple's Core Audio, with bit-perfect done by
 hand (coreaudio.py): hog mode, and the device switched to the file's rate and its deepest
-format. Windows' own device list (read through Windows' Core Audio)
-is live; PortAudio's is scanned once at start-up. When Windows lists a device that
-PortAudio hasn't seen — a USB DAC plugged in after launch — we re-scan PortAudio. A
-re-scan pulls every open PortAudio stream out from under its owner, so it only happens
-while none is open: whoever opens a stream reports it with `holding` / `released`.
+format. The system's own device list (Windows' Core Audio, or Apple's) is live;
+PortAudio's is scanned once at start-up. So the system's list is the one shown, and when it
+has a device that PortAudio hasn't seen — headphones or a USB DAC plugged in after launch —
+we re-scan PortAudio. A re-scan pulls every open PortAudio stream out from under its owner,
+so it only happens while none is open: whoever opens a stream reports it with `holding` /
+`released`.
 
 The Core Audio queries ask only for the active output endpoints and only the property
 needed (the name, or the volume control): a few milliseconds, where reading every
@@ -187,12 +188,25 @@ def rescan() -> None:
     sd._initialize()
 
 
+def _live_output_names() -> list[str] | None:
+    """The system's own list of the outputs connected right now (PortAudio's is from start-up).
+    None = can't tell: not Windows or a Mac, or the query failed."""
+    if IS_WINDOWS:
+        return _com_call(lambda: [name for name, _ in _active_outputs()])
+    if IS_MAC:
+        from . import coreaudio
+
+        try:
+            return coreaudio.output_names()
+        except OSError:
+            log.info("core audio device list failed", exc_info=True)
+    return None
+
+
 def _system_lists(name: str) -> bool:
-    """Does Windows list `name` as connected (so a re-scan would find it)? True when it can't
-    tell, and off Windows (PortAudio's list is all there is)."""
-    if not IS_WINDOWS:
-        return True
-    names = _com_call(lambda: [found for found, _ in _active_outputs()])
+    """Does the system list `name` as connected (so a re-scan would find it)? True when it
+    can't tell (then PortAudio's list is all there is)."""
+    names = _live_output_names()
     return names is None or name in names
 
 
@@ -303,11 +317,8 @@ def core_audio_device(name: str | None) -> int | None:
 
 def output_names() -> list[str]:
     """Every output device that's connected right now."""
-    if IS_WINDOWS:
-        names = _com_call(lambda: [name for name, _ in _active_outputs()])
-        if names is not None:
-            return names
-    return [name for _, name in _portaudio_outputs()]
+    names = _live_output_names()
+    return names if names is not None else [name for _, name in _portaudio_outputs()]
 
 
 def _portaudio_inputs() -> list[tuple[int, str]]:
@@ -339,9 +350,19 @@ def find_input(name: str) -> int | None:
 
 
 def default_output_name() -> str | None:
-    """The system's default output right now (on Windows, as set in Sound settings)."""
+    """The system's default output right now (as set in Sound settings)."""
     if IS_WINDOWS:
         name = _com_call(lambda: _name_of(_default_output()))
+        if name:
+            return name
+    elif IS_MAC:
+        from . import coreaudio
+
+        try:
+            name = coreaudio.default_output_name()
+        except OSError:
+            log.info("core audio default output failed", exc_info=True)
+            name = None
         if name:
             return name
     index = _portaudio_default()

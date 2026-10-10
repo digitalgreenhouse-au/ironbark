@@ -36,7 +36,7 @@ def _code(text: str) -> int:
 
 
 SCOPE_GLOBAL, SCOPE_OUTPUT = _code("glob"), _code("outp")
-DEVICES, NAME, STREAMS = _code("dev#"), _code("lnam"), _code("stm#")
+DEVICES, NAME, STREAMS, DEFAULT_OUTPUT = _code("dev#"), _code("lnam"), _code("stm#"), _code("dOut")
 HOG_MODE, NOMINAL_RATE, VOLUME = _code("oink"), _code("nsrt"), _code("volm")
 PHYSICAL_FORMAT, PHYSICAL_FORMATS = _code("pft "), _code("pfta")
 LINEAR_PCM = _code("lpcm")
@@ -132,11 +132,29 @@ def output_streams(device: int) -> list[int]:
     return _get(device, STREAMS, ctypes.c_uint32, SCOPE_OUTPUT) or []
 
 
+def output_devices() -> list[int]:
+    """Every output device connected right now, in Core Audio's order (PortAudio's too)."""
+    return [d for d in _get(SYSTEM_OBJECT, DEVICES, ctypes.c_uint32) or [] if output_streams(d)]
+
+
+def output_names() -> list[str]:
+    """The names of the outputs connected right now — live, where PortAudio's list is from
+    start-up (headphones plugged in since are here and not there)."""
+    return [_name(d) for d in output_devices()]
+
+
+def default_output_name() -> str | None:
+    """The name of the system's default output right now (as Sound settings shows it)."""
+    default = _get(SYSTEM_OBJECT, DEFAULT_OUTPUT, ctypes.c_uint32)
+    if not default or not default[0]:
+        return None
+    return _name(default[0]) or None
+
+
 def find_device(name: str, nth: int = 0) -> int | None:
     """The Core Audio id of the `nth` output device called `name` (two displays can share a name;
     PortAudio lists them in Core Audio's order, so the nth of each is the same device)."""
-    matches = [d for d in _get(SYSTEM_OBJECT, DEVICES, ctypes.c_uint32) or []
-               if output_streams(d) and _name(d) == name]
+    matches = [d for d in output_devices() if _name(d) == name]
     return matches[nth] if nth < len(matches) else None
 
 
