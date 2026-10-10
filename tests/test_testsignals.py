@@ -67,7 +67,8 @@ def test_a_perfect_tone_has_nothing_but_the_tone():
     signal = ts.tone(RATE, -20)
     r = ts.analyse_tone(np.tile(signal.period, 4), RATE)
     assert r.level_db == pytest.approx(-20, abs=0.001) and r.frequency == pytest.approx(1000, abs=0.01)
-    assert r.thd_n_db < -180 and r.noise_db < -180
+    # The analysis's own floor: the window's far sidelobes and float64 rounding, about -166 dB.
+    assert r.thd_n_db < -160 and r.noise_db < -160
 
 
 def test_thd_n_of_a_tone_with_a_known_harmonic_and_noise():
