@@ -4281,6 +4281,11 @@ class PlayerWindow:
             except queue.Empty:
                 break
             arrived = True
+            if request.command:   # a remote control: the same as a press of that media key
+                self.media.press(request.command)
+                log.info("a remote control asked for %s", request.command)
+                if not request.paths and not request.front:
+                    continue
             front = front or request.front
             if request.paths:
                 self._named.append(request.paths)

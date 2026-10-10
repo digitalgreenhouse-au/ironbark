@@ -16,6 +16,9 @@ them from there on its own thread (Tk must never be called from any other).
 
 A request on the wire: a 4-byte little-endian length, then that many bytes of UTF-8 JSON
 {"paths": [...], "front": true, "key": "..."}; the running copy answers one byte, 1 = taken.
+A request may instead (or as well) carry "command": one of the media-key words ("play",
+"pause", "toggle", "next", "previous", "stop"), which the running copy treats exactly like a
+press of that media key — a remote control needs nothing more than the port file and the key.
 """
 
 from __future__ import annotations
@@ -48,18 +51,25 @@ ACK = b"\x01"
 # The installer looks for this before uninstalling ("close Ironbark first"). Not per user: the
 # installer only needs to know a copy is open in this Windows session.
 INSTALLER_MUTEX = "DigitalGreenhouse.Ironbark.Running"
+# The media-key words a request may carry (mediakeys.PLAY ... STOP; not imported: no UI code here).
+COMMANDS = ("play", "pause", "toggle", "next", "previous", "stop")
 
 
 @dataclass(frozen=True)
 class Request:
-    """What a later launch asked for: files / folders / playlists to open, and to come forward."""
+    """What a later launch asked for: files / folders / playlists to open, and to come forward;
+    or, from a remote control, a media-key command (one of COMMANDS, "" for none)."""
     paths: tuple[str, ...] = ()
     front: bool = True
+    command: str = ""
 
 
-def encode(paths, front: bool = True, key: str = "") -> bytes:
+def encode(paths, front: bool = True, key: str = "", command: str = "") -> bytes:
     """One request, framed for the wire."""
-    body = json.dumps({"paths": [str(p) for p in paths], "front": bool(front), "key": key}).encode("utf-8")
+    data = {"paths": [str(p) for p in paths], "front": bool(front), "key": key}
+    if command:
+        data["command"] = command
+    body = json.dumps(data).encode("utf-8")
     return struct.pack("<I", len(body)) + body
 
 
@@ -75,7 +85,10 @@ def decode(body: bytes, key: str = "") -> Request | None:
     paths = data.get("paths", [])
     if not isinstance(paths, list):
         return None
-    return Request(tuple(p for p in paths if isinstance(p, str) and p), bool(data.get("front", True)))
+    command = data.get("command", "")
+    if not isinstance(command, str) or (command and command not in COMMANDS):
+        return None
+    return Request(tuple(p for p in paths if isinstance(p, str) and p), bool(data.get("front", True)), command)
 
 
 def absolute(paths) -> list[str]:
