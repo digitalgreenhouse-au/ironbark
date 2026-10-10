@@ -35,6 +35,18 @@ needs_ffprobe = pytest.mark.skipif(FFPROBE is None, reason="FFmpeg's ffprobe isn
 needs_ffmpeg = pytest.mark.skipif(FFMPEG is None, reason="FFmpeg isn't on PATH")
 
 
+def ffmpeg_encodes(codec: str) -> bool:
+    """Was this FFmpeg built with encoder `codec`? (Homebrew's, say, has no libvorbis.)"""
+    if FFMPEG is None:
+        return False
+    out = subprocess.run([FFMPEG, "-v", "error", "-encoders"], capture_output=True, text=True).stdout
+    return any(line.split()[1:2] == [codec] for line in out.splitlines())
+
+
+def needs_encoder(codec: str):
+    return pytest.mark.skipif(not ffmpeg_encodes(codec), reason=f"FFmpeg here has no {codec} encoder")
+
+
 @pytest.fixture(autouse=True)
 def temp_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
@@ -490,7 +502,8 @@ def test_written_tags_and_cover_are_read_by_ffprobe(tmp_path, kind):
 @pytest.mark.parametrize("kind,args", [("flac", []), ("mp3", ["-c:a", "libmp3lame"]),
                                        ("mp3", ["-c:a", "libmp3lame", "-id3v2_version", "3"]),
                                        ("aiff", ["-write_id3v2", "1"]), ("mp4", ["-c:a", "alac"]),
-                                       ("ogg", ["-c:a", "libvorbis"]), ("opus", ["-c:a", "libopus"])])
+                                       pytest.param("ogg", ["-c:a", "libvorbis"], marks=needs_encoder("libvorbis")),
+                                       pytest.param("opus", ["-c:a", "libopus"], marks=needs_encoder("libopus"))])
 def test_ffmpeg_made_tags_are_read(tmp_path, kind, args):
     source = make(tmp_path / "src.wav", "wav")
     out = tmp_path / f"b{SUFFIX[kind]}"

@@ -17,7 +17,7 @@ import conftest
 import pytest
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
-from ironbark import playlists, popups, tabbar, theme
+from ironbark import playlists, popups, recycle, tabbar, theme
 from ironbark.popups import PopupMenu, Prompt
 from ironbark.tabbar import glyph
 
@@ -437,11 +437,11 @@ def test_playlist_name_prompt_checks_for_a_clash(make_window, tmp_path, monkeypa
     window.delete_playlist(window.current)          # (to the Recycle Bin, on a worker thread)
     gone = playlists.path_for("Jazz")
     deadline = time.monotonic() + 10
-    while (gone.exists() or "Recycle Bin" not in (window._notice or "")) and time.monotonic() < deadline:
+    while (gone.exists() or recycle.BIN_NAME not in (window._notice or "")) and time.monotonic() < deadline:
         root.update()
         time.sleep(0.02)
     assert not gone.exists() and not errors and str(gone) in conftest.binned
-    assert window._notice.startswith("Moved the playlist “Jazz” to the Recycle Bin")
+    assert window._notice.startswith(f"Moved the playlist “Jazz” to the {recycle.BIN_NAME}")
 
 
 def test_a_playlist_on_a_drive_with_no_recycle_bin_is_deleted_for_good_only_when_said(make_window, tmp_path,

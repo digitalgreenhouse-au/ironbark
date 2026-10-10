@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
-from ironbark import mini_view, places, theme
+from ironbark import mini_view, places, tabbar, theme
 from ironbark.library_view import unsearched_note
 
 NET = Path("Y:/Net Music")
@@ -99,5 +99,7 @@ def test_mini_strip_glyphs_are_weighed_against_each_other(make_window):
     mini = window.mini
     for button in (mini.previous_button, mini.next_button):
         assert button._glyph == theme.px(mini_view.SKIP_GLYPH) < theme.px(button.SKIP_SIZE)
+    # (Without Segoe's icon font — a Mac — the plain glyphs are set a point bigger to weigh the same.)
+    icon_size = theme.ICON if tabbar.icon_font(root) else theme.ICON + 1
     for button in (mini.settings_button, mini.full_button, mini.close_button):
-        assert tkfont.Font(root=root, font=button.cget("font")).cget("size") == theme.ICON
+        assert tkfont.Font(root=root, font=button.cget("font")).cget("size") == icon_size
