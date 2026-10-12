@@ -4,6 +4,18 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.46.1 — 12/10/2026
+
+- **24-bit tracks reach a USB device that takes 24-bit samples only in packed form.** Some
+  USB Audio Class 1 devices (those built on the CMedia CM6542, for one) refuse 32-bit
+  samples in bit-perfect mode; the sound library then fell back to 16-bit, so a 24-bit track lost
+  its lowest 8 bits (the player said so, rightly: "not bit-perfect"). Bit-perfect mode now also
+  asks such a device for packed 24-bit samples (three bytes each) and keeps whichever format
+  carries more bits. 16- and 24-bit tracks are bit-perfect on these devices again, proven sample
+  by sample as before. Devices that take 32-bit samples are opened exactly as before.
+- The Details window's Output line names the bits the device takes in bit-perfect mode
+  ("96 kHz 24-bit exclusive").
+
 ## 0.46.0 — 10/10/2026
 
 - **The Settings page is built by its own module.** `settings_view.py` now makes the controls
