@@ -644,6 +644,7 @@ class PlayerWindow:
         self._poll_errors: set[tuple[str, str]] = set()  # kinds of error _poll has logged already
         self._closing = False
         player.set_output_device(self.prefs["output_device"] or None)
+        player.set_amp_outputs(self.prefs["amp_volume_outputs"])
         player.set_shuffle(bool(self.prefs["shuffle"]))
         player.set_repeat(self.prefs["repeat"])
         hardware_volume = None
@@ -1311,12 +1312,14 @@ class PlayerWindow:
 
     def _ears_at_risk(self) -> bool:
         """Bit-perfect on a device that can't turn itself down (or that the player couldn't confirm
-        can): the player's volume is all there is between the file and the ears (see _protect_ears)."""
-        return bool(self.exclusive.get()) and not self.player.hardware_volume
+        can): the player's volume is all there is between the file and the ears (see _protect_ears).
+        Not on an output whose volume is set on the amplifier it feeds (Settings)."""
+        return bool(self.exclusive.get()) and not self.player.hardware_volume and not self.player.amp_volume
 
     def _ear_setup(self) -> tuple:
         """What the level is heard through: a level kept from one setup isn't safe to bring back in another."""
-        return bool(self.exclusive.get()), self.player.output_device, self.player.hardware_volume
+        return (bool(self.exclusive.get()), self.player.output_device, self.player.hardware_volume,
+                self.player.amp_volume)
 
     def full_volume(self):
         """Ctrl+Shift+↑: volume 100% (untouched). Where the player's volume is the only one (bit-perfect
@@ -3784,11 +3787,13 @@ class PlayerWindow:
         self.player.set_output_device(chosen)
         self.prefs["output_device"] = chosen or ""
         self.output_box.selection_clear()
+        settings_view.show_amp_volume(self)
 
     def _protect_ears(self, hardware_volume: bool | None):
         """Bit-perfect bypasses the Windows mixer. If the device can't turn itself down,
-        the system volume slider stops working — so drop the player volume first."""
-        if hardware_volume or self.player.volume <= SAFE_VOLUME:
+        the system volume slider stops working — so drop the player volume first. Not on an output
+        whose volume is set on the amplifier it feeds (Settings → Volume on my amplifier)."""
+        if hardware_volume or self.player.amp_volume or self.player.volume <= SAFE_VOLUME:
             return
         self.player.set_volume(SAFE_VOLUME)
         self.volume_var.set(SAFE_VOLUME * 100)

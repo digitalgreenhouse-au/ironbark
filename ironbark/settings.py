@@ -44,6 +44,7 @@ DEFAULTS = {
     "mini_on_top": True,         # (0.25.0) the mini strip's own Keep on top (on by default)
     "exclusive": False,
     "output_device": "",  # "" = system default
+    "amp_volume_outputs": [],    # (0.47.0) outputs whose volume is set on an amplifier or receiver (by name)
     "library_folders": [],       # the folders the Library looks in ([] = Windows' own Music folder)
     "library_folder": "",        # (before library_folders) the one library folder: read into library_folders
     "now_playing_geometry": "",  # where the Now Playing window was last left
@@ -443,6 +444,8 @@ _CHECKS = {
     "vu_auto": _dict_or_none,
     "vu_auto_loudness": _dict_or_none,
     "track_columns": lambda value: [v for v in value if isinstance(v, str)] if isinstance(value, list) else _BAD,
+    "amp_volume_outputs": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
+                                         else _BAD),
     "library_folders": lambda value: ([v for v in value if isinstance(v, str) and v] if isinstance(value, list)
                                       else _BAD),
     "net_mode": _one_of("intelligent", "fast", "complete"),

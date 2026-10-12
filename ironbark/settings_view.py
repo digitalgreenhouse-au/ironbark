@@ -242,6 +242,37 @@ def refresh_outputs(win):
         labels.append(f"{chosen} (not connected)")
     win.output_box.configure(values=labels)
     win.output_box.current(win._output_choices.index(chosen))
+    show_amp_volume(win)
+
+
+AMP_VOLUME_TEXT = "The amplifier or receiver it feeds sets the level, so no volume warning in Bit-perfect."
+
+
+def show_amp_volume(win):
+    """Settings → Volume on my amplifier shows the setting for the output in use (it's kept per output)."""
+    if getattr(win, "amp_volume", None) is None:
+        return   # (not built yet, or no Bit-perfect on this system)
+    name = win.player.output_name()
+    win.amp_volume.set(bool(name) and name in win.prefs["amp_volume_outputs"])
+    if win.amp_volume_row.about is not None:
+        where = f" For {name} only." if name else ""
+        win.amp_volume_row.about.configure(text=AMP_VOLUME_TEXT + where)
+
+
+def amp_volume_toggled(win):
+    """The switch, for the output in use: saved by name, and the player told. Turned off in
+    Bit-perfect on an output with no volume of its own, the usual ear check follows."""
+    name = win.player.output_name()
+    if not name:
+        win.amp_volume.set(False)
+        return
+    names = [n for n in win.prefs["amp_volume_outputs"] if n != name]
+    if win.amp_volume.get():
+        names.append(name)
+    win.prefs["amp_volume_outputs"] = names
+    win.player.set_amp_outputs(names)
+    if not win.amp_volume.get() and win.exclusive.get():
+        win._protect_ears(win.player.hardware_volume)
 
 
 def add_help_buttons(win, box: ttk.Frame):
@@ -344,6 +375,10 @@ def build_controls(win, view: SettingsView):
     if win.can_exclusive:
         setting(b, win.root, "Bit-perfect", "Sound exactly as recorded. Other apps go quiet.",
                       win.exclusive, win._toggle_exclusive)
+        win.amp_volume = tk.BooleanVar(value=False)
+        win.amp_volume_row = setting(b, win.root, "Volume on my amplifier", AMP_VOLUME_TEXT,
+                                     win.amp_volume, lambda: amp_volume_toggled(win))
+        show_amp_volume(win)
     row = ttk.Frame(b, style="Pop.TFrame")
     row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
     ttk.Label(row, text="Volume", style="Pop.TLabel").pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM))
