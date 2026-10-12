@@ -133,6 +133,7 @@ class OutputInfo:
     exclusive: bool
     hardware_volume: bool | None = None  # exclusive only: does the OS volume slider still work?
     device_bits: int | None = None       # exclusive only: bits per sample the device takes (None = unknown)
+    amp_volume: bool = False             # exclusive only: its volume is set on an amplifier (Player.amp_outputs)
 
     @property
     def resampled(self) -> bool:
@@ -235,6 +236,10 @@ class Player:
         self._exclusive = False
         self._device: str | None = None  # output device name; None = system default
         self.hardware_volume: bool | None = None  # see refresh_hardware_volume()
+        # Outputs whose volume is set on an amplifier or receiver they feed (Settings → Volume on my
+        # amplifier), by name: with no volume of their own, that's as it should be, not a risk.
+        self.amp_outputs: frozenset[str] = frozenset()
+        self.amp_volume = False   # the output last checked is one of them (see refresh_hardware_volume)
         # Bit-perfect on the system default plays only on the device whose volume control was checked
         # (its name, from refresh_hardware_volume). When Windows makes another device the default,
         # nothing plays in bit-perfect until that one has been checked too: `volume_check_due` asks
@@ -841,9 +846,21 @@ class Player:
         if name is None:
             # (Its name first: if Windows changes the default during the check, the change is caught.)
             self._checked_default = devices.default_output_name()
+        self.amp_volume = (name if name is not None else self._checked_default) in self.amp_outputs
         self.hardware_volume = devices.has_hardware_volume(name)
         self.volume_check_due = False
         return self.hardware_volume
+
+    def set_amp_outputs(self, names) -> None:
+        """The outputs whose volume is set on an amplifier they feed (by name); `amp_volume` follows
+        for the output in use (the system default: the one last checked)."""
+        self.amp_outputs = frozenset(names)
+        current = self._device if self._device is not None else self._checked_default
+        self.amp_volume = isinstance(current, str) and current in self.amp_outputs
+
+    def output_name(self) -> str | None:
+        """The output in use by name: the chosen one, or the system default's (now)."""
+        return self._device if self._device is not None else devices.default_output_name()
 
     def check_default(self) -> str | None:
         """Bit-perfect on the system default: the device to play on — the one whose volume control
@@ -856,6 +873,7 @@ class Player:
             if name == self._checked_default:
                 return name
             self.hardware_volume = None   # (not known for this device: the ear checks treat it as none)
+            self.amp_volume = False
             self.volume_check_due = True
         raise devices.DefaultChanged(f"Windows' default output is now {name or 'another device'}")
 
@@ -910,7 +928,8 @@ class Player:
                 state = State.PAUSED if session.paused or wait is not None else State.PLAYING
                 position, duration = session.position, session.duration
                 output = OutputInfo(session.device_name, session.samplerate, session.mixer_rate, session.exclusive,
-                                    self.hardware_volume if session.exclusive else None, session.device_bits)
+                                    self.hardware_volume if session.exclusive else None, session.device_bits,
+                                    session.exclusive and self.amp_volume)
             message = self._message or (session.message if session else "")
             # index -1 while a queued song plays: it isn't one of the list's songs
             index = -1 if self.queued_now is not None else self.index
