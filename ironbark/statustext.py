@@ -29,7 +29,7 @@ def levelling_text(level, trim: float = 1.0) -> str:
 
 def output_line(output: OutputInfo | None, gain: float, float_source: bool = False,
                 lossy: bool = False, trim: float = 1.0, bits: int = 0, codec: str = "",
-                level=None, fading: bool = False) -> tuple[str, str]:
+                level=None, fading: bool = False, show_bits: bool = False) -> tuple[str, str]:
     """(text, tone) for the line under the format. tone is "good", "warn" or "plain".
     float_source: the file holds floating-point samples (some WAVs), which the device
     can only take after conversion to whole numbers — so never bit-perfect.
@@ -39,14 +39,16 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
     the rest, so that isn't bit-perfect either.
     level: volume levelling on this track (levelling.Levelling) — amber, never bit-perfect (unless
     its gain comes to exactly 0 dB, which leaves the samples as they are).
-    fading: the sleep timer is fading the music out."""
+    fading: the sleep timer is fading the music out.
+    show_bits: name the bits per sample the device takes in exclusive mode, when known ("96 kHz
+    24-bit exclusive"): the Details window's longer line."""
     if output is None:
         return "", "plain"
     changes = [text for text in (levelling_text(level, trim), "fading out (sleep timer)" if fading else "") if text]
     if changes:   # volume levelling (it takes in the clipping guard) or a fade: the level is changed on purpose
         device = output.device
         if output.exclusive:
-            base = f"→ {device} · {format_rate(output.rate)} exclusive"
+            base = f"→ {device} · {_exclusive_format(output, show_bits)}"
             volume = " · volume below 100%" if gain < 1.0 else ""
             return f"{base}{volume} · {' · '.join(changes)}, so not bit-perfect", "warn"
         mixed = (f"resampled to {format_rate(output.mixer_rate)} by the {MIXER} mixer ⚠" if output.resampled
@@ -56,7 +58,7 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
              f"the converter)") if trim < 1.0 else ""
     device = output.device
     if output.exclusive:
-        base = f"→ {device} · {format_rate(output.rate)} exclusive"
+        base = f"→ {device} · {_exclusive_format(output, show_bits)}"
         if gain < 1.0:
             return f"{base} · volume below 100%, so not bit-perfect", "warn"
         if float_source:
@@ -78,6 +80,12 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
         return (f"→ {device} · resampled to {format_rate(output.mixer_rate)} by the {MIXER} mixer ⚠{guard}",
                 "warn")
     return f"→ {device} · {format_rate(output.rate)} · shared ({MIXER} mixer){guard}", "plain"
+
+
+def _exclusive_format(output: OutputInfo, show_bits: bool) -> str:
+    """"96 kHz exclusive", or "96 kHz 24-bit exclusive" with `show_bits` and the device's bits known."""
+    bits = f" {output.device_bits}-bit" if show_bits and output.device_bits else ""
+    return f"{format_rate(output.rate)}{bits} exclusive"
 
 
 def fewer_bits(output: OutputInfo | None, bits: int) -> bool:

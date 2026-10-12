@@ -78,6 +78,26 @@ JOIN_GIVE_UP_S = 0.3      # the next song still downloading: joined gaplessly on
 _NOT_YET = object()   # _Source.lined_up before the decoder has read to the file's end
 
 
+PACKED_24_BITS = 24   # a device that takes fewer bits than this from int32 is asked for packed 24-bit too
+
+
+def pack_int24(samples: np.ndarray, raw) -> None:
+    """Left-justified int32 samples into `raw` (a sound card's buffer) as packed 24-bit samples:
+    three bytes each, little-endian — each sample's top three bytes. A track of 24 bits or fewer
+    has nothing in the bottom byte, so it goes out exactly; anything deeper loses that byte here,
+    as it would in PortAudio's own conversion."""
+    out = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
+    out[...] = samples.reshape(-1).view(np.uint8).reshape(-1, 4)[:, 1:]
+
+
+def _close_unstarted(stream) -> None:
+    """Close a stream opened only to see what format the device takes."""
+    try:
+        stream.close()
+    except sd.PortAudioError:
+        log.exception("closing a stream that was only tried")
+
+
 _AWAIT = object()     # _next_source: the next song is still downloading (the decoder waits for it)
 
 
@@ -314,6 +334,11 @@ class _Session:
         self._events = events if events is not None else collections.deque(maxlen=50)
         self._tap: dict | None = None  # a short recording of what's sent, for the Windows check
         self._monitors = monitors if monitors is not None else []  # queues for the meters / PCM viewer
+        # The format the stream was opened with: "float32" (shared), "int32", or "int24" (packed
+        # 24-bit, for a device that takes nothing wider; see _open_exclusive). The samples
+        # themselves are int32 in either exclusive format (self.dtype): int24 packs them last thing.
+        self.stream_format = "float32"
+        self._unpacked = np.zeros((BLOCK_FRAMES, self.channels), np.int32)   # int24: the samples before packing
 
         try:
             index = devices.find_device(device)
@@ -329,7 +354,7 @@ class _Session:
         except BaseException:
             first.close()
             raise
-        self.dtype = "int32" if self.exclusive else "float32"
+        self.dtype = "int32" if self.exclusive else "float32"   # the samples (int24 streams pack int32's)
         self.device_name = self._lookup_device_name()
         self.mixer_rate = devices.mixer_rate(index)
         # What the device really takes in exclusive mode: PortAudio converts to a narrower format by itself.
@@ -368,16 +393,50 @@ class _Session:
     _path = property(lambda self: self._src.path)
     _track_name = property(lambda self: self._src.name)
 
-    def _stream_kwargs(self, dtype):
+    def _stream_kwargs(self, dtype, callback=None):
         return dict(
             samplerate=self.samplerate,
             channels=self.channels,
             dtype=dtype,
             blocksize=BLOCK_FRAMES,
             latency="high",
-            callback=self._callback,
+            callback=callback or self._callback,
             finished_callback=self._finished,
         )
+
+    def _exclusive_stream(self, index, fmt: str):
+        """An exclusive stream (opened, not started) taking `fmt`: "int32", or "int24" — packed
+        3-byte samples, which numpy has no type for, so a raw stream fed by _packed_callback."""
+        if fmt == "int24":
+            kind, callback = sd.RawOutputStream, self._packed_callback
+        else:
+            kind, callback = sd.OutputStream, self._callback
+        return kind(device=index, extra_settings=sd.WasapiSettings(exclusive=True), dither_off=True,
+                    clip_off=True, **self._stream_kwargs(fmt, callback))
+
+    def _open_exclusive(self, index):
+        """(stream, format): the exclusive stream that gets the most bits to the device. int32 is
+        asked for first. A device that refuses it gets PortAudio's nearest format instead, but
+        PortAudio goes straight to 16-bit and never tries packed 24-bit — the only 24-bit format
+        many USB Audio Class 1 devices take. So when int32 lands below 24 bits, packed 24-bit is
+        tried too, and kept if the device takes more bits that way. An exclusive stream holds its
+        device, so each is closed before the next is opened; none has started (nothing is heard)."""
+        stream = self._exclusive_stream(index, "int32")
+        bits = devices.exclusive_bits(stream)
+        if bits is None or bits >= PACKED_24_BITS:
+            return stream, "int32"   # (None: can't tell, so nothing to gain by trying)
+        _close_unstarted(stream)
+        try:
+            packed = self._exclusive_stream(index, "int24")
+        except sd.PortAudioError as exc:
+            log.info("packed 24-bit refused in exclusive mode: %s", exc)
+        else:
+            packed_bits = devices.exclusive_bits(packed)
+            if packed_bits is not None and packed_bits > bits:
+                log.info("the device takes %d-bit samples as packed 24-bit (%d-bit from int32)", packed_bits, bits)
+                return packed, "int24"
+            _close_unstarted(packed)
+        return self._exclusive_stream(index, "int32"), "int32"
 
     def _open_stream(self, index, want_exclusive):
         if want_exclusive:
@@ -386,13 +445,7 @@ class _Session:
             else:
                 stream = None
                 try:
-                    stream = sd.OutputStream(
-                        device=index,
-                        extra_settings=sd.WasapiSettings(exclusive=True),
-                        dither_off=True,
-                        clip_off=True,
-                        **self._stream_kwargs("int32"),
-                    )
+                    stream, self.stream_format = self._open_exclusive(index)
                     stream.start()
                     devices.holding(stream)
                     return stream, True
@@ -403,7 +456,8 @@ class _Session:
                     self.note = (f"Device won't take {format_rate(self.samplerate)} in bit-perfect mode "
                                  f"(or another app holds it) — playing shared")
         # Shared. On Windows: WASAPI with auto-convert, so Windows resamples to its mixer rate.
-        extra = sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS and index is not None else None
+        self.stream_format = "float32"
+        extra =sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS and index is not None else None
         stream = sd.OutputStream(device=index, extra_settings=extra, **self._stream_kwargs("float32"))
         try:
             stream.start()
@@ -1099,6 +1153,18 @@ class _Session:
             self._watch_buffer()
             if self._tap is not None:
                 self._record_tap(outdata)
+
+    def _packed_callback(self, outdata, frames, time_info, status):
+        """The callback of a packed 24-bit stream (outdata is raw bytes): the request is filled as
+        int32, exactly as for any exclusive stream — so the proof, the levels and the meters see
+        the same samples — and then packed. The audio thread's rules (see _callback) hold here too."""
+        if frames > len(self._unpacked):   # (never with a fixed block size; allocates only if it happens)
+            self._unpacked = np.zeros((frames, self.channels), np.int32)
+        samples = self._unpacked[:frames]
+        try:
+            self._callback(samples, frames, time_info, status)
+        finally:   # (the end of the chain stops the stream by raising, after filling the rest with silence)
+            pack_int24(samples, outdata)
 
     def _starving(self, now: float):
         if self._starved_since is not None:

@@ -92,17 +92,31 @@ def pull_under_the_rules(session, forbid, limit=200) -> int:
         while ((session._seek_request is not None or (session._queue.qsize() < 2 and not session._draining))
                and time.monotonic() < deadline):
             time.sleep(0.002)  # let the decoder keep ahead, as it does in real playback
-        block = np.zeros((BLOCK_FRAMES, 2), np.float32)
+        block = np.zeros((BLOCK_FRAMES, 2), np.float32) if session.stream_format != "int24" else bytearray(BLOCK_FRAMES * 6)
         with forbid:
             try:
-                session._callback(block, BLOCK_FRAMES, TIME_INFO, UNDERFLOW if n == 3 else OK)
+                session._stream.callback(block, BLOCK_FRAMES, TIME_INFO, UNDERFLOW if n == 3 else OK)
             except sd.CallbackStop:
                 return filled
-        filled += bool(block.any())
+        filled += any(block) if isinstance(block, bytearray) else bool(block.any())
     raise AssertionError("never reached the end")
 
 
-def test_the_callback_keeps_to_the_rules(tmp_path, fake_card, monkeypatch):
+class PackedOnlyCard(FakeStream):
+    """A device that takes 24-bit samples only packed (3 bytes each): its stream is the raw one."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dtype = kwargs["dtype"]
+
+
+@pytest.mark.parametrize("packed", [False, True], ids=["float32", "packed int24"])
+def test_the_callback_keeps_to_the_rules(tmp_path, fake_card, monkeypatch, packed):
+    if packed:   # (bit-perfect mode on a device taking 16 bits from int32 and 24 packed)
+        monkeypatch.setattr(engine.sd, "OutputStream", PackedOnlyCard)
+        monkeypatch.setattr(engine.sd, "RawOutputStream", PackedOnlyCard)
+        monkeypatch.setattr(engine.devices, "find_device", lambda name, rescan_ok=True: 0)
+        monkeypatch.setattr(engine.devices, "exclusive_supported", lambda: True)
+        monkeypatch.setattr(engine.devices, "exclusive_bits", lambda stream: 24 if stream.dtype == "int24" else 16)
     a = wav(tmp_path, "a.wav", BLOCK_FRAMES * 5)
     b = wav(tmp_path, "b.wav", BLOCK_FRAMES * 5)
     forbid = Forbidden(monkeypatch)
@@ -124,7 +138,8 @@ def test_the_callback_keeps_to_the_rules(tmp_path, fake_card, monkeypatch):
     slow_viewer: queue.Queue = queue.Queue(maxsize=1)   # a meter that never reads: drop, never wait
     session = _Session(a, lambda path: 1.0, lambda s: None, index=0, follow={0: (1, b)}.get,
                        on_advance=lambda s, previous, new: advances.append((previous.path, new.path)),
-                       monitors=[slow_viewer])
+                       monitors=[slow_viewer], want_exclusive=packed)
+    assert session.stream_format == ("int24" if packed else "float32")
     session.start()
     try:
         filled = pull_under_the_rules(session, forbid)

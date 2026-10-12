@@ -23,7 +23,9 @@ a = Analysis(
     [str(Path(SPECPATH) / "launch.py")],
     pathex=[str(REPO)],
     datas=collect_data_files("ironbark", includes=["assets/*"]),
-    excludes=["pytest", "_pytest", "setuptools", "pip"],
+    # yaml: numpy's optional config printout imports it when the development tools have installed it;
+    # Ironbark never uses it (and it would need a licence of its own in the package).
+    excludes=["pytest", "_pytest", "setuptools", "pip", "yaml"],
 )
 
 # sounddevice's hook takes every PortAudio build it carries. Keep only 64-bit Windows without ASIO:
