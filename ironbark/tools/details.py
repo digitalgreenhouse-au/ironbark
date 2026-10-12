@@ -987,7 +987,7 @@ class NowPlayingWindow:
 
         level, fading = getattr(status, "levelling", None), getattr(status, "fading", False)
         text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
-                                 track.bits, track.codec, level, fading)
+                                 track.bits, track.codec, level, fading, show_bits=True)
         self.values["output"].configure(text=text.removeprefix("→ "), style=self._style("output", tone))
 
         drops = status.dropouts

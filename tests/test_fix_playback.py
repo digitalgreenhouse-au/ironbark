@@ -22,7 +22,7 @@ import sounddevice as sd
 import soundfile as sf
 from test_gapless import FakeStream, pull, wav  # noqa: F401 (the stand-in sound card)
 
-from ironbark import analysis, audiofile, devices, engine, m4a, mp3frames
+from ironbark import analysis, audiofile, devices, engine, m4a, mp3frames, statustext
 from ironbark import session as session_mod  # (tests name their own `session`)
 from ironbark.engine import BLOCK_FRAMES, Player, State, _Session
 from ironbark.library import Track
@@ -52,6 +52,7 @@ def exclusive_card(monkeypatch, fake_card):
     monkeypatch.setattr(engine.devices, "exclusive_supported", lambda: True)
     monkeypatch.setattr(engine.devices, "default_output_name", lambda: "Test DAC")
     monkeypatch.setattr(engine.devices, "has_hardware_volume", lambda name: True)
+    monkeypatch.setattr(engine.sd, "RawOutputStream", FakeStream)   # (packed 24-bit: only if asked)
 
 
 def sine(seconds, amplitude, rate=RATE, channels=2, freq=997.0):
@@ -598,9 +599,141 @@ def test_a_device_taking_fewer_bits_is_reported(tmp_path, exclusive_card, monkey
     status = p.status()
     assert status.output.device_bits == 16
     assert "16-bit samples" in status.message and "24-bit" in status.message and "not bit-perfect" in status.message
+    assert p._session.stream_format == "int32"       # packed 24-bit was tried, and got no more bits
     p.play(1)
     assert p.status().message == ""                   # a 16-bit track loses nothing
     p.close()
+
+
+class Uac1Card(FakeStream):
+    """A stand-in for a USB Audio Class 1 device such as the CMedia CM6542: in exclusive mode it
+    refuses 32-bit samples (PortAudio falls back to 16-bit) but takes packed 24-bit ones."""
+    takes = {"int32": 16, "int24": 24}
+    refuse = ()
+    opened: list = []
+
+    def __init__(self, **kwargs):
+        if kwargs["dtype"] in self.refuse:
+            raise sd.PortAudioError("Invalid sample format")
+        super().__init__(**kwargs)
+        self.dtype, self.closed = kwargs["dtype"], False
+        Uac1Card.opened.append(self)
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def uac1_card(monkeypatch, exclusive_card):
+    Uac1Card.opened, Uac1Card.refuse = [], ()
+    monkeypatch.setattr(engine.sd, "OutputStream", Uac1Card)
+    monkeypatch.setattr(engine.sd, "RawOutputStream", Uac1Card)
+    monkeypatch.setattr(engine.devices, "exclusive_bits", lambda stream: Uac1Card.takes[stream.dtype])
+    return Uac1Card
+
+
+def pump_packed(session, limit=600):
+    """`pump` for a packed 24-bit stream: raw 3-byte buffers through the stream's own callback,
+    turned back into left-justified int32 samples."""
+    out = []
+    for _ in range(limit):
+        deadline = time.monotonic() + 2
+        while ((session._seek_request is not None or (session._queue.qsize() < 2 and not session._draining))
+               and time.monotonic() < deadline):
+            time.sleep(0.002)
+        raw = bytearray(BLOCK_FRAMES * session.channels * 3)
+        try:
+            session._stream.callback(raw, BLOCK_FRAMES, TIME_INFO, OK)
+            stopped = False
+        except sd.CallbackStop:
+            stopped = True
+        wide = np.zeros((BLOCK_FRAMES * session.channels, 4), np.uint8)
+        wide[:, 1:] = np.frombuffer(bytes(raw), np.uint8).reshape(-1, 3)
+        block = wide.view("<i4").reshape(BLOCK_FRAMES, session.channels)
+        if out or block.any():
+            out.append(block)
+        if stopped:
+            session._finished()
+            return np.concatenate(out)
+    raise AssertionError("never reached the end")
+
+
+def test_pack_int24_sends_each_samples_top_three_bytes():
+    samples = np.array([[0x12345600, -256], [2**31 - 256, -2**31]], np.int32)
+    raw = bytearray(12)
+    session_mod.pack_int24(samples, raw)
+    assert bytes(raw) == bytes([0x56, 0x34, 0x12, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x00, 0x80])
+
+
+def test_a_device_that_takes_only_packed_24_bit_gets_24_bit_tracks_whole(tmp_path, uac1_card):
+    """A CM6542-based USB device: asked for int32 it got 16-bit samples, so 24-bit tracks lost their
+    lowest 8 bits; asked for packed 24-bit it takes all 24."""
+    deep = tmp_path / "deep.flac"
+    sf.write(deep, RNG.standard_normal((30000, 2)) * 0.1, RATE, subtype="PCM_24")
+    s = _Session(deep, lambda p: 1.0, lambda s: None, want_exclusive=True)
+    assert s.exclusive and s.stream_format == "int24" and s.dtype == "int32"
+    assert s.device_bits == 24 and s.message == ""
+    assert isinstance(s._stream, Uac1Card) and s._stream.dtype == "int24" and not s._stream.closed
+    assert [x.closed for x in uac1_card.opened] == [True, False]    # int32 was tried first, and let go
+    s.start()
+    got = pump_packed(s)
+    with audiofile.open(deep) as f:
+        want = audiofile.read(f, -1, "int32")
+    assert np.array_equal(got[:len(want)], want)                    # every bit of every sample
+    record = s._src.sent
+    with audiofile.open(deep) as reference:
+        record.check(reference)
+    assert record.summary().complete and record.summary().mismatch_at is None and record.summary().untouched
+    s.close()
+
+
+def test_packed_24_bit_through_the_player_says_bit_perfect(tmp_path, uac1_card):
+    deep = tmp_path / "deep.wav"
+    sf.write(deep, RNG.standard_normal((20000, 2)) * 0.1, RATE, subtype="PCM_24")
+    shallow, _ = wav(tmp_path, "shallow.wav", 20000)
+    p = Player()
+    p.refresh_hardware_volume()                       # (the window's check, as bit-perfect goes on)
+    p.set_exclusive(True)
+    p.set_tracks([Track(deep, "deep"), Track(shallow, "shallow")])
+    for index, bits in ((0, 24), (1, 16)):                         # a 16-bit track is whole in 24 bits too
+        p.play(index)
+        status = p.status()
+        assert status.output.device_bits == 24 and status.message == ""
+        text, tone = statustext.output_line(status.output, 1.0, bits=bits, show_bits=True)
+        assert "44.1 kHz 24-bit exclusive" in text and "bit-perfect ✓" in text and tone == "good"
+    p.close()
+
+
+def test_a_32_bit_track_on_a_packed_24_bit_device_is_flagged(tmp_path, uac1_card):
+    deepest = tmp_path / "deepest.wav"
+    sf.write(deepest, RNG.standard_normal((20000, 2)) * 0.1, RATE, subtype="PCM_32")
+    s = _Session(deepest, lambda p: 1.0, lambda s: None, want_exclusive=True)
+    assert s.stream_format == "int24" and "24-bit samples" in s.message and "32-bit" in s.message
+    s.close()
+
+
+@pytest.mark.parametrize("refuse, takes", [(("int24",), {"int32": 16, "int24": 24}),
+                                           ((), {"int32": 16, "int24": 16})])
+def test_without_packed_24_bit_the_stream_stays_int32(tmp_path, uac1_card, refuse, takes, monkeypatch):
+    """Packed 24-bit refused, or no better: int32 is opened again (PortAudio's 16-bit), and a 24-bit
+    track still says it isn't bit-perfect."""
+    monkeypatch.setattr(uac1_card, "refuse", refuse)
+    monkeypatch.setattr(uac1_card, "takes", takes)
+    deep = tmp_path / "deep.wav"
+    sf.write(deep, RNG.standard_normal((20000, 2)) * 0.1, RATE, subtype="PCM_24")
+    s = _Session(deep, lambda p: 1.0, lambda s: None, want_exclusive=True)
+    assert s.exclusive and s.stream_format == "int32" and s._stream.dtype == "int32" and not s._stream.closed
+    assert s.device_bits == 16 and "16-bit samples" in s.message
+    assert sum(not x.closed for x in uac1_card.opened) == 1          # only the stream in use is still open
+    s.close()
+
+
+def test_a_device_taking_int32_whole_is_never_asked_for_packed_24_bit(tmp_path, uac1_card, monkeypatch):
+    monkeypatch.setattr(uac1_card, "takes", {"int32": 32, "int24": 24})
+    path, _ = wav(tmp_path, "t.wav", 20000)
+    s = _Session(path, lambda p: 1.0, lambda s: None, want_exclusive=True)
+    assert s.stream_format == "int32" and [x.dtype for x in uac1_card.opened] == ["int32"]
+    s.close()
 
 
 # -- the buffer and the proof -------------------------------------------------------------------
