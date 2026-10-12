@@ -71,6 +71,8 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
         if guard:
             # (0.24.0) The clipping guard wins over Bit-perfect (crackle-free first), and says so.
             return f"{base}{guard}, so this track isn't bit-perfect (the guard comes first)", "good"
+        if output.amp_volume and not output.hardware_volume:
+            return f"{base} · bit-perfect ✓ · volume on your amplifier", "good"
         if output.hardware_volume is False:
             return f"{base} · bit-perfect ✓ · no device volume: use the player or headphone volume", "warn"
         if output.hardware_volume:

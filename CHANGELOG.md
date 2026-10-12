@@ -4,6 +4,15 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.47.0 — 12/10/2026
+
+- **Settings → Volume on my amplifier**, kept for each output: for an output that feeds an
+  amplifier or receiver, whose own knob sets the level. In Bit-perfect such an output often has no
+  volume control of its own, and the player warned about it in amber and turned its own volume down
+  to protect your ears. With this switched on for that output, the line is green ("bit-perfect ✓ ·
+  volume on your amplifier") and the volume is left alone. Every other output with no volume of its
+  own still gets the warning.
+
 ## 0.46.1 — 12/10/2026
 
 - **24-bit tracks reach a USB device that takes 24-bit samples only in packed form.** Some

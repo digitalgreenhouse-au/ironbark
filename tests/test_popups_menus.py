@@ -482,6 +482,40 @@ def test_protect_ears_is_an_unmissable_modal_box(make_window):
     assert Prompt.stack == [] and root.grab_current() is None and not errors
 
 
+def test_volume_on_my_amplifier_stands_the_ear_checks_down(make_window, monkeypatch):
+    """Settings → Volume on my amplifier, for the output in use: kept by name, and on it the
+    protect-your-ears box doesn't come up; switched off in Bit-perfect, it does."""
+    from ironbark import engine, settings_view
+    from ironbark.ui import SAFE_VOLUME
+
+    window, root, player, errors = make_window()
+    if getattr(window, "amp_volume", None) is None:
+        pytest.skip("no Bit-perfect on this system")
+    monkeypatch.setattr(engine.devices, "has_hardware_volume", lambda name: False)
+    player.set_output_device("USB DAC")
+    window.exclusive.set(True)
+    player.set_volume(1.0)
+    settings_view.show_amp_volume(window)
+    assert not window.amp_volume.get() and "For USB DAC only." in window.amp_volume_row.about.cget("text")
+    window.amp_volume_row.toggle.toggle()                              # on
+    assert window.prefs["amp_volume_outputs"] == ["USB DAC"] and player.amp_outputs == {"USB DAC"}
+    window._protect_ears(player.refresh_hardware_volume())
+    assert Prompt.stack == [] and player.volume == 1.0 and not window._ears_at_risk()
+    player.set_output_device("Headphones")                             # another output: its own setting
+    settings_view.show_amp_volume(window)
+    assert not window.amp_volume.get()
+    player.set_output_device("USB DAC")
+    settings_view.show_amp_volume(window)
+    assert window.amp_volume.get()
+    player.refresh_hardware_volume()
+    seen = []
+    answer_later(root, lambda p: (seen.append(p.tone), p.press_default()))
+    window.amp_volume_row.toggle.toggle()                              # off, in Bit-perfect: the ear check
+    assert window.prefs["amp_volume_outputs"] == [] and not player.amp_volume
+    assert seen == ["warn"] and player.volume == SAFE_VOLUME and window._ears_at_risk()
+    assert Prompt.stack == [] and not errors
+
+
 def test_settings_scroll_to_the_bottom_in_a_short_window(make_window):
     window, root, player, errors = make_window(geometry="420x460+120+120")
     window._open_settings()
