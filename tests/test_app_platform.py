@@ -248,8 +248,9 @@ def test_a_copy_that_closed_while_another_launch_took_its_place_gets_the_files(m
     monkeypatch.setattr(instance, "claim", lambda *a, **k: next(claims))
     monkeypatch.setattr(crash, "tell_native", lambda *a, **k: pytest.fail("said it isn't answering"))
     monkeypatch.setattr(start, "_run", lambda *a: pytest.fail("a second player was started"))
-    start.main([r"C:\a.flac"])
-    assert closing.sent == new.sent == [[r"C:\a.flac"]]
+    song = os.path.abspath(os.sep + "a.flac")   # (already absolute, so passed on as it is)
+    start.main([song])
+    assert closing.sent == new.sent == [[song]]
 
 
 def test_a_running_copy_that_doesnt_answer_is_reported(monkeypatch):
