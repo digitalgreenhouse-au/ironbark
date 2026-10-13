@@ -20,7 +20,7 @@ from fakework import FakeWork
 from test_cue_playback import make_image
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
 
-from ironbark import analysis, artwork, audiofile, library, placement, playlists, settings, ui
+from ironbark import analysis, artwork, audiofile, library, passthrough, placement, playlists, settings, ui
 from ironbark.engine import State, Status
 from ironbark.library import Track
 from ironbark.ui import SAFE_VOLUME, PlayerWindow, Tab
@@ -509,7 +509,7 @@ def test_the_clipping_guard_measures_only_what_is_wanted_and_survives_errors(mon
         return 1.0
     monkeypatch.setattr(analysis, "true_peak", true_peak)
     w = SimpleNamespace(_peaks={}, _peak_jobs=queue.Queue(), _peak_wanted={Path("odd.flac"), Path("now.flac")},
-                        _stored_peak=lambda path: None)   # (none from the library check: measured)
+                        _stored_peak=lambda path: None, _encoded=passthrough.Detector())   # (none from the library check: measured)
     for name in ("skipped 1.flac", "skipped 2.flac", "odd.flac", "now.flac"):
         w._peak_jobs.put(Path(name))
     threading.Thread(target=PlayerWindow._measure_peaks, args=(w,), daemon=True).start()

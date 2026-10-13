@@ -153,6 +153,7 @@ class Status:
     trim: float = 1.0                 # this track's own gain: the clipping guard and volume levelling together
     guard: float = 1.0                # the clipping guard's part of it (1.0 = none)
     levelling: object = None          # volume levelling on this track (levelling.Levelling), or None
+    encoded: str = ""                 # "DTS" / "HDCD": an encoded stream, played at its own level (passthrough.py)
     fading: bool = False              # the sleep timer is fading the music out
     stop_after: str = ""              # "song" / "album": playback stops at the end of this song / album
     levels: tuple[float, ...] = ()    # peak of the latest block per channel, 0..1 (before volume)
@@ -257,6 +258,8 @@ class Player:
         self._trims: dict = {}
         # Volume levelling (off unless chosen): a gain per file (see set_levelling).
         self._levels: dict = {}
+        # Files that are encoded streams (DTS, HDCD): never given a gain of their own (see set_encoded).
+        self._encoded: dict = {}
         # "Stop after this song" / "… this album" (see set_stop_after), and the sleep timer's
         # fade-out: (when it began, how long it lasts), read by the audio thread without a lock.
         self.stop_after: str | None = None
@@ -565,6 +568,20 @@ class Player:
             levels.pop(next(iter(levels)))
         self._levels = levels  # replaced whole: the audio thread reads it without a lock
 
+    def set_encoded(self, path, kind: str):
+        """Mark a file as an encoded stream ("DTS" / "HDCD", see passthrough.py) that any change of
+        level would break: it plays at its own level, whatever the clipping guard or levelling ask
+        for (trim_for). "" unmarks it. Set ahead for the next track, like the guard."""
+        encoded = {p: k for p, k in self._encoded.items() if p != path}
+        if kind:
+            encoded[path] = kind
+        while len(encoded) > TRIMS_KEPT:
+            encoded.pop(next(iter(encoded)))
+        self._encoded = encoded  # replaced whole: the audio thread reads it without a lock
+
+    def encoded_for(self, path) -> str:
+        return self._encoded.get(path, "")
+
     def levelling_for(self, path):
         return self._levels.get(path)
 
@@ -574,7 +591,10 @@ class Player:
     def trim_for(self, path) -> float:
         """A file's own gain: its clipping guard, or its levelling gain when that's smaller. A
         track the guard leaves alone (1.0: it wouldn't clip) takes its levelling gain as it is,
-        turned up included (levelling holds that under the track's own peak itself)."""
+        turned up included (levelling holds that under the track's own peak itself). An encoded
+        stream (set_encoded) gets none: 1.0."""
+        if path in self._encoded:
+            return 1.0
         guard = self._trims.get(path, 1.0)
         level = self._levels.get(path)
         if level is None:
@@ -936,8 +956,10 @@ class Player:
             status = Status(state, index, track, min(position, duration), duration,
                             message, output, self._volume ** 2, self._current_trim())
             if track is not None:
-                status.guard = self.guard_for(track.path)
-                status.levelling = self.levelling_for(track.path)
+                status.encoded = self.encoded_for(track.path)
+                if not status.encoded:   # (an encoded stream gets neither: trim_for)
+                    status.guard = self.guard_for(track.path)
+                    status.levelling = self.levelling_for(track.path)
             status.fading = self._fade is not None and (session is not None or prep is not None)
             status.stop_after = self.stop_after or ""
             status.network = self._network_view(track, session, prep)

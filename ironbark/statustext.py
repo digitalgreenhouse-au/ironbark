@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import math
 
-from . import levelling, platforms
+from . import levelling, passthrough, platforms
 from .engine import OutputInfo
 from .library import format_rate
 
 MIXER = "Windows" if platforms.IS_WINDOWS else "system"
+NO_DEVICE_VOLUME = "no device volume: use the player or headphone volume"
 
 
 def levelling_text(level, trim: float = 1.0) -> str:
@@ -29,7 +30,25 @@ def levelling_text(level, trim: float = 1.0) -> str:
 
 def output_line(output: OutputInfo | None, gain: float, float_source: bool = False,
                 lossy: bool = False, trim: float = 1.0, bits: int = 0, codec: str = "",
-                level=None, fading: bool = False, show_bits: bool = False) -> tuple[str, str]:
+                level=None, fading: bool = False, show_bits: bool = False,
+                encoded: str = "") -> tuple[str, str]:
+    """(text, tone) for the line under the format, as _output_line, plus a word for an encoded
+    stream (`encoded` "DTS" / "HDCD", passthrough.py): kept at its own level when it goes out
+    untouched; amber, saying what it needs, when the volume, a fade or the shared mixer changes it."""
+    text, tone = _output_line(output, gain, float_source, lossy, trim, bits, codec, level, fading, show_bits)
+    if not encoded or output is None:
+        return text, tone
+    if output.exclusive and gain >= 1.0 and not fading and not float_source and not fewer_bits(output, bits):
+        text = text.replace(NO_DEVICE_VOLUME, "no device volume: keep the player at 100%, use the amplifier's")
+        return f"{text} · {passthrough.note(encoded)}", tone
+    breaks = "the receiver gets noise" if encoded == passthrough.DTS else "the decoder loses its codes"
+    needs = "exclusive mode" if not output.exclusive else "volume at 100%" if gain < 1.0 else "the samples exactly"
+    return f"{text} · this {encoded} stream needs {needs}, or {breaks}", "warn"
+
+
+def _output_line(output: OutputInfo | None, gain: float, float_source: bool = False,
+                 lossy: bool = False, trim: float = 1.0, bits: int = 0, codec: str = "",
+                 level=None, fading: bool = False, show_bits: bool = False) -> tuple[str, str]:
     """(text, tone) for the line under the format. tone is "good", "warn" or "plain".
     float_source: the file holds floating-point samples (some WAVs), which the device
     can only take after conversion to whole numbers — so never bit-perfect.
@@ -74,7 +93,7 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
         if output.amp_volume and not output.hardware_volume:
             return f"{base} · bit-perfect ✓ · volume on your amplifier", "good"
         if output.hardware_volume is False:
-            return f"{base} · bit-perfect ✓ · no device volume: use the player or headphone volume", "warn"
+            return f"{base} · bit-perfect ✓ · {NO_DEVICE_VOLUME}", "warn"
         if output.hardware_volume:
             return f"{base} · bit-perfect ✓ · volume by device ✓", "good"
         return f"{base} · bit-perfect ✓", "good"

@@ -281,8 +281,8 @@ def describe_range(a: Analysis) -> str:
 
 
 def describe_flags(flags: FormatFlags, rate: int = 0) -> list[tuple[str, str]]:
-    """Rows for what the file carries: HDCD, MQA, pre-emphasis (0.9.0). Found only — the player
-    decodes none of them, so what's sent is still exactly the file."""
+    """Rows for what the file carries: HDCD, DTS, MQA, pre-emphasis (0.9.0; DTS 0.49.0). Found only —
+    the player decodes none of them, so what's sent is still exactly the file."""
     rows = []
     hdcd = flags.hdcd
     if hdcd is not None and hdcd.detected:
@@ -301,7 +301,14 @@ def describe_flags(flags: FormatFlags, rate: int = 0) -> list[tuple[str, str]]:
                     "sounds the same with or without a decoder")
         if hdcd.packet_type == "A+B":
             text += " · both packet types mixed (usually an encoding slip)"
+        text += " · The clipping guard and volume levelling leave it alone, so a decoder still finds the codes"
         rows.append(("HDCD", text))
+    dts = flags.dts
+    if dts is not None and dts.detected:
+        cd = " (a DTS music CD)" if dts.packing == "14-bit" else ""
+        rows.append(("DTS", f"⚠ A DTS bitstream{cd}, not music samples: played as PCM it is loud noise. "
+                            "Only a DTS receiver can decode it, and only if it gets the samples exactly: "
+                            "exclusive mode, volume 100%. The clipping guard and volume levelling leave it alone"))
     mqa = flags.mqa
     if mqa is not None and mqa.detected:
         details = []
@@ -324,7 +331,11 @@ def describe_flags(flags: FormatFlags, rate: int = 0) -> list[tuple[str, str]]:
                                      "boosted at mastering, to be cut again on playback (de-emphasis). "
                                      "This player doesn't de-emphasise, so it sounds brighter than intended"))
     if not rows:
-        rows.append(("Format flags", "✓ None: no HDCD, MQA or pre-emphasis"))
+        if flags.dts is None and flags.hdcd is not None:   # (16-bit, checked before DTS was looked for)
+            rows.append(("Format flags", "✓ None: no HDCD, MQA or pre-emphasis (not checked for DTS: "
+                                         "examine it again)"))
+        else:
+            rows.append(("Format flags", "✓ None: no HDCD, DTS, MQA or pre-emphasis"))
     return rows
 
 
@@ -987,7 +998,8 @@ class NowPlayingWindow:
 
         level, fading = getattr(status, "levelling", None), getattr(status, "fading", False)
         text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
-                                 track.bits, track.codec, level, fading, show_bits=True)
+                                 track.bits, track.codec, level, fading, show_bits=True,
+                                 encoded=getattr(status, "encoded", ""))
         self.values["output"].configure(text=text.removeprefix("→ "), style=self._style("output", tone))
 
         drops = status.dropouts

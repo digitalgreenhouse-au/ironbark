@@ -101,7 +101,7 @@ source_modules = [
     "ironbark.engine", "ironbark.session", "ironbark.audiofile", "ironbark.library", "ironbark.library_db",
     "ironbark.library_sql", "ironbark.library_import", "ironbark.indexer",
     "ironbark.tagio", "ironbark.netcache", "ironbark.analysis", "ironbark.loudness", "ironbark.proof",
-    "ironbark.devices", "ironbark.settings", "ironbark.places", "ironbark.musicfiles",
+    "ironbark.devices", "ironbark.settings", "ironbark.places", "ironbark.musicfiles", "ironbark.passthrough",
 ]
 forbidden_modules = [
     "ironbark.ui", "ironbark.tools", "ironbark.toolwin", "ironbark.controls", "ironbark.tabbar",
