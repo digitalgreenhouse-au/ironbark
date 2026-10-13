@@ -357,6 +357,9 @@ class Keys:
         # A ttk entry's Ctrl+K deletes to the end of the line before the table's Ctrl+K (search)
         # acts: an empty script removes that class binding (Ctrl+K then types nothing, as any Ctrl key).
         root.bind_class("TEntry", "<Control-Key-k>", "")
+        # On X11, Tk also makes Ctrl+W a Cut (an Emacs habit): in a text box it would cut the selection
+        # as well as close the tab. Windows' and the Mac's Tk don't; removing it is harmless there.
+        root.event_delete("<<Cut>>", "<Control-Key-w>", "<Control-Lock-Key-W>")
 
     # -- windows -------------------------------------------------------------------------------
     def attach(self, window: tk.Misc, scope: str = "app", handlers: dict[str, Callable] | None = None):
