@@ -166,6 +166,7 @@ def packaged_load_error(winerror: int) -> OSError:
         return wrapped
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 def test_a_folder_too_deep_is_found_behind_the_packaged_programs_own_error():
     launch = load_launcher()
     short = r"C:\Ironbark"

@@ -188,7 +188,9 @@ _SHOWN = {"Left": "←", "Right": "→", "Up": "↑", "Down": "↓"}
 # Keysyms that name the same key another way.
 _KEYSYMS = {"ISO_Left_Tab": "tab", "KP_Enter": "return", "KP_Prior": "prior", "KP_Next": "next",
             "KP_Up": "up", "KP_Down": "down", "KP_Left": "left", "KP_Right": "right", "KP_Home": "home",
-            "KP_End": "end", "KP_Delete": "delete"}
+            "KP_End": "end", "KP_Delete": "delete",
+            # Tk 9 names punctuation by its character ("/"), where Tk 8.6 gave X11's name ("slash").
+            "/": "slash", "?": "question", ",": "comma", ".": "period"}
 _MODIFIERS = {"ctrl": "Ctrl", "shift": "Shift", "alt": "Alt"}
 _TK_MODIFIERS = {"Ctrl": "Control", "Shift": "Shift", "Alt": "Alt"}
 
@@ -355,6 +357,9 @@ class Keys:
         # A ttk entry's Ctrl+K deletes to the end of the line before the table's Ctrl+K (search)
         # acts: an empty script removes that class binding (Ctrl+K then types nothing, as any Ctrl key).
         root.bind_class("TEntry", "<Control-Key-k>", "")
+        # On X11, Tk also makes Ctrl+W a Cut (an Emacs habit): in a text box it would cut the selection
+        # as well as close the tab. Windows' and the Mac's Tk don't; removing it is harmless there.
+        root.event_delete("<<Cut>>", "<Control-Key-w>", "<Control-Lock-Key-W>")
 
     # -- windows -------------------------------------------------------------------------------
     def attach(self, window: tk.Misc, scope: str = "app", handlers: dict[str, Callable] | None = None):

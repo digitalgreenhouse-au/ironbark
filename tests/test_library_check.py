@@ -307,6 +307,7 @@ def test_a_damaged_read_leaves_no_peak_for_the_clipping_guard(db):
     assert library_check.stored_peak(db, damaged.path) is None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows' file names ignore case")
 def test_a_song_checked_under_two_spellings_of_its_path_is_listed_once(db):
     """Now Playing keeps its check by the path it played from; a playlist may write the library's
     "C:\\…" as "c:\\…". Needs a look lists the song once, by its own key's check — and one checked

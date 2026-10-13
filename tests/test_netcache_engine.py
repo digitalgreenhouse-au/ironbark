@@ -1006,6 +1006,7 @@ def test_a_sleep_timer_running_out_in_bit_perfect_while_a_song_waits_never_fades
     p.stop()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows network paths")
 def test_a_song_found_gone_while_it_waits_to_start_is_skipped_saying_why(tmp_path, fake_card, quick_watch):
     p, prep, copy = preparing_player(tmp_path)
     p.play(0)

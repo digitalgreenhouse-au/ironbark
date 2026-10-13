@@ -6,6 +6,7 @@ Fake shares, a fake clock where time matters; no real network."""
 from __future__ import annotations
 
 import importlib
+import os
 import socket
 import sys
 import time
@@ -225,6 +226,7 @@ def _flac_item(m, name: str, size: int = 30_000_000, seconds: int = 300) -> Item
     return item
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive letters and network paths")
 def test_once_what_plays_from_the_seek_on_is_here_the_stretch_behind_waits_its_turn(tmp_path):
     clock = Clock()
     player = FakePlayer([unc("now.flac"), unc("next.flac")])
@@ -247,6 +249,7 @@ def test_once_what_plays_from_the_seek_on_is_here_the_stretch_behind_waits_its_t
         assert m._next_range(now) == (2_000_000, island.start, None)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive letters and network paths")
 def test_when_the_link_cant_keep_up_nothing_past_the_next_song_is_wanted(tmp_path):
     clock = Clock()
     names = ["a.flac", "b.flac", "c.flac", "d.flac"]
