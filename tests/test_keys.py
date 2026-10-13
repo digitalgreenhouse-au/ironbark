@@ -8,6 +8,7 @@ played, nothing of the user's is read or written) and are skipped without a disp
 from __future__ import annotations
 
 import re
+import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -808,3 +809,35 @@ def test_stop_after_and_the_sleep_timer_menu_from_the_keys(make_window, monkeypa
     assert (x, y) == (window.status_label.winfo_rootx(), window.status_label.winfo_rooty())
     assert keys.hint("stop_after") == "Ctrl+." and keys.hint("sleep_timer") == "Ctrl+Shift+S"
     assert not errors
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="the Mac keeps its own text keys (Ctrl+A is the line's start)")
+def test_text_boxes_take_windows_keys_not_x11s_emacs_ones():
+    root = tk.Tk()
+    try:
+        keys.Keys(root)
+        entry = ttk.Entry(root)
+        entry.pack()
+        entry.insert(0, "Road trip")
+        entry.icursor(4)
+        entry.focus_force()
+        root.update()
+        entry.event_generate("<Control-a>")
+        assert entry.selection_present() and entry.selection_get() == "Road trip"   # all, not the line's start
+        entry.select_clear()
+        entry.icursor(4)
+        entry.event_generate("<Control-e>")
+        entry.event_generate("<Control-f>")
+        assert entry.index("insert") == 4                     # no Emacs moves
+        text = tk.Text(root, undo=True)
+        text.pack()
+        text.insert("1.0", "Mix")
+        text.edit_separator()
+        text.focus_force()
+        root.update()
+        text.event_generate("<Control-z>")
+        assert text.get("1.0", "end-1c") == ""
+        text.event_generate("<Control-y>")
+        assert text.get("1.0", "end-1c") == "Mix"            # Ctrl+Y redoes, as on Windows (not X11's paste)
+    finally:
+        root.destroy()
