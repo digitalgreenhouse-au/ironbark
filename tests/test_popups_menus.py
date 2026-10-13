@@ -140,6 +140,9 @@ def test_confirm_and_tell(root):
 
 
 def test_a_prompt_is_modal_and_the_window_keys_dont_reach_the_player(root):
+    from ironbark import keys
+
+    keys.Keys(root)   # (as the player's window has: on X11 it takes Ctrl+W out of Cut, too)
     fired = []
     root.bind("<Control-w>", lambda e: fired.append("close tab"))
     prompt = Prompt(root, "Rename playlist", "New name:", entry="Mix", buttons=(("Rename", True), ("Cancel", None)))
