@@ -19,7 +19,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from .. import audiofile, controls, placement, shapes, theme, toolwin
+from .. import APP_NAME, audiofile, controls, placement, shapes, theme, toolwin
 from ..analysis import CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse, lossy_below
 from ..engine import Health, OutputInfo, PlaybackEvent, Player, State
 from ..flacframes import FrameIndex, build_index
@@ -422,7 +422,7 @@ class NowPlayingWindow:
         self._stored_found: Path | None = None   # a stored result came in for this song (shown on the tick)
         self.prefs = prefs if prefs is not None else {}
         self.on_moved = on_moved
-        self.win = tk.Toplevel(parent, bg=theme.BG)
+        self.win = tk.Toplevel(parent, bg=theme.BG, class_=APP_NAME)
         self.win.title("Now Playing")
         self.win.protocol("WM_DELETE_WINDOW", self.close)
         self.win.bind("<Escape>", lambda e: self.close())

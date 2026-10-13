@@ -593,7 +593,7 @@ def test_a_failure_while_starting_up_is_logged(monkeypatch):
     monkeypatch.setattr(start.settings, "carry_over_old_folder", lambda: False)
     monkeypatch.setattr(start, "_enable_crisp_text_on_windows", lambda: None)
     monkeypatch.setattr(start.appicon, "set_app_id", lambda: None)
-    monkeypatch.setattr(start.tk, "Tk", lambda: SimpleNamespace(report_callback_exception=None))
+    monkeypatch.setattr(start.tk, "Tk", lambda **options: SimpleNamespace(report_callback_exception=None))
     monkeypatch.setattr(start, "Player", lambda: None)
 
     def broken(*args, **kwargs):

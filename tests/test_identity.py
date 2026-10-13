@@ -212,8 +212,9 @@ def test_the_player_sets_its_app_id_before_making_any_window(monkeypatch):
     class Stop(Exception):
         pass
 
-    def no_tk():
+    def no_tk(**options):
         order.append("window")
+        assert options == {"className": "Ironbark"}   # (a Linux taskbar and launcher know it by this)
         raise Stop
 
     monkeypatch.setattr(start, "_start_crash_log", lambda: None)

@@ -387,7 +387,7 @@ def test_the_window_is_told_how_to_stop_listening(monkeypatch):
     monkeypatch.setattr(start.settings, "carry_over_old_folder", lambda: False)
     monkeypatch.setattr(start, "_enable_crisp_text_on_windows", lambda: None)
     monkeypatch.setattr(start.appicon, "set_app_id", lambda: None)
-    monkeypatch.setattr(start.tk, "Tk", lambda: SimpleNamespace(report_callback_exception=None, mainloop=lambda: None))
+    monkeypatch.setattr(start.tk, "Tk", lambda **options: SimpleNamespace(report_callback_exception=None, mainloop=lambda: None))
     monkeypatch.setattr(start, "Player", lambda: None)
     monkeypatch.setattr(start, "PlayerWindow", lambda root, player, **kwargs: made.append(kwargs) or SimpleNamespace())
     monkeypatch.setattr(crash, "attach", lambda root, before=None: None)
@@ -480,7 +480,7 @@ def test_a_start_up_failure_shows_the_box_after_closing_the_half_built_window(mo
     monkeypatch.setattr(start.settings, "carry_over_old_folder", lambda: False)
     monkeypatch.setattr(start, "_enable_crisp_text_on_windows", lambda: None)
     monkeypatch.setattr(start.appicon, "set_app_id", lambda: None)
-    monkeypatch.setattr(start.tk, "Tk", lambda: SimpleNamespace(report_callback_exception=None,
+    monkeypatch.setattr(start.tk, "Tk", lambda **options: SimpleNamespace(report_callback_exception=None,
                                                                 destroy=lambda: events.append("closed")))
     monkeypatch.setattr(start, "Player", lambda: None)
 

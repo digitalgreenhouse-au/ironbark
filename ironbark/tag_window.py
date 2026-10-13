@@ -28,7 +28,7 @@ from tkinter import filedialog, ttk
 
 from PIL import Image, ImageOps, ImageTk
 
-from . import audiofile, controls, keys, placement, popups, tag_editor, theme
+from . import APP_NAME, audiofile, controls, keys, placement, popups, tag_editor, theme
 from .tag_editor import VARIOUS, Edit, TagSave
 
 COVER_PX = 88
@@ -108,7 +108,7 @@ class TagWindow:
         self._loaded: dict | None = None
         self._baseline: tuple | None = None   # the fields and cover as last read or saved (see dirty)
 
-        self.win = tk.Toplevel(parent, bg=theme.BG)
+        self.win = tk.Toplevel(parent, bg=theme.BG, class_=APP_NAME)
         self.win.title("Edit tags")
         self.win.geometry(f"{theme.px(440)}x{theme.px(560)}")
         self.win.minsize(theme.px(340), theme.px(420))
@@ -424,7 +424,7 @@ class TagHistoryWindow:
         self.loading: dict | None = None   # the history being read (on a thread)
         self.clearing = False  # Clear history is deleting it (on a thread)
         self.entries: list[dict] = []
-        self.win = tk.Toplevel(parent, bg=theme.BG)
+        self.win = tk.Toplevel(parent, bg=theme.BG, class_=APP_NAME)
         self.win.title("Tag history")
         self.win.geometry(f"{theme.px(560)}x{theme.px(360)}")
         self.win.minsize(theme.px(380), theme.px(240))
