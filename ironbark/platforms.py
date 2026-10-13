@@ -8,9 +8,11 @@ simply absent there and the program says nothing about it.
 """
 import sys
 
-NAME = "windows" if sys.platform == "win32" else "mac" if sys.platform == "darwin" else "other"
+NAME = ("windows" if sys.platform == "win32" else "mac" if sys.platform == "darwin"
+        else "linux" if sys.platform.startswith("linux") else "other")
 IS_WINDOWS = NAME == "windows"
 IS_MAC = NAME == "mac"
+IS_LINUX = NAME == "linux"
 
 # What the platform provides.
 CUSTOM_TITLE_BAR = IS_WINDOWS      # chrome.py draws the title bar itself (the Win32 caption is removed)
@@ -20,3 +22,7 @@ HARDWARE_VOLUME = IS_WINDOWS       # devices.py: the device's own volume control
 LOOPBACK_RECORDING = IS_WINDOWS    # tools/loopback.py: Windows' loopback, for the Windows check
 NAMED_PIPE_INSTANCE = IS_WINDOWS   # instance.py: one copy at a time through a named pipe (a socket elsewhere)
 RECYCLE_BIN = "Bin" if IS_MAC else "Recycle Bin"   # recycle.py: what the bin is called; both have one
+
+# How Tk names things that differ by windowing system.
+# The keyboard's menu key. X11 calls it Menu: "App" is no X11 key name, and Tk refuses a binding to it.
+MENU_KEY = "<App>" if IS_WINDOWS or IS_MAC else "<Menu>"

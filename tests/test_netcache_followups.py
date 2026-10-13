@@ -9,6 +9,7 @@ No real network: FakeShare / FakeCopy / FakePreparer, fake clocks where time mat
 from __future__ import annotations
 
 import importlib
+import os
 import socket
 import sys
 import time
@@ -510,6 +511,7 @@ def test_now_playings_frame_index_is_built_once_the_copy_completes_mid_song(monk
 
 
 # -- the track list's Cached column --------------------------------------------------------------------------
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive letters and network paths")
 def test_the_track_list_marks_network_songs_when_the_tab_has_some(make_window):
     from test_netcache_ui import NetStub
 
@@ -596,6 +598,7 @@ def test_a_whole_librarys_paths_are_classified_by_drive_letter():
     assert c.any_remote([Path("//nas/share/c.flac")]) and not c.any_remote(["\\\\.\\C:\\x.flac"])
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive letters and network paths")
 def test_whether_a_folder_is_inside_onedrive_is_worked_out_once_per_folder():
     from netfakes import FakeClassifier
     roots, files = [], []

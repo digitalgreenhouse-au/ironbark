@@ -77,7 +77,8 @@ def _measuring_font(widget: tk.Misc, font) -> tkfont.Font:
     fonts = getattr(root, "_dg_measure_fonts", None)
     if fonts is None:
         fonts = root._dg_measure_fonts = {}
-    key = tuple(font) if isinstance(font, list) else font
+    # Tk 9 hands a style's font back as a Tcl object (Tk 8.6 as text), which can't be a dict key.
+    key = tuple(font) if isinstance(font, (list, tuple)) else str(font)
     if key not in fonts:
         fonts[key] = tkfont.Font(root=root, font=font)
     return fonts[key]

@@ -61,7 +61,7 @@ from collections.abc import Callable, Sequence
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from . import audiofile, controls, searchfold, theme
+from . import audiofile, controls, platforms, searchfold, theme
 from .library import Track, group_by_album
 from .tabbar import Toggle, Tooltip
 from .virtual_list import CELL_ROOM, ELLIPSIS, VirtualTree
@@ -482,7 +482,7 @@ class PlaylistView:
         theme.on_change(self._palette_changed)
         self.tree.bind("<ButtonRelease-1>", self._released, add="+")
         self.tree.bind("<Button-3>", self._context)
-        for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
+        for key in (platforms.MENU_KEY, "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
             self.tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
         # Dragging songs: a song carries itself, an album header its album's listed songs, a row of a
         # selection of several every song selected.

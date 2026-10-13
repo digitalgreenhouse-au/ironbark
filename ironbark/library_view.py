@@ -81,6 +81,7 @@ from . import (
     library_db,
     library_index,
     places,
+    platforms,
     popups,
     searchfold,
     theme,
@@ -598,7 +599,7 @@ class LibraryView:
         theme.on_change(self._palette_changed)
         self.drag: TreeDrag | None = None
         self.tree.bind("<Button-3>", self._context)
-        for key in ("<App>", "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
+        for key in (platforms.MENU_KEY, "<Shift-F10>"):   # (0.21.0) the keyboard's menu key: the focused row's menu
             self.tree.bind(key, lambda e: self._context(self.list.menu_event()) or "break")
         self._on_drag = on_drag
         self.drag = TreeDrag(self.tree, self._carried, self._dragged)
