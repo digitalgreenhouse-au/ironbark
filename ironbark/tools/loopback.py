@@ -55,7 +55,8 @@ class WindowsSettings:
 
 
 def _interfaces():
-    from ctypes import HRESULT      # only Windows' ctypes has it, so it's imported where it's used
+    from ctypes import HRESULT  # only Windows' ctypes has it, so it's imported where it's used
+
     from comtypes import COMMETHOD, GUID, IUnknown
 
     class IAudioCaptureClient(IUnknown):
