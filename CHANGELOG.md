@@ -4,6 +4,20 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.48.0 — 13/10/2026
+
+- **Ironbark for the web** (`web/`): Ironbark in a web browser, for the music on your own computer.
+  Open a folder or some songs, or drop them on the page; nothing is uploaded, and the page can't use
+  the internet at all (its Content Security Policy forbids it). It has the desktop player's look and
+  side-player shape: albums with covers, search, shuffle and repeat, the next song loaded before this
+  one ends, a level meter and a spectrum, the same keyboard shortcuts, media keys, Light and Dark
+  themes, and Details with **Check this file**, which decodes a FLAC file and compares it with the
+  MD5 its encoder stored. It says plainly what a browser can't do: play bit-perfect (it names the
+  rate the browser plays at, and any resampling). It plays FLAC, MP3, Ogg Vorbis, Opus, WAV and AAC
+  where the browser does; it remembers the folder in Chrome and Edge and installs there as an app
+  that works offline. Plain HTML, CSS and JavaScript with no build step and no libraries; see
+  `web/README.md`.
+
 ## 0.47.0 — 12/10/2026
 
 - **Settings → Volume on my amplifier**, kept for each output: for an output that feeds an

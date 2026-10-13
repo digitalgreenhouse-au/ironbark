@@ -63,6 +63,17 @@ to remove them. An optional, unticked task adds Ironbark to Explorer's *Open wit
 files, playlists and CUE sheets (it never becomes the default). The builds are not yet code-signed,
 so Windows SmartScreen warns about an unknown publisher.
 
+### In a web browser
+
+`web/` is Ironbark for the web: the same look and shape, played by the browser, for the music on
+the listener's own computer. Open a folder or some songs, or drop them on the page. Nothing is
+uploaded, and a Content Security Policy keeps the page off the internet. It has albums, search,
+shuffle and repeat, a level meter and a spectrum, the desktop player's keys, media keys, both themes
+and *Check this file* (a FLAC file's MD5, proved by decoding it). A browser can't play bit-perfect
+or promise gapless playback, and the page says so. Plain HTML, CSS and JavaScript with no build
+step: see [web/README.md](web/README.md). To try it: `python -m http.server 8000 -d web`, then
+<http://localhost:8000>.
+
 ## Features
 
 ### Playing music
