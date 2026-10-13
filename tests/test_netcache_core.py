@@ -9,7 +9,7 @@ import socket
 import sqlite3
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import numpy as np
@@ -73,6 +73,7 @@ def windows(monkeypatch):
     return calls
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive letters and network paths")
 def test_classify_by_spelling_and_tables_without_network_calls(windows):
     c = sources.Classifier()
     K = sources.Kind
@@ -96,6 +97,7 @@ def test_classify_by_spelling_and_tables_without_network_calls(windows):
     assert "PathIsNetworkPath" not in source.replace("Never `PathIsNetworkPathW`", "")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive letters and network paths")
 def test_mapped_and_subst_letters_name_the_same_copy_as_the_server_path(windows):
     c = sources.Classifier()
     c.refresh(force=True)
@@ -232,7 +234,7 @@ def test_start_up_tidy_after_a_crash(tmp_path):
 
     store = Store(tmp_path / "NetCache")
     kept, done = store.tidy(store.open())
-    by_name = {Path(i.source).name: i for i in kept}
+    by_name = {PureWindowsPath(i.source).name: i for i in kept}   # (the sources are \\server\share paths)
     assert set(by_name) == {"partial.flac", "renamed.flac", "nothing.flac"}
     assert by_name["partial.flac"].state == PARTIAL and store.part_path(by_name["partial.flac"]).stat().st_size == 100
     assert by_name["renamed.flac"].state == READY
@@ -241,7 +243,7 @@ def test_start_up_tidy_after_a_crash(tmp_path):
     assert [p.name for p in store.tracks.iterdir()] == [by_name["renamed.flac"].final_name]
     assert done["promoted"] == 1 and done["truncated"] == 1 and done["stale"] == 1 and done["dropped"] == 1
     store.close()
-    reloaded = {Path(i.source).name: i.state for i in Store(tmp_path / "NetCache").open()}
+    reloaded = {PureWindowsPath(i.source).name: i.state for i in Store(tmp_path / "NetCache").open()}
     assert reloaded == {"partial.flac": PARTIAL, "renamed.flac": READY, "nothing.flac": QUEUED}
 
 

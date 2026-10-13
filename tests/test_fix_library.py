@@ -356,6 +356,7 @@ def test_playlist_cue_tracks_survive_a_save_while_the_sheet_is_away(tmp_path, ap
 
 
 # -- renaming a playlist by case only ---------------------------------------------------------------
+@pytest.mark.skipif(os.name != "nt", reason="Windows' file names ignore case")
 def test_renaming_a_playlist_by_case_only(app):
     rock = playlists.path_for("rock")
     playlists.write(rock, [])
