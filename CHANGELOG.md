@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.49.1 — 14/10/2026
+
+Fixes for macOS and Linux, ahead of their first downloads (nothing changes on Windows):
+
+- **Linux: the main window opens.** The keyboard's menu key has another name on Linux, and the
+  playlist and library views couldn't be built.
+- **Newer Tk (9.0, used by the macOS and Linux builds):** the status line and the rest of the main
+  window's refresh no longer stop partway, and `/` (search), `?` (shortcuts) and Ctrl+, (Settings)
+  work again.
+- **Linux:** live numbers and samples use the desktop's fixed-width font; Ctrl+W in a text box no
+  longer cuts the selected text as well as closing the tab.
+- **macOS and Linux:** Now Playing opens (a Windows-only import stopped it).
+
 ## 0.49.0 — 14/10/2026
 
 - **DTS music CDs and HDCD discs stay bit-perfect.** Both carry something hidden in their samples —
