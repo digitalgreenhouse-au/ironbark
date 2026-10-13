@@ -2,6 +2,7 @@
 "Search the whole library" row, Ctrl+K (the Library tab's search box). Favourites (favourites.py) and
 the database's song lookups for the Library's views."""
 import gc
+import os
 import time
 import tkinter as tk
 from pathlib import Path
@@ -103,6 +104,7 @@ def other_spelling(key: str) -> str:
     return key[0].swapcase() + key[1:]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows' file names ignore case")
 def test_a_song_found_by_two_spellings_of_its_path_comes_once(library):
     """Plays, favourites and checks are kept by the path they were made with — a playlist may write
     "c:\\Music" where the library has "C:\\Music". Both find the song, and the key that found it is

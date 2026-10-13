@@ -7,6 +7,7 @@ reaches its last line in a short window. Tk smoke tests (skipped without a displ
 from __future__ import annotations
 
 import gc
+import os
 import re
 import time
 from pathlib import Path
@@ -402,6 +403,7 @@ def test_track_and_tab_menus(make_window, shown_menus, tmp_path, monkeypatch):
     assert not errors
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows' file names ignore case")
 def test_playlist_name_prompt_checks_for_a_clash(make_window, tmp_path, monkeypatch):
     window, root, player, errors = make_window()
     monkeypatch.setattr(playlists, "folder", lambda: tmp_path / "Playlists")

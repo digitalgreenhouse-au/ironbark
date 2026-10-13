@@ -8,6 +8,7 @@ from __future__ import annotations
 import errno
 import io
 import json
+import os
 import queue
 import sys
 import threading
@@ -229,8 +230,9 @@ def test_a_launch_waits_for_a_copy_that_takes_longer_than_usual_to_close(monkeyp
     told, ran = [], []
     monkeypatch.setattr(crash, "tell_native", lambda title, text, warning=True: told.append(title))
     monkeypatch.setattr(start, "_run", lambda paths, here: ran.append((paths, here)))
-    start.main([r"C:\Music\a.flac"])
-    assert told == [] and ran == [([r"C:\Music\a.flac"], mine)]
+    song = os.path.abspath(os.path.join(os.sep, "Music", "a.flac"))   # (already absolute, so passed on as it is)
+    start.main([song])
+    assert told == [] and ran == [([song], mine)]
 
 
 def test_a_copy_still_closing_after_the_longest_wait_is_called_closing_not_stuck(monkeypatch):
