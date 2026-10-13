@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The lock: this page may load its own files and nothing else. Songs and pictures are read
+     from the listener's own files (blob: URLs); nothing is fetched from, or sent to, the internet. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src blob:; manifest-src 'self'; worker-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#1e1f22">
+<meta name="description" content="Ironbark: a music player for the files on your own computer. Nothing is uploaded.">
+<title>Ironbark</title>
+<link rel="icon" href="icons/icon_32.png" sizes="32x32">
+<link rel="icon" href="icons/icon_256.png" sizes="256x256">
+<link rel="apple-touch-icon" href="icons/icon_256.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="ironbark.css">
+</head>
+<body>
+<svg class="sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="3.6" height="14" rx="1.2"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><rect x="5" y="5" width="2.4" height="14" rx="1"/><path d="M19 6.2v11.6a1 1 0 0 1-1.55.83L9.2 13.2a1.4 1.4 0 0 1 0-2.4l8.25-5.43A1 1 0 0 1 19 6.2z"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><rect x="16.6" y="5" width="2.4" height="14" rx="1"/><path d="M5 6.2v11.6a1 1 0 0 0 1.55.83l8.25-5.43a1.4 1.4 0 0 0 0-2.4L6.55 5.37A1 1 0 0 0 5 6.2z"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M3.5 7h3.2c2 0 3.2 1 4.3 2.7l2 3.6c1.1 1.7 2.3 2.7 4.3 2.7h3.2M3.5 17h3.2c1.4 0 2.4-.5 3.3-1.4M14.1 8.4c.9-.9 1.9-1.4 3.2-1.4h3.2M18 4.5 20.5 7 18 9.5M18 14.5l2.5 2.5-2.5 2.5"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M4.5 11V9.5A3 3 0 0 1 7.5 6.5h11M16 4l2.5 2.5L16 9M19.5 13v1.5a3 3 0 0 1-3 3h-11M8 20l-2.5-2.5L8 15"/></symbol>
+  <symbol id="i-repeat-one" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M4.5 11V9.5A3 3 0 0 1 7.5 6.5h11M16 4l2.5 2.5L16 9M19.5 13v1.5a3 3 0 0 1-3 3h-11M8 20l-2.5-2.5L8 15"/><path d="M11.2 10.4 12.6 9.6h.9v5h-1.3v-3.4l-.9.5z"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5h3l4.3-3.6a.8.8 0 0 1 1.3.62v10.96a.8.8 0 0 1-1.3.62L7 14.5H4a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1z"/><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="M15.5 9.2a4 4 0 0 1 0 5.6M18 6.8a7.4 7.4 0 0 1 0 10.4"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3l4.3-3.6a.8.8 0 0 1 1.3.62v10.96a.8.8 0 0 1-1.3.62L7 14.5H4a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1z"/><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="m16 9.5 5 5m0-5-5 5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" d="M10.3 3.5h3.4l.5 2.4 1.7 1 2.3-.8 1.7 2.9-1.8 1.6v2l1.8 1.6-1.7 2.9-2.3-.8-1.7 1-.5 2.4h-3.4l-.5-2.4-1.7-1-2.3.8-1.7-2.9 1.8-1.6v-2L4.1 9l1.7-2.9 2.3.8 1.7-1z"/><circle cx="12" cy="12" r="2.8" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 11v5.2"/><circle cx="12" cy="7.9" r="1.1"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="m15 15 4.5 4.5"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 17.5V6.6a1 1 0 0 1 .76-.97l8-2A1 1 0 0 1 19 4.6v10.9a2.6 2.6 0 1 1-1.6-2.4V8.2l-6.8 1.7v7.6a2.6 2.6 0 1 1-1.6-2.4z"/></symbol>
+  <symbol id="i-meters" viewBox="0 0 24 24"><rect x="4" y="11" width="3" height="8" rx="1"/><rect x="10.5" y="6" width="3" height="13" rx="1"/><rect x="17" y="9" width="3" height="10" rx="1"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="m6.5 6.5 11 11m0-11-11 11"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" d="M6.5 3.5h7l4 4v12a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1zM13.5 3.5v4h4"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+</svg>
+
+<!-- shown until the page's scripts start: if they can't run, this says why instead of a dead page -->
+<div class="noscript" id="noscript">
+  <h2>Ironbark needs its scripts to run</h2>
+  <p>Your browser hasn't started them. Ironbark works in a current Chrome, Edge, Firefox or Safari with JavaScript on. If you opened <code>index.html</code> straight from a folder and see this, open it from a web address instead (the Ironbark page, or <code>python -m http.server</code> in this folder, then <code>http://localhost:8000</code>).</p>
+</div>
+
+<div class="app empty" id="app">
+  <header class="strip">
+    <div class="brand"><img src="icons/icon_32.png" alt="" width="20" height="20"><span>Ironbark</span></div>
+    <div class="strip-actions">
+      <button class="iconbtn" id="btnAdd" title="Open music (Ctrl+O)" aria-haspopup="menu" aria-label="Open music"><svg><use href="#i-plus"/></svg></button>
+      <button class="iconbtn" id="btnMeters" title="Meters (M)" aria-pressed="false" aria-label="Meters"><svg><use href="#i-meters"/></svg></button>
+      <button class="iconbtn" id="btnSettings" title="Settings (Ctrl+,)" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
+    </div>
+  </header>
+
+  <section class="now" aria-label="Now playing">
+    <div class="cover" id="coverBox"><svg class="cover-note"><use href="#i-note"/></svg><img id="cover" alt=""></div>
+    <h1 class="title" id="title">Ironbark</h1>
+    <p class="sub" id="sub">Your music, on your computer</p>
+    <div class="fmtline">
+      <span class="fmt" id="fmt"></span>
+      <span class="fmt-icons">
+        <span class="dot" id="dot" hidden></span>
+        <button class="iconbtn small" id="btnInfo" title="Details (I)" aria-label="Details"><svg><use href="#i-info"/></svg></button>
+      </span>
+    </div>
+    <p class="outline" id="outline"></p>
+    <div class="seek">
+      <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="Position" disabled>
+      <div class="times"><span id="tPos">0:00</span><span id="tLeft">–0:00</span></div>
+    </div>
+    <div class="transport">
+      <button class="iconbtn" id="btnShuffle" title="Shuffle (S)" aria-pressed="false" aria-label="Shuffle"><svg><use href="#i-shuffle"/></svg></button>
+      <button class="iconbtn" id="btnPrev" title="Previous (P)" aria-label="Previous"><svg><use href="#i-prev"/></svg></button>
+      <button class="play" id="btnPlay" title="Play (Space)" aria-label="Play"><svg><use href="#i-play" id="playIcon"/></svg></button>
+      <button class="iconbtn" id="btnNext" title="Next (N)" aria-label="Next"><svg><use href="#i-next"/></svg></button>
+      <button class="iconbtn" id="btnRepeat" title="Repeat: off (R)" aria-pressed="false" aria-label="Repeat"><svg><use href="#i-repeat" id="repeatIcon"/></svg></button>
+      <div class="vol">
+        <button class="pill" id="btnVol" title="Volume (Ctrl+Up / Ctrl+Down)" aria-haspopup="true" aria-label="Volume">100%</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="meters" id="meters" hidden aria-label="Meters">
+    <div class="meters-head">
+      <div class="seg" role="tablist">
+        <button role="tab" id="mLevels" aria-selected="true">Level</button>
+        <button role="tab" id="mSpectrum" aria-selected="false">Spectrum</button>
+      </div>
+      <button class="link" id="mReset" title="Clear the held peaks">Reset peaks</button>
+    </div>
+    <canvas id="meterCanvas" height="70"></canvas>
+  </section>
+
+  <div class="searchrow">
+    <label class="search"><svg><use href="#i-search"/></svg><input id="search" type="search" placeholder="Search songs, artists, albums" aria-label="Search" autocomplete="off" spellcheck="false"><kbd>Ctrl+F</kbd></label>
+  </div>
+  <div class="listhead"><span class="c-num">#</span><span class="c-title">Title</span><span class="c-time">Time</span></div>
+  <div class="list" id="list" role="listbox" tabindex="0" aria-label="Songs">
+    <div class="list-spacer" id="listSpacer"></div>
+    <div class="list-rows" id="listRows"></div>
+  </div>
+
+  <div class="welcome" id="welcome">
+    <svg class="welcome-note"><use href="#i-note"/></svg>
+    <h2>Play the music on this computer</h2>
+    <p>Pick a folder of music, or drop songs and folders here.</p>
+    <div class="welcome-buttons">
+      <button class="btn primary" id="wFolder"><svg><use href="#i-folder"/></svg>Open a folder</button>
+      <button class="btn" id="wFiles"><svg><use href="#i-file"/></svg>Open songs</button>
+    </div>
+    <button class="btn ghost" id="wReopen" hidden></button>
+    <p class="privacy"><svg><use href="#i-lock"/></svg><span>Your music stays on your computer. Ironbark reads your files where they are and never uploads them. This page can't use the internet at all.</span></p>
+    <p class="formats" id="formats"></p>
+  </div>
+
+  <footer class="status" id="status" role="status" aria-live="polite"></footer>
+</div>
+
+<div class="drop" id="drop" hidden><div><svg><use href="#i-plus"/></svg><p>Drop to add</p></div></div>
+
+<input type="file" id="pickFiles" multiple accept=".flac,.fla,.mp3,.ogg,.oga,.opus,.wav,.wave,.aif,.aiff,.aifc,.m4a,.m4b,.mp4,.aac,audio/*" hidden>
+<input type="file" id="pickFolder" webkitdirectory multiple hidden>
+
+<!-- pop-overs and dialogs -->
+<div class="menu" id="addMenu" role="menu" hidden>
+  <button role="menuitem" data-act="open-folder">Open a folder…<kbd>Ctrl+O</kbd></button>
+  <button role="menuitem" data-act="open-files">Open songs…</button>
+  <button role="menuitem" data-act="add-folder">Add a folder…</button>
+  <button role="menuitem" data-act="add-files">Add songs…</button>
+  <hr>
+  <button role="menuitem" data-act="clear">Clear the list</button>
+</div>
+
+<div class="menu volmenu" id="volMenu" hidden>
+  <input type="range" id="vol" min="0" max="100" step="1" value="100" aria-label="Volume">
+  <div class="volrow"><span id="volDb">0 dB · untouched</span><button class="link" id="volMute">Mute</button></div>
+</div>
+
+<dialog id="dlgDetails" class="sheet">
+  <header><h2>Details</h2><button class="iconbtn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></header>
+  <div class="sheet-body" id="detailsBody"></div>
+  <footer id="detailsFoot"></footer>
+</dialog>
+
+<dialog id="dlgSettings" class="sheet">
+  <header><h2>Settings</h2><button class="iconbtn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></header>
+  <div class="sheet-body">
+    <h3>Look</h3>
+    <div class="row"><span>Theme</span>
+      <div class="seg" id="themeSeg" role="radiogroup">
+        <button role="radio" data-theme="dark">Dark</button><button role="radio" data-theme="light">Light</button><button role="radio" data-theme="system">Follow system</button>
+      </div>
+    </div>
+    <h3>Music</h3>
+    <label class="row switchrow"><span>Remember the folder I open<small id="rememberNote">So it can be reopened with one click next time (this browser only).</small></span><input type="checkbox" id="optRemember" class="switch"></label>
+    <label class="row switchrow"><span>Show the meters<small>Level and spectrum, under the play button (key M).</small></span><input type="checkbox" id="optMeters" class="switch"></label>
+    <h3>About</h3>
+    <p class="about" id="about"></p>
+    <p class="about">Ironbark reads your music where it is: the songs never leave this computer. The page carries a lock (a Content Security Policy) that stops it fetching or sending anything over the internet. Settings are kept in this browser only.</p>
+    <p class="about"><b>Bit-perfect playback isn't possible in a browser:</b> the browser mixes every page's sound and hands it to the computer at its own rate. The desktop Ironbark plays bit-perfect and proves it. Here, Details shows what the browser does, and <i>Check this file</i> proves that a FLAC file itself decodes exactly.</p>
+    <p class="about"><button class="link" id="btnKeys">Keyboard shortcuts</button></p>
+  </div>
+</dialog>
+
+<dialog id="dlgKeys" class="sheet">
+  <header><h2>Keyboard shortcuts</h2><button class="iconbtn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></header>
+  <div class="sheet-body"><table class="keys" id="keysTable"></table></div>
+</dialog>
+
+<script src="js/version.js"></script>
+<script src="js/tags.js"></script>
+<script src="js/verify.js"></script>
+<script src="js/library.js"></script>
+<script src="js/player.js"></script>
+<script src="js/meters.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

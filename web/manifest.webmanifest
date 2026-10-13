@@ -1,0 +1,29 @@
+{
+  "name": "Ironbark",
+  "short_name": "Ironbark",
+  "description": "A music player for the files on your own computer. Nothing is uploaded.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#1e1f22",
+  "theme_color": "#1e1f22",
+  "icons": [
+    { "src": "icons/icon_128.png", "sizes": "128x128", "type": "image/png" },
+    { "src": "icons/icon_256.png", "sizes": "256x256", "type": "image/png" },
+    { "src": "icons/icon_512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "audio/flac": [".flac", ".fla"],
+        "audio/mpeg": [".mp3"],
+        "audio/ogg": [".ogg", ".oga", ".opus"],
+        "audio/wav": [".wav", ".wave"],
+        "audio/aiff": [".aif", ".aiff", ".aifc"],
+        "audio/mp4": [".m4a", ".m4b"]
+      }
+    }
+  ]
+}

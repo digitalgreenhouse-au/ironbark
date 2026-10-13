@@ -85,6 +85,15 @@ one. The `proof` module records what was sent so the Now Playing window can show
 Ironbark never uses the internet. *Local network access* (off by default) gates reading music
 from shares and the cache.
 
+## The web player
+
+`web/` is a separate, smaller player for a browser (plain HTML, CSS and JavaScript; no build, no
+libraries). It shares no code with the Python package: its tag reader (`web/js/tags.js`), album
+grouping, playback engine (two `<audio>` elements into one Web Audio graph) and FLAC check are its
+own. It shares the design tokens (`web/ironbark.css` repeats `theme.DARK` / `theme.LIGHT`, checked by
+`tests/test_web_player.py`), the version and the keyboard shortcuts. Its tests are `web/tests/`
+(Node's test runner), run from pytest when Node.js is installed.
+
 ## Adding a Check tool
 
 1. The measurement in its own module under `tools/` (pure code, testable without a window).
