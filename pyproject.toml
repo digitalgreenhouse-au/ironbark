@@ -122,6 +122,7 @@ forbidden_modules = [
 # netcache/manager.py (52). Modules a listed one imports are read but not reported (follow_imports).
 [tool.mypy]
 python_version = "3.11"
+platform = "win32"   # checked as Windows wherever it runs (a CI runner is Linux): the Windows-only branches are typed against Windows
 files = [
     "ironbark/tagio/__init__.py", "ironbark/tagio/_files.py", "ironbark/tagio/flac.py", "ironbark/tagio/genres.py",
     "ironbark/tagio/id3.py", "ironbark/tagio/mp4.py", "ironbark/tagio/riff.py", "ironbark/tagio/vorbis.py",
