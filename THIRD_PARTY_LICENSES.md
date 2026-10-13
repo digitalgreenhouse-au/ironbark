@@ -67,6 +67,24 @@ packages' own licence files, and for the native libraries above the texts kept i
 | [PyInstaller](https://pyinstaller.org) bootloader | GPL-2.0-or-later **with the Bootloader Exception** | The small launcher inside `Ironbark.exe`. The exception allows it in programs under any licence, including commercial ones; PyInstaller's run-time hooks are Apache-2.0. Not used when running from source. |
 | [Inno Setup](https://jrsoftware.org/isinfo.php) | Inno Setup License | Builds the installer; its setup and uninstall code is inside `Ironbark-Setup-X.Y.Z.exe` and `unins000.exe`, not in Ironbark itself. |
 
+## The Linux build (`Ironbark-X.Y.Z-linux-x86_64.tar.gz`)
+
+The Linux build is made on the distribution's own Python 3.12 and Tcl/Tk 8.6 (built with Xft, so
+text is drawn with the desktop's fonts), not the python-build-standalone runtime the table above
+describes. So the Python runtime, Tcl/Tk, PortAudio, OpenSSL, SQLite, Expat, libffi, liblzma, bzip2
+and zlib inside it are the distribution's builds, under the same licences as above. The C and C++
+run-time libraries (`libgcc_s`, `libstdc++`) are GPL-3.0-or-later **with the GCC Runtime Library
+Exception**, which allows them in programs under any licence. Every library in the build has its
+licence text in `Ironbark/licenses/`: the Python packages' own files, the texts in
+`packaging/licenses/`, and each system library's copyright file from its distribution package
+(listed in `licenses/SYSTEM-LIBRARIES.txt`). The build stops if a library has no licence file or is
+GPL without such an exception (`packaging/linux/licence_check.py`).
+
+Left out on purpose and used from the system instead, as every Linux desktop has them: X11 and its
+font libraries, ALSA, JACK, and Berkeley DB (`libdb`, which the distribution's PortAudio is linked to
+but never calls). The Windows-only packages above (pycaw, comtypes, psutil, the Visual C++ runtime)
+aren't in it.
+
 ## Used only for development and testing (not shipped)
 
 | Tool | Licence | Notes |
