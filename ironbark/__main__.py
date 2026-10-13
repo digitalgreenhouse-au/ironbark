@@ -120,7 +120,7 @@ def _run(paths: list[str], here: instance.Instance) -> None:
     root = None
     try:
         player_class, window_class = _player_classes()
-        root = tk.Tk()
+        root = tk.Tk(className=APP_NAME)   # its windows' class: how a Linux taskbar knows them
         root.report_callback_exception = _log_callback_error
         window = window_class(root, player_class(), paths=paths, requests=here.requests,
                               on_close=here.stop_listening)

@@ -172,7 +172,7 @@ def _window(parent: tk.Misc, title: str, size: tuple[int, int], minimum: tuple[i
     # has about 1,030 px), measured before the window is made so nothing half-made is drawn.
     room = placement.work_height(parent) - theme.px(FIT_MARGIN)
     height = max(theme.px(minimum[1]), min(theme.px(size[1]), room))
-    win = tk.Toplevel(parent, bg=theme.BG)
+    win = tk.Toplevel(parent, bg=theme.BG, class_=APP_NAME)
     win.title(title)
     win.geometry(f"{theme.px(size[0])}x{height}")
     win.minsize(theme.px(minimum[0]), theme.px(minimum[1]))
