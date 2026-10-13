@@ -49,13 +49,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
-      - name: PortAudio (Linux only; the Windows and macOS wheels carry their own)
+      # Linux: uv uses the distribution's Python here (as the Linux build does), whose tkinter is a
+      # separate package; PortAudio too (the Windows and macOS wheels carry their own). Xvfb gives
+      # the tests that make a Tk root a screen to make it on.
+      - name: tkinter, PortAudio and a virtual screen (Linux only)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+        run: sudo apt-get update && sudo apt-get install -y python3-tk libportaudio2 xvfb
       - name: Install (exactly as locked)
         run: uv sync --locked
       - name: Run the tests that make no window
+        if: runner.os != 'Linux'
         run: uv run pytest -q -m "not ui"
+      - name: Run the tests that make no window (on the virtual screen)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a uv run pytest -q -m "not ui"
 
   full:
     name: Full suite (Windows)
