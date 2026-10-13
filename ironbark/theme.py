@@ -311,8 +311,11 @@ FONT = "Segoe UI" if platforms.IS_WINDOWS else "TkDefaultFont"
 # Consolas ships with Windows since Vista (Microsoft Learn's Consolas page, checked 05/10/2026:
 # "Fixed pitch: True", supplied by Windows 7 / 8 / 8.1 / 10 / 11). (0.22.0) For the Mac build: Menlo
 # ships with macOS (Apple's "Fonts included with macOS Sequoia" lists Menlo Regular / Bold / Italic /
-# Bold Italic, checked 05/10/2026); SF Mono isn't on that list. Not yet tried on a Mac.
-MONO = "Consolas" if platforms.IS_WINDOWS else "Menlo" if platforms.IS_MAC else "TkFixedFont"
+# Bold Italic, checked 05/10/2026); SF Mono isn't on that list. Not yet tried on a Mac. Elsewhere,
+# "Monospace" is fontconfig's name for the desktop's fixed-width font (DejaVu Sans Mono on most Linux
+# desktops). It's a family name, which a Font's family must be: "TkFixedFont" names a Tk font, not a
+# family, so asked for as one it falls back to the proportional default.
+MONO = "Consolas" if platforms.IS_WINDOWS else "Menlo" if platforms.IS_MAC else "Monospace"
 # (0.22.0) The family live numbers are drawn in, so they don't jiggle as their digits change: FONT
 # when its digits are all one width, else MONO. Tk can't ask a font for tabular figures (Tk 8.6's
 # `font` command has only -family -size -weight -slant -underline -overstrike: no OpenType
