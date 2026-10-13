@@ -16,6 +16,8 @@ bottom of Settings. Dates are dd/mm/yyyy. Newest first.
   the volume at 100%.
 - **Check** reports a DTS stream (and whether it is a DTS music CD's 14-bit packing) next to HDCD,
   MQA and pre-emphasis.
+- **Downloads:** the README marks Ironbark as experimental and lists the downloads — Windows now,
+  macOS and Linux coming — and links [Ironbark for the web](https://www.digitalgreenhouse.com.au/labs/ironbark/).
 
 ## 0.48.0 — 13/10/2026
 

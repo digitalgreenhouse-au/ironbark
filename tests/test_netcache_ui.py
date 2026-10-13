@@ -243,6 +243,8 @@ def test_switched_on_the_cache_starts_once_the_window_is_up_and_stops_with_it(ma
 # -- the measuring workers ---------------------------------------------------------------------------------
 def worker_window(**more):
     from ironbark.ui import PlayerWindow
+    ordinary = SimpleNamespace(check=lambda path, cancel=None: "")   # no DTS or HDCD stream in these songs
+    more.setdefault("_encoded", ordinary)
     w = SimpleNamespace(_peaks={}, _gain_tags={}, _lufs={}, _peak_jobs=queue.Queue(), _peak_wanted=set(),
                         _level_wanted=set(), _stored_peak=lambda path: None, **more)
     w._again_later = PlayerWindow._again_later.__get__(w)
@@ -345,6 +347,7 @@ REVIEWED = {
     ("ironbark.session", "_Session._reopen", "audiofile.open"): 1,
     ("ironbark.session", "_Source.__init__", "audiofile.open"): 1,
     ("ironbark.formats", "scan", "audiofile.open"): 1,
+    ("ironbark.passthrough", "detect", "audiofile.open"): 1,
     ("ironbark.levelling", "measure", "audiofile.open"): 1,
     ("ironbark.library", "find_albums", "audiofile.info"): 1,
     ("ironbark.loudness", "file_powers", "audiofile.open"): 1,
