@@ -131,6 +131,7 @@ from . import (
     theme,
     tkgc,
     watcher,
+    winstate,
 )
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim
 from .engine import Player, State
@@ -1197,8 +1198,8 @@ class PlayerWindow:
 
     def settings_from_key(self):
         """Ctrl+, / Ctrl+P, in any window: Settings, with the player window brought to the front."""
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         self._open_settings()
 
@@ -1208,8 +1209,8 @@ class PlayerWindow:
         the whole library" row): stay in this tab, switch Whole library on and search for that."""
         if self.mini_mode:
             self.toggle_mini()
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         if query is None:
             main = self._main_tab(make=True)
@@ -2810,8 +2811,8 @@ class PlayerWindow:
         changed in Settings since, they're made afresh for the new folders."""
         if self.mini_mode:
             self.toggle_mini()
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         main = self._main_tab(make=True)
         if self.current != main:
@@ -4291,8 +4292,8 @@ class PlayerWindow:
 
     def bring_to_front(self):
         """Show the window in front of the others (from the taskbar if it was minimised)."""
-        if self.root.state() in ("iconic", "withdrawn"):
-            self.root.deiconify()
+        if self.root.state() == "withdrawn" or winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         if not self.on_top.get():   # in front once, without staying on top
             self.root.attributes("-topmost", True)

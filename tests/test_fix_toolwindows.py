@@ -10,6 +10,7 @@ import queue
 import time
 from types import SimpleNamespace
 
+import conftest
 import numpy as np
 import pytest
 import soundfile as sf
@@ -207,14 +208,12 @@ def test_a_minimised_window_draws_nothing(root, stand_in_devices, kind, drawing,
     drawn = []
     real = getattr(win, drawing)
     setattr(win, drawing, lambda *a, **k: drawn.append(1) or real(*a, **k))
-    win.win.iconify()
-    win.win.update()
+    conftest.minimise(win.win)
     for _ in range(3):
         win._tick()
         win.win.after_cancel(win._job)
     assert drawn == []
-    win.win.deiconify()
-    win.win.update()
+    conftest.restore(win.win)
     win._tick()
     assert drawn                                      # drawn again once it's back on screen
     win.close()

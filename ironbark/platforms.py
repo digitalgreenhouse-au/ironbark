@@ -22,6 +22,9 @@ HARDWARE_VOLUME = IS_WINDOWS       # devices.py: the device's own volume control
 LOOPBACK_RECORDING = IS_WINDOWS    # tools/loopback.py: Windows' loopback, for the Windows check
 NAMED_PIPE_INSTANCE = IS_WINDOWS   # instance.py: one copy at a time through a named pipe (a socket elsewhere)
 RECYCLE_BIN = "Bin" if IS_MAC else "Recycle Bin"   # recycle.py: what the bin is called; both have one
+# x11.py through winstate.py: X11 window managers (Cinnamon, GNOME) keep a minimised window mapped,
+# so Tk calls it "normal" and can't bring it back; the window manager is asked instead.
+MINIMISED_STAYS_MAPPED = IS_LINUX
 
 # How Tk names things that differ by windowing system.
 # The keyboard's menu key. X11 calls it Menu: "App" is no X11 key name, and Tk refuses a binding to it.

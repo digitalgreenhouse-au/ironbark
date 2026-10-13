@@ -28,7 +28,7 @@ from tkinter import filedialog, ttk
 
 from PIL import Image, ImageOps, ImageTk
 
-from . import APP_NAME, audiofile, controls, keys, placement, popups, tag_editor, theme
+from . import APP_NAME, audiofile, controls, keys, placement, popups, tag_editor, theme, winstate
 from .tag_editor import VARIOUS, Edit, TagSave
 
 COVER_PX = 88
@@ -383,7 +383,7 @@ class TagWindow:
                 self.prefs["tags_geometry"] = geometry
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
 
     def may_discard(self) -> bool:
@@ -641,7 +641,7 @@ class TagHistoryWindow:
                 self.prefs["tag_history_geometry"] = geometry
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
 
     def close(self):

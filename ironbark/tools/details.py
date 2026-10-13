@@ -19,7 +19,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from .. import APP_NAME, audiofile, controls, placement, shapes, theme, toolwin
+from .. import APP_NAME, audiofile, controls, placement, shapes, theme, toolwin, winstate
 from ..analysis import CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse, lossy_below
 from ..engine import Health, OutputInfo, PlaybackEvent, Player, State
 from ..flacframes import FrameIndex, build_index
@@ -613,7 +613,7 @@ class NowPlayingWindow:
             self.win.geometry(f"{width}x{height}")
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
         self.win.focus_force()
 
