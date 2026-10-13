@@ -4,6 +4,18 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.49.2 — 14/10/2026
+
+- **A Linux download.** `Ironbark-0.49.2-linux-x86_64.tar.gz`: unpack it and run `Ironbark/Ironbark`
+  (`install.sh` adds it to the applications menu). For 64-bit PCs with Ubuntu 24.04, Linux Mint 22,
+  Debian 13, Fedora 39 or newer; tested on Linux Mint 22.3 (Cinnamon, X11). Experimental: no
+  bit-perfect output on Linux yet, files dragged in from the file manager aren't accepted yet, a
+  minimised window comes back only from the taskbar, network folders are treated as local, nothing
+  can be moved to the Trash yet, and some text sits tighter than on Windows. `packaging/linux/build.sh` builds it.
+- **Linux:** Ironbark's windows are grouped as Ironbark in the taskbar and the applications menu.
+- One version number for every platform: each release's Windows, macOS and Linux downloads are
+  built from the same code.
+
 ## 0.49.1 — 14/10/2026
 
 Fixes for macOS and Linux, ahead of their first downloads (nothing changes on Windows):

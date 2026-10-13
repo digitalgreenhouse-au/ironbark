@@ -9,7 +9,7 @@ Made by [Digital Greenhouse](https://www.digitalgreenhouse.com.au) in Australia.
 source under the [MIT licence](LICENSE).
 
 > **Status: experimental.** Ironbark is early software (version 0.x), used every day and tested on
-> Windows 11. macOS and Linux builds are on their way. Expect rough edges, and please
+> Windows 11, with a Linux build too. A macOS build is on its way. Expect rough edges, and please
 > [report them](https://github.com/digitalgreenhouse-au/ironbark/issues).
 
 ## Download
@@ -20,7 +20,7 @@ Get the latest version from [Releases](https://github.com/digitalgreenhouse-au/i
 |---|---|
 | **Windows 10 and 11** | `Ironbark-Setup-X.Y.Z.exe` (installer) or `Ironbark-X.Y.Z-windows-portable.zip` (no install). Not yet code-signed, so Windows SmartScreen warns about an unknown publisher: choose *More info* → *Run anyway*. Check the download against `SHA256SUMS.txt` if you like. |
 | **macOS** | Coming soon: it will be added to the release when it's ready. Until then, run from source (below). |
-| **Linux** | Coming soon (built on Linux Mint): it will be added to the release when it's ready. |
+| **Linux** | `Ironbark-X.Y.Z-linux-x86_64.tar.gz`: unpack it anywhere and run `Ironbark/Ironbark`; `Ironbark/install.sh` adds it to your applications menu. Needs a 64-bit PC and a recent distribution (Ubuntu 24.04, Linux Mint 22, Debian 13, Fedora 39 or newer). Built and tested on Linux Mint 22.3 (Cinnamon, X11); Wayland not tested yet. On Linux there's no bit-perfect output yet: sound goes through the system's mixer. |
 | **In a web browser** | [Ironbark for the web](https://www.digitalgreenhouse.com.au/labs/ironbark/): nothing to install, and your music never leaves your computer (see below). |
 
 ## Why Ironbark
@@ -74,6 +74,18 @@ keeps your settings, playlists and library database (play counts and favourites)
 to remove them. An optional, unticked task adds Ironbark to Explorer's *Open with* list for music
 files, playlists and CUE sheets (it never becomes the default). The builds are not yet code-signed,
 so Windows SmartScreen warns about an unknown publisher.
+
+### Building the Linux package
+
+```
+packaging/linux/build.sh
+```
+
+On Linux, with the distribution's Python 3.12 and its Tk (`python3-tk`): uv's own Python can't be
+used, as its Tk on Linux draws every font as a bitmap. It runs the tests, packages Ironbark with
+PyInstaller, runs the packaged program's `--self-check`, then makes
+`Ironbark-X.Y.Z-linux-x86_64.tar.gz` and `SHA256SUMS-linux.txt` in `dist/linux/`. Build on the
+oldest distribution the package should run on (it needs that one's C library or newer).
 
 ### In a web browser
 

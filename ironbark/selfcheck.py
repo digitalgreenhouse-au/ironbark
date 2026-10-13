@@ -382,7 +382,7 @@ def _check_window() -> str:
                         "library_folder": str(music), "library_check": "off", "local_network": False}),
             encoding="utf-8")
         appicon.set_app_id()
-        root = tk.Tk()
+        root = tk.Tk(className=APP_NAME)
         errors = []    # errors in the window code (Tk would only print them)
         root.report_callback_exception = lambda kind, value, tb: errors.append(
             "".join(traceback.format_exception(kind, value, tb)))

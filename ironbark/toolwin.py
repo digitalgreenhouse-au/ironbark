@@ -19,7 +19,7 @@ import tkinter as tk
 import traceback
 import weakref
 
-from . import placement, theme
+from . import APP_NAME, placement, theme
 
 
 class KeepGoing:
@@ -68,7 +68,7 @@ class ToolWindow:
 
     def __init__(self, parent: tk.Misc, prefs: dict, on_close=lambda: None):
         self.prefs, self.on_close = prefs, on_close
-        self.win = tk.Toplevel(parent, bg=theme.BG)
+        self.win = tk.Toplevel(parent, bg=theme.BG, class_=APP_NAME)
         self.win.title(self.TITLE)
         self.win.geometry(f"{theme.px(self.SIZE[0])}x{theme.px(self.SIZE[1])}")
         self.win.minsize(theme.px(self.MIN_SIZE[0]), theme.px(self.MIN_SIZE[1]))
