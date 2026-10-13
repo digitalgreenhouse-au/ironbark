@@ -49,7 +49,7 @@ from pathlib import Path
 
 from . import analysis, audiofile, indexer
 from .analysis import Analysis
-from .formats import FormatFlags, HdcdResult, MqaResult, PreEmphasis
+from .formats import DtsResult, FormatFlags, HdcdResult, MqaResult, PreEmphasis
 from .library import Track
 from .library_db import LibraryDB, SongHit
 
@@ -185,6 +185,7 @@ def from_json(text: str) -> Analysis | None:
             pre = _known(PreEmphasis, flags.get("pre_emphasis"))
             result.flags = FormatFlags(
                 hdcd=HdcdResult(**_known(HdcdResult, flags["hdcd"])) if flags.get("hdcd") else None,
+                dts=DtsResult(**_known(DtsResult, flags["dts"])) if flags.get("dts") else None,
                 mqa=MqaResult(**_known(MqaResult, flags["mqa"])) if flags.get("mqa") else None,
                 pre_emphasis=PreEmphasis(**{**pre, "sources": list(pre.get("sources") or [])}))
         return result

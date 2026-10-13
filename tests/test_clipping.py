@@ -454,6 +454,7 @@ def test_player_guard_follows_the_headroom_setting_and_key_c_opens_the_window(ma
     window._open_settings()
     _pump(root, 0.2)
     assert window.headroom_box.get() == "Off"                     # off by default
+    window._encoded.check(path)                                   # (an ordinary song, as the worker finds first)
     window._peaks[path] = 1.2                                     # +1.6 dB true peak
     window._apply_guard(player.track, 0)
     assert player.trim_for(path) == pytest.approx(guard_trim(1.2))

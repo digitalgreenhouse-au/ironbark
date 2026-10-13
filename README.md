@@ -8,8 +8,20 @@ measure it to published standards, and help you check your own ears.
 Made by [Digital Greenhouse](https://www.digitalgreenhouse.com.au) in Australia. Free and open
 source under the [MIT licence](LICENSE).
 
-> **Status:** early (version 0.x), tested on Windows 11. The code is written to be cross-platform;
-> macOS is planned. Expect rough edges, and please report them.
+> **Status: experimental.** Ironbark is early software (version 0.x), used every day and tested on
+> Windows 11. macOS and Linux builds are on their way. Expect rough edges, and please
+> [report them](https://github.com/digitalgreenhouse-au/ironbark/issues).
+
+## Download
+
+Get the latest version from [Releases](https://github.com/digitalgreenhouse-au/ironbark/releases/latest):
+
+| | |
+|---|---|
+| **Windows 10 and 11** | `Ironbark-Setup-X.Y.Z.exe` (installer) or `Ironbark-X.Y.Z-windows-portable.zip` (no install). Not yet code-signed, so Windows SmartScreen warns about an unknown publisher: choose *More info* → *Run anyway*. Check the download against `SHA256SUMS.txt` if you like. |
+| **macOS** | Coming soon: it will be added to the release when it's ready. Until then, run from source (below). |
+| **Linux** | Coming soon (built on Linux Mint): it will be added to the release when it's ready. |
+| **In a web browser** | [Ironbark for the web](https://www.digitalgreenhouse.com.au/labs/ironbark/): nothing to install, and your music never leaves your computer (see below). |
 
 ## Why Ironbark
 
@@ -27,8 +39,8 @@ source under the [MIT licence](LICENSE).
 
 ## Install and run
 
-Ironbark runs from source for now (ready-made downloads are planned). You need
-[uv](https://docs.astral.sh/uv/), which also fetches the right Python version for you.
+To run from source instead of a download, you need [uv](https://docs.astral.sh/uv/), which also
+fetches the right Python version for you.
 
 ```
 git clone https://github.com/digitalgreenhouse-au/ironbark.git
@@ -71,8 +83,9 @@ uploaded, and a Content Security Policy keeps the page off the internet. It has 
 shuffle and repeat, a level meter and a spectrum, the desktop player's keys, media keys, both themes
 and *Check this file* (a FLAC file's MD5, proved by decoding it). A browser can't play bit-perfect
 or promise gapless playback, and the page says so. Plain HTML, CSS and JavaScript with no build
-step: see [web/README.md](web/README.md). To try it: `python -m http.server 8000 -d web`, then
-<http://localhost:8000>.
+step: see [web/README.md](web/README.md). Use it at
+<https://www.digitalgreenhouse.com.au/labs/ironbark/>, or run your own copy:
+`python -m http.server 8000 -d web`, then <http://localhost:8000>.
 
 ## Features
 
@@ -153,7 +166,8 @@ step: see [web/README.md](web/README.md). To try it: `python -m http.server 8000
   the sound — hover it to see what.
 - **Clipping guard:** many loud masters peak *between* samples above full scale, which can crackle in
   a converter. Ironbark measures each track's true peak ahead of time and turns down only the
-  tracks that need it, by just enough. Everything else stays bit-perfect.
+  tracks that need it, by just enough. Everything else stays bit-perfect, and so do DTS music CDs
+  and HDCD discs, whatever their peaks: any change of level would break their encoding.
 
 ### Is this file genuine? (Now Playing → Check)
 

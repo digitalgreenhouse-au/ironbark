@@ -121,7 +121,7 @@ Settings → Sound → **Volume levelling** (off at first) plays songs at about 
 uses Album while an album plays in order and Track otherwise. Ironbark uses ReplayGain tags (loudness
 notes some programs write into files) or measures the songs itself, and never turns a song up past
 the point where it would clip. While levelling changes a song's level, the song isn't bit-perfect,
-and the player says so.
+and the player says so. DTS music CDs and HDCD discs are never levelled (see the clipping guard below).
 
 ### Lyrics
 
@@ -213,6 +213,17 @@ crackle on those. With the **Clipping guard** on (Settings → Sound), Ironbark 
 true peak ahead of time and turns down only the songs that need it, by just enough. Every other song
 stays bit-perfect. If your converter is known to have room above full scale, **My DAC has headroom**
 tells the guard how much.
+
+Two kinds of CD must reach your equipment exactly as they are, so the guard (and volume levelling)
+leaves them alone even when their peaks are high:
+- **DTS music CDs** ("DTS 5.1 Music Disc"): the "audio" is a DTS surround stream that only a DTS
+  receiver can decode. Any change of level turns it into loud noise.
+- **HDCD discs** (High Definition Compatible Digital): extra codes hidden in the lowest bit of each
+  sample, read by an HDCD decoder. Any change of level wipes them out.
+
+Ironbark recognises both from the first seconds of each track, and the line under the format says
+"clipping guard and levelling kept off". For them to arrive intact, use bit-perfect (exclusive)
+mode with the player volume at 100%; if not, that line turns amber and says what's needed.
 
 ## The Check and the measuring tools
 

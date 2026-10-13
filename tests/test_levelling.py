@@ -15,7 +15,7 @@ import soundfile as sf
 from mp4_maker import write_m4a
 from tagging import write_id3, write_vorbis
 
-from ironbark import engine, levelling
+from ironbark import engine, levelling, passthrough
 from ironbark.engine import BLOCK_FRAMES, OutputInfo, Player
 from ironbark.levelling import GainTags, Levelling, level_for, mode_for, parse_gain, parse_peak, parse_r128
 from ironbark.library import Track
@@ -345,6 +345,7 @@ def test_the_window_levels_the_song_playing_and_the_next(make_window):
     window, root, player, errors = make_window(levelling="track")
     path = player.track.path
     assert window.levelling_box.get() == "Track" and str(window.preamp_box.cget("state")) == "readonly"
+    window._encoded.check(path)                           # (an ordinary song: as the worker finds first)
     window._gain_tags[path] = GainTags(-6.0, -7.0)
     window._peaks[path] = db(-1.0)
     window._level_wanted = {path}                         # (as if the worker had been asked)
@@ -382,7 +383,8 @@ def test_the_worker_reads_tags_and_measures_only_what_it_must(monkeypatch, tmp_p
     monkeypatch.setattr(levelling, "measure", measure)
     monkeypatch.setattr(levelling, "read_tags", lambda path: GainTags(-3.0) if path.name == "tagged.flac" else None)
     w = SimpleNamespace(_peaks={}, _gain_tags={}, _lufs={}, _peak_jobs=queue.Queue(), _peak_wanted=set(),
-                        _level_wanted={Path("tagged.flac"), Path("bare.flac")}, _stored_peak=lambda path: None)
+                        _level_wanted={Path("tagged.flac"), Path("bare.flac")}, _stored_peak=lambda path: None,
+                        _encoded=passthrough.Detector())
     w._measure_for_levelling = PlayerWindow._measure_for_levelling.__get__(w)
     for name in ("skipped.flac", "tagged.flac", "bare.flac"):
         w._peak_jobs.put(("level", Path(name)))
@@ -410,6 +412,7 @@ def settled(window, path, forget_peak=True):
     window._lufs.pop(path, None)
     window._level_set_with.clear()
     window.player.set_levelling(None)
+    window._encoded.check(path)                            # (an ordinary song, as the worker found)
     window._level_wanted = {path}                          # (as if the worker had been asked)
 
 
