@@ -228,6 +228,7 @@ def _no_real_recycle_bin(monkeypatch):
 
     monkeypatch.setattr(recycle, "_shell_delete", delete)
     monkeypatch.setattr(recycle, "_to_mac_bin", delete)
+    monkeypatch.setattr(recycle, "_to_trash", delete)
 
 
 @pytest.fixture
