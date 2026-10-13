@@ -4054,10 +4054,19 @@ class PlayerWindow:
             widget = self.root.winfo_containing(x_root, y_root)
         except (KeyError, tk.TclError):
             widget = None
+        if widget is None and self._inside_window(x_root, y_root):
+            # On X11 the program the drag comes from (Nemo, Nautilus) draws what's dragged as a
+            # window of its own, right under the pointer, so Tk finds none of ours there. The drop
+            # events come to this window alone: a point inside it is over it.
+            widget = self.root
         if widget is None or widget.winfo_toplevel() is not self.root:
             return None
         index = self.bar.tab_at(x_root, y_root) if not self.mini_mode else None
         return ("tab", index) if index is not None else ("window", None)
+
+    def _inside_window(self, x_root: int, y_root: int) -> bool:
+        x, y = x_root - self.root.winfo_rootx(), y_root - self.root.winfo_rooty()
+        return 0 <= x < self.root.winfo_width() and 0 <= y < self.root.winfo_height()
 
     def _show_drop_target(self, target, what: str = ""):
         """Light up where a drag would land: a tab gets an outline, the window a green edge.
