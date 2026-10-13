@@ -419,6 +419,7 @@ def test_mini_strip_is_on_top_by_default_and_the_full_window_keeps_its_own(make_
     window, root, _player, errors = make_window()                  # full window: Keep on top off
     assert not bool(root.attributes("-topmost"))
     window.toggle_mini()
+    _pump(root, 0.3)   # (X11 says so once the window manager has applied it, a moment later)
     assert bool(root.attributes("-topmost")) and window.on_top.get()   # the strip: on at first
     window.on_top.set(False)
     window._toggle_on_top()
@@ -426,6 +427,7 @@ def test_mini_strip_is_on_top_by_default_and_the_full_window_keeps_its_own(make_
     window.on_top.set(True)
     window._toggle_on_top()
     window.toggle_mini()                                           # back to full: off again
+    _pump(root, 0.3)
     assert not bool(root.attributes("-topmost")) and not window.on_top.get()
     assert window.prefs["mini_on_top"] is True and window.prefs["always_on_top"] is False
     window._save_if_changed()
