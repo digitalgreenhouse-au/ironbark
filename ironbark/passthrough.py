@@ -11,9 +11,11 @@ leave these tracks alone: the engine plays them at their own level whatever eith
 A DTS stream looks like noise at or near full scale, which is just what the clipping guard turns
 down and levelling turns down hardest; an HDCD master can have inter-sample peaks like any other.
 
-How it's found: the first SCAN_SECONDS of a 16-bit PCM file (formats.DtsScanner, which needs a few
-frames' sync words; formats.HdcdScanner, which needs a packet on every channel within two
-seconds). Both are found throughout such a track, so its first stretch is enough.
+How it's found: the library check's stored flags when it has read the whole file (Detector's
+`flags_of`); else the first SCAN_SECONDS of a 16-bit PCM file (formats.DtsScanner, which needs a
+few frames' sync words; formats.HdcdScanner, which needs a packet on every channel within two
+seconds). Both are found throughout such a track, so its first stretch is enough — unless its
+codes only start after a long silent opening, which the library check still catches.
 """
 
 from __future__ import annotations
@@ -60,15 +62,16 @@ def detect(path, cancel=None) -> str | None:
 
 
 class Detector:
-    """What each file is, found once (on a worker thread) and remembered for the window's thread.
-    A file not looked at yet is "not known": the clipping guard and levelling wait for it, as they
-    wait for its true peak."""
+    """What each file is, found once (on a worker thread) and remembered for the window's thread
+    for the session — like the window's true peaks, never forgotten: the guard waits for both, and
+    a file whose kind was forgotten while its peak was kept would never be guarded again.
+    A file not looked at yet is "not known": the clipping guard and levelling wait for it.
+    `flags_of(path)`: the library check's stored formats.FormatFlags for a file, or None."""
 
-    KEPT = 256   # files remembered (the newest kept)
-
-    def __init__(self):
+    def __init__(self, flags_of=None):
         self._kinds: dict = {}
         self._lock = threading.Lock()
+        self._flags_of = flags_of
 
     def known(self, path) -> bool:
         return path in self._kinds
@@ -85,7 +88,9 @@ class Detector:
         if path in self._kinds:
             return self._kinds[path]
         try:
-            found = detect(path, cancel)
+            found = _from_flags(self._stored_flags(path))
+            if not found:
+                found = detect(path, cancel)
         except audiofile.NotCached:
             raise
         except (OSError, RuntimeError, ValueError):
@@ -97,12 +102,30 @@ class Detector:
         if found is None:
             return None
         with self._lock:
-            kinds = {p: k for p, k in self._kinds.items() if p != path}
-            kinds[path] = found
-            while len(kinds) > self.KEPT:
-                kinds.pop(next(iter(kinds)))
-            self._kinds = kinds   # replaced whole: the window's thread reads it without the lock
+            self._kinds = {**self._kinds, path: found}   # replaced whole: read without the lock
         return found
+
+
+    def _stored_flags(self, path):
+        """The library check's flags for a file, or None (none stored, or they can't be read now)."""
+        if self._flags_of is None:
+            return None
+        try:
+            return self._flags_of(path)
+        except Exception:
+            log.info("couldn't read the stored check of %s", path, exc_info=True)
+            return None
+
+
+def _from_flags(flags) -> str:
+    """DTS or HDCD from a whole-file check's flags; "" when they say neither or there are none."""
+    if flags is None:
+        return ""
+    if flags.dts is not None and flags.dts.detected:
+        return DTS
+    if flags.hdcd is not None and flags.hdcd.detected:
+        return HDCD
+    return ""
 
 
 def note(kind: str) -> str:

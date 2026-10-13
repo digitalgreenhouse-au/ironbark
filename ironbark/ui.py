@@ -620,7 +620,8 @@ class PlayerWindow:
         self._guard_for: Path | None = None
         # Encoded streams (DTS music CDs, HDCD) that any change of level would break: found on the
         # same worker before the true peak, and left alone by the guard and levelling (passthrough.py).
-        self._encoded = passthrough.Detector()
+        self._encoded = passthrough.Detector(
+            lambda path: getattr((self._stored_check(path) or (None,))[0], "flags", None))
         # Volume levelling (off by default): ReplayGain tags, else the measured loudness, worked out
         # on the same worker (tags read, loudness and true peak measured in one pass); an album's own
         # loudness on a worker of its own. Kept in memory for the session.
@@ -2059,10 +2060,14 @@ class PlayerWindow:
                 continue
             unwanted = _Unwanted(lambda path=path: path not in self._peak_wanted)
             try:   # (first: the guard never acts before it knows the file isn't an encoded stream)
-                if self._encoded.check(path, unwanted.is_set) is None:
-                    continue   # skipped past meanwhile
+                kind = self._encoded.check(path, unwanted.is_set)
             except audiofile.NotCached as error:
                 self._again_later(path, error, unwanted)
+                continue
+            if kind is None:
+                continue   # skipped past meanwhile
+            if kind:   # (an encoded stream gets no gain at all: its peak isn't needed, so not measured)
+                self._peaks[path] = 0.0
                 continue
             stored = self._stored_peak(path)
             if stored is not None:   # (the library check read it already: known at once)
@@ -2095,10 +2100,16 @@ class PlayerWindow:
             return   # skipped past meanwhile
         try:
             try:   # (first: levelling waits for it, see _apply_levelling)
-                if self._encoded.check(path, lambda: path not in self._level_wanted) is None:
-                    return   # skipped past meanwhile
+                kind = self._encoded.check(path, lambda: path not in self._level_wanted)
             except audiofile.NotCached as error:
                 self._again_later(("level", path), error, _Unwanted(lambda: path not in self._level_wanted))
+                return
+            if kind is None:
+                return   # skipped past meanwhile
+            if kind:   # (never levelled: nothing to read or measure)
+                self._gain_tags.setdefault(path, None)
+                self._lufs.setdefault(path, None)
+                self._peaks.setdefault(path, 0.0)
                 return
             if path not in self._gain_tags:
                 self._gain_tags[path] = levelling.read_tags(path)

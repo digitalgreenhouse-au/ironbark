@@ -13,6 +13,7 @@ from .engine import OutputInfo
 from .library import format_rate
 
 MIXER = "Windows" if platforms.IS_WINDOWS else "system"
+NO_DEVICE_VOLUME = "no device volume: use the player or headphone volume"
 
 
 def levelling_text(level, trim: float = 1.0) -> str:
@@ -38,6 +39,7 @@ def output_line(output: OutputInfo | None, gain: float, float_source: bool = Fal
     if not encoded or output is None:
         return text, tone
     if output.exclusive and gain >= 1.0 and not fading and not float_source and not fewer_bits(output, bits):
+        text = text.replace(NO_DEVICE_VOLUME, "no device volume: keep the player at 100%, use the amplifier's")
         return f"{text} · {passthrough.note(encoded)}", tone
     breaks = "the receiver gets noise" if encoded == passthrough.DTS else "the decoder loses its codes"
     needs = "exclusive mode" if not output.exclusive else "volume at 100%" if gain < 1.0 else "the samples exactly"
@@ -91,7 +93,7 @@ def _output_line(output: OutputInfo | None, gain: float, float_source: bool = Fa
         if output.amp_volume and not output.hardware_volume:
             return f"{base} · bit-perfect ✓ · volume on your amplifier", "good"
         if output.hardware_volume is False:
-            return f"{base} · bit-perfect ✓ · no device volume: use the player or headphone volume", "warn"
+            return f"{base} · bit-perfect ✓ · {NO_DEVICE_VOLUME}", "warn"
         if output.hardware_volume:
             return f"{base} · bit-perfect ✓ · volume by device ✓", "good"
         return f"{base} · bit-perfect ✓", "good"

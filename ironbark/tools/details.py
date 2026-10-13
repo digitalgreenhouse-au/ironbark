@@ -331,7 +331,11 @@ def describe_flags(flags: FormatFlags, rate: int = 0) -> list[tuple[str, str]]:
                                      "boosted at mastering, to be cut again on playback (de-emphasis). "
                                      "This player doesn't de-emphasise, so it sounds brighter than intended"))
     if not rows:
-        rows.append(("Format flags", "✓ None: no HDCD, DTS, MQA or pre-emphasis"))
+        if flags.dts is None and flags.hdcd is not None:   # (16-bit, checked before DTS was looked for)
+            rows.append(("Format flags", "✓ None: no HDCD, MQA or pre-emphasis (not checked for DTS: "
+                                         "examine it again)"))
+        else:
+            rows.append(("Format flags", "✓ None: no HDCD, DTS, MQA or pre-emphasis"))
     return rows
 
 

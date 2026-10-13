@@ -248,7 +248,7 @@ def test_the_guard_waits_until_it_knows_the_file_is_not_encoded(tmp_path):
     player = Player()
     player.set_tracks([Track(path, "hdcd")])
     w = fake_window(player)
-    w._peaks[path] = 1.4                       # (a true peak known — from the library check, say)
+    w._peaks[path] = 1.4                       # (a true peak in before the look — never, from the worker)
     PlayerWindow._apply_guard(w, player.tracks[0], 0)
     assert player.guard_for(path) == 1.0       # not turned down before the look
     w._encoded.check(path)
@@ -270,3 +270,64 @@ def test_levelling_leaves_an_encoded_stream_alone(tmp_path):
     PlayerWindow._apply_levelling(w, player.tracks[0], status)
     assert player.levelling_for(cd) is None and player.encoded_for(cd) == "DTS" and player.trim_for(cd) == 1.0
     assert player.levelling_for(plain) is not None and player.levelling_for(plain).db != 0.0
+
+
+# -- from the code review ----------------------------------------------------------------------------
+def test_the_detector_never_forgets_so_the_guard_never_loses_a_song(tmp_path):
+    # The window keeps every true peak for the session; a kind forgotten while its peak was kept
+    # would leave that song unguarded for good (it's never looked at again).
+    detector = passthrough.Detector()
+    first = tmp_path / "missing 0.flac"
+    for n in range(300):
+        detector.check(tmp_path / f"missing {n}.flac")
+    assert detector.known(first)
+
+
+def test_the_library_checks_whole_file_flags_count_first(tmp_path):
+    from ironbark.formats import FormatFlags, HdcdResult
+    gone = tmp_path / "gone.flac"                     # (not read at all: the stored flags say)
+    detector = passthrough.Detector(lambda path: FormatFlags(hdcd=HdcdResult(detected=True)))
+    assert detector.check(gone) == passthrough.HDCD
+
+    def broken(path):
+        raise OSError("database busy")
+    path = flac16(tmp_path / "dts-cd.flac", dts_stream())
+    assert passthrough.Detector(broken).check(path) == passthrough.DTS                  # (read instead)
+    assert passthrough.Detector(lambda path: FormatFlags(hdcd=HdcdResult())).check(path) == passthrough.DTS
+
+
+def test_an_encoded_streams_peak_and_loudness_are_not_measured(tmp_path, monkeypatch):
+    from ironbark import analysis
+    measured = []
+    monkeypatch.setattr(analysis, "true_peak", lambda path, cancel=None: measured.append(path) or 1.0)
+    monkeypatch.setattr(levelling, "measure", lambda path, **kw: measured.append(path) or (1.0, -10.0))
+    cd = flac16(tmp_path / "dts-cd.flac", dts_stream())
+    player = Player()
+    player.set_tracks([Track(cd, "cd")])
+    w = fake_window(player)
+    w._peak_wanted, w._level_wanted = {cd}, {cd}
+    w._peak_jobs.put(cd)
+    w._peak_jobs.put(("level", cd))
+    run_worker(w, lambda: cd in w._peaks and cd in w._lufs)
+    assert measured == [] and w._encoded.kind(cd) == "DTS"
+
+
+def test_a_burst_of_sync_like_words_does_not_hide_a_dts_stream_after_it():
+    junk = np.tile(np.array([[0x7FFE, 0x8001 - 0x10000]], dtype=np.int16), (RATE // 2, 1))
+    scanner = DtsScanner()
+    for block in as_blocks(np.concatenate([junk, dts_stream(2, "16-bit")])):
+        scanner.add(block)
+    assert scanner.result().detected and scanner.result().frame_words == 2 * FRAME
+
+
+def test_a_check_from_before_dts_was_looked_for_does_not_claim_no_dts():
+    from ironbark.formats import FormatFlags, HdcdResult
+    old = dict(describe_flags(FormatFlags(hdcd=HdcdResult(), dts=None)))
+    assert "not checked for DTS" in old["Format flags"] and "no HDCD, MQA" in old["Format flags"]
+
+
+def test_no_device_volume_tells_a_dts_listener_to_keep_the_player_at_100():
+    out = OutputInfo("DAC", 44100, 44100, True, False, 16)
+    text = output_line(out, 1.0, bits=16, encoded="DTS")[0]
+    assert "keep the player at 100%" in text and "use the player or headphone volume" not in text
+    assert "use the player or headphone volume" in output_line(out, 1.0, bits=16)[0]   # (others: as before)

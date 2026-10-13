@@ -195,7 +195,7 @@ DTS_SYNCS = (
 DTS_MIN_FRAMES = 8         # sync words found before it counts as a DTS stream
 DTS_STEADY = 0.75          # the share of gaps between them that must be the same (a frame's length)
 DTS_MIN_GAP = 48           # words: the smallest DTS frame is 96 bytes (frame size field, 95 + 1)
-_DTS_KEPT = 64             # sync positions kept per pattern: plenty to judge by
+_DTS_KEPT = 64             # sync positions kept per pattern (the latest): plenty to judge by
 
 
 @dataclass
@@ -232,11 +232,12 @@ class DtsScanner:
             for i in range(1, len(sync)):
                 match &= (buf[i:i + span] & mask[i]) == sync[i]
             found = self.hits.setdefault(k, [])
-            for at in np.flatnonzero(match):
-                if len(found) >= _DTS_KEPT:
-                    break
-                if not found or start + int(at) > found[-1]:   # (one found in the tail last time: once)
-                    found.append(start + int(at))
+            at = np.flatnonzero(match) + start
+            if found:
+                at = at[at > found[-1]]                      # (one found in the tail last time: once)
+            found.extend(at[-_DTS_KEPT:].tolist())
+            del found[:-_DTS_KEPT]                           # (the latest kept: an early burst of
+                                                             # sync-like words can't crowd out a stream)
         self.tail = buf[-2:]
         self.done += len(words)
         self.detected = self._best()[1] >= DTS_MIN_FRAMES
