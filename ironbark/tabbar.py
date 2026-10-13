@@ -564,8 +564,13 @@ class TabBar(tk.Frame):
                 self._pictures.pop(item, None)
             self._shown.pop()
         if made:
-            for layer in self.LAYERS:
-                c.tag_raise(layer)
+            self._restack()
+
+    def _restack(self):
+        """Every item in its layer's place (LAYERS, bottom first): an item made later would
+        otherwise sit on top of all the others."""
+        for layer in self.LAYERS:
+            self.canvas.tag_raise(layer)
 
     def _layout(self):
         n = len(self._titles)
@@ -696,8 +701,10 @@ class TabBar(tk.Frame):
     def _tint_plates(self):
         """A plate (three canvas items) per tinted tab, made as needed."""
         wanted = sorted(self._tinted)
-        while len(self._tints) < len(wanted):
-            self._tints.append(self._three_slice("plate", 1))
+        if len(self._tints) < len(wanted):
+            while len(self._tints) < len(wanted):
+                self._tints.append(self._three_slice("plate", 1))
+            self._restack()   # (under the names: made after them, a plate would hide its tab's name)
         for plate in self._tints[len(wanted):]:
             self._hide(*plate)
         return list(zip(wanted, self._tints))
