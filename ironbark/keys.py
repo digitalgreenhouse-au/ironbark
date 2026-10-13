@@ -188,7 +188,9 @@ _SHOWN = {"Left": "←", "Right": "→", "Up": "↑", "Down": "↓"}
 # Keysyms that name the same key another way.
 _KEYSYMS = {"ISO_Left_Tab": "tab", "KP_Enter": "return", "KP_Prior": "prior", "KP_Next": "next",
             "KP_Up": "up", "KP_Down": "down", "KP_Left": "left", "KP_Right": "right", "KP_Home": "home",
-            "KP_End": "end", "KP_Delete": "delete"}
+            "KP_End": "end", "KP_Delete": "delete",
+            # Tk 9 names punctuation by its character ("/"), where Tk 8.6 gave X11's name ("slash").
+            "/": "slash", "?": "question", ",": "comma", ".": "period"}
 _MODIFIERS = {"ctrl": "Ctrl", "shift": "Shift", "alt": "Alt"}
 _TK_MODIFIERS = {"Ctrl": "Control", "Shift": "Shift", "Alt": "Alt"}
 
