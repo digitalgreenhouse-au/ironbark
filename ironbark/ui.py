@@ -115,6 +115,7 @@ from . import (
     loudness,
     mediakeys,
     offthread,
+    passthrough,
     placement,
     places,
     platforms,
@@ -617,6 +618,9 @@ class PlayerWindow:
         self._peak_jobs: queue.Queue = queue.Queue()
         self._peak_wanted: set[Path] = set()
         self._guard_for: Path | None = None
+        # Encoded streams (DTS music CDs, HDCD) that any change of level would break: found on the
+        # same worker before the true peak, and left alone by the guard and levelling (passthrough.py).
+        self._encoded = passthrough.Detector()
         # Volume levelling (off by default): ReplayGain tags, else the measured loudness, worked out
         # on the same worker (tags read, loudness and true peak measured in one pass); an album's own
         # loudness on a worker of its own. Kept in memory for the session.
@@ -2053,11 +2057,17 @@ class PlayerWindow:
                 continue
             if path in self._peaks or path not in self._peak_wanted:
                 continue
+            unwanted = _Unwanted(lambda path=path: path not in self._peak_wanted)
+            try:   # (first: the guard never acts before it knows the file isn't an encoded stream)
+                if self._encoded.check(path, unwanted.is_set) is None:
+                    continue   # skipped past meanwhile
+            except audiofile.NotCached as error:
+                self._again_later(path, error, unwanted)
+                continue
             stored = self._stored_peak(path)
             if stored is not None:   # (the library check read it already: known at once)
                 self._peaks[path] = stored
                 continue
-            unwanted = _Unwanted(lambda path=path: path not in self._peak_wanted)
             try:
                 peak = analysis.true_peak(path, unwanted)
             except audiofile.NotCached as error:   # (a network song not downloaded yet: nothing recorded)
@@ -2084,6 +2094,12 @@ class PlayerWindow:
         if path not in self._level_wanted:
             return   # skipped past meanwhile
         try:
+            try:   # (first: levelling waits for it, see _apply_levelling)
+                if self._encoded.check(path, lambda: path not in self._level_wanted) is None:
+                    return   # skipped past meanwhile
+            except audiofile.NotCached as error:
+                self._again_later(("level", path), error, _Unwanted(lambda: path not in self._level_wanted))
+                return
             if path not in self._gain_tags:
                 self._gain_tags[path] = levelling.read_tags(path)
             tags = self._gain_tags[path]
@@ -2222,6 +2238,14 @@ class PlayerWindow:
                 self._peak_jobs.put(("level", path))   # (does nothing for what's already known)
         preamp = self._preamp_db()
         for path, queued in entries:
+            if not self._encoded.known(path):
+                continue   # (not known yet: worked out once it is, before its gain is)
+            if self._encoded.kind(path):   # a DTS or HDCD stream: never levelled (passthrough.py)
+                if self.player.encoded_for(path) != self._encoded.kind(path):
+                    self.player.set_encoded(path, self._encoded.kind(path))
+                if self.player.levelling_for(path) is not None:
+                    self.player.set_levelling(path, None)
+                continue
             mode = levelling.mode_for(setting, tab.kind if tab else None, self.player.shuffle, queued)
             choices = (setting, preamp, mode)
             current, set_with = self.player.levelling_for(path), self._level_set_with.get(path)
@@ -2293,7 +2317,13 @@ class PlayerWindow:
                     self._peak_jobs.put(path)
         for path in paths:
             peak = self._peaks.get(path)
-            if peak is None:
+            if peak is None or not self._encoded.known(path):
+                continue
+            if self._encoded.kind(path):   # a DTS or HDCD stream: never turned down (passthrough.py)
+                if self.player.encoded_for(path) != self._encoded.kind(path):
+                    self.player.set_encoded(path, self._encoded.kind(path))
+                if self.player.guard_for(path) != 1.0:
+                    self.player.set_trim(path, 1.0)
                 continue
             # (0.24.0) Measured at 8x; just under full scale (plus any headroom the DAC has), with
             # 0.17 dB spare — the most 8x can under-read (analysis.guard_trim).
@@ -4882,7 +4912,8 @@ class PlayerWindow:
             self._set_head(track.title, track.display_artist_album or track.path.parent.name,
                            track.format_line)
             text, tone = output_line(status.output, status.gain, track.float_samples, track.lossy, status.trim,
-                                     track.bits, track.codec, status.levelling, status.fading)
+                                     track.bits, track.codec, status.levelling, status.fading,
+                                     encoded=status.encoded)
             # The proof (see proof.py) backs up — or contradicts — what the line above claims.
             proof = status.proof
             copy = getattr(proof, "copy", "")   # (played from the network playback cache: its copy)

@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from ironbark import library_index, playlists, popups, settings, tag_editor, theme
+from ironbark import library_index, passthrough, playlists, popups, settings, tag_editor, theme
 from ironbark.library import Track, read_track
 from ironbark.library_check import Checker, Status
 
@@ -214,7 +214,8 @@ def test_the_clipping_guard_takes_a_stored_true_peak(tmp_path):
 
     measured = []
     w = SimpleNamespace(_peaks={}, _peak_jobs=queue.Queue(), _peak_wanted=set(), _gain_tags={}, _lufs={},
-                        _level_wanted=set(), _stored_peak=lambda path: 1.25 if path.name == "known.flac" else None)
+                        _level_wanted=set(), _stored_peak=lambda path: 1.25 if path.name == "known.flac" else None,
+                        _encoded=passthrough.Detector())
     w._measure_for_levelling = lambda path: PlayerWindow._measure_for_levelling(w, path)
     known, unknown = tmp_path / "known.flac", tmp_path / "other.flac"
     flac(known, noise(1, amp=0.5))

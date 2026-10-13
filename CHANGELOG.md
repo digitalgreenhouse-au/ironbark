@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.49.0 — 14/10/2026
+
+- **DTS music CDs and HDCD discs stay bit-perfect.** Both carry something hidden in their samples —
+  a DTS surround stream for a receiver to decode, or HDCD's control codes in the lowest bit — that any
+  change of level destroys (a DTS receiver then plays loud noise). The clipping guard and volume
+  levelling used to turn such tracks down like any other: a DTS stream looks like noise near full
+  scale, and an HDCD master can peak above full scale between samples. Ironbark now recognises both
+  from the first seconds of each track and plays them at their own level; the line under the format
+  says "clipping guard and levelling kept off", or, in amber, that the stream needs exclusive mode or
+  the volume at 100%.
+- **Check** reports a DTS stream (and whether it is a DTS music CD's 14-bit packing) next to HDCD,
+  MQA and pre-emphasis.
+
 ## 0.48.0 — 13/10/2026
 
 - **Ironbark for the web** (`web/`): Ironbark in a web browser, for the music on your own computer.

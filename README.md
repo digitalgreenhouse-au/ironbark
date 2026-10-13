@@ -153,7 +153,8 @@ step: see [web/README.md](web/README.md). To try it: `python -m http.server 8000
   the sound — hover it to see what.
 - **Clipping guard:** many loud masters peak *between* samples above full scale, which can crackle in
   a converter. Ironbark measures each track's true peak ahead of time and turns down only the
-  tracks that need it, by just enough. Everything else stays bit-perfect.
+  tracks that need it, by just enough. Everything else stays bit-perfect, and so do DTS music CDs
+  and HDCD discs, whatever their peaks: any change of level would break their encoding.
 
 ### Is this file genuine? (Now Playing → Check)
 

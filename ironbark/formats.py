@@ -22,6 +22,16 @@ HDCD (High Definition Compatible Digital, a 1990s Pacific Microsonics CD encodin
   FFmpeg only checks the window at certain points (a skip table, for speed); here every sample
   position is checked, which finds the same packets.
 
+DTS (Digital Theater Systems) music CDs
+  A DTS CD ("DTS 5.1 Music Disc") looks like an ordinary 16-bit 44.1 kHz CD, but its samples are a
+  DTS bitstream: played as PCM it is loud noise, and only a receiver given the samples exactly as
+  they are can decode it. Every DTS frame starts with a 32-bit sync word; the byte sequences are
+  from the MultimediaWiki DTS page and FFmpeg's `libavcodec/dca_syncwords.h` (checked 14/10/2026):
+  7F FE 80 01 / FE 7F 01 80 for the plain 16-bit stream, and 1F FF E8 00 07 Fx / FF 1F 00 E8 Fx 07
+  for the 14-bit packing DTS music CDs use (14 bits of data in each 16-bit word, the top two bits
+  copying the sign, which keeps it about 12 dB down if it is played as PCM by mistake). Here they are
+  matched as the 16-bit samples a stereo file reads as, left and right in turn.
+
 MQA (Master Quality Authenticated)
   MQA hides its data below the music's noise floor. Following the MQA_identifier tool
   (github.com/purpl3F0x/MQA_identifier, `mqa_identifier.h`, read 04/10/2026): stereo 16- or
@@ -171,6 +181,83 @@ class HdcdScanner:
         return HdcdResult(detected=self.detected, packets=packets, packet_type=kind, peak_extend=pe,
                           max_gain_db=hdcd_gain_db(self.max_gain), transient_filter=bool(self.transient),
                           errors=self.errors)
+
+
+# -- DTS ----------------------------------------------------------------------------
+# Each pattern: the 16-bit words a DTS frame starts with, as a stereo 16-bit file's samples read
+# (left, right, left, …), and a mask per word. "14-bit" is what DTS music CDs carry.
+DTS_SYNCS = (
+    ("14-bit", (0x1FFF, 0xE800, 0x07F0), (0xFFFF, 0xFFFF, 0xFFF0)),   # bytes FF 1F 00 E8 Fx 07
+    ("14-bit", (0xFF1F, 0x00E8, 0xF007), (0xFFFF, 0xFFFF, 0xF0FF)),   # bytes 1F FF E8 00 07 Fx
+    ("16-bit", (0x7FFE, 0x8001), (0xFFFF, 0xFFFF)),                   # bytes FE 7F 01 80
+    ("16-bit", (0xFE7F, 0x0180), (0xFFFF, 0xFFFF)),                   # bytes 7F FE 80 01
+)
+DTS_MIN_FRAMES = 8         # sync words found before it counts as a DTS stream
+DTS_STEADY = 0.75          # the share of gaps between them that must be the same (a frame's length)
+DTS_MIN_GAP = 48           # words: the smallest DTS frame is 96 bytes (frame size field, 95 + 1)
+_DTS_KEPT = 64             # sync positions kept per pattern: plenty to judge by
+
+
+@dataclass
+class DtsResult:
+    detected: bool = False
+    packing: str = ""      # "14-bit" (DTS music CDs: about 12 dB quieter as PCM) or "16-bit"
+    frames: int = 0        # sync words found
+    frame_words: int = 0   # 16-bit words from one frame to the next (both channels counted)
+
+
+class DtsScanner:
+    """Looks for a DTS bitstream in a stereo 16-bit file fed in blocks of left-justified int32
+    samples (the analysis pass's blocks). It counts once the same sync word turns up at least
+    DTS_MIN_FRAMES times, mostly a fixed distance apart, as a stream of fixed-size frames does;
+    music doesn't. Every frame starts with a sync word, so a few seconds is enough."""
+
+    def __init__(self):
+        self.tail = np.zeros(0, dtype=np.uint16)   # the last words of the block before
+        self.done = 0                              # words fed so far
+        self.hits: dict[int, list[int]] = {}       # pattern index -> where its syncs start
+        self.detected = False
+
+    def add(self, block: np.ndarray) -> None:
+        if not len(block) or self.detected:
+            return
+        words = (block.view(np.uint32) >> np.uint32(16)).astype(np.uint16).reshape(-1)
+        buf = np.concatenate([self.tail, words])
+        start = self.done - len(self.tail)         # where buf begins in the whole stream
+        for k, (_, sync, mask) in enumerate(DTS_SYNCS):
+            span = len(buf) - len(sync) + 1
+            if span <= 0:
+                continue
+            match = (buf[:span] & mask[0]) == sync[0]
+            for i in range(1, len(sync)):
+                match &= (buf[i:i + span] & mask[i]) == sync[i]
+            found = self.hits.setdefault(k, [])
+            for at in np.flatnonzero(match):
+                if len(found) >= _DTS_KEPT:
+                    break
+                if not found or start + int(at) > found[-1]:   # (one found in the tail last time: once)
+                    found.append(start + int(at))
+        self.tail = buf[-2:]
+        self.done += len(words)
+        self.detected = self._best()[1] >= DTS_MIN_FRAMES
+
+    def _best(self) -> tuple[int, int, int]:
+        """(pattern index, syncs found, the commonest gap between them) of the likeliest pattern."""
+        best = (-1, 0, 0)
+        for k, found in self.hits.items():
+            if len(found) < 2:
+                continue
+            values, counts = np.unique(np.diff(found), return_counts=True)
+            gap = int(values[counts.argmax()])
+            if counts.max() >= DTS_STEADY * (len(found) - 1) and gap >= DTS_MIN_GAP and len(found) > best[1]:
+                best = (k, len(found), gap)
+        return best
+
+    def result(self) -> DtsResult:
+        k, frames, gap = self._best()
+        if frames < DTS_MIN_FRAMES:
+            return DtsResult(frames=max((len(f) for f in self.hits.values()), default=0))
+        return DtsResult(detected=True, packing=DTS_SYNCS[k][0], frames=frames, frame_words=gap)
 
 
 # -- MQA ----------------------------------------------------------------------------
@@ -359,12 +446,14 @@ def _tracks(numbers: list[int]) -> str:
 @dataclass
 class FormatFlags:
     hdcd: HdcdResult | None = None        # None = not checked (only 16-bit files can carry it)
+    dts: DtsResult | None = None          # None = not checked (stereo 16-bit only)
     mqa: MqaResult | None = None          # None = not checked (stereo 16/24-bit only)
     pre_emphasis: PreEmphasis = field(default_factory=PreEmphasis)
 
     @property
     def any(self) -> bool:
-        return bool((self.hdcd and self.hdcd.detected) or (self.mqa and (self.mqa.detected or self.mqa.encoder))
+        return bool((self.hdcd and self.hdcd.detected) or (self.dts and self.dts.detected)
+                    or (self.mqa and (self.mqa.detected or self.mqa.encoder))
                     or self.pre_emphasis.flagged)
 
 
@@ -376,17 +465,21 @@ class FormatScan:
                  float_samples: bool = False):
         pcm = not lossy and not float_samples
         self.hdcd = HdcdScanner(channels, rate) if pcm and bits == 16 and channels <= 2 else None
+        self.dts = DtsScanner() if pcm and bits == 16 and channels == 2 else None
         self.mqa = MqaScanner(rate, channels, bits if pcm else None)
 
     def add(self, block: np.ndarray) -> None:
         if self.hdcd is not None:
             self.hdcd.add(block)
+        if self.dts is not None:
+            self.dts.add(block)
         self.mqa.add(block)
 
     def finish(self, path: str | Path) -> FormatFlags:
         tags, track_no = _tag_values(Path(path))
         encoder = (tags.get("MQAENCODER") or [""])[0].strip()
         return FormatFlags(hdcd=self.hdcd.result() if self.hdcd is not None else None,
+                           dts=self.dts.result() if self.dts is not None else None,
                            mqa=self.mqa.result(encoder),
                            pre_emphasis=pre_emphasis(path, tags, track_no))
 
