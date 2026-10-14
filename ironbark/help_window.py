@@ -368,8 +368,8 @@ class HelpWindow:
 
     def _rewrap(self, event):
         width = max(theme.px(160), event.width - 2 * theme.px(theme.GAP_WIDE))
-        self.note.configure(wraplength=width)
-        self.full.configure(wraplength=width)
+        theme.wrap_inside(self.note, width)
+        theme.wrap_inside(self.full, width)
 
     def _moved(self, event):
         if event.widget is self.win:
@@ -507,8 +507,8 @@ class AboutWindow:
         width = max(theme.px(160), event.width - 2 * theme.px(theme.GAP_WIDE))
         if width != self._wrap_width:
             self._wrap_width = width
-            for label in self.wrapped:
-                label.configure(wraplength=width)
+            for label in self.wrapped:   # (inside the page's width: see theme.wrap_inside)
+                theme.wrap_inside(label, width)
         self._fit_text_later()
 
     def _fit_text_later(self):

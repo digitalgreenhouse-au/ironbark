@@ -199,6 +199,7 @@ FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the m
 # made full screen; its height is free.
 FULL_MAX_WIDTH = 560        # px at 100%: the full window's widest
 NO_LIMIT = 32000            # px: a size Tk is told not to cap (taller than any screen)
+_STOP_WORKER = object()     # put on a background worker's queue: that worker ends
 DROP_GAP = 4               # px at 100%: a pop-over from the strip opens this far below it
 HEAD_ICON_SLOT = 24        # px at 100%: the lock's and ⓘ's slots (and round hover discs) beside the format line
 INFO_INK_INSET = 6         # px at 100%: the ⓘ glyph's ink stops this far inside its slot (measured from Segoe
@@ -2053,6 +2054,8 @@ class PlayerWindow:
 
         while True:
             path = self._peak_jobs.get()
+            if path is _STOP_WORKER:
+                return
             if isinstance(path, tuple):   # ("level", path): volume levelling's tags, loudness and peak
                 self._measure_for_levelling(path[1])
                 continue
@@ -2148,7 +2151,10 @@ class PlayerWindow:
         """Background worker: an album's loudness, all its tracks as one programme (for Album
         levelling when its tags have no album gain). Given up when another album is wanted."""
         while True:
-            folder, track_path = self._album_jobs.get()
+            job = self._album_jobs.get()
+            if job is _STOP_WORKER:
+                return
+            folder, track_path = job
             if folder in self._album_lufs or folder != self._album_wanted:
                 continue
             cancel = self._album_cancel
@@ -5143,10 +5149,16 @@ class PlayerWindow:
             log.warning("closing: a favourite change wasn't stored in time")
 
     def _stop_timers(self):
+        """The timers, and the background workers: off-thread reads, and the true-peak and
+        album-loudness threads, which end after the job in hand (an album's loudness is cancelled) —
+        so a window closed while the process goes on (each test's) leaves no threads behind."""
         self.work.close()
         for job in (self._poll_job, self._media_job, self._art_job):
             if job is not None:
                 self.root.after_cancel(job)
+        self._album_cancel.set()
+        self._peak_jobs.put(_STOP_WORKER)
+        self._album_jobs.put(_STOP_WORKER)
 
     def _last_tag_tries(self):
         """The player has let go of its files: a last quick try for the songs still waiting (a save

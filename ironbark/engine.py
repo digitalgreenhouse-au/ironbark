@@ -977,7 +977,10 @@ class Player:
             return status
 
     def close(self):
+        """Stop playing for good: the player's control thread ends too (after close, nothing more
+        is played)."""
         self.stop()
+        self._ended_events.put(("quit", None))
 
     def monitor(self) -> queue.Queue:
         """A live feed of every block sent to the device (see _Session._feed_monitors), until
@@ -1355,6 +1358,8 @@ class Player:
                 kind, session, *details = self._ended_events.get(timeout=WATCH_SECONDS)
             except queue.Empty:
                 kind, session, details = "watch", None, []
+            if kind == "quit":   # (close)
+                return
             try:
                 with self._lock:
                     if kind == "ready":   # a song waiting for the network may start (no session yet)

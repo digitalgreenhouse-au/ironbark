@@ -628,7 +628,7 @@ class LibraryView:
         self.check_other = controls.FlatButton(bottom, "Pause", self._pause_check)
         self.status = ttk.Label(bottom, text="", style="Muted.TLabel", anchor="w", justify="left")
         self.status.pack(side="left", fill="x", expand=True)
-        self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(1, e.width)), add="+")
+        self.status.bind("<Configure>", lambda e: theme.wrap_inside(self.status, e.width), add="+")
 
         frame.bind("<Destroy>", self._destroyed, add="+")
         self._load()

@@ -1072,10 +1072,11 @@ class SettingRow(tk.Frame):
             w.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self.toggle.toggle())
 
     def _column_changed(self, event):
-        """The text column changed width: the description wraps at its new edge. (The width comes from
-        the panel, never from the text, so a new wrap can't change it again.)"""
-        if event.width > 1 and int(self.about.cget("wraplength")) != event.width:
-            self.about.configure(wraplength=event.width)
+        """The text column changed width: the description wraps inside its new edge. (Until Settings
+        is shown, the column's width comes from the text itself: theme.wrap_inside keeps the label
+        from asking for more than it has, so the two settle.)"""
+        if event.width > 1:
+            theme.wrap_inside(self.about, event.width)
 
 
 DISABLED_FADE = 0.45   # (0.21.0) a greyed-out menu item: its text this far from MUTED toward the background

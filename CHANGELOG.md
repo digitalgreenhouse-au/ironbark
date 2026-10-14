@@ -4,6 +4,18 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.49.3 — 15/10/2026
+
+- **Fixed: Ironbark could freeze on a small screen** (seen with 1024 × 768). Settings is laid out
+  while it's still hidden, and the descriptions under its switches could keep rewrapping against the
+  page's width without ever settling; the window then stopped responding. A wrapped description now
+  never asks for more room than it has, so the layout always settles. The About and Keyboard
+  shortcuts pages and the Library's status line follow the same rule.
+- Closing the player now also stops its background helper threads (they used to wait until the
+  program ended).
+- **Windows installer:** the tick boxes on the "Select Additional Tasks" page are no longer cut off
+  on the left.
+
 ## 0.49.2 — 14/10/2026
 
 - **A Linux download.** `Ironbark-0.49.2-linux-x86_64.tar.gz`: unpack it and run `Ironbark/Ironbark`

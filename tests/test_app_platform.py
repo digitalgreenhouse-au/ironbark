@@ -381,6 +381,20 @@ def test_the_player_stops_listening_as_soon_as_it_starts_closing(make_window):
     assert opened == [] and errors == []
 
 
+def test_closing_the_player_ends_its_background_threads(make_window):
+    window, root, player, errors = make_window()
+
+    def threads():   # the window's workers (true peak, album loudness) and the player's control thread
+        return [t for t in threading.enumerate()
+                if getattr(getattr(t, "_target", None), "__self__", None) in (window, player)]
+
+    assert len(threads()) == 3
+    window.quit()
+    for thread in threads():
+        thread.join(5)
+    assert threads() == [] and errors == []
+
+
 def test_the_window_is_told_how_to_stop_listening(monkeypatch):
     made = []
     monkeypatch.setattr(start, "_start_crash_log", lambda: None)
