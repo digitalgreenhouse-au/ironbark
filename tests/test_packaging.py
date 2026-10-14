@@ -89,6 +89,12 @@ def test_setup_doesnt_promise_to_reopen_a_player_windows_cant_reopen():
     assert registers or setup_value("RestartApplications") == "no"
 
 
+def test_the_tasks_pages_tick_boxes_have_room_before_them():
+    # With the modern wizard style the Tasks page's tick boxes sat flush with the list's edge and
+    # their left side was cut off; a little more offset, scaled for the display, shows them whole.
+    assert re.search(r"WizardForm\.TasksList\.Offset\s*:=\s*WizardForm\.TasksList\.Offset\s*\+\s*ScaleX\(\d+\)", ISS)
+
+
 # -- the packaged program's own PortAudio ---------------------------------------------------------
 def test_the_packaged_program_ignores_other_portaudio_copies_and_the_asio_switch(monkeypatch):
     import ctypes.util
