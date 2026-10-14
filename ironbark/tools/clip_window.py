@@ -28,6 +28,7 @@ import queue
 import threading
 import time
 import tkinter as tk
+import types
 from tkinter import ttk
 
 import numpy as np
@@ -137,6 +138,7 @@ class ClipWindow(toolwin.ToolWindow):
         self.scan_result: clipping.OverScan | None = None
         self._scan_progress = 0.0
         self._scan_failed = False
+        self._scan: Handback | None = None   # the reading's progress and result, filled in on its thread
         self._scan_cancel = threading.Event()
         self.chosen: clipping.Over | None = None
         self._strip_key = None
@@ -149,6 +151,7 @@ class ClipWindow(toolwin.ToolWindow):
         self.versions: clipping.Versions | None = None
         self._versions_for = None      # (path, over time) the versions were made for
         self._loading: threading.Thread | None = None
+        self._made: queue.Queue = queue.Queue()   # the thread puts what it made here (see Handback)
         self._loaded = None            # ((path, over time), Versions or why not), from the thread
         self._last: str | None = None
         self._message = ""
@@ -397,23 +400,34 @@ class ClipWindow(toolwin.ToolWindow):
         self._stop_audition()
         self.audition = self.versions = self._versions_for = None
         self._message = ""
+        self._scan = None
         if path is None:
             return
+        # The thread fills this in and _take_scan copies it across (it never holds the window: see Handback).
+        self._scan = job = Handback(progress=0.0, failed=False, result=None)
 
         def work():
             try:
-                result = clipping.scan(path, cancel, progress=lambda p: setattr(self, "_scan_progress", p))
+                result = clipping.scan(path, cancel, progress=lambda p: setattr(job, "progress", p))
             except (OSError, RuntimeError, ValueError):
                 result = None
-                self._scan_failed = not cancel.is_set()
+                job.failed = not cancel.is_set()
             except Exception:  # noqa: BLE001 — said in the window ("couldn't be read"), never "Reading…" for ever
                 log.exception("reading the whole song for overs")
                 result = None
-                self._scan_failed = not cancel.is_set()
+                job.failed = not cancel.is_set()
             if result is not None and not cancel.is_set():
-                self.scan_result = result
+                job.result = result
 
         threading.Thread(target=work, name="clip-scan", daemon=True).start()
+
+    def _take_scan(self):
+        """The whole-song reading's progress and result, from its thread."""
+        job = self._scan
+        if job is not None:
+            self._scan_progress, self._scan_failed = job.progress, job.failed
+            if self.scan_result is None and job.result is not None:
+                self.scan_result = job.result
 
     def _strip_geometry(self):
         w = self.strip.winfo_width()
@@ -583,6 +597,7 @@ class ClipWindow(toolwin.ToolWindow):
             return
         self._versions_for = want
         path = self.scan_path
+        made = self._made
 
         def work():
             try:
@@ -592,7 +607,7 @@ class ClipWindow(toolwin.ToolWindow):
             except Exception as exc:  # noqa: BLE001 — said in the window; another over can still be tried
                 log.exception("making the clipping A/B loop")
                 result = f"Couldn't make the loop: {exc}"
-            self._loaded = (want, result)
+            made.put((want, result))
 
         self._loading = threading.Thread(target=work, name="clip-versions", daemon=True)
         self._loading.start()
@@ -719,6 +734,7 @@ class ClipWindow(toolwin.ToolWindow):
         path = status.track.path if status.track is not None else None
         if path != self.scan_path:
             self._start_scan(path)
+        self._take_scan()
         if toolwin.on_screen(self.win):   # minimised: the overs are still found, nothing is drawn
             self._draw_live()
             readout = self._readouts()
@@ -727,6 +743,11 @@ class ClipWindow(toolwin.ToolWindow):
             self._draw_strip()
         self._build_listen()
         self._prepare_versions()     # (does nothing unless the experiment is on and the loop needs making)
+        if self._loaded is None:
+            try:
+                self._loaded = self._made.get_nowait()
+            except queue.Empty:
+                pass
         if self._loaded is not None:
             self._take_versions()
         if self.playing:
@@ -754,6 +775,14 @@ class ClipWindow(toolwin.ToolWindow):
         toolwin.give_back_sound(self)
         self.player.unmonitor(self.feed)
         self._live_photo = self._strip_photo = None   # its pictures go with the window, on this thread
+        self.zoom = None                              # and its Tk variable (the zoom row lets go of it too)
+
+
+class Handback(types.SimpleNamespace):
+    """What a worker thread hands back to the window, which takes it in on Tk's thread. The thread
+    holds this, never the window: a thread still at work after the window closed would otherwise be
+    the last to let go of it, and the window's Tk variable would be freed there, which fails
+    ("main thread is not in main loop")."""
 
 
 def clipping_float(source: np.ndarray) -> np.ndarray:

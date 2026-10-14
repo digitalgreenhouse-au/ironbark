@@ -4,6 +4,15 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.49.4 — 15/10/2026
+
+- **Fixed (behind the scenes): the Clipping window is now always cleaned up on the right thread.**
+  Its background work (reading the whole song, making the A/B loop) kept hold of the window, so if
+  that work finished after the window had closed, the window was freed on the background thread and
+  Tk printed "main thread is not in main loop". Nothing showed in the window, but Tk objects must
+  only ever be freed on Tk's own thread. The background work now hands its results over without
+  holding the window, and the window lets go of its Tk setting when it closes.
+
 ## 0.49.3 — 15/10/2026
 
 - **Fixed: Ironbark could freeze on a small screen** (seen with 1024 × 768). Settings is laid out
