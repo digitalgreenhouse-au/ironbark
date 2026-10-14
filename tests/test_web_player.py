@@ -120,6 +120,9 @@ def test_the_shortcuts_sheet_and_the_desktop_player_agree_on_the_common_keys():
 def test_the_javascript_tests_pass():
     tests = sorted(str(p) for p in (WEB / "tests").glob("*.test.js"))
     assert tests
-    run = subprocess.run(["node", "--test", *tests], capture_output=True, text=True, encoding="utf-8", timeout=120)
+    # The TAP reporter, named: Node's default differs by version and by whether output is a terminal.
+    run = subprocess.run(["node", "--test", "--test-reporter=tap", *tests], capture_output=True, text=True,
+                         encoding="utf-8", timeout=120)
     assert run.returncode == 0, run.stdout[-4000:] + run.stderr[-2000:]
-    assert re.search(r"^ℹ fail 0", run.stdout, re.M), run.stdout[-2000:]
+    assert re.search(r"^# fail 0$", run.stdout, re.M), run.stdout[-2000:]
+    assert not re.search(r"^# pass 0$", run.stdout, re.M), run.stdout[-2000:]   # (and something ran)
