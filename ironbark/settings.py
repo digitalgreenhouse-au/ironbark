@@ -103,7 +103,7 @@ DEFAULTS = {
     "about_geometry": "",        # the About Ironbark window
     "new_music": None,           # {"since": when new music started to count, "opened": {album folder: when opened}}
     "theme": "dark",             # Settings → Window → Theme: "dark" or "light" (a saved "system" is settled once at start)
-    "mini_mode": False,          # the window was last left as the mini strip (it opens that way again)
+    "mini_mode": False,          # (unused: the player opens as the full window; kept so older settings files load as they are)
     "mini_geometry": "",         # where (and how big) the mini strip was last left
     # Network playback (the Experimental "Network playback cache"): songs on network drives play from a copy
     "net_mode": "intelligent",   # "intelligent", "fast" (start after the initial buffer) or "complete"

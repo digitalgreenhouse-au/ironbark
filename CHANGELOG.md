@@ -4,6 +4,27 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.50.0 — 16/10/2026
+
+- **Ironbark always opens as the full window.** It used to come back as the mini strip if that's
+  how it was left (so a fresh install could open as the strip). The strip is still there when you
+  want it (Z, the Mini player button, or double-click the cover), and it remembers its own place.
+- **Opening a folder says what it's doing.** A folder on a network drive can take a while: the
+  status line now shows *Opening…*, then *Looking for music in …* with the count found so far,
+  then *Reading … 12 of 40 songs (30%)* until the tab is ready, and ends with how many songs and
+  albums were loaded. A tab of many albums read from the files names the album it's on.
+- **The + button opens a blank tab, as a browser does.** Its page offers your library, a folder, a
+  new playlist and a playlist file; the first thing you open takes the blank tab's place. The old
+  menu is a right-click away on the + button. Ctrl+T does the same. A blank tab is remembered with
+  the others, and closing one leaves nothing to reopen.
+- **Pause the music from another tab.** While music plays in a tab you aren't looking at, the
+  status line's *♪ Playing in another tab: …* has a pause button at its end: pause and carry on from
+  there without leaving the tab on show (the line says *Paused in another tab* meanwhile). The
+  transport's play button still belongs to the tab you're looking at, and starts that one.
+- **Settings has an X at the top right**, next to Mini player: back to the player, like Done, Esc
+  and the gear.
+- Windows installer: the tick boxes on the Tasks page are no longer cut off.
+
 ## 0.49.4 — 15/10/2026
 
 - **Fixed (behind the scenes): the Clipping window is now always cleaned up on the right thread.**

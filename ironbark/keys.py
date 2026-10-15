@@ -87,7 +87,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("stop_after", _keys("Ctrl+.",), "app", "Stop after this song (again: carry on)", "Playback"),
     Action("sleep_timer", _keys("Ctrl+Shift+S",), "app", "Sleep timer and Stop after (a menu)", "Playback"),
     # -- Tabs & lists --------------------------------------------------------------------------
-    Action("new_tab", _keys("Ctrl+T",), "main", "New tab menu (the + button)", "Tabs & lists"),
+    Action("new_tab", _keys("Ctrl+T",), "main", "New tab (the + button)", "Tabs & lists"),
     Action("close_tab", _keys("Ctrl+W",), "main", "Close the tab", "Tabs & lists"),
     Action("reopen_tab", _keys("Ctrl+Shift+T",), "main", "Reopen the tab closed last", "Tabs & lists"),
     Action("next_tab", _keys("Ctrl+Tab", "Ctrl+PgDn"), "main", "Next tab", "Tabs & lists"),

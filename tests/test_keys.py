@@ -364,10 +364,10 @@ def test_tab_keys(make_window, tmp_path):
     _run(window, root, "Ctrl+PgDn")
     _run(window, root, "Ctrl+1")
     assert window.current == 0
-    _run(window, root, "Ctrl+T")                            # the + button's menu
+    _run(window, root, "Ctrl+T")                            # the + button: a blank tab
     _pump(root, 0.1)
-    assert window.new_menu.is_open
-    window.new_menu.hide()
+    assert window.tabs[-1].kind == "new" and window.current == len(window.tabs) - 1
+    window.close_tab(window.current)
     assert not errors
 
 

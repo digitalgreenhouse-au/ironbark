@@ -243,10 +243,49 @@ class IconButton(tk.Label):
         self.active = active
         self._paint(False)
 
+    def set_glyph(self, name: str):
+        """Show another of GLYPHS (a pause button that becomes play)."""
+        text = glyph(self.winfo_toplevel(), name)
+        if str(self.cget("text")) != text:
+            self.configure(text=text)
+
+    def repaint(self):
+        """After a palette change: the resting colours of the new palette."""
+        self._paint(False)
+
     def _paint(self, hover: bool):
         lit = hover or self.active
         self.configure(bg=theme.colour(self._hover if lit else self._bg),
                        fg=theme.colour(self._hover_fg if hover else ("ACCENT_TEXT" if self.active else self._fg)))
+
+
+class ElsewhereButton(IconButton):
+    """The pause / play button at the end of the status line while music plays in another tab (the
+    line says "♪ Playing in another tab: …"): the music can be paused, and started again, without
+    leaving the tab on show — the transport's play belongs to that tab, and starts it. `show` places
+    it over the end of `line` (the status label) or takes it away, with the glyph the opposite of the
+    music's state."""
+
+    def __init__(self, parent, root, line: tk.Misc, command: Callable[[], None]):
+        super().__init__(parent, root, "pause", command, size=theme.ICON_SMALL, width=24, bg="BG",
+                         hover="SURFACE_HI", fg="MUTED", hover_fg="TEXT", label=lambda: self.hint)
+        self.configure(cursor="hand2")
+        self._line = line
+        self.playing: bool | None = None
+        self.hint = ""
+
+    def show(self, on: bool, playing: bool = True):
+        if not on:
+            if self.winfo_manager():
+                self.place_forget()
+            return
+        if playing != self.playing:
+            self.playing = playing
+            self.set_glyph("pause" if playing else "play")
+            self.hint = ("Pause the music playing in the other tab"
+                         if playing else "Carry on playing the music in the other tab")
+        if not self.winfo_manager():
+            self.place(in_=self._line, relx=1.0, rely=0.5, anchor="e")
 
 
 class RoundIconButton(Focusable, IconButton):
