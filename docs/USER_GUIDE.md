@@ -49,8 +49,15 @@ You don't have to wait for the Library to play something. Any of these works str
 - **Drag** a folder, songs or a playlist from Explorer onto the window or onto a tab.
 - **Double-click** a music file in Explorer, or use *Open with* (if you ticked that box). A file
   opens in the Ironbark that's already running: only one copy of Ironbark runs at a time.
-- The **+** button beside the tabs (Ctrl+T) offers *Browse library…*, *Open a folder…*,
-  *New playlist…* and *Open a playlist file…*.
+- The **+** button beside the tabs (Ctrl+T) opens a blank tab, as a browser does. Its page offers
+  *Open your library*, *Open a folder…*, *New playlist…* and *Open a playlist file…*, and the first
+  thing you open takes the blank tab's place. (A right-click on **+** gives the same choices as a menu.)
+- Opening a folder on a network drive can take a while: the status line says what Ironbark is doing
+  (opening the folder, looking for music files, reading the songs — so many of so many, with a
+  percentage) until the tab is ready.
+- While music plays in a tab you aren't looking at, the status line says *♪ Playing in another tab:
+  …* with a pause button at its end: pause and carry on from there, without leaving the tab you're
+  on. The transport's play button belongs to the tab on show, and starts that one.
 
 ### The window
 
@@ -335,7 +342,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 
 | Key | Action |
 |---|---|
-| Ctrl+T | New tab menu (the + button) |
+| Ctrl+T | New tab (the + button) |
 | Ctrl+W | Close the tab |
 | Ctrl+Shift+T | Reopen the tab closed last |
 | Ctrl+Tab · Ctrl+PgDn | Next tab |

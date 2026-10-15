@@ -365,14 +365,13 @@ def test_mini_and_full_keep_their_own_places_and_the_music_plays_on(make_window)
     assert window.mini.title_label.cget("text") == "Song One"
     assert window.mini.sub_label.cget("text").startswith("Artist")
     assert window.mini.seek.value == 42.0 and window.mini.seek.maximum == 200.0
-    assert window.prefs["mini_mode"] is True
 
     window.toggle_mini()
     _pump(root, 0.5)
     assert not window.mini_mode and window.bar.winfo_ismapped() and not window.mini.winfo_ismapped()
     w, h, x, y = _where(root)
     assert (x, y) == full_before[2:] and abs(w - full_before[0]) <= 4 and abs(h - full_before[1]) <= 4
-    assert window.prefs["mini_geometry"].endswith("+300+60") and window.prefs["mini_mode"] is False
+    assert window.prefs["mini_geometry"].endswith("+300+60")
 
     window._save_if_changed()                        # the two places are saved separately
     saved = settings.load()
@@ -381,11 +380,13 @@ def test_mini_and_full_keep_their_own_places_and_the_music_plays_on(make_window)
     assert errors == []
 
 
-def test_keep_on_top_survives_the_switch_and_the_mini_strip_reopens(make_window):
+def test_keep_on_top_survives_the_switch_and_the_mini_strip_keeps_its_place(make_window):
     window, root, player, errors = make_window(always_on_top=True, mini_mode=True, mini_geometry="600x130+200+90")
-    assert window.mini_mode and window.mini.winfo_ismapped()         # left as the mini strip: opens as it
-    assert _where(root)[2:] == (200, 90)
+    assert not window.mini_mode and window.bar.winfo_ismapped()      # always the full window at the start
+    assert _where(root)[2:] == (120, 120)
     assert bool(root.attributes("-topmost"))
+    window.toggle_mini()
+    assert bool(root.attributes("-topmost")) and _where(root)[2:] == (200, 90)   # the strip's own last place
     window.toggle_mini()
     assert bool(root.attributes("-topmost")) and _where(root)[2:] == (120, 120)
     window.mini.show(title="t", artist="a", position=1.0, duration=2.0, playing=False,

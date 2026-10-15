@@ -111,7 +111,8 @@ step: see [web/README.md](web/README.md). Use it at
 - **Gapless:** tracks run straight into each other with nothing in between (live albums, DJ mixes,
   classical works) whenever they share a sample rate.
 - **Tabs** for albums, folders, playlists and the Library. Each tab remembers where it was; opening a
-  new tab never interrupts what's playing. Drag tabs to reorder them.
+  new tab never interrupts what's playing (the status line pauses the music in another tab). The +
+  button opens a blank tab, as a browser does. Drag tabs to reorder them.
 - **The Library tab** is always there: every song of every library folder, grouped by album, with
   the search box searching the whole library. Its **views** (Ctrl+L, or the Songs ▾ button) show inside
   the tab: browse by album, artist, genre, year, composer or recently added; sort by any column;
@@ -275,7 +276,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 
 | Key | Action |
 |---|---|
-| Ctrl+T | New tab menu (the + button) |
+| Ctrl+T | New tab (the + button) |
 | Ctrl+W | Close the tab |
 | Ctrl+Shift+T | Reopen the tab closed last |
 | Ctrl+Tab · Ctrl+PgDn | Next tab |

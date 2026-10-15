@@ -22,7 +22,7 @@ from tkinter import ttk
 
 from . import controls, devices, experiments, keyfocus, keys, levelling, settings, theme
 from .analysis import GUARD_HEADROOM_CHOICES, headroom_index, headroom_label
-from .tabbar import Popover, SettingRow, Tooltip
+from .tabbar import IconButton, Popover, SettingRow, Tooltip
 
 PAGES = ("simple", "advanced")
 
@@ -47,6 +47,11 @@ class SettingsView:
         self.advanced = tk.Frame(self.area.inner, bg=theme.SURFACE)
         self.frame.bind("<Escape>", lambda e: self.close() or "break")
         self.bar = self.done_button = self.page_button = None   # (made by finish, after the window's controls)
+        # The X at the top right of the head: back to the player, as Done, Esc and the gear are.
+        self.close_button = IconButton(self.head, root, "close", self.close, size=theme.ICON_SMALL, width=28,
+                                       bg="SURFACE", hover="SURFACE_HI", fg="MUTED", hover_fg="TEXT",
+                                       label="Back to the player (also Esc, Done, or the gear)")
+        self.close_button.configure(cursor="hand2")
 
     def finish(self):
         """The bottom bar, made last so the keyboard's Tab order starts at the top of the page:
@@ -360,6 +365,7 @@ def build_controls(win, view: SettingsView):
     b, a = view.simple, view.advanced
     row = view.head
     ttk.Label(row, text="Settings", style="PopTitle.TLabel").pack(side="left")
+    view.close_button.pack(side="right", padx=theme.pad(theme.GAP, 0))
     win.mini_button = pop_button(row, "Mini player", win.toggle_mini,   # (it closes Settings first)
                                         "Shrink the player to a small strip. Also Z, or double-click the cover")
     win.mini_button.pack(side="right")
