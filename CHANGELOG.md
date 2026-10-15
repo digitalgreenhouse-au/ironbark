@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.50.1 — 16/10/2026
+
+- **Fixed (behind the scenes): the other tool windows are now always cleaned up on the right
+  thread too,** as the Clipping window was in 0.49.4. The background work in Now Playing (its
+  check, the album and rip-log checks, the stored-result look-up, the live-bitrate index), the
+  Spectrogram's whole-track picture, Test signals' measurement and Compare kept hold of their
+  window, so a window closed while that work was still going could be freed on the background
+  thread, where Tk objects must never be freed. The work now hands its results over without
+  holding the window. ABX, Meters, Spectrogram and Test signals also let go of their Tk settings
+  when they close, and Now Playing of its meter pictures. Nothing changes in how the windows look
+  or behave.
+- The web player's version number matches the desktop player's again (it had stayed at 0.49.4).
+
 ## 0.50.0 — 16/10/2026
 
 - **Ironbark always opens as the full window.** It used to come back as the mini strip if that's

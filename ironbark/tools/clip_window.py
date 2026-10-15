@@ -28,7 +28,6 @@ import queue
 import threading
 import time
 import tkinter as tk
-import types
 from tkinter import ttk
 
 import numpy as np
@@ -778,11 +777,7 @@ class ClipWindow(toolwin.ToolWindow):
         self.zoom = None                              # and its Tk variable (the zoom row lets go of it too)
 
 
-class Handback(types.SimpleNamespace):
-    """What a worker thread hands back to the window, which takes it in on Tk's thread. The thread
-    holds this, never the window: a thread still at work after the window closed would otherwise be
-    the last to let go of it, and the window's Tk variable would be freed there, which fails
-    ("main thread is not in main loop")."""
+Handback = toolwin.Handback   # (what the threads hand back: shared by the tool windows now)
 
 
 def clipping_float(source: np.ndarray) -> np.ndarray:

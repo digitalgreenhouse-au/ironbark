@@ -288,10 +288,12 @@ class TestSignalsWindow(toolwin.ToolWindow):
         signal, output, source = self.signal, self.output.get(), self.input.get()
         result: dict = {}
         self._result = result
+        # The thread holds the result and the recorder, never the window (see toolwin.Handback).
+        recorder = self._recorder
 
         def work():
             try:
-                audio, rate, notes = self._recorder(source, output, signal.rate, signal.seconds_needed())
+                audio, rate, notes = recorder(source, output, signal.rate, signal.seconds_needed())
                 measurement = testsignals.measure(signal, audio, rate)
                 measurement.notes.extend(notes)
                 result["measurement"] = measurement
@@ -455,3 +457,5 @@ class TestSignalsWindow(toolwin.ToolWindow):
         if self.audition is not None:
             self.audition.stop()
         toolwin.give_back_sound(self)
+        # Its Tk variables go here, on Tk's thread (the choice row and switch let go of theirs too).
+        self.kind = self.level = self.bits = self.output = self.input = self.exclusive = None

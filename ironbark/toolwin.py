@@ -11,12 +11,16 @@ Test signals, Tape reels, Lyrics). No drawing here.
 - One sound at a time: the windows that play their own sound (ABX, Clipping → Hear it, Test
   signals) call `take_sound` first; the window that was playing stops and says so. Each of them
   also pauses the player first (Player.suspend), so nothing ever plays over anything else.
+- `Handback`: what a window's worker thread hands back. A worker holds that, never the window,
+  and the window takes it in on Tk's thread (in `_step`); a window's `_closing` also lets go of
+  its Tk variables. Either way a closed window is freed on Tk's thread, never on a worker's.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
 import traceback
+import types
 import weakref
 
 from . import APP_NAME, placement, theme
@@ -128,6 +132,13 @@ class ToolWindow:
         self._closing()
         self.win.destroy()
         self.on_close()
+
+
+class Handback(types.SimpleNamespace):
+    """What a worker thread hands back to its window, which takes it in on Tk's thread. The thread
+    holds this, never the window: a thread still at work after the window closed would otherwise be
+    the last to let go of it, and the window's Tk objects (variables, pictures) would be freed
+    there, which fails ("main thread is not in main loop")."""
 
 
 _sound: weakref.ref | None = None   # the window whose own sound plays (or played last)

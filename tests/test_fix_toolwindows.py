@@ -1,13 +1,17 @@
 """The tool windows together: a refresh loop that keeps going after an error (and doesn't fill
-crash.log with it), no drawing while a window is minimised, and one sound at a time between the
-windows that play their own (ABX, Clipping → Hear it, Test signals). No sound device is opened:
-stand-in streams, as in the windows' own tests. Skipped without a display."""
+crash.log with it), no drawing while a window is minimised, one sound at a time between the
+windows that play their own (ABX, Clipping → Hear it, Test signals), and a closed window freed on
+Tk's thread even while its worker thread is still busy. No sound device is opened: stand-in
+streams, as in the windows' own tests. Skipped without a display."""
 
 from __future__ import annotations
 
 import gc
 import queue
+import threading
 import time
+import weakref
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -258,4 +262,165 @@ def test_one_sound_at_a_time_between_the_windows(root, stand_in_devices, tmp_pat
     assert len(open_streams) == 1                     # never two sounds at once
     abx.close()
     signals.close()
+    assert not root.errors
+
+
+# -- a closed window is freed on Tk's thread --------------------------------------------------------
+# A worker thread that held its window would be the last to let go of it when its work outlasts the
+# window, and the window's Tk variables and pictures would then be freed on that thread, which fails
+# ("main thread is not in main loop"). Each worker below is held inside its slow step while the
+# window closes; the window must already be gone once the main thread collects, the thread still busy.
+
+def held_tk_variables(win) -> list[str]:
+    import tkinter
+    return [name for name, value in vars(win).items() if isinstance(value, tkinter.Variable)]
+
+
+@pytest.mark.parametrize("kind", ["meters", "spectrogram", "clipping", "abx", "testsignals", "now playing"])
+def test_a_closed_window_lets_go_of_its_tk_variables(root, stand_in_devices, kind):
+    win, _, _ = make(kind, root, AnyPlayer())
+    win.win.update()
+    win.close()
+    assert not held_tk_variables(win)
+    assert not root.errors
+
+
+def cd_album(tmp_path) -> list[Path]:
+    """Two short CD-quality FLAC tracks in an album folder (rip verification wants 16-bit 44.1 kHz)."""
+    folder = tmp_path / "Album"
+    folder.mkdir()
+    rng = np.random.default_rng(7)
+    paths = []
+    for n in (1, 2):
+        path = folder / f"0{n}.flac"
+        sf.write(path, 0.1 * rng.standard_normal((RATE * 2, 2)), RATE, subtype="PCM_16")
+        paths.append(path)
+    return paths
+
+
+def now_playing(root, tmp_path, monkeypatch, **kwargs):
+    from ironbark.library import read_track
+    from ironbark.tools.details import NowPlayingWindow
+    for cache in ("_analysis_cache", "_stored_when", "_index_cache", "_album_cache", "_log_cache"):
+        monkeypatch.setattr(NowPlayingWindow, cache, {})   # (this test's results stay out of the others')
+    player = AnyPlayer()
+    player.track = read_track(cd_album(tmp_path)[0])
+    win = NowPlayingWindow(root, player, prefs={}, **kwargs)
+    win.win.update()
+    return win
+
+
+def slow_stored(root, tmp_path, monkeypatch, slow):
+    return now_playing(root, tmp_path, monkeypatch, stored=slow)
+
+
+def slow_frame_index(root, tmp_path, monkeypatch, slow):
+    from ironbark.tools import details
+    monkeypatch.setattr(details, "build_index", slow)
+    return now_playing(root, tmp_path, monkeypatch)
+
+
+def slow_check(root, tmp_path, monkeypatch, slow):
+    from ironbark.tools import details
+    monkeypatch.setattr(details, "analyse", slow)
+    win = now_playing(root, tmp_path, monkeypatch, remember=lambda *args: None)
+    win.check_button.invoke()
+    return win
+
+
+def slow_album(root, tmp_path, monkeypatch, slow):
+    from ironbark.tools import details
+    monkeypatch.setattr(details, "album_measure", slow)
+    win = now_playing(root, tmp_path, monkeypatch)
+    win.album_button.invoke()
+    return win
+
+
+def slow_rip_log(root, tmp_path, monkeypatch, slow):
+    from ironbark.tools import ripcheck
+    monkeypatch.setattr(ripcheck, "check_log", slow)
+    win = now_playing(root, tmp_path, monkeypatch)
+    win.log_button.invoke()
+    return win
+
+
+def slow_spectrogram(root, tmp_path, monkeypatch, slow):
+    from ironbark.tools import spectrum
+    from ironbark.tools.spectrogram_window import SpectrogramWindow
+    monkeypatch.setattr(spectrum, "track_picture", slow)
+    player = AnyPlayer()
+    player.track = SimpleNamespace(path=cd_album(tmp_path)[0], lossy=False)
+    win = SpectrogramWindow(root, player, {"spectrogram_view": "track"})
+    win.win.update()
+    win._step()
+    return win
+
+
+def slow_test_signals(root, tmp_path, monkeypatch, slow):
+    from ironbark.tools.testsignals_window import TestSignalsWindow
+    win = TestSignalsWindow(root, AnyPlayer(), {"testsignals_level": -80.0}, stream_factory=FakeStream,
+                            recorder=slow, confirm=lambda *a: True)
+    win.win.update()
+    win.measure()
+    return win
+
+
+def slow_compare(root, tmp_path, monkeypatch, slow):
+    from ironbark.tools import compare
+    from ironbark.tools.compare_window import CompareWindow
+    monkeypatch.setattr(compare, "compare_files", slow)
+    a, b = write_pair(tmp_path)
+    win = CompareWindow(root, {}, path_a=a, path_b=b)
+    win.win.update()
+    win.start()
+    return win
+
+
+def slow_abx(root, tmp_path, monkeypatch, slow):
+    from ironbark.tools import abx
+    from ironbark.tools.abx_window import AbxWindow
+    monkeypatch.setattr(abx, "prepare", slow)
+    a, b = write_pair(tmp_path)
+    win = AbxWindow(root, AnyPlayer(), {"abx_length": 5}, path_a=a, start_s=4.0, stream_factory=FakeStream)
+    win._set_file("B", b)
+    win.win.after_cancel(win._reload_job)   # (loaded here and now, once)
+    win.load()
+    return win
+
+
+SLOW_WORKERS = {"now playing: stored check": slow_stored, "now playing: frame index": slow_frame_index,
+                "now playing: check": slow_check, "now playing: album": slow_album,
+                "now playing: rip log": slow_rip_log, "spectrogram": slow_spectrogram,
+                "test signals": slow_test_signals, "compare": slow_compare, "abx": slow_abx}
+
+
+@pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
+@pytest.mark.parametrize("worker", list(SLOW_WORKERS))
+def test_a_closed_window_is_freed_here_while_its_thread_works_on(root, stand_in_devices, tmp_path, monkeypatch,
+                                                                 worker):
+    go_on, busy = threading.Event(), []
+
+    def slow(*args, **kwargs):
+        busy.append(threading.current_thread())
+        go_on.wait(20)
+        raise RuntimeError("stopped by the test")   # (each window says a failure its own way)
+
+    try:
+        win = SLOW_WORKERS[worker](root, tmp_path, monkeypatch, slow)
+        deadline = time.time() + 20
+        while not busy and time.time() < deadline:
+            time.sleep(0.01)
+        assert busy, "the worker never started"
+        thread = busy[0]
+        win.close()
+        assert not held_tk_variables(win)
+        gone = weakref.ref(win)
+        del win
+        gc.collect()                                  # (here, on the main thread)
+        assert thread.is_alive()                      # the worker is still busy…
+        assert gone() is None                         # …but the window is already freed
+    finally:
+        go_on.set()
+    thread.join(20)
+    assert not thread.is_alive()
     assert not root.errors

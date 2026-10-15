@@ -498,3 +498,6 @@ class MeterWindow(toolwin.ToolWindow):
         if self._auto is not None:
             self._auto["cancel"].set()
         self.player.unmonitor(self.feed)
+        # Its Tk variables go here, on Tk's thread: the closed window may be freed by the cycle
+        # collector, which runs on whichever thread it likes.
+        self.align_var = self.ppm_var = None

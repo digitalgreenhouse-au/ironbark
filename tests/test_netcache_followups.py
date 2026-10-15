@@ -486,6 +486,7 @@ def test_vu_auto_measures_a_network_album_once_its_songs_have_downloaded(root, t
 
 # -- Now Playing's live bitrate once the copy completes ---------------------------------------------------
 def test_now_playings_frame_index_is_built_once_the_copy_completes_mid_song(monkeypatch):
+    import queue
     import threading
     from types import SimpleNamespace
 
@@ -497,11 +498,16 @@ def test_now_playings_frame_index_is_built_once_the_copy_completes_mid_song(monk
                         lambda path: asked.append(path) or (path if path in complete else None))
     monkeypatch.setattr(details, "INDEX_LOOK_S", 0.02)
     w = SimpleNamespace(_index_cache={}, _track_path=song, _index=None, INDEX_CACHE_SIZE=20,
-                        _closed=threading.Event())
+                        _closed=threading.Event(), _showing=SimpleNamespace(path=song), _handed=queue.Queue())
+
+    def ticked():   # (the window takes the worker's index in on its tick)
+        details.NowPlayingWindow._take_handed(w)
+        return w._index
+
     details.NowPlayingWindow._load_index(w, song, lambda source: ("index of", source))
-    assert wait_until(lambda: len(asked) >= 3, 3) and w._index is None and song not in w._index_cache
+    assert wait_until(lambda: len(asked) >= 3, 3) and ticked() is None and song not in w._index_cache
     complete.add(song)                                           # the copy is complete now, mid-song
-    assert wait_until(lambda: w._index == ("index of", song), 3)
+    assert wait_until(lambda: ticked() == ("index of", song), 3)
     assert w._index_cache[song] == ("index of", song)
     asked.clear()
     details.NowPlayingWindow._load_index(w, other, lambda source: ("index of", source))
