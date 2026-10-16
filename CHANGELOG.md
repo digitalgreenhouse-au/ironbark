@@ -4,6 +4,19 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.51.0 — 16/10/2026
+
+- **Ironbark on the Mac (experimental).** The same player, as a Mac app (Apple silicon), unsigned
+  for now. **Bit-perfect on a Mac:** Ironbark takes the output for itself while it plays and
+  switches it to the song's own sample rate and its deepest format, so Core Audio passes the
+  samples through untouched; the output is put back as it was when you stop. Devices plugged in
+  after Ironbark starts show up in Output; ⌘Q closes it as usual.
+- Mac: a playlist on another disk or a network share is deleted for good after Ironbark says so
+  (it can't go to the Bin from there); one on the Mac's own disk goes to the Bin as before.
+- Known limits on the Mac for now: a few button symbols show as letters, shortcut hints say Ctrl
+  (⌘ works too), opening a song from Finder with a double-click doesn't reach the player yet, and
+  the app isn't signed.
+
 ## 0.50.4 — 16/10/2026
 
 - **Fixed: no sample played twice when a song carries on from where it stopped.** Carrying on
