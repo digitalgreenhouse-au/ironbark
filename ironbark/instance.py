@@ -21,6 +21,7 @@ A request on the wire: a 4-byte little-endian length, then that many bytes of UT
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -70,7 +71,9 @@ def decode(body: bytes, key: str = "") -> Request | None:
         data = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         return None
-    if not isinstance(data, dict) or data.get("key", "") != key:
+    if not isinstance(data, dict) or not isinstance(data.get("key", ""), str):
+        return None
+    if not hmac.compare_digest(data.get("key", "").encode("utf-8"), key.encode("utf-8")):   # (in constant time)
         return None
     paths = data.get("paths", [])
     if not isinstance(paths, list):
@@ -246,6 +249,7 @@ def _k32():
         k.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
         k.WaitNamedPipeW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
         k.GetNamedPipeServerProcessId.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG))
+        k.GetNamedPipeServerSessionId.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG))
         k.ProcessIdToSessionId.argtypes = (wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
         _kernel = k
     return _kernel
@@ -467,6 +471,12 @@ def _talk(handle, frame: bytes) -> bool:
     from ctypes import wintypes
 
     k = _k32()
+    # Pipe names are shared by every session on the computer, so a program another user started
+    # could have taken this one first: only a running copy in this Windows session is told anything.
+    session = wintypes.ULONG(0)
+    if k.GetNamedPipeServerSessionId(handle, ctypes.byref(session)) and session.value != _session():
+        log.warning("the pipe belongs to another Windows session (%d): not used", session.value)
+        return False
     server = wintypes.ULONG(0)
     if k.GetNamedPipeServerProcessId(handle, ctypes.byref(server)):
         # Windows only lets the program the user just started bring a window forward: pass that on.
@@ -546,7 +556,8 @@ def claim_with_socket(key: str, folder: Path) -> Instance:
 
 class SocketServer:
     """Listens on 127.0.0.1 (a port the system picks); the port and a random key go in `info_path`,
-    which only this user can normally read."""
+    which only this user can read (0600): any program on the computer can connect to the port, so
+    the key is what keeps other users' programs from handing the player files to open."""
 
     def __init__(self, info_path: Path, requests: queue.Queue):
         self.info_path, self.requests = info_path, requests
@@ -559,8 +570,9 @@ class SocketServer:
             self.sock.settimeout(0.5)   # (so the thread notices `close`)
             from .settings import write_file
 
+            # This user's only: whoever can read the key can make the player open files.
             write_file(info_path, json.dumps({"port": self.sock.getsockname()[1], "key": self.key,
-                                              "pid": os.getpid()}))
+                                              "pid": os.getpid()}), private=True)
         except (OSError, ValueError) as exc:
             self.sock.close()
             raise OSError("couldn't set up the local socket") from exc

@@ -3,8 +3,7 @@ name: Tests
 # Three tiers, so a push gets an answer in minutes and a release still gets everything:
 # - checks: ruff (the linter), import rules (lint-imports) and the two tiers' config: every push.
 # - quick:  every test that makes no window (`-m "not ui"`), on Windows and on Ubuntu: every push.
-#           The Ubuntu run is advisory until it has been seen green (continue-on-error): the player is
-#           Windows-first and its tests were written there.
+#           Both decide the run (Ubuntu since it was seen green on 14/10/2026).
 # - full:   the whole suite, windows and all, on Windows: pull requests, pushes to main and dev,
 #           a nightly run, and the "Run workflow" button.
 
@@ -40,7 +39,6 @@ jobs:
     name: Quick tier (${{ matrix.os }})
     needs: checks
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -69,16 +67,17 @@ jobs:
     needs: checks
     if: github.event_name != 'push' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     runs-on: windows-latest
-    # Advisory until it has been seen green on the runner: there a test runs for minutes that takes
-    # seconds on a desktop PC (being found). The quick tiers still decide the run.
+    # Advisory until it has been seen green on the runner (a test that hung there for 90 minutes is
+    # thought fixed: a window that grew without end on the runner's small screen). Make it decide the
+    # run, by deleting this line, once it has passed there. Meanwhile the run says plainly it failed.
     continue-on-error: true
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
       - name: Install (exactly as locked)
         run: uv sync --locked
-      # A test still running after 5 minutes has every thread's stack printed, so a hang on the
-      # runner says where it is (the job's own timeout only says it was cancelled).
+      # A test still running after 5 minutes has every thread's stack printed and the run stopped
+      # (exit_on_timeout), so a hang says where it is and fails in minutes, not at the job's limit.
       - name: Run every test
-        run: uv run pytest -v -o faulthandler_timeout=300 --durations=25
+        run: uv run pytest -v -o faulthandler_timeout=300 -o faulthandler_exit_on_timeout=true --durations=25

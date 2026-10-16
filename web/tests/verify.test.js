@@ -74,3 +74,12 @@ test("a file too long to decode in memory is refused politely, before any decodi
   assert.equal(none.ok, null);
   assert.match(none.verdict, /No fingerprint/);
 });
+
+test("a file of unknown length is judged by its size, so a huge one is still refused before decoding", async () => {
+  const { verifyFlac } = require("../js/verify.js");
+  // a stand-in for a 200 MB file: only its size is read before the refusal
+  const big = { size: 200 * 1048576, arrayBuffer: () => { throw new Error("read the whole file"); } };
+  const r = await verifyFlac(big, { md5: "00".repeat(16), sampleRate: 44100, channels: 2, bitsPerSample: 16 });
+  assert.equal(r.ok, null);
+  assert.match(r.verdict, /Too long/);
+});

@@ -4,6 +4,25 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.50.2 — 16/10/2026
+
+- **Safer on a shared Mac or Linux computer.** When Ironbark is already open, a second launch hands
+  it the files to play through a small note only you can read: other people signed in to the same
+  computer could read it before, and so could make your player open files. On Windows, a later
+  launch now talks only to an Ironbark running in your own Windows session.
+- **Linux: the Linux improvements reach the main line** — bringing back a minimised window under
+  Cinnamon and GNOME, deleting a playlist to the Trash (so the file manager can put it back),
+  dropping files from Nemo, Windows' editing keys in text boxes, and the Library tab's plate under
+  its name.
+- **Linux: a playlist reached through a link is binned on the disk it's really on**, and a window
+  closed at the wrong moment can no longer end the program while Ironbark asks the desktop whether
+  it's minimised.
+- **The web player checks a very large file safely** even when the file doesn't say how long it
+  is, and keeps its offline copy reliably.
+- Messages on a Mac or Linux no longer mention Windows.
+- Behind the scenes: the automatic checks on GitHub now fail when the Linux tests fail, and a test
+  that hangs stops the run within minutes.
+
 ## 0.50.1 — 16/10/2026
 
 - **Fixed (behind the scenes): the other tool windows are now always cleaned up on the right

@@ -10,8 +10,11 @@ _NET_WM_STATE_HIDDEN (both checked with xprop). `minimised` reads those; `restor
 manager to activate the window (_NET_ACTIVE_WINDOW), which brings a minimised one back where it was.
 
 Through libX11 with ctypes, on a connection of our own, used from Tk's thread only. Only windows
-Tk has seen mapped are asked about, so each one exists on the server by then (an X error on this
-connection would end the program: Xlib's default handler exits). Without libX11 or a display,
+Tk has seen mapped are asked about, so each one exists on the server by then. Even so, an X error on
+this connection (a window gone a moment before it was asked about) must never end the program, and
+Xlib's default error handler would do just that: so an error handler goes in front of the one in
+place (Tk's) that takes the errors of our own connection, and hands every other one on unchanged.
+A call that met an error answers as if there were nothing to tell. Without libX11 or a display,
 nothing is ever minimised here, as before.
 """
 
@@ -38,6 +41,33 @@ class _Event(ctypes.Union):
     _fields_ = [("xclient", _ClientMessage), ("pad", ctypes.c_long * 24)]   # (an XEvent is 24 longs)
 
 
+# int (*)(Display *, XErrorEvent *)
+_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+_ours: set[int] = set()        # our own connections: their errors are ours to take
+_errors: dict[int, int] = {}   # connection -> X errors met on it so far
+_handler: list = []            # [our handler, the one it hands on to] (kept alive)
+
+
+def _install_error_handler(x) -> None:
+    """In front of the error handler in place (Tk's, by now): errors on our own connections are
+    counted, every other one goes on to it as before."""
+    if _handler:
+        return
+    x.XSetErrorHandler.restype = _ERROR_HANDLER
+    x.XSetErrorHandler.argtypes = [_ERROR_HANDLER]
+
+    def handle(display, event):
+        if display in _ours:
+            _errors[display] = _errors.get(display, 0) + 1
+            return 0
+        previous = _handler[1]
+        return previous(display, event) if previous else 0
+
+    ours = _ERROR_HANDLER(handle)
+    _handler[:] = [ours, None]
+    _handler[1] = x.XSetErrorHandler(ours)
+
+
 class _Display:
     """One connection to the X server a window is on, with the calls used here."""
 
@@ -62,7 +92,13 @@ class _Display:
         self.handle = x.XOpenDisplay(name.encode())
         if not self.handle:
             raise OSError(f"can't open display {name!r}")
+        _ours.add(self.handle)
+        _install_error_handler(x)
         self._atoms: dict[str, int] = {}
+
+    def errors(self) -> int:
+        """X errors met on this connection so far (each is taken by our handler, never fatal)."""
+        return _errors.get(self.handle, 0)
 
     def atom(self, name: str) -> int:
         if name not in self._atoms:

@@ -57,7 +57,7 @@ from enum import Enum
 
 import sounddevice as sd
 
-from . import audiofile, devices
+from . import audiofile, devices, platforms
 from .library import Track, album_folder
 from .proof import Proof
 from .session import (  # noqa: F401 — re-exported: the rest of the program gets these from the engine
@@ -90,6 +90,8 @@ from .session import (  # noqa: F401 — re-exported: the rest of the program ge
 )
 
 log = logging.getLogger(__name__)
+
+DEFAULT_OWNER = "Windows'" if platforms.IS_WINDOWS else "The system's"   # (whose default output it is)
 
 
 RESTART_THRESHOLD = 3.0  # "previous" within this many seconds goes back a track
@@ -895,7 +897,7 @@ class Player:
             self.hardware_volume = None   # (not known for this device: the ear checks treat it as none)
             self.amp_volume = False
             self.volume_check_due = True
-        raise devices.DefaultChanged(f"Windows' default output is now {name or 'another device'}")
+        raise devices.DefaultChanged(f"{DEFAULT_OWNER} default output is now {name or 'another device'}")
 
     @property
     def output_device(self) -> str | None:

@@ -64,6 +64,23 @@ def test_a_playlist_on_another_disk_goes_to_that_disks_trash(tmp_path, monkeypat
     assert (stick / ".Trash" / str(os.getuid()) / "files" / "Mix.m3u8").exists()
 
 
+def test_a_playlist_reached_through_a_link_goes_to_the_trash_of_the_disk_it_is_on(tmp_path, monkeypatch):
+    stick = tmp_path / "stick"
+    (stick / "Playlists").mkdir(parents=True)
+    (tmp_path / "home").mkdir()
+    link = tmp_path / "home" / "Music"
+    link.symlink_to(stick / "Playlists", target_is_directory=True)   # ~/Music -> a folder on the stick
+    mounts(tmp_path, monkeypatch, f"/dev/sdb1 {stick} ext4")
+    monkeypatch.setattr(recycle, "_device", lambda path: -1)   # (the home folder is on another disk)
+    mix = link / "Mix.m3u8"
+    mix.write_text("#EXTM3U\n", encoding="utf-8")
+    assert recycle.can_recycle(mix)
+    to_trash(str(mix))
+    own = stick / f".Trash-{os.getuid()}"
+    assert (own / "files" / "Mix.m3u8").exists()
+    assert info_of(own / "info" / "Mix.m3u8.trashinfo")[0] == "Playlists/Mix.m3u8"   # (not "../home/…")
+
+
 def test_a_network_folder_has_no_trash_and_is_never_looked_at(tmp_path, monkeypatch):
     mounts(tmp_path, monkeypatch, "//nas/music /mnt/music cifs", "gvfsd-fuse /run/user/1000/gvfs fuse.gvfsd-fuse")
     monkeypatch.setattr(os, "stat", lambda *a, **k: pytest.fail("a network folder was looked at"))

@@ -58,7 +58,7 @@ def can_recycle(path) -> bool:
     if platforms.IS_MAC:
         return (Path.home() / ".Trash").is_dir()
     if platforms.IS_LINUX:
-        return _trash_for(os.path.abspath(os.fspath(path))) is not None
+        return _trash_for(_resolved(os.path.abspath(os.fspath(path)))) is not None
     return False
 
 
@@ -185,10 +185,22 @@ def _trash_for(full: str) -> tuple[Path, str | None] | None:
     return None
 
 
+def _resolved(full: str) -> str:
+    """`full` with the folders above it resolved (a link to a folder on another disk is followed, so
+    the disk, and its Trash, are the ones the file is really on). The file itself isn't: a link is
+    put in the Trash as a link, as the file manager does. A path the mount table already places on
+    a network folder is left as it is: resolving it would ask the server."""
+    kind = _mount_of(full)[1]
+    if kind in _NETWORK_FILESYSTEMS or kind.startswith("fuse.gvfs"):
+        return full
+    return os.path.join(os.path.realpath(os.path.dirname(full)), os.path.basename(full))
+
+
 def _to_trash(full: str) -> None:
     """Into the Trash as the file manager puts it there: the file in files/, and beside it in info/
     a .trashinfo saying where it came from and when (so it can be put back), under a name not taken
     there yet ("Mix.2.m3u8")."""
+    full = _resolved(full)
     found = _trash_for(full)
     if found is None:
         raise OSError(f"there's no {BIN_NAME} for “{full}”")

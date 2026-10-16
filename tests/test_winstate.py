@@ -51,3 +51,30 @@ def test_without_x_nothing_is_minimised(monkeypatch):
     top.winfo_toplevel = lambda: top
     assert not x11.minimised(top)
     x11.restore(top)   # (nothing to ask: nothing happens)
+
+
+def test_an_x_error_on_our_own_connection_never_ends_the_program(monkeypatch):
+    # Xlib's default handler exits the program on any X error. Ours goes in front of the one in
+    # place (Tk's): it takes the errors of our own connections and hands every other one on.
+    handed_on = []
+
+    def tks_handler(display, event):
+        handed_on.append(display)
+        return 0
+    previous = x11._ERROR_HANDLER(tks_handler)
+    installed = []
+
+    def set_handler(handler):
+        installed.append(handler)
+        return previous
+    fake = SimpleNamespace(XSetErrorHandler=set_handler)
+    monkeypatch.setattr(x11, "_handler", [])
+    monkeypatch.setattr(x11, "_ours", {1234})
+    monkeypatch.setattr(x11, "_errors", {})
+    x11._install_error_handler(fake)
+    x11._install_error_handler(fake)   # (once only)
+    assert len(installed) == 1
+    ours = installed[0]
+    assert ours(1234, None) == 0 and x11._errors == {1234: 1}   # ours: counted, nothing else
+    ours(5678, None)
+    assert handed_on == [5678]   # Tk's own connection's errors go to Tk, as before
