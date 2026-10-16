@@ -215,7 +215,7 @@ def test_needs_look_says_when_a_file_has_changed_since_its_check(tmp_path):
 
 # -- About on a small screen ---------------------------------------------------------------------------------
 def test_about_opens_no_taller_than_the_screen_and_every_part_can_be_read(root, monkeypatch):
-    room = theme.px(700)
+    room = theme.px(500)   # (shorter than the page, about 580 px at 100%: 700 was only short with too-big fonts)
     monkeypatch.setattr(placement, "work_height", lambda window: room)
     about = help_window.AboutWindow(root, {}, copy=lambda text: None, open_url=lambda url: None)
     settle(root, 0.4)
