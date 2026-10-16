@@ -203,10 +203,11 @@ def _nothing_system_wide(monkeypatch):
     monkeypatch.setattr(start, "_enable_crisp_text_on_windows", lambda: None)
     before = _dpi_awareness()
     if not LIVE_WINDOWS:
-        from ironbark import mediakeys
+        from ironbark import mediakeys, mpris
 
         monkeypatch.setattr(mediakeys, "start_windows", lambda hub, hwnd: None)
         monkeypatch.setattr(mediakeys, "KeyboardHook", _NoKeyboardHook)
+        monkeypatch.setattr(mpris, "start", lambda hub, cover_folder=None: None)   # (never the real session bus)
     yield
     if _dpi_awareness() != before:
         pytest.fail("this test made the test process DPI-aware: later tests' text would be laid out "

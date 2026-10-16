@@ -16,7 +16,8 @@ IS_LINUX = NAME == "linux"
 
 # What the platform provides.
 CUSTOM_TITLE_BAR = IS_WINDOWS      # chrome.py draws the title bar itself (the Win32 caption is removed)
-MEDIA_CONTROLS = IS_WINDOWS        # mediakeys.py: media keys, Windows' media panel, taskbar buttons
+MEDIA_CONTROLS = IS_WINDOWS or IS_LINUX   # media keys and the desktop's media panel: mediakeys.py
+                                         # (Windows' SMTC, taskbar buttons); mpris.py on Linux (MPRIS)
 EXCLUSIVE_OUTPUT = IS_WINDOWS or IS_MAC   # devices.py / session.py: "bit-perfect" — WASAPI exclusive mode;
                                          # on a Mac coreaudio.py hogs the device at the file's rate
 HARDWARE_VOLUME = IS_WINDOWS       # devices.py: the device's own volume control, through pycaw

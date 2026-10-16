@@ -459,8 +459,9 @@ def build_controls(win, view: SettingsView):
                              "peak allows (it stays under −0.1 dB true peak).")
 
     caption(a, "Window")
-    if platforms.MEDIA_CONTROLS:   # (media keys reach the player on Windows only)
-        setting(a, win.root, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
+    if platforms.MEDIA_CONTROLS:   # (Windows and Linux; not yet a Mac)
+        panel = "Windows' media panel" if platforms.IS_WINDOWS else "the desktop's sound menu"
+        setting(a, win.root, "Media keys", f"Play/pause, next, previous keys and {panel}.",
                       win.media_controls, win._toggle_media)
     row = ttk.Frame(a, style="Pop.TFrame")
     row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))

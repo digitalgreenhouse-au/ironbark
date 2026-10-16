@@ -116,6 +116,7 @@ from . import (
     logs,
     loudness,
     mediakeys,
+    mpris,
     offthread,
     passthrough,
     placement,
@@ -632,7 +633,7 @@ class PlayerWindow:
         self._held_key = None    # what the songs held round the one playing were worked out for
         self._opened_key = None                  # the song last marked as opening its album
         self.media = mediakeys.MediaKeys()        # presses from media keys / Windows arrive here
-        self._windows_media = None                # mediakeys.WindowsMedia while switched on
+        self._windows_media = None                # mediakeys.WindowsMedia (mpris.MprisMedia on Linux) while on
         self._drop_overlay: list[tk.Frame] = []   # the green edge shown while something is dragged over
         self._drop_shown = None                   # what's lit up for a drag now: ("tab", i) / ("window", None)
         experiments.tidy(self.prefs)  # forget switches for experiments since rolled in or dropped
@@ -4048,14 +4049,17 @@ class PlayerWindow:
         else:
             self._about = self._with_keys(AboutWindow(self.root, self.prefs))
 
-    # -- media keys, Windows' media panel, taskbar buttons (mediakeys.py) -------------------------
+    # -- media keys, the desktop's media panel, taskbar buttons (mediakeys.py, mpris.py) ----------
     def _start_media(self):
-        """Hand the window to Windows' media controls (and the taskbar's buttons). Anything that
-        fails is logged and left off; the player works the same without it."""
-        if self._windows_media is not None or not mediakeys.AVAILABLE:
+        """Hand the window to the desktop's media controls: Windows' (and the taskbar's buttons), or
+        MPRIS on Linux. Anything that fails is logged and left off; the player works the same."""
+        if self._windows_media is not None:
             return
         try:
-            self._windows_media = mediakeys.start_windows(self.media, chrome._hwnd(self.root))
+            if mediakeys.AVAILABLE:
+                self._windows_media = mediakeys.start_windows(self.media, chrome._hwnd(self.root))
+            elif mpris.AVAILABLE:
+                self._windows_media = mpris.start(self.media, settings.cache_folder() / "MediaControls")
         except Exception:
             log.exception("media controls: couldn't start")
             self._windows_media = None
