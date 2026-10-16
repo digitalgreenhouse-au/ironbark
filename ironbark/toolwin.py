@@ -23,7 +23,7 @@ import traceback
 import types
 import weakref
 
-from . import APP_NAME, placement, theme
+from . import APP_NAME, placement, theme, winstate
 
 
 class KeepGoing:
@@ -54,7 +54,7 @@ class KeepGoing:
 
 def on_screen(window: tk.Misc) -> bool:
     """False while the window is minimised or hidden: nothing it draws can be seen."""
-    return bool(window.winfo_viewable())
+    return winstate.on_screen(window)
 
 
 class ToolWindow:
@@ -118,7 +118,7 @@ class ToolWindow:
                 self.prefs[self.GEOMETRY_KEY] = geometry
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
 
     def _closing(self):

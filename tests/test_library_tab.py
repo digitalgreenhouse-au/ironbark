@@ -145,3 +145,28 @@ def test_the_open_album_mark_opens_the_songs_album_in_a_new_tab(make_window, tmp
     assert len(window.tabs) == before + 1 or window.current != 0   # (the album was already open: it's selected)
     assert window.tabs[window.current].kind == "album"
     assert window.playing_tab in (None, 0, 1) and errors == []
+
+
+
+def test_the_library_tabs_name_shows_on_its_plate_when_another_tab_is_selected(make_window):
+    # Opening with the Library tab and another, the other selected (as a saved session does): the
+    # Library tab's own plate is made after the tabs' names, and must still sit under them (it hid
+    # "Library" until a tab was next opened).
+    import tkinter as tk
+
+    from ironbark.tabbar import TabBar
+
+    window, root, player, errors = make_window()
+    holder = tk.Toplevel(root)
+    holder.geometry("400x60")
+    nothing = lambda *a, **k: None  # noqa: E731
+    bar = TabBar(holder, root, on_select=nothing, on_close=nothing, on_new=nothing, on_settings=nothing,
+                 on_double=nothing, on_quit=nothing)
+    bar.pack(fill="x")
+    bar.set_tabs(["Library", "21"], 1, None, locked={0}, tinted={0})
+    root.update()
+    order = bar.canvas.find_all()   # (bottom first)
+    assert bar._tints and max(order.index(item) for item in bar._tints[0]) < order.index(bar._slots[0]["name"])
+    assert bar.canvas.itemcget(bar._slots[0]["name"], "text") == "Library"
+    holder.destroy()
+    assert not errors

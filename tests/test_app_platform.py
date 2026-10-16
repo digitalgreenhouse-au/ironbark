@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import conftest
 import pytest
 from test_dragdrop import flac, music, touch  # noqa: F401  (music is a fixture)
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
@@ -572,13 +573,13 @@ def test_the_box_waits_while_the_window_is_minimised(root, tmp_path, monkeypatch
     copied = []
     monkeypatch.setattr(crash, "copy_text", lambda text, window=None: copied.append(text) or True)
     crash.attach(root, folder=lambda: tmp_path)
-    root.iconify()
+    conftest.minimise(root)
     _pump(root, 0.2)
     for n in range(50):   # (one kind: the same line, again and again)
         crash.report("in the cover-art thread", *error_info(f"lost {n}"))
     _pump(root, 1.2)
     assert Prompt.stack == [] and crash._pending.empty()   # none shown, and the rest not piling up
-    root.deiconify()
+    conftest.restore(root)
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline and not Prompt.stack:
         _pump(root, 0.1)

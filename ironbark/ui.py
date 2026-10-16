@@ -133,6 +133,7 @@ from . import (
     theme,
     tkgc,
     watcher,
+    winstate,
 )
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim
 from .engine import Player, State
@@ -1242,8 +1243,8 @@ class PlayerWindow:
 
     def settings_from_key(self):
         """Ctrl+, / Ctrl+P, in any window: Settings, with the player window brought to the front."""
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         self._open_settings()
 
@@ -1253,8 +1254,8 @@ class PlayerWindow:
         the whole library" row): stay in this tab, switch Whole library on and search for that."""
         if self.mini_mode:
             self.toggle_mini()
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         if query is None:
             main = self._main_tab(make=True)
@@ -2878,8 +2879,8 @@ class PlayerWindow:
         changed in Settings since, they're made afresh for the new folders."""
         if self.mini_mode:
             self.toggle_mini()
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         main = self._main_tab(make=True)
         if self.current != main:
@@ -4123,10 +4124,19 @@ class PlayerWindow:
             widget = self.root.winfo_containing(x_root, y_root)
         except (KeyError, tk.TclError):
             widget = None
+        if widget is None and self._inside_window(x_root, y_root):
+            # On X11 the program the drag comes from (Nemo, Nautilus) draws what's dragged as a
+            # window of its own, right under the pointer, so Tk finds none of ours there. The drop
+            # events come to this window alone: a point inside it is over it.
+            widget = self.root
         if widget is None or widget.winfo_toplevel() is not self.root:
             return None
         index = self.bar.tab_at(x_root, y_root) if not self.mini_mode else None
         return ("tab", index) if index is not None else ("window", None)
+
+    def _inside_window(self, x_root: int, y_root: int) -> bool:
+        x, y = x_root - self.root.winfo_rootx(), y_root - self.root.winfo_rooty()
+        return 0 <= x < self.root.winfo_width() and 0 <= y < self.root.winfo_height()
 
     def _show_drop_target(self, target, what: str = ""):
         """Light up where a drag would land: a tab gets an outline, the window a green edge.
@@ -4360,8 +4370,8 @@ class PlayerWindow:
 
     def bring_to_front(self):
         """Show the window in front of the others (from the taskbar if it was minimised)."""
-        if self.root.state() in ("iconic", "withdrawn"):
-            self.root.deiconify()
+        if self.root.state() == "withdrawn" or winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         if not self.on_top.get():   # in front once, without staying on top
             self.root.attributes("-topmost", True)
