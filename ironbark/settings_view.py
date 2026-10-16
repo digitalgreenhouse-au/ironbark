@@ -157,9 +157,10 @@ NET_KEEPS = (("none", "Don't keep"), ("session", "Until playback finishes"), ("d
 
 NET_SIZES = ((1, "1 GB"), (5, "5 GB"), (10, "10 GB"), (25, "25 GB"), (50, "50 GB"), (0, "Unlimited"))
 
-LOCAL_NETWORK_TEXT = ("Lets Ironbark read music on your home network (a NAS, a shared folder, a mapped drive) "
-                      "and keep copies here, so songs keep playing if the network drops (Network playback, below). "
-                      "Off, nothing on the network is read. Never the internet.")
+LOCAL_NETWORK_TEXT = ("Lets Ironbark read music on your home network (a NAS, a shared folder, "
+                      + ("a mapped drive" if platforms.IS_WINDOWS else "a network folder you've opened or mounted")
+                      + ") and keep copies here, so songs keep playing if the network drops (Network playback, "
+                      "below). Off, nothing on the network is read. Never the internet.")
 
 
 def caption(parent, text: str, first: bool = False):

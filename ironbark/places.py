@@ -13,6 +13,11 @@ took 42 s (measured), and so did asking Windows what kind of drive a server path
   download): an online-only file is a cloud file.
 - Anything else is local. (Google Drive's G: looks like a plain disk and stays local.)
 
+On Linux there are no drive letters or server paths: a network folder is a mounted one, told from
+the mount table alone (mounts.py) — an SMB or NFS mount, or a share the file manager opened (gvfs).
+Its server is read from the mount, and a song there is named by that share whatever folder it was
+reached through (`//server/share/…`), as on Windows.
+
 `source_key` names the file the same way whatever path reached it — a mapped `Z:\\x` and
 `\\\\192.168.80.173\\Shared\\x` are one copy — using the mapping the scheduler looked up
 (WNetGetConnectionW, QueryDosDeviceW). A letter not looked up yet keeps its own spelling: at
@@ -27,7 +32,7 @@ import time
 from collections import OrderedDict
 from enum import Enum
 
-from . import platforms
+from . import mounts, platforms
 from .audiofile import UrlPath
 
 DRIVE_REMOTE = 4
@@ -132,6 +137,15 @@ def _letter(text: str) -> str | None:
     return None
 
 
+def _mount_unc(place: mounts.Place, text: str) -> str:
+    """Linux: a song in a network folder named by its share, `//server/share/rest` — the same
+    whichever folder (fstab's mount, the file manager's) reached it. Without a server or share
+    (an unknown gvfs kind), the folder that stands for the share names it."""
+    rest = text[len(place.root):].lstrip("/")
+    head = f"//{place.server}/{place.share}" if place.server and place.share else place.root
+    return f"{head}/{rest}" if rest else head
+
+
 def network_target(letter: str) -> str | None:
     """The server path (`\\\\server\\share`) a drive letter ("Z:") stands for — a mapped network
     drive, or a `subst` onto a server path — or None. Asks Windows, which may wait on the network:
@@ -152,6 +166,13 @@ class Classifier:
         self._refreshed = -1e18
         self._cloud: OrderedDict[str, tuple[float, bool]] = OrderedDict()
         self._roots = _onedrive_roots()
+        self._mounts = mounts.Table(clock=clock) if platforms.IS_LINUX else None
+
+    def _mount_place(self, text: str) -> mounts.Place | None:
+        """Linux: the network folder `text` is in (mount table only), or None."""
+        if self._mounts is None or not text.startswith("/"):
+            return None
+        return self._mounts.place_of(text)
 
     # The scheduler's part --------------------------------------------------------------
     def refresh(self, force: bool = False) -> None:
@@ -222,6 +243,8 @@ class Classifier:
         text = os.fspath(path)
         if _unc_of(text) is not None:
             return Kind.SHARE
+        if self._mount_place(text) is not None:
+            return Kind.SHARE
         text = _strip_long(text)
         if text.startswith("\\\\"):
             return Kind.LOCAL   # a device path (\\.\C:)
@@ -235,6 +258,15 @@ class Classifier:
     def is_remote(self, path) -> bool:
         return self.classify(path) is not Kind.LOCAL
 
+    def smb_server(self, path) -> bool:
+        """Is this share song's server reached over SMB (so its file-sharing port answers when it's
+        up)? Windows' shares are; on Linux, only an SMB mount or the file manager's smb:// share —
+        not NFS, SFTP or WebDAV, whose servers can't be asked that way."""
+        if self._mounts is None:
+            return True
+        place = self._mount_place(os.fspath(path))
+        return place is not None and place.smb and bool(place.server)
+
     def any_remote(self, paths) -> bool:
         """Is any of `paths` on the network (a share, a mapped drive, an online-only OneDrive file)?
         Quick for a whole library: a drive letter is looked up once, whether a folder is inside a
@@ -245,6 +277,10 @@ class Classifier:
             if isinstance(path, UrlPath):
                 continue
             text = os.fspath(path)
+            if self._mounts is not None:
+                if self._mount_place(text) is not None:
+                    return True
+                continue
             if text[:2] in ("\\\\", "//"):   # a server path (or a device path: classified in full)
                 if self.classify(path) is not Kind.LOCAL:
                     return True
@@ -267,11 +303,14 @@ class Classifier:
 
     def unc(self, path) -> str | None:
         """The server path of a share song (a mapped letter turned into its server path when the
-        mapping is known)."""
+        mapping is known). Windows only: it's where the cache reads the song from. On Linux the
+        folder it was found in is already the way to it (see `source_key` for its name)."""
         text = os.fspath(path)
         unc = _unc_of(text)
         if unc is not None:
             return unc
+        if self._mounts is not None:
+            return None
         text = _strip_long(text)
         letter = _letter(text)
         if letter is None:
@@ -286,6 +325,9 @@ class Classifier:
             return "url:" + path.url
         text = os.fspath(path)
         if kind is Kind.SHARE:
+            place = self._mount_place(text)
+            if place is not None:   # (Linux: case matters in names there)
+                return "smb:" + _mount_unc(place, text)
             return "smb:" + os.path.normcase(self.unc(path) or _strip_long(text))
         if kind is Kind.CLOUD:
             return "cloud:" + os.path.normcase(text)
@@ -294,6 +336,9 @@ class Classifier:
     def host_of(self, path) -> str:
         kind = self.classify(path)
         if kind is Kind.SHARE:
+            place = self._mount_place(os.fspath(path))
+            if place is not None:
+                return place.server or "share"
             unc = self.unc(path)
             if unc:
                 return unc[2:].split("\\", 1)[0].lower()

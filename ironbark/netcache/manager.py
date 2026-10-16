@@ -202,6 +202,7 @@ class Host:
 
     def __init__(self, name: str, kind: str, clock=time.monotonic):
         self.name, self.kind = name, kind
+        self.smb = True                      # its file-sharing port says whether it's up (Linux: SMB mounts only)
         self.state = UP
         self.speed = policy.Speed(clock)
         self.score = policy.QualityScore()   # the quality class, with hysteresis
@@ -388,7 +389,7 @@ class Manager:
             self.items[key] = item
         self._paths.setdefault(key, path)
         if host and host not in self.hosts:
-            self._add_host(host, kind.value)
+            self._add_host(host, kind.value).smb = kind is Kind.SHARE and self.classifier.smb_server(path)
         return item
 
     def _add_host(self, name: str, kind: str) -> Host:
@@ -1346,17 +1347,22 @@ class Manager:
                 host = self._probe_hosts.get(timeout=0.5)
             except queue.Empty:
                 continue
-            ok = host.kind != "share" or (_tcp_can_tell(host.name) and bool(self._probe_host(host.name)))
+            ok = host.kind != "share" or (self._tcp_can_tell(host) and bool(self._probe_host(host.name)))
             if not ok and self._look_at_files(host, self._clock()):
                 continue   # (its I/O thread says whether it's back)
             self._answered(host, ok, self._clock())
 
+    @staticmethod
+    def _tcp_can_tell(host: Host) -> bool:
+        return host.smb and _tcp_can_tell(host.name)
+
     def _look_at_files(self, host: Host, now: float) -> bool:
         """The TCP probe can't tell about this server (a WebDAV drive, a drive letter whose server
-        isn't known), or hasn't reached it for a while (an NFS-only server, say): hand its I/O thread
-        one of its wanted songs to look at, watched like any call. False when there's none to ask."""
+        isn't known, a Linux NFS or SFTP mount), or hasn't reached it for a while (an NFS-only server,
+        say): hand its I/O thread one of its wanted songs to look at, watched like any call. False
+        when there's none to ask."""
         with self._lock:
-            if _tcp_can_tell(host.name) and (host.down_since is None or now - host.down_since < ASK_FILES_AFTER_S
+            if self._tcp_can_tell(host) and (host.down_since is None or now - host.down_since < ASK_FILES_AFTER_S
                                              or now - host.looked_at < ASK_FILES_AFTER_S):
                 return False
             wanted = [item for item in self.items.values() if item.host == host.name and item.priority is not None]
