@@ -3,7 +3,7 @@
    the page's own files; songs are never fetched (they're read from the listener's disk). */
 "use strict";
 
-const VERSION = "0.50.3";
+const VERSION = "0.50.4";
 const CACHE = "ironbark-web-" + VERSION;
 const FILES = [
   "./", "index.html", "ironbark.css", "manifest.webmanifest",
