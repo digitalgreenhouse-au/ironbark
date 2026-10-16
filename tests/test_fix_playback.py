@@ -839,3 +839,21 @@ def test_the_player_thread_survives_an_error(monkeypatch):
     del p._ended                                               # (back to the real one)
     p._ended_events.put(("end", fake))
     assert wait_for(lambda: p._message == "End of album") and closed
+
+
+# -- a position handed back as seconds starts on its own frame -------------------------------------
+def test_a_position_handed_back_as_seconds_starts_on_that_very_frame(tmp_path, fake_card):
+    """A resume (after the network, a lost device, another tab) hands the session the position it
+    left at, frames / rate as seconds. For about one position in twelve that float times the rate
+    comes back a hair under the whole frame, and cutting it down started one frame early: the
+    frame before the resume was heard twice."""
+    path, ref = wav(tmp_path, "t.wav", RATE)
+    early = [n for n in range(RATE // 4, RATE // 2) if int(n / RATE * RATE) != n][:3]
+    assert len(early) == 3
+    for n in early:
+        s = _Session(path, lambda p: 1.0, lambda s: None, start_at=n / RATE)
+        assert s.frames_played == n
+        s.start()
+        got = pump(s)
+        s.close()
+        assert np.array_equal(got[: RATE - n], ref[n:])

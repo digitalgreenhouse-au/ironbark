@@ -1368,7 +1368,10 @@ class _Session:
                 self.note = f"The sound device wouldn't start again ({exc}): check Output, then press play"
 
     def seek(self, seconds: float):
-        frame = int(max(0.0, seconds) * self.samplerate)
+        # Rounded, not cut down: a position handed back as seconds (frames / rate, on a resume) can
+        # come back a hair under its whole frame, and cutting that down started one frame early —
+        # the frame before the resume heard twice.
+        frame = round(max(0.0, seconds) * self.samplerate)
         frame = min(frame, max(0, self.total_frames - 1))
         with self._lock:
             self._seek_request = frame

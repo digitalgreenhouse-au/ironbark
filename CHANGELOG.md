@@ -4,6 +4,21 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.50.4 — 16/10/2026
+
+- **Fixed: no sample played twice when a song carries on from where it stopped.** Carrying on
+  after a pause for the network, after the sound device went away, or on another tab could start
+  one sample early — about one spot in twelve — so the last sample before the stop was heard
+  twice. It now carries on from exactly the next sample.
+
+## 0.50.3 — 16/10/2026
+
+- **Tests only: the window tests give the same answer whatever order they run in.** One test of the
+  `--self-check` start-up switched the whole test run to Windows' real display scaling, which can't be
+  switched back, so windows made by later tests had text too wide for their layout and a few of them
+  failed, depending on which tests ran first (and one test of the About window passed only because of
+  it). No change to the player itself.
+
 ## 0.50.2 — 16/10/2026
 
 - **Safer on a shared Mac or Linux computer.** When Ironbark is already open, a second launch hands
