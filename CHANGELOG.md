@@ -16,6 +16,11 @@ bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 - Known limits on the Mac for now: a few button symbols show as letters, shortcut hints say Ctrl
   (⌘ works too), opening a song from Finder with a double-click doesn't reach the player yet, and
   the app isn't signed.
+## 0.50.5 — 16/10/2026
+
+- Linux: the list of third-party software now names BLT 2.5 (MIT licence), which the Linux
+  download includes because the distribution's tkinter is linked to it. Its licence text was
+  already in the download's `licenses` folder. No change to the player.
 
 ## 0.50.4 — 16/10/2026
 

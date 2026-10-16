@@ -72,10 +72,11 @@ packages' own licence files, and for the native libraries above the texts kept i
 The Linux build is made on the distribution's own Python 3.12 and Tcl/Tk 8.6 (built with Xft, so
 text is drawn with the desktop's fonts), not the python-build-standalone runtime the table above
 describes. So the Python runtime, Tcl/Tk, PortAudio, OpenSSL, SQLite, Expat, libffi, liblzma, bzip2
-and zlib inside it are the distribution's builds, under the same licences as above. The C and C++
-run-time libraries (`libgcc_s`, `libstdc++`) are GPL-3.0-or-later **with the GCC Runtime Library
-Exception**, which allows them in programs under any licence. Every library in the build has its
-licence text in `Ironbark/licenses/`: the Python packages' own files, the texts in
+and zlib inside it are the distribution's builds, under the same licences as above. It also carries
+**BLT 2.5** (`libBLT`, MIT licence), a Tk extension the distribution's tkinter is linked to. The C
+and C++ run-time libraries (`libgcc_s`, `libstdc++`) are GPL-3.0-or-later **with the GCC Runtime
+Library Exception**, which allows them in programs under any licence. Every library in the build has
+its licence text in `Ironbark/licenses/`: the Python packages' own files, the texts in
 `packaging/licenses/`, and each system library's copyright file from its distribution package
 (listed in `licenses/SYSTEM-LIBRARIES.txt`). The build stops if a library has no licence file or is
 GPL without such an exception (`packaging/linux/licence_check.py`).
