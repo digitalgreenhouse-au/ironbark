@@ -4,6 +4,12 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.50.5 — 16/10/2026
+
+- Linux: the list of third-party software now names BLT 2.5 (MIT licence), which the Linux
+  download includes because the distribution's tkinter is linked to it. Its licence text was
+  already in the download's `licenses` folder. No change to the player.
+
 ## 0.50.4 — 16/10/2026
 
 - **Fixed: no sample played twice when a song carries on from where it stopped.** Carrying on
