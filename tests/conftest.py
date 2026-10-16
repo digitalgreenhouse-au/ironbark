@@ -185,6 +185,34 @@ def _nothing_system_wide(monkeypatch):
     monkeypatch.setattr(mediakeys, "KeyboardHook", _NoKeyboardHook)
 
 
+def minimise(window) -> None:
+    """Minimise `window` the way its window manager does, and wait (3 s at most) until it has: an X11
+    window manager applies it a moment later, and Cinnamon's keeps the window mapped (winstate.py)."""
+    import time
+
+    from ironbark import winstate
+
+    window.iconify()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and winstate.on_screen(window):
+        window.update()
+        time.sleep(0.01)
+
+
+def restore(window) -> None:
+    """Bring `window` back from `minimise`, as the player does (winstate.restore: Tk's deiconify
+    doesn't on Cinnamon), and wait (3 s at most) until it's on screen again."""
+    import time
+
+    from ironbark import winstate
+
+    winstate.restore(window)
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not winstate.on_screen(window):
+        window.update()
+        time.sleep(0.01)
+
+
 binned: list[str] = []   # what tests "sent to the Recycle Bin" (deleted instead, and noted here)
 
 
@@ -200,6 +228,7 @@ def _no_real_recycle_bin(monkeypatch):
 
     monkeypatch.setattr(recycle, "_shell_delete", delete)
     monkeypatch.setattr(recycle, "_to_mac_bin", delete)
+    monkeypatch.setattr(recycle, "_to_trash", delete)
 
 
 @pytest.fixture

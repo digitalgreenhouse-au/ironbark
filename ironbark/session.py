@@ -31,6 +31,8 @@ from . import audiofile, devices, platforms
 from .library import format_rate
 from .proof import SentRecord, apply_gain
 
+_SYSTEM = "Windows" if platforms.IS_WINDOWS else "the system"   # (named in what the player says)
+
 log = logging.getLogger(__name__)
 
 
@@ -1085,7 +1087,7 @@ class _Session:
             self.dropouts += 1
             ready = self._queue.qsize() * BLOCK_FRAMES / self.samplerate
             self._event("dropout", f"the sound driver ran short, though the player had {ready:.1f} s of "
-                                   "music ready: Windows or the driver was held up (a busy computer)")
+                                   f"music ready: {_SYSTEM} or the driver was held up (a busy computer)")
         if self.paused:
             outdata.fill(0)
             return

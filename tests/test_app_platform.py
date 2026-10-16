@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import conftest
 import pytest
 from test_dragdrop import flac, music, touch  # noqa: F401  (music is a fixture)
 from test_light_mini import _pump, make_window  # noqa: F401  (make_window is a fixture)
@@ -86,6 +87,48 @@ def test_the_socket_way_works_the_same(tmp_path):
     after = instance.claim_with_socket(key, tmp_path)
     assert after.first
     after.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="file modes are a Mac / Linux matter")
+def test_the_socket_key_can_be_read_by_this_user_only(tmp_path):
+    old = os.umask(0o022)   # (the usual umask: without care the file would be readable by everyone)
+    try:
+        key = unique_key()
+        running = instance.claim_with_socket(key, tmp_path)
+        try:
+            assert (tmp_path / f"{key}.json").stat().st_mode & 0o777 == 0o600
+        finally:
+            running.close()
+    finally:
+        os.umask(old)
+
+
+def test_a_private_file_is_written_whole_and_readable_again(tmp_path):
+    target = tmp_path / "sub" / "secret.json"
+    settings.write_file(target, '{"key": "x"}', private=True)
+    settings.write_file(target, '{"key": "y"}', private=True)   # (replaces it, as before)
+    assert target.read_text(encoding="utf-8") == '{"key": "y"}'
+    assert [p.name for p in target.parent.iterdir()] == ["secret.json"]   # no temporary left behind
+    if sys.platform != "win32":
+        assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_request_whose_key_isnt_text_is_ignored():
+    assert instance.decode(b'{"paths": ["a"], "key": 1}', "1") is None
+    assert instance.decode(b'{"paths": ["a"], "key": null}', "") is None
+
+
+@windows_only
+def test_a_pipe_in_another_windows_session_is_never_told_anything(monkeypatch):
+    key = unique_key()
+    running = instance.claim(key)
+    later = instance.claim(key)
+    try:
+        monkeypatch.setattr(instance, "_session", lambda: 987654)   # (as if this launch were in another session)
+        assert later.forward(["a.flac"], timeout=2) is False
+        assert running.requests.empty()
+    finally:
+        running.close()
 
 
 @windows_only
@@ -572,13 +615,13 @@ def test_the_box_waits_while_the_window_is_minimised(root, tmp_path, monkeypatch
     copied = []
     monkeypatch.setattr(crash, "copy_text", lambda text, window=None: copied.append(text) or True)
     crash.attach(root, folder=lambda: tmp_path)
-    root.iconify()
+    conftest.minimise(root)
     _pump(root, 0.2)
     for n in range(50):   # (one kind: the same line, again and again)
         crash.report("in the cover-art thread", *error_info(f"lost {n}"))
     _pump(root, 1.2)
     assert Prompt.stack == [] and crash._pending.empty()   # none shown, and the rest not piling up
-    root.deiconify()
+    conftest.restore(root)
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline and not Prompt.stack:
         _pump(root, 0.1)

@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
 import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from .. import APP_NAME, audiofile, controls, placement, shapes, theme, toolwin
+from .. import APP_NAME, audiofile, controls, placement, shapes, theme, toolwin, winstate
 from ..analysis import CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse, lossy_below
 from ..engine import Health, OutputInfo, PlaybackEvent, Player, State
 from ..flacframes import FrameIndex, build_index
@@ -429,6 +430,10 @@ class NowPlayingWindow:
         theme.dark_title_bar(self.win)
 
         self._track_path: Path | None = None
+        # The workers hold these, never the window (toolwin.Handback): the song on show, and what
+        # they hand back — ("stored", path) or ("index", path, FrameIndex) — taken in on the tick.
+        self._showing = toolwin.Handback(path=None)
+        self._handed: queue.Queue = queue.Queue()
         self._index: FrameIndex | None = None
         self._shown_db: list[float] = []
         self._analysis: Analysis | None = None
@@ -613,13 +618,13 @@ class NowPlayingWindow:
             self.win.geometry(f"{width}x{height}")
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
         self.win.focus_force()
 
     # -- per track -----------------------------------------------------------
     def _on_track_change(self, track: Track):
-        self._track_path = track.path
+        self._track_path = self._showing.path = track.path
         self._cancel.set()
         self._cancel = threading.Event()
         self._analysis_state = None   # (the last track's check is cancelled; its watch stops)
@@ -668,19 +673,33 @@ class NowPlayingWindow:
 
     def _look_up_stored(self, path: Path):
         """Ask (on a worker) for the library check's result for this song; the tick shows it."""
+        stored, cache, stored_when, handed = self.stored, self._analysis_cache, self._stored_when, self._handed
+
         def work():
             try:
-                found = self.stored(path)
+                found = stored(path)
             except Exception:  # noqa: BLE001 — without it, the Check button is there as before
                 log.info("couldn't look up the stored check of %s", path, exc_info=True)
                 found = None
             if found is not None:
                 result, when = found
-                self._analysis_cache.setdefault(path, result)
-                self._stored_when[path] = when
-                self._stored_found = path
+                cache.setdefault(path, result)
+                stored_when[path] = when
+                handed.put(("stored", path))
 
         threading.Thread(target=work, name="stored-check", daemon=True).start()
+
+    def _take_handed(self):
+        """(The tick.) What the workers handed back, taken in here on Tk's thread."""
+        while True:
+            try:
+                item = self._handed.get_nowait()
+            except queue.Empty:
+                return
+            if item[0] == "stored":
+                self._stored_found = item[1]
+            elif item[1] == self._track_path:   # a frame index, for the song still on show
+                self._index = item[2]
 
     def _take_stored(self):
         """(The tick.) A stored result for the song on show came in: shown, unless a check is running."""
@@ -694,6 +713,8 @@ class NowPlayingWindow:
             self._index = self._index_cache[path]
             return
         self._index = None
+        cache, keep, showing, closed, handed = (self._index_cache, self.INDEX_CACHE_SIZE, self._showing,
+                                                self._closed, self._handed)
 
         def work():
             # (A song on a network drive: its complete copy on this computer, once there is one —
@@ -703,18 +724,17 @@ class NowPlayingWindow:
                 source = audiofile.local_copy(path)
                 if source is not None:
                     break
-                if path != self._track_path or self._closed.wait(INDEX_LOOK_S):
+                if path != showing.path or closed.wait(INDEX_LOOK_S):
                     return
             try:
                 index = builder(source)
             except Exception:  # noqa: BLE001 — no live bitrate is fine; the average still shows
                 index = None
-            cache = self._index_cache
             cache[path] = index
-            while len(cache) > self.INDEX_CACHE_SIZE:
+            while len(cache) > keep:
                 cache.pop(next(iter(cache)))
-            if path == self._track_path:
-                self._index = index
+            if path == showing.path:
+                handed.put(("index", path, index))
 
         threading.Thread(target=work, name="frame-index", daemon=True).start()
 
@@ -785,7 +805,7 @@ class NowPlayingWindow:
         state = {"folder": folder, "progress": 0.0, "done": False}
         self._album_state = state
         self.album_button.configure(state="disabled")
-        cancel = self._album_cancel
+        cancel, cache = self._album_cancel, self._album_cache   # (the thread never holds the window)
 
         def work():
             try:
@@ -796,7 +816,7 @@ class NowPlayingWindow:
                 log.exception("measuring the album %s", folder)
                 result = None
             if result is not None:
-                self._album_cache[folder] = result
+                cache[folder] = result
             state["done"] = True
 
         threading.Thread(target=work, name="album-loudness", daemon=True).start()
@@ -850,7 +870,7 @@ class NowPlayingWindow:
         state = {"folder": folder, "progress": 0.0, "done": False}
         self._log_state = state
         self.log_button.configure(state="disabled")
-        cancel = self._rip_cancel
+        cancel, cache = self._rip_cancel, self._log_cache   # (the thread never holds the window)
 
         def work():
             try:
@@ -859,7 +879,7 @@ class NowPlayingWindow:
                 result = ripcheck.LogCheck(problem=f"something went wrong ({error})")
             if result is not None:
                 for file in (result.rip.files if result.rip is not None else [audiofile.real_path(path)]):
-                    self._log_cache[file] = result
+                    cache[file] = result
             state["done"] = True
 
         threading.Thread(target=work, name="rip-log-check", daemon=True).start()
@@ -889,14 +909,16 @@ class NowPlayingWindow:
         self._analysis_state = state
         self.check_button.configure(state="disabled")
         cancel = self._cancel
+        # (The thread never holds the window: what it needs, it's given here.)
+        remember, cache, stored_when = self.remember, self._analysis_cache, self._stored_when
 
         def work():
             try:
                 st = os.stat(audiofile.real_path(path))
                 result = analyse(path, track.bits, track.md5,
                                  progress=lambda p: state.__setitem__("progress", p), cancel=cancel)
-                if result is not None and self.remember is not None:
-                    self.remember(track, result, (st.st_size, st.st_mtime_ns))
+                if result is not None and remember is not None:
+                    remember(track, result, (st.st_size, st.st_mtime_ns))
             except (OSError, RuntimeError):  # won't even open: damaged from the start
                 result = Analysis(md5_ok=False, dr=None, peak_dbfs=float("-inf"), damaged_at=0.0,
                                   duration=track.duration)
@@ -904,8 +926,8 @@ class NowPlayingWindow:
                 log.exception("checking %s", path)
                 result, state["error"] = None, f"{type(exc).__name__}: {exc}"
             if result is not None:
-                self._analysis_cache[path] = result
-                self._stored_when.pop(path, None)   # (checked here and now)
+                cache[path] = result
+                stored_when.pop(path, None)   # (checked here and now)
             state["done"] = True
 
         threading.Thread(target=work, name="analysis", daemon=True).start()
@@ -940,6 +962,7 @@ class NowPlayingWindow:
         track = status.track
         if track is not None and track.path != self._track_path:
             self._on_track_change(track)
+        self._take_handed()
         if self._stored_found is not None:
             self._take_stored()
         if not toolwin.on_screen(self.win):
@@ -1193,6 +1216,8 @@ class NowPlayingWindow:
         self._album_cancel.set()
         self._rip_cancel.set()
         self._closed.set()
+        self._showing.path = None
         if self._job:
             self.win.after_cancel(self._job)
+        self._meter_pictures = []   # its pictures go here, on Tk's thread (the shared cache may have let go of them)
         self.win.destroy()

@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from . import APP_NAME, __version__, controls, experiments, keys, placement, platforms, theme
+from . import APP_NAME, __version__, controls, experiments, keys, placement, platforms, theme, winstate
 from .playlist_view import fit_columns
 from .searchfold import fold
 from .virtual_list import CELL_ROOM, ELLIPSIS
@@ -378,7 +378,7 @@ class HelpWindow:
                 self.prefs["help_geometry"] = geometry
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
         self.win.focus_force()
 
@@ -537,7 +537,7 @@ class AboutWindow:
                 self.prefs["about_geometry"] = geometry
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
         self.win.focus_force()
 

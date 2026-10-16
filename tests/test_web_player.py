@@ -63,6 +63,8 @@ def test_no_outside_addresses_or_network_calls():
             assert call not in body, f"{path.name} uses {call}"
     # the offline copy fetches only the page's own files, from where the page came from
     assert "url.origin !== self.location.origin" in text(WEB / "sw.js")
+    # …and the browser waits for each saved copy to be written before it may stop the worker
+    assert "ev.waitUntil(caches.open(CACHE).then((c) => c.put(" in text(WEB / "sw.js")
 
 
 def test_nothing_inline_that_the_lock_would_block():

@@ -4,6 +4,38 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.50.2 — 16/10/2026
+
+- **Safer on a shared Mac or Linux computer.** When Ironbark is already open, a second launch hands
+  it the files to play through a small note only you can read: other people signed in to the same
+  computer could read it before, and so could make your player open files. On Windows, a later
+  launch now talks only to an Ironbark running in your own Windows session.
+- **Linux: the Linux improvements reach the main line** — bringing back a minimised window under
+  Cinnamon and GNOME, deleting a playlist to the Trash (so the file manager can put it back),
+  dropping files from Nemo, Windows' editing keys in text boxes, and the Library tab's plate under
+  its name.
+- **Linux: a playlist reached through a link is binned on the disk it's really on**, and a window
+  closed at the wrong moment can no longer end the program while Ironbark asks the desktop whether
+  it's minimised.
+- **The web player checks a very large file safely** even when the file doesn't say how long it
+  is, and keeps its offline copy reliably.
+- Messages on a Mac or Linux no longer mention Windows.
+- Behind the scenes: the automatic checks on GitHub now fail when the Linux tests fail, and a test
+  that hangs stops the run within minutes.
+
+## 0.50.1 — 16/10/2026
+
+- **Fixed (behind the scenes): the other tool windows are now always cleaned up on the right
+  thread too,** as the Clipping window was in 0.49.4. The background work in Now Playing (its
+  check, the album and rip-log checks, the stored-result look-up, the live-bitrate index), the
+  Spectrogram's whole-track picture, Test signals' measurement and Compare kept hold of their
+  window, so a window closed while that work was still going could be freed on the background
+  thread, where Tk objects must never be freed. The work now hands its results over without
+  holding the window. ABX, Meters, Spectrogram and Test signals also let go of their Tk settings
+  when they close, and Now Playing of its meter pictures. Nothing changes in how the windows look
+  or behave.
+- The web player's version number matches the desktop player's again (it had stayed at 0.49.4).
+
 ## 0.50.0 — 16/10/2026
 
 - **Ironbark always opens as the full window.** It used to come back as the mini strip if that's

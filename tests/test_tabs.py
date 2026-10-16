@@ -53,7 +53,7 @@ def _opener(state):
     from ironbark.engine import Status
 
     calls = []
-    w = SimpleNamespace(tabs=[], notices=[], calls=calls, _tier="column", view="tracks",
+    w = SimpleNamespace(tabs=[], current=0, notices=[], calls=calls, _tier="column", view="tracks",
                         player=SimpleNamespace(status=lambda: Status(state, 0, None, 0.0, 0.0)))
     w._set_notice = lambda text, ms=5000: w.notices.append(text)
     w.select_tab = lambda index, then_play=False: calls.append((index, then_play))
