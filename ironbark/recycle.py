@@ -56,10 +56,24 @@ def can_recycle(path) -> bool:
         kernel32.GetDriveTypeW.restype = ctypes.c_uint
         return kernel32.GetDriveTypeW(drive + "\\") == _DRIVE_FIXED
     if platforms.IS_MAC:
-        return (Path.home() / ".Trash").is_dir()
+        return _same_disk_as_mac_bin(os.path.abspath(os.fspath(path)))
     if platforms.IS_LINUX:
         return _trash_for(_resolved(os.path.abspath(os.fspath(path)))) is not None
     return False
+
+
+def _same_disk_as_mac_bin(full: str) -> bool:
+    """A Mac: the file can go to ~/.Trash only from the same disk (a move to another one fails, and
+    another disk's own .Trashes is Finder's to manage). Anything under /Volumes is another disk or
+    a network share: told from its path alone, so asking never waits on a server."""
+    if full == "/Volumes" or full.startswith("/Volumes/"):
+        return False
+    trash = Path.home() / ".Trash"
+    try:
+        here = os.stat(os.path.dirname(os.path.realpath(full))).st_dev
+        return trash.is_dir() and here == trash.stat().st_dev
+    except OSError:
+        return False
 
 
 def recycle(path) -> None:

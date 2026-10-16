@@ -147,8 +147,8 @@ def _describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float,
             return (f"Sent exactly as in the file ({checked}), but the device takes {output.device_bits}-bit "
                     f"samples, so it isn't bit-perfect", "warn")
         return f"✓ Bit-perfect, proven: every sample sent is identical to the file ({checked})", "good"
-    return (f"✓ The player sent every sample unchanged ({checked}). In shared mode {MIXER} mixes it next: "
-            f"use “{CHECK_MIXER}” below to see what that does", "plain")
+    hint = f": use “{CHECK_MIXER}” below to see what that does" if loopback.AVAILABLE else ""
+    return f"✓ The player sent every sample unchanged ({checked}). In shared mode {MIXER} mixes it next{hint}", "plain"
 
 
 def describe_health(health: Health | None, dropouts: int) -> tuple[str, str]:
@@ -504,9 +504,11 @@ class NowPlayingWindow:
             value = ttk.Label(proof, text="—", anchor="w", justify="left", wraplength=theme.px(VALUE_WRAP))
             value.grid(row=row, column=1, sticky="w", pady=theme.px(1))
             self.values[key] = value
-        self._label(proof, 3, MIXER, theme.pad(theme.GAP, 1))
+        # Recording what the mixer does to the sound needs a loopback of the output: Windows only.
         self.windows_frame = ttk.Frame(proof)
-        self.windows_frame.grid(row=3, column=1, sticky="w", pady=theme.pad(theme.GAP, 1))
+        if loopback.AVAILABLE:
+            self._label(proof, 3, MIXER, theme.pad(theme.GAP, 1))
+            self.windows_frame.grid(row=3, column=1, sticky="w", pady=theme.pad(theme.GAP, 1))
         self.windows_button = controls.FlatButton(self.windows_frame, CHECK_MIXER,
                                                   self._start_windows_check)
         self.windows_button.grid(row=0, column=0, columnspan=2, sticky="w")

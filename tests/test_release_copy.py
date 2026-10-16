@@ -40,7 +40,8 @@ def test_the_proof_line_names_the_button_under_it():
     from ironbark.proof import Proof
     text, _tone = details.describe_proof(Proof(sent=60, checked=60), OutputInfo("Speakers", 48000, 48000, False),
                                          1.0, 1.0, bits=16, codec="FLAC")
-    assert f"“{details.CHECK_MIXER}”" in text
+    # (The button, and so the line's hint, is only there where the mixer can be recorded: Windows.)
+    assert (f"“{details.CHECK_MIXER}”" in text) == details.loopback.AVAILABLE
     assert details.CHECK_MIXER == f"Check what {statustext.MIXER} does to the sound"
 
 

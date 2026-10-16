@@ -320,6 +320,7 @@ class _Session:
         self._pending = None       # the rest of a queued block, carried into the next request
         self._draining = False     # the decoder has queued the end of the chain
         self.note = ""             # e.g. why exclusive mode wasn't possible
+        self._claim: devices.Claim | None = None  # the device held for bit-perfect (see devices.claim)
         self.levels: tuple[float, ...] = (0.0,) * self.channels
         self.track_peak = 0.0
         self.dropouts = 0
@@ -359,8 +360,12 @@ class _Session:
         self.dtype = "int32" if self.exclusive else "float32"   # the samples (int24 streams pack int32's)
         self.device_name = self._lookup_device_name()
         self.mixer_rate = devices.mixer_rate(index)
-        # What the device really takes in exclusive mode: PortAudio converts to a narrower format by itself.
-        self.device_bits = devices.exclusive_bits(self._stream) if self.exclusive else None
+        # What the device really takes in exclusive mode: on a Mac, the format bit-perfect set it to;
+        # on Windows, PortAudio converts to a narrower format by itself.
+        self.device_bits = None
+        if self.exclusive:
+            self.device_bits = (self._claim.bits if self._claim and self._claim.bits
+                                else devices.exclusive_bits(self._stream))
         self.health.usual_wait = BLOCK_FRAMES / self.samplerate
         try:
             self._latency = float(self._stream.latency)
@@ -413,7 +418,7 @@ class _Session:
             kind, callback = sd.RawOutputStream, self._packed_callback
         else:
             kind, callback = sd.OutputStream, self._callback
-        return kind(device=index, extra_settings=sd.WasapiSettings(exclusive=True), dither_off=True,
+        return kind(device=index, extra_settings=devices.exclusive_settings(), dither_off=True,
                     clip_off=True, **self._stream_kwargs(fmt, callback))
 
     def _open_exclusive(self, index):
@@ -445,22 +450,29 @@ class _Session:
             if not devices.exclusive_supported() or index is None:
                 self.note = "Bit-perfect mode isn't available on this system"
             else:
-                stream = None
+                stream = claim = None
                 try:
+                    claim = devices.claim(index, self.samplerate)
                     stream, self.stream_format = self._open_exclusive(index)
                     stream.start()
                     devices.holding(stream)
+                    self._claim = claim
                     return stream, True
+                except devices.Refused as exc:
+                    log.info("bit-perfect refused: %s", exc)
+                    self.note = f"Bit-perfect isn't possible here ({exc}) — playing shared"
                 except sd.PortAudioError as exc:
                     log.info("exclusive mode refused: %s", exc)
                     if stream is not None:
                         stream.close(ignore_errors=True)
                     self.note = (f"Device won't take {format_rate(self.samplerate)} in bit-perfect mode "
                                  f"(or another app holds it) — playing shared")
+                if claim is not None:
+                    claim.release()
         # Shared. On Windows: WASAPI with auto-convert, so Windows resamples to its mixer rate.
         self.stream_format = "float32"
-        extra =sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS and index is not None else None
-        stream = sd.OutputStream(device=index, extra_settings=extra, **self._stream_kwargs("float32"))
+        stream = sd.OutputStream(device=index, extra_settings=devices.shared_settings(index),
+                                 **self._stream_kwargs("float32"))
         try:
             stream.start()
         except BaseException:
@@ -1399,6 +1411,9 @@ class _Session:
             log.exception("closing output stream")
         finally:
             devices.released(self._stream)
+        if self._claim is not None:
+            self._claim.release()
+            self._claim = None
         if not self._decoder_started:
             with self._lock:
                 sources, self._sources = self._sources, []

@@ -80,6 +80,72 @@ def test_system_default_falls_back_to_portaudio_default(monkeypatch):
     assert devices.find_device(None) == 0
 
 
+class FakeMac:
+    """A Mac whose Core Audio lists `live` (ids 10, 11, ...) with `default` the system default,
+    while PortAudio still lists what it saw at start-up."""
+
+    def __init__(self, monkeypatch, live, default, portaudio=None):
+        from ironbark import coreaudio
+
+        self.live, self.default, self.rescans = list(live), default, 0
+        self.portaudio = list(portaudio if portaudio is not None else live)
+        monkeypatch.setattr(devices, "IS_MAC", True)
+        monkeypatch.setattr(devices, "IS_WINDOWS", False)
+        monkeypatch.setattr(devices, "_streams", weakref.WeakSet())
+        monkeypatch.setattr(devices, "_portaudio_outputs", lambda: list(enumerate(self.portaudio)))
+        monkeypatch.setattr(devices, "_portaudio_default", lambda: 0)
+        monkeypatch.setattr(devices, "rescan", self._rescan)
+        monkeypatch.setattr(coreaudio, "_get", self.get)
+        monkeypatch.setattr(coreaudio, "_name", lambda d: self.live[d - 10])
+
+    def get(self, obj, selector, ctype, scope=0, element=0):
+        from ironbark import coreaudio
+
+        if selector == coreaudio.DEVICES:
+            return [10 + k for k in range(len(self.live))]
+        if selector == coreaudio.STREAMS:
+            return [obj * 10]
+        if selector == coreaudio.DEFAULT_OUTPUT:
+            return [10 + self.live.index(self.default)]
+        return None
+
+    def _rescan(self):
+        self.rescans += 1
+        self.portaudio = list(self.live)
+
+
+def test_mac_lists_headphones_plugged_in_after_launch(monkeypatch):
+    # The dropdown reads Core Audio's live list, not PortAudio's start-up one.
+    FakeMac(monkeypatch, ["Mac mini Speakers", "External Headphones"], "External Headphones",
+            portaudio=["Mac mini Speakers"])
+    assert devices.output_names() == ["Mac mini Speakers", "External Headphones"]
+    assert devices.default_output_name() == "External Headphones"
+
+
+def test_mac_choosing_new_headphones_rescans_portaudio_once(monkeypatch):
+    mac = FakeMac(monkeypatch, ["Mac mini Speakers", "External Headphones"], "Mac mini Speakers",
+                  portaudio=["Mac mini Speakers"])
+    assert devices.find_device("External Headphones") == 1
+    assert mac.rescans == 1
+    assert devices.find_device("External Headphones") == 1 and mac.rescans == 1
+
+
+def test_mac_system_default_moved_to_new_headphones(monkeypatch):
+    # macOS made the headphones the default when they went in; PortAudio hasn't seen them.
+    mac = FakeMac(monkeypatch, ["Mac mini Speakers", "External Headphones"], "External Headphones",
+                  portaudio=["Mac mini Speakers"])
+    assert devices.find_device(None) == 1
+    assert mac.rescans == 1
+
+
+def test_mac_unplugged_device_is_not_rescanned_for(monkeypatch):
+    mac = FakeMac(monkeypatch, ["Mac mini Speakers"], "Mac mini Speakers",
+                  portaudio=["Mac mini Speakers", "External Headphones"])
+    assert devices.output_names() == ["Mac mini Speakers"]
+    assert devices.find_device("External Headphones") == 1   # PortAudio still has it: no re-scan needed
+    assert devices.find_device("Old DAC") is None and mac.rescans == 0
+
+
 def test_a_slow_volume_query_keeps_the_last_answer(monkeypatch):
     """A query that times out mustn't turn a known "has a volume control" into "don't know"
     (the player would then turn the volume down for nothing)."""

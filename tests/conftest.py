@@ -213,6 +213,16 @@ def restore(window) -> None:
         time.sleep(0.01)
 
 
+@pytest.fixture(autouse=True)
+def _never_hold_a_real_device(monkeypatch):
+    """Bit-perfect on a Mac hogs the device and changes its format. Tests that switch it on
+    with stand-in streams must never do that to the real sound card they run beside."""
+    from ironbark import devices
+
+    monkeypatch.setattr(devices, "claim", lambda index, rate: devices.Claim())
+    monkeypatch.setattr(devices, "restore_formats", lambda keep=None: None)
+
+
 binned: list[str] = []   # what tests "sent to the Recycle Bin" (deleted instead, and noted here)
 
 

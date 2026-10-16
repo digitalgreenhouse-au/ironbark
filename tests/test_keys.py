@@ -53,6 +53,10 @@ def test_keys_are_normalised_caps_lock_ignored():
     assert keys.normalise("ISO_Left_Tab", CONTROL) == (frozenset({"Ctrl", "Shift"}), "tab")
     assert keys.normalise("Up", ALT | 0x8) == (frozenset({"Alt"}), "up")         # (Num Lock is ignored)
     assert keys.normalise("KP_Enter", CONTROL) == (frozenset({"Ctrl"}), "return")
+    # Tk 9 on a Mac names punctuation by the character: "/" for slash, "," for Ctrl+, (Settings).
+    assert keys.normalise("/", 0) == keys.normalise("slash", 0) == (frozenset(), "slash")
+    assert keys.normalise(",", CONTROL) == (frozenset({"Ctrl"}), "comma")
+    assert keys.normalise("?", SHIFT) == (frozenset({"Shift"}), "question")
     assert keys.parse("Ctrl+Shift+PgUp") == (frozenset({"Ctrl", "Shift"}), "prior")
     assert keys.parse("Ctrl+,") == (frozenset({"Ctrl"}), "comma") and keys.parse("?") == (frozenset(), "question")
 
