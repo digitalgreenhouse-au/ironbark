@@ -64,7 +64,9 @@ out.mkdir(parents=True)
 shutil.copy2(REPO / "LICENSE", out / "Ironbark-LICENSE.txt")
 shutil.copy2(REPO / "THIRD_PARTY_LICENSES.md", out)
 
-SHIPPED = ["numpy", "pillow", "soundfile", "sounddevice", "cffi", "pycparser", "tkinterdnd2", "pyinstaller"]
+# Every Python package in the build whose licence travels with it: each runtime dependency for Linux
+# (pyproject.toml; a test checks they match), what they bring along, and PyInstaller's own run-time code.
+SHIPPED = ["numpy", "pillow", "soundfile", "sounddevice", "cffi", "pycparser", "tkinterdnd2", "jeepney", "pyinstaller"]
 for name in SHIPPED:
     dist = metadata.distribution(name)
     for file in dist.files or []:

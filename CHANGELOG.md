@@ -4,6 +4,13 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.51.1 — 17/10/2026
+
+The first release with downloads for Windows, macOS and Linux: everything in 0.51.0 below, plus:
+
+- Linux download: the licence of jeepney (MIT), the library behind the media keys, is now included
+  with the others in `Ironbark/licenses`.
+
 ## 0.51.0 — 17/10/2026
 
 Downloads for Windows, macOS and Linux, all built from this version.
