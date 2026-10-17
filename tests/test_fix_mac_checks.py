@@ -264,6 +264,13 @@ def test_the_systems_request_to_close_runs_the_ordinary_close_on_tks_thread(a_si
     assert closed == []                 # the handler itself closes nothing
     root.run_timers()
     assert closed == [threading.main_thread()]
+    # Still watching until the window has gone (the entry point stops it after the main loop): a
+    # second request while the close runs, or after one called off, is caught too.
+    assert root.jobs and signal.getsignal(a_signal) == watcher._heard
+    signal.raise_signal(a_signal)
+    root.run_timers()
+    assert closed == [threading.main_thread()] * 2
+    watcher.stop()
     assert not root.jobs and signal.getsignal(a_signal) != watcher._heard   # stopped watching
 
 
