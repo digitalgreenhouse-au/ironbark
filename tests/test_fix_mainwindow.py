@@ -177,9 +177,9 @@ def _other_album(tmp_path) -> Path:
 def _slow_scan(window, gate):
     real = window._scan
 
-    def scan(folder, whole_tree=False):
+    def scan(folder, whole_tree=False, progress=None):
         gate.wait(5)
-        return real(folder, whole_tree)
+        return real(folder, whole_tree, progress)
     return scan
 
 
@@ -221,7 +221,7 @@ def test_a_loader_that_fails_unexpectedly_still_finishes(make_window, tmp_path):
     window, root, player, errors = make_window()
     other = _other_album(tmp_path)
 
-    def broken(folder, whole_tree=False):
+    def broken(folder, whole_tree=False, progress=None):
         raise ValueError("a file the readers didn't expect")
     window._scan = broken
     window.tabs.append(Tab("folder", str(other)))

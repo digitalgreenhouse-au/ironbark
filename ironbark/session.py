@@ -31,6 +31,8 @@ from . import audiofile, devices, platforms
 from .library import format_rate
 from .proof import SentRecord, apply_gain
 
+_SYSTEM = "Windows" if platforms.IS_WINDOWS else "the system"   # (named in what the player says)
+
 log = logging.getLogger(__name__)
 
 
@@ -313,11 +315,13 @@ class _Session:
         self._nudge = threading.Event()   # wakes the decoder from a wait (a seek, a change, closing)
         self._decoder_started = False
         self.paused = False
+        self._paused_since: float | None = None   # when it was paused by hand (paused_for)
         self.frames_played = 0     # in the file being heard
         self._ended = False
         self._pending = None       # the rest of a queued block, carried into the next request
         self._draining = False     # the decoder has queued the end of the chain
         self.note = ""             # e.g. why exclusive mode wasn't possible
+        self._claim: devices.Claim | None = None  # the device held for bit-perfect (see devices.claim)
         self.levels: tuple[float, ...] = (0.0,) * self.channels
         self.track_peak = 0.0
         self.dropouts = 0
@@ -344,7 +348,7 @@ class _Session:
             index = devices.find_device(device)
             if index is None and device is not None:
                 if want_exclusive:
-                    raise devices.DeviceMissing(f"{device} isn't connected")
+                    raise devices.missing(device)
                 self.note = f"{device} isn't connected — playing on the system default"
                 index = devices.find_device(None)
             outputs = devices.max_output_channels(index)
@@ -357,8 +361,12 @@ class _Session:
         self.dtype = "int32" if self.exclusive else "float32"   # the samples (int24 streams pack int32's)
         self.device_name = self._lookup_device_name()
         self.mixer_rate = devices.mixer_rate(index)
-        # What the device really takes in exclusive mode: PortAudio converts to a narrower format by itself.
-        self.device_bits = devices.exclusive_bits(self._stream) if self.exclusive else None
+        # What the device really takes in exclusive mode: on a Mac, the format bit-perfect set it to;
+        # on Windows, PortAudio converts to a narrower format by itself.
+        self.device_bits = None
+        if self.exclusive:
+            self.device_bits = (self._claim.bits if self._claim and self._claim.bits
+                                else devices.exclusive_bits(self._stream))
         self.health.usual_wait = BLOCK_FRAMES / self.samplerate
         try:
             self._latency = float(self._stream.latency)
@@ -411,7 +419,7 @@ class _Session:
             kind, callback = sd.RawOutputStream, self._packed_callback
         else:
             kind, callback = sd.OutputStream, self._callback
-        return kind(device=index, extra_settings=sd.WasapiSettings(exclusive=True), dither_off=True,
+        return kind(device=index, extra_settings=devices.exclusive_settings(), dither_off=True,
                     clip_off=True, **self._stream_kwargs(fmt, callback))
 
     def _open_exclusive(self, index):
@@ -443,22 +451,30 @@ class _Session:
             if not devices.exclusive_supported() or index is None:
                 self.note = "Bit-perfect mode isn't available on this system"
             else:
-                stream = None
+                stream = claim = None
                 try:
+                    claim = devices.claim(index, self.samplerate)
                     stream, self.stream_format = self._open_exclusive(index)
                     stream.start()
                     devices.holding(stream)
+                    self._claim = claim
                     return stream, True
+                except devices.Refused as exc:
+                    log.info("bit-perfect refused: %s", exc)
+                    self.note = (f"Bit-perfect: {exc} — playing shared for now" if exc.advice
+                                 else f"Bit-perfect isn't possible here ({exc}) — playing shared")
                 except sd.PortAudioError as exc:
                     log.info("exclusive mode refused: %s", exc)
                     if stream is not None:
                         stream.close(ignore_errors=True)
                     self.note = (f"Device won't take {format_rate(self.samplerate)} in bit-perfect mode "
                                  f"(or another app holds it) — playing shared")
+                if claim is not None:
+                    claim.release()
         # Shared. On Windows: WASAPI with auto-convert, so Windows resamples to its mixer rate.
         self.stream_format = "float32"
-        extra =sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS and index is not None else None
-        stream = sd.OutputStream(device=index, extra_settings=extra, **self._stream_kwargs("float32"))
+        stream = sd.OutputStream(device=index, extra_settings=devices.shared_settings(index),
+                                 **self._stream_kwargs("float32"))
         try:
             stream.start()
         except BaseException:
@@ -1085,7 +1101,7 @@ class _Session:
             self.dropouts += 1
             ready = self._queue.qsize() * BLOCK_FRAMES / self.samplerate
             self._event("dropout", f"the sound driver ran short, though the player had {ready:.1f} s of "
-                                   "music ready: Windows or the driver was held up (a busy computer)")
+                                   f"music ready: {_SYSTEM} or the driver was held up (a busy computer)")
         if self.paused:
             outdata.fill(0)
             return
@@ -1320,6 +1336,12 @@ class _Session:
             return 0.0
         return max(0.0, now - wait.silent_since)
 
+    def paused_for(self, now: float) -> float:
+        """Seconds paused by hand so far (0 when playing)."""
+        if not self.paused or self._paused_since is None:
+            return 0.0
+        return max(0.0, now - self._paused_since)
+
     @property
     def network_wait(self) -> WaitInfo | None:
         """The pause for the network the listener hears (committed, or already silent), if any."""
@@ -1336,6 +1358,7 @@ class _Session:
         if paused == self.paused:
             return
         self.paused = paused
+        self._paused_since = time.perf_counter() if paused else None
         self._last_callback = None  # the pause itself isn't a late request
         self._primed = False
         wait = self.waiting
@@ -1351,10 +1374,14 @@ class _Session:
             log.exception("pause/resume")
             if not paused:
                 self.paused = True  # it isn't playing: say so, rather than show "playing" in silence
+                self._paused_since = time.perf_counter()
                 self.note = f"The sound device wouldn't start again ({exc}): check Output, then press play"
 
     def seek(self, seconds: float):
-        frame = int(max(0.0, seconds) * self.samplerate)
+        # Rounded, not cut down: a position handed back as seconds (frames / rate, on a resume) can
+        # come back a hair under its whole frame, and cutting that down started one frame early —
+        # the frame before the resume heard twice.
+        frame = round(max(0.0, seconds) * self.samplerate)
         frame = min(frame, max(0, self.total_frames - 1))
         with self._lock:
             self._seek_request = frame
@@ -1397,6 +1424,9 @@ class _Session:
             log.exception("closing output stream")
         finally:
             devices.released(self._stream)
+        if self._claim is not None:
+            self._claim.release()
+            self._claim = None
         if not self._decoder_started:
             with self._lock:
                 sources, self._sources = self._sources, []

@@ -87,7 +87,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("stop_after", _keys("Ctrl+.",), "app", "Stop after this song (again: carry on)", "Playback"),
     Action("sleep_timer", _keys("Ctrl+Shift+S",), "app", "Sleep timer and Stop after (a menu)", "Playback"),
     # -- Tabs & lists --------------------------------------------------------------------------
-    Action("new_tab", _keys("Ctrl+T",), "main", "New tab menu (the + button)", "Tabs & lists"),
+    Action("new_tab", _keys("Ctrl+T",), "main", "New tab (the + button)", "Tabs & lists"),
     Action("close_tab", _keys("Ctrl+W",), "main", "Close the tab", "Tabs & lists"),
     Action("reopen_tab", _keys("Ctrl+Shift+T",), "main", "Reopen the tab closed last", "Tabs & lists"),
     Action("next_tab", _keys("Ctrl+Tab", "Ctrl+PgDn"), "main", "Next tab", "Tabs & lists"),
@@ -334,6 +334,29 @@ def readme_section() -> str:
 
 
 # -- the dispatcher ------------------------------------------------------------------------------
+# The Emacs keys X11's Tk adds to the text boxes' events, and the keys Windows' Tk has there instead.
+_X11_EMACS_KEYS = {
+    "<<Paste>>": ("<Control-Key-y>", "<Control-Lock-Key-Y>"),
+    "<<Copy>>": ("<Meta-Key-w>", "<Lock-Meta-Key-W>"),
+    "<<LineStart>>": ("<Control-Key-a>", "<Control-Lock-Key-A>"),
+    "<<SelectLineStart>>": ("<Control-Key-A>", "<Control-Lock-Key-a>"),
+    "<<LineEnd>>": ("<Control-Key-e>", "<Control-Lock-Key-E>"),
+    "<<SelectLineEnd>>": ("<Control-Key-E>", "<Control-Lock-Key-e>"),
+    "<<NextChar>>": ("<Control-Key-f>", "<Control-Lock-Key-F>"),
+    "<<SelectNextChar>>": ("<Control-Key-F>", "<Control-Lock-Key-f>"),
+    "<<PrevChar>>": ("<Control-Key-b>", "<Control-Lock-Key-B>"),
+    "<<SelectPrevChar>>": ("<Control-Key-B>", "<Control-Lock-Key-b>"),
+    "<<NextLine>>": ("<Control-Key-n>", "<Control-Lock-Key-N>"),
+    "<<SelectNextLine>>": ("<Control-Key-N>", "<Control-Lock-Key-n>"),
+    "<<PrevLine>>": ("<Control-Key-p>", "<Control-Lock-Key-P>"),
+    "<<SelectPrevLine>>": ("<Control-Key-P>", "<Control-Lock-Key-p>"),
+}
+_WINDOWS_EDIT_KEYS = {
+    "<<SelectAll>>": ("<Control-Key-a>", "<Control-Lock-Key-A>"),
+    "<<Redo>>": ("<Control-Key-y>", "<Control-Lock-Key-Y>"),
+}
+
+
 class Keys:
     """The app's keyboard. `handlers` are the main window's: action id → callable (an `arg`
     action's handler takes the key as written in the table). A handler that returns False didn't
@@ -360,6 +383,14 @@ class Keys:
         # On X11, Tk also makes Ctrl+W a Cut (an Emacs habit): in a text box it would cut the selection
         # as well as close the tab. Windows' and the Mac's Tk don't; removing it is harmless there.
         root.event_delete("<<Cut>>", "<Control-Key-w>", "<Control-Lock-Key-W>")
+        if platforms.IS_LINUX:
+            # X11's Tk gives text boxes more Emacs keys than Windows' does, and some meet the key table:
+            # there they take Windows' meaning (Ctrl+A selects all, Ctrl+Y redoes) and do nothing else
+            # (Ctrl+N doesn't also move the cursor). (The Mac keeps its own: Ctrl+A/E/F/B are the Mac's too.)
+            for event, keys in _X11_EMACS_KEYS.items():
+                root.event_delete(event, *keys)
+            for event, keys in _WINDOWS_EDIT_KEYS.items():
+                root.event_add(event, *keys)
 
     # -- windows -------------------------------------------------------------------------------
     def attach(self, window: tk.Misc, scope: str = "app", handlers: dict[str, Callable] | None = None):

@@ -20,9 +20,9 @@ from collections.abc import Callable
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from . import controls, devices, experiments, keyfocus, keys, levelling, settings, theme
+from . import controls, devices, experiments, keyfocus, keys, levelling, platforms, settings, theme
 from .analysis import GUARD_HEADROOM_CHOICES, headroom_index, headroom_label
-from .tabbar import Popover, SettingRow, Tooltip
+from .tabbar import IconButton, Popover, SettingRow, Tooltip
 
 PAGES = ("simple", "advanced")
 
@@ -47,6 +47,11 @@ class SettingsView:
         self.advanced = tk.Frame(self.area.inner, bg=theme.SURFACE)
         self.frame.bind("<Escape>", lambda e: self.close() or "break")
         self.bar = self.done_button = self.page_button = None   # (made by finish, after the window's controls)
+        # The X at the top right of the head: back to the player, as Done, Esc and the gear are.
+        self.close_button = IconButton(self.head, root, "close", self.close, size=theme.ICON_SMALL, width=28,
+                                       bg="SURFACE", hover="SURFACE_HI", fg="MUTED", hover_fg="TEXT",
+                                       label="Back to the player (also Esc, Done, or the gear)")
+        self.close_button.configure(cursor="hand2")
 
     def finish(self):
         """The bottom bar, made last so the keyboard's Tab order starts at the top of the page:
@@ -152,9 +157,10 @@ NET_KEEPS = (("none", "Don't keep"), ("session", "Until playback finishes"), ("d
 
 NET_SIZES = ((1, "1 GB"), (5, "5 GB"), (10, "10 GB"), (25, "25 GB"), (50, "50 GB"), (0, "Unlimited"))
 
-LOCAL_NETWORK_TEXT = ("Lets Ironbark read music on your home network (a NAS, a shared folder, a mapped drive) "
-                      "and keep copies here, so songs keep playing if the network drops (Network playback, below). "
-                      "Off, nothing on the network is read. Never the internet.")
+LOCAL_NETWORK_TEXT = ("Lets Ironbark read music on your home network (a NAS, a shared folder, "
+                      + ("a mapped drive" if platforms.IS_WINDOWS else "a network folder you've opened or mounted")
+                      + ") and keep copies here, so songs keep playing if the network drops (Network playback, "
+                      "below). Off, nothing on the network is read. Never the internet.")
 
 
 def caption(parent, text: str, first: bool = False):
@@ -360,6 +366,7 @@ def build_controls(win, view: SettingsView):
     b, a = view.simple, view.advanced
     row = view.head
     ttk.Label(row, text="Settings", style="PopTitle.TLabel").pack(side="left")
+    view.close_button.pack(side="right", padx=theme.pad(theme.GAP, 0))
     win.mini_button = pop_button(row, "Mini player", win.toggle_mini,   # (it closes Settings first)
                                         "Shrink the player to a small strip. Also Z, or double-click the cover")
     win.mini_button.pack(side="right")
@@ -452,17 +459,21 @@ def build_controls(win, view: SettingsView):
                              "peak allows (it stays under −0.1 dB true peak).")
 
     caption(a, "Window")
-    setting(a, win.root, "Media keys", "Play/pause, next, previous keys and Windows' media panel.",
-                  win.media_controls, win._toggle_media)
+    if platforms.MEDIA_CONTROLS:   # (Windows and Linux; not yet a Mac)
+        panel = "Windows' media panel" if platforms.IS_WINDOWS else "the desktop's sound menu"
+        setting(a, win.root, "Media keys", f"Play/pause, next, previous keys and {panel}.",
+                      win.media_controls, win._toggle_media)
     row = ttk.Frame(a, style="Pop.TFrame")
     row.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
-    win.home_text = ttk.Label(row, text="", style="Pop.TLabel")
-    win.home_text.pack(side="left", fill="x", expand=True)
+    # The buttons take their room first, so a narrow window shortens the text instead of
+    # drawing it over them.
     win.snap_button = pop_button(row, "Snap to home", lambda: (win._close_settings(), win.snap_home()),
                                         "Also Ctrl+Shift+H, or double-click the empty strip at the top")
     win.snap_button.pack(side="right")
     pop_button(row, "Use current", win.make_home, "Make the window's current spot and size its home").pack(
         side="right", padx=theme.pad(0, theme.GAP))
+    win.home_text = ttk.Label(row, text="", style="Pop.TLabel")
+    win.home_text.pack(side="left", fill="x", expand=True)
     setting(a, win.root, "Open at home", "Start up at the home position.", win.open_at_home)
     win._update_home_text()
 

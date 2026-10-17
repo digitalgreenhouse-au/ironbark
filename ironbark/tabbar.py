@@ -243,10 +243,49 @@ class IconButton(tk.Label):
         self.active = active
         self._paint(False)
 
+    def set_glyph(self, name: str):
+        """Show another of GLYPHS (a pause button that becomes play)."""
+        text = glyph(self.winfo_toplevel(), name)
+        if str(self.cget("text")) != text:
+            self.configure(text=text)
+
+    def repaint(self):
+        """After a palette change: the resting colours of the new palette."""
+        self._paint(False)
+
     def _paint(self, hover: bool):
         lit = hover or self.active
         self.configure(bg=theme.colour(self._hover if lit else self._bg),
                        fg=theme.colour(self._hover_fg if hover else ("ACCENT_TEXT" if self.active else self._fg)))
+
+
+class ElsewhereButton(IconButton):
+    """The pause / play button at the end of the status line while music plays in another tab (the
+    line says "♪ Playing in another tab: …"): the music can be paused, and started again, without
+    leaving the tab on show — the transport's play belongs to that tab, and starts it. `show` places
+    it over the end of `line` (the status label) or takes it away, with the glyph the opposite of the
+    music's state."""
+
+    def __init__(self, parent, root, line: tk.Misc, command: Callable[[], None]):
+        super().__init__(parent, root, "pause", command, size=theme.ICON_SMALL, width=24, bg="BG",
+                         hover="SURFACE_HI", fg="MUTED", hover_fg="TEXT", label=lambda: self.hint)
+        self.configure(cursor="hand2")
+        self._line = line
+        self.playing: bool | None = None
+        self.hint = ""
+
+    def show(self, on: bool, playing: bool = True):
+        if not on:
+            if self.winfo_manager():
+                self.place_forget()
+            return
+        if playing != self.playing:
+            self.playing = playing
+            self.set_glyph("pause" if playing else "play")
+            self.hint = ("Pause the music playing in the other tab"
+                         if playing else "Carry on playing the music in the other tab")
+        if not self.winfo_manager():
+            self.place(in_=self._line, relx=1.0, rely=0.5, anchor="e")
 
 
 class RoundIconButton(Focusable, IconButton):
@@ -564,8 +603,13 @@ class TabBar(tk.Frame):
                 self._pictures.pop(item, None)
             self._shown.pop()
         if made:
-            for layer in self.LAYERS:
-                c.tag_raise(layer)
+            self._restack()
+
+    def _restack(self):
+        """Every item in its layer's place (LAYERS, bottom first): an item made later would
+        otherwise sit on top of all the others."""
+        for layer in self.LAYERS:
+            self.canvas.tag_raise(layer)
 
     def _layout(self):
         n = len(self._titles)
@@ -696,8 +740,10 @@ class TabBar(tk.Frame):
     def _tint_plates(self):
         """A plate (three canvas items) per tinted tab, made as needed."""
         wanted = sorted(self._tinted)
-        while len(self._tints) < len(wanted):
-            self._tints.append(self._three_slice("plate", 1))
+        if len(self._tints) < len(wanted):
+            while len(self._tints) < len(wanted):
+                self._tints.append(self._three_slice("plate", 1))
+            self._restack()   # (under the names: made after them, a plate would hide its tab's name)
         for plate in self._tints[len(wanted):]:
             self._hide(*plate)
         return list(zip(wanted, self._tints))
@@ -1072,10 +1118,11 @@ class SettingRow(tk.Frame):
             w.bind("<ButtonRelease-1>", lambda e: released_over(e, self) and self.toggle.toggle())
 
     def _column_changed(self, event):
-        """The text column changed width: the description wraps at its new edge. (The width comes from
-        the panel, never from the text, so a new wrap can't change it again.)"""
-        if event.width > 1 and int(self.about.cget("wraplength")) != event.width:
-            self.about.configure(wraplength=event.width)
+        """The text column changed width: the description wraps inside its new edge. (Until Settings
+        is shown, the column's width comes from the text itself: theme.wrap_inside keeps the label
+        from asking for more than it has, so the two settle.)"""
+        if event.width > 1:
+            theme.wrap_inside(self.about, event.width)
 
 
 DISABLED_FADE = 0.45   # (0.21.0) a greyed-out menu item: its text this far from MUTED toward the background

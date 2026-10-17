@@ -139,8 +139,23 @@ def _run(paths: list[str], here: instance.Instance) -> None:
         collector.restore_on_close = False
     crash.attach(root, before=getattr(window, "_for_prompt", None))
     threading.Thread(target=_sweep_tag_copies, name="tag-copies-sweep", daemon=True).start()
-    root.mainloop()
+    quitting = _quit_on_signal(root, window)
+    try:
+        root.mainloop()
+    finally:
+        if quitting is not None:
+            quitting.stop()
     _note_clean_exit()
+
+
+def _quit_on_signal(root, window):
+    """The system's request to close (SIGTERM) runs the window's ordinary close (quitsignal.py)."""
+    close = getattr(window, "quit", None)
+    if close is None or not hasattr(root, "after"):
+        return None
+    from . import quitsignal
+
+    return quitsignal.QuitOnSignal(root, close)
 
 
 def _note_clean_exit() -> None:

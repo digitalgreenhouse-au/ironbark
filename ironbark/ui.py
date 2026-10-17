@@ -107,13 +107,16 @@ from . import (
     experiments,
     keys,
     levelling,
+    library,
     library_check,
     library_db,
     library_index,
     library_tracks,
+    loadprogress,
     logs,
     loudness,
     mediakeys,
+    mpris,
     offthread,
     passthrough,
     placement,
@@ -131,6 +134,7 @@ from . import (
     theme,
     tkgc,
     watcher,
+    winstate,
 )
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim
 from .engine import Player, State
@@ -155,6 +159,7 @@ from .playlist_view import PlaylistView
 from .searchfold import fold
 from .settings_view import SETTINGS_WIDTH, VOLUME_STEP
 from .statustext import (
+    MIXER,
     cache_mark,
     copy_failed_text,
     copy_note,
@@ -163,7 +168,7 @@ from .statustext import (
     network_now_line,
     output_line,
 )
-from .tabbar import MenuRow, Popover, TabBar, Tooltip, glyph
+from .tabbar import ElsewhereButton, MenuRow, Popover, TabBar, Tooltip, glyph
 from .tag_window import TagHistoryWindow, TagWindow
 from .tools.details import NowPlayingWindow
 from .tools.meters import album_files
@@ -179,6 +184,8 @@ READ_HERE_MOST = 2_000   # songs of a library tab read on Tk's thread for an act
 MEDIA_POLL_MS = 60   # how often presses from media keys / Windows' media panel are picked up
 AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
+VOLUME_CONTROL = ("Mac's volume keys" if platforms.IS_MAC else "Windows volume slider" if platforms.IS_WINDOWS
+                  else "desktop's volume control")
 SEEK_STEP = 5.0
 LONG_SEEK_STEP = 30.0  # Shift+← / →
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
@@ -199,6 +206,7 @@ FULL_MIN_SIZE = (300, 260)  # px at 100%: the full window's smallest size (the m
 # made full screen; its height is free.
 FULL_MAX_WIDTH = 560        # px at 100%: the full window's widest
 NO_LIMIT = 32000            # px: a size Tk is told not to cap (taller than any screen)
+_STOP_WORKER = object()     # put on a background worker's queue: that worker ends
 DROP_GAP = 4               # px at 100%: a pop-over from the strip opens this far below it
 HEAD_ICON_SLOT = 24        # px at 100%: the lock's and ⓘ's slots (and round hover discs) beside the format line
 INFO_INK_INSET = 6         # px at 100%: the ⓘ glyph's ink stops this far inside its slot (measured from Segoe
@@ -426,8 +434,10 @@ def _queued_alone(playing_tab: int | None, status) -> bool:
 @dataclass
 class Tab:
     kind: str                         # "album" (from the Library), "folder" (everything under it), "library",
-                                      # "playlist" (an .m3u8 file; path is the file) or "files" (music files
+                                      # "playlist" (an .m3u8 file; path is the file), "files" (music files
                                       # dropped from Explorer: they're its extras; path = the first one's folder)
+                                      # or "new" (a blank tab from the + button, like a browser's: path "";
+                                      # the first thing opened from it takes its place)
     path: str                         # "" = the main Library tab (every library folder; 0.40.0)
     query: str = ""                   # Library search, for a "library" tab
     name: str = ""                    # a name given with Rename… (shown on the strip in place of the album's)
@@ -462,11 +472,18 @@ class Tab:
         return self.kind == "library" and self.path == ""
 
     @property
+    def blank(self) -> bool:
+        """A new tab with nothing opened in it yet (the + button)."""
+        return self.kind == "new"
+
+    @property
     def title(self) -> str:
         if self.name:
             return self.name
         if self.main:
             return "Library"
+        if self.blank:
+            return "New tab"
         if self.kind == "playlist":
             return Path(self.path).stem
         if self.album_name:
@@ -496,6 +513,16 @@ class Tab:
         if self.main or (kind == "library" and str(path) == ""):
             return self.main and kind == "library" and str(path) == ""
         return self.kind == kind and Path(self.path) == Path(path) and self.query == query
+
+
+def place_new_tab(tabs: list[Tab], current: int, tab: Tab) -> int:
+    """Where a tab just opened goes: in place of the blank tab being looked at (used up, as a
+    browser's new-tab page is by the first thing opened from it), else at the end. Returns its index."""
+    if 0 <= current < len(tabs) and tabs[current].blank:
+        tabs[current] = tab
+        return current
+    tabs.append(tab)
+    return len(tabs) - 1
 
 
 def tab_numbers(tab: Tab) -> tuple[int, int, float]:
@@ -607,7 +634,7 @@ class PlayerWindow:
         self._held_key = None    # what the songs held round the one playing were worked out for
         self._opened_key = None                  # the song last marked as opening its album
         self.media = mediakeys.MediaKeys()        # presses from media keys / Windows arrive here
-        self._windows_media = None                # mediakeys.WindowsMedia while switched on
+        self._windows_media = None                # mediakeys.WindowsMedia (mpris.MprisMedia on Linux) while on
         self._drop_overlay: list[tk.Frame] = []   # the green edge shown while something is dragged over
         self._drop_shown = None                   # what's lit up for a drag now: ("tab", i) / ("window", None)
         experiments.tidy(self.prefs)  # forget switches for experiments since rolled in or dropped
@@ -673,11 +700,9 @@ class PlayerWindow:
         chrome.remove_caption(root)   # before restoring the size, so it isn't counted twice
         home = self.prefs["home_geometry"]
         start = home if self.open_at_home.get() and home else self.prefs["geometry"]
-        if self.prefs["mini_mode"]:   # left as the mini strip last time: open that way
-            self._show_mini(True)
-            start = self._mini_geometry(start)
-        if not placement.restore(root, start) and placement.parse(start) is None and self.mini_mode:
-            root.geometry(f"{theme.px(MINI_DEFAULT_SIZE[0])}x{theme.px(MINI_DEFAULT_SIZE[1])}")
+        # The player always opens as the full window: the mini strip is for the session it was asked
+        # for (Z, or double-click the cover), and it comes back at its own last place.
+        placement.restore(root, start)
         root.deiconify()
         self._settle_size(start)
         theme.dark_title_bar(root)
@@ -689,6 +714,10 @@ class PlayerWindow:
         self._polls = 0
         self._saved_snapshot = json.dumps(self.prefs, sort_keys=True)
         root.protocol("WM_DELETE_WINDOW", self.quit)
+        if platforms.IS_MAC:
+            # Cmd+Q, or Quit from the Dock, reaches Tk as an Apple event that Tk would answer by
+            # ending the program on the spot: it closes the player the ordinary way instead.
+            root.createcommand("::tk::mac::Quit", self.quit)
         if self.exclusive.get():
             # Bit-perfect from the start: the device may not be last time's (a different Windows
             # default, or the chosen one unplugged), so the same ear check as switching it on —
@@ -718,7 +747,7 @@ class PlayerWindow:
         theme.apply(self.root)
         theme.on_change(self._palette_changed)
         self.bar = TabBar(self.root, self.root, on_select=self.select_tab, on_close=self.close_tab,
-                          on_new=lambda: self.new_menu.toggle(self.bar.add_btn, self._below_strip()),
+                          on_new=self.new_blank_tab,
                           on_settings=lambda: self._open_settings(),
                           on_double=self._bar_double_click, on_quit=self.quit,
                           on_tab_menu=self._tab_menu, on_move=self.move_tab)
@@ -866,6 +895,8 @@ class PlayerWindow:
         # over the line, so nothing else moves).
         self.undo_link = ttk.Label(body, text=f"Undo ({keys.hint('undo')})", style="UpNext.TLabel", cursor="hand2")
         self.undo_link.bind("<Button-1>", lambda e: self._link_clicked())
+        # Music in another tab: pause / play at the end of the status line (tabbar.ElsewhereButton).
+        self.elsewhere_button = ElsewhereButton(body, self.root, self.status_label, lambda: self.player.toggle_pause())
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu,
@@ -902,6 +933,19 @@ class PlayerWindow:
         self.empty_button = controls.PillButton(middle, "Open your library", self.open_library,
                                                 label="Your albums, artists and playlists (Ctrl+L)")
         self.empty_button.pack()
+        # (a blank tab's page) The other ways in, under it: a folder, a new playlist, a playlist file.
+        self.empty_folder_button = controls.PillButton(
+            middle, f"Open a folder… ({keys.hint('open_folder')})", self.choose_folder, kind="plain", small=True,
+            bg="BG", label="Play everything in a folder, in order, in this tab")
+        self.empty_folder_button.pack(pady=theme.pad(theme.GAP_LARGE, 0))
+        self.empty_playlist_button = controls.PillButton(
+            middle, f"New playlist… ({keys.hint('new_playlist')})", lambda: self.new_playlist(), kind="plain",
+            small=True, bg="BG", label="An empty playlist to add songs to")
+        self.empty_playlist_button.pack(pady=theme.pad(theme.GAP_SMALL, 0))
+        self.empty_file_button = controls.PillButton(
+            middle, f"Open a playlist file… ({keys.hint('open_playlist')})", self.open_playlist_file, kind="plain",
+            small=True, bg="BG", label="An .m3u / .m3u8 playlist saved by Ironbark or another player")
+        self.empty_file_button.pack(pady=theme.pad(theme.GAP_SMALL, 0))
         self.empty_hint = ttk.Label(middle, text="Ctrl+L  ·  or drop a folder or music files here",
                                     style="Info.TLabel", anchor="center")
         self.empty_hint.pack(pady=theme.pad(theme.GAP_MEDIUM, 0))
@@ -916,6 +960,7 @@ class PlayerWindow:
         self.settings.finish()
         self.root.bind("<Escape>", lambda e: self._escape_settings(), add="+")
         self.new_menu = self._build_new_menu()
+        self.bar.add_btn.bind("<Button-3>", lambda e: self.open_new_menu())   # (the old menu, on a right-click)
 
         # Mini mode: built now, shown in place of the strip + body by toggle_mini.
         self.mini = MiniView(self.root, self.root, on_play=self.toggle_play, on_previous=self.player.previous,
@@ -1137,7 +1182,7 @@ class PlayerWindow:
             "volume": lambda key: self._step_volume(side(key)),
             "mute": call("toggle_mute"),
             "full_volume": call("full_volume"),
-            "new_tab": call("open_new_menu"),
+            "new_tab": call("new_blank_tab"),
             "close_tab": lambda: self.close_tab(self.current) if self.tabs else None,
             "open_album_tab": lambda: self.playlist.open_selected_album(),
             "add_to_this_playlist": lambda: self.playlist.add_selected_library_song(),
@@ -1183,8 +1228,17 @@ class PlayerWindow:
         return window
 
     # -- what the keys do (keys.py has which key is which) ------------------------------------------
+    def new_blank_tab(self):
+        """Ctrl+T and the + button: a blank tab, as a browser opens one — its page offers the library, a
+        folder and playlists, and the first thing opened from it takes its place on the strip."""
+        if self.mini_mode:
+            self.toggle_mini()
+        self.tabs.append(Tab("new", ""))
+        self.select_tab(len(self.tabs) - 1)
+
     def open_new_menu(self):
-        """Ctrl+T: the + button's menu (Browse library, Open a folder, New playlist, Open a playlist file)."""
+        """A right-click on the + button: its menu (Browse library, Open a folder, New playlist, Open a
+        playlist file)."""
         if self.mini_mode:
             self.toggle_mini()
         self.new_menu.toggle(self.bar.add_btn, self._below_strip())
@@ -1197,8 +1251,8 @@ class PlayerWindow:
 
     def settings_from_key(self):
         """Ctrl+, / Ctrl+P, in any window: Settings, with the player window brought to the front."""
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         self._open_settings()
 
@@ -1208,8 +1262,8 @@ class PlayerWindow:
         the whole library" row): stay in this tab, switch Whole library on and search for that."""
         if self.mini_mode:
             self.toggle_mini()
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         if query is None:
             main = self._main_tab(make=True)
@@ -1342,7 +1396,8 @@ class PlayerWindow:
         loud = "full level" if level >= 1.0 else volume_words(level)
         self._for_prompt()
         return popups.confirm(self.root, f"Turn the volume up to {level:.0%}?",
-                              f"{reason}, and bit-perfect goes round the Windows volume: the music will "
+                              f"{reason}, and bit-perfect goes round the "
+                              f"{'Windows volume' if platforms.IS_WINDOWS else VOLUME_CONTROL}: the music will "
                               f"play at {loud} (the volume is {volume_words(self.player.volume)} now). "
                               "Turn your headphone or amp volume down first.",
                               ok="Turn it up", danger=True, tone="warn")
@@ -1532,8 +1587,9 @@ class PlayerWindow:
             try:
                 path, kind = source.get("path", ""), source.get("kind")
                 main = kind == "library" and path == ""
-                if not (main or (path and isinstance(path, str)
-                                 and kind in ("album", "folder", "library", "playlist", "files"))):
+                blank = kind == "new" and path == ""
+                if not (main or blank or (path and isinstance(path, str)
+                                          and kind in ("album", "folder", "library", "playlist", "files"))):
                     continue
                 if main and any(t.main for t in self.tabs):
                     continue   # (one main Library tab)
@@ -1573,8 +1629,7 @@ class PlayerWindow:
             if tab.same(kind, path, query):
                 self.select_tab(i, then_play=play)
                 return
-        self.tabs.append(Tab(kind, str(path), query))
-        self.select_tab(len(self.tabs) - 1, then_play=play)
+        self.select_tab(place_new_tab(self.tabs, self.current, Tab(kind, str(path), query)), then_play=play)
 
     def select_tab(self, index: int, then_play: bool = False):
         if not 0 <= index < len(self.tabs):
@@ -1606,7 +1661,7 @@ class PlayerWindow:
         if closing.loading:   # the load under way is forgotten: reopened, the tab is read afresh
             self._forget_songs(closing)
         closing.play_when_loaded = False
-        if remember:
+        if remember and not closing.blank:   # (nothing was in a blank tab: nothing to reopen)
             self._closed_tabs = (self._closed_tabs + [(index, closing)])[-10:]
             self._set_notice(f"Closed “{closing.title}” · click here or press Ctrl+Shift+T to reopen", 8000)
         if index == self.playing_tab:
@@ -1677,16 +1732,27 @@ class PlayerWindow:
         if tab.loading:
             return
         tab.loading = True
-        progress = {"done": 0, "total": 0, "tracks": None, "missing": 0, "unavailable": False, "needs_network": False}
+        progress = {"done": 0, "total": 0, "tracks": None, "missing": 0, "unavailable": False, "needs_network": False,
+                    "text": ""}
         tab.load_progress = progress
         index = self._index()
         if tab.kind in ("album", "folder") and index.indexer.running:
             index.indexer.prioritise(tab.path)   # (a first look under way reads this one next)
 
+        def say(text: str):   # (from the worker) the status line says how far the load has got
+            progress["text"] = text
+            self.work.post(self._say_loading, tab, progress)
+
+        reporter = loadprogress.Reporter(tab.title, say)
+
         def work():
             try:
-                root = Path(tab.path) if not tab.main else None   # (the main Library tab: every library folder)
-                if root is not None and not places.allowed(root, self.prefs):
+                root = Path(tab.path) if not (tab.main or tab.blank) else None   # (the main Library tab: every folder)
+                if root is not None:
+                    reporter.say(loadprogress.opening_text(tab.title))   # (a network drive may take a while to answer)
+                if tab.blank:
+                    tracks = []   # (nothing opened in it yet)
+                elif root is not None and not places.allowed(root, self.prefs):
                     progress["unavailable"] = progress["needs_network"] = True   # on the network; the switch is off
                     tracks = []
                 elif root is not None and not (root.is_file() if tab.kind == "playlist" else root.is_dir()):
@@ -1701,13 +1767,13 @@ class PlayerWindow:
                         words = [fold(w) for w in tab.query.split()]
                         albums = [a for a in albums if browse.matches(a, words, fold)]
                     progress["total"] = len(albums)
-                    self.work.post(self._say_loading, tab, progress)
-                    tracks = self._library_tracks(albums)
+                    reporter.say(f"Loading library… {plural(len(albums), 'album')}")
+                    tracks = self._library_tracks(albums, reporter)
                     progress["done"] = len(albums)
                 elif tab.kind == "files":
                     tracks = []  # dropped files: all in extras
                 else:
-                    tracks = self._scan(root, whole_tree=tab.kind != "album")
+                    tracks = self._scan(root, whole_tree=tab.kind != "album", progress=reporter)
                 if not progress["unavailable"]:
                     # Albums / songs added later (a drive may be unplugged). Each song once: one
                     # added from an album the tab already holds isn't listed twice.
@@ -1741,9 +1807,10 @@ class PlayerWindow:
         start()
 
     def _say_loading(self, tab: Tab, progress: dict):
-        """A library tab's worker says how far it has got (on Tk's thread, through the queue)."""
-        if tab.load_progress is progress and progress["tracks"] is None and tab.kind == "library":
-            self._set_notice(f"Loading library… {progress['done']} of {progress['total'] or '?'} albums", 0)
+        """A tab's worker says how far its load has got (on Tk's thread, through the queue): the
+        status line shows it until the load ends (loadprogress.py has the words)."""
+        if tab.load_progress is progress and progress["tracks"] is None and progress["text"]:
+            self._set_notice(progress["text"], 0)
 
     def _extra_tracks(self, extra: str) -> list[Track]:
         """The songs an extra stands for: an album folder's, a file, or one track of a CUE image
@@ -1775,6 +1842,8 @@ class PlayerWindow:
             tab.loading, tab.load_progress = False, None
             return  # the tab was closed (or the tabs replaced) meanwhile: nothing to show
         tab.loading, tab.load_progress = False, None
+        if progress["text"] and self._notice == progress["text"]:
+            self._set_notice("", 0)   # (the load's last line goes: what follows says how it ended)
         play, tab.play_when_loaded = tab.play_when_loaded, False
         tab.unavailable, tab.needs_network = progress["unavailable"], progress["needs_network"]
         if tab.unavailable:
@@ -1800,10 +1869,13 @@ class PlayerWindow:
         elif progress["missing"]:
             self._set_notice(f"{progress['missing']} song(s) in “{tab.title}” can't be found: moved, or on a drive "
                              "that isn't plugged in?", 8000)
-        elif not tab.tracks:
+        elif not tab.tracks and not tab.blank:
             self._set_notice(f"No music files in {tab.title}")
         elif tab.kind == "library":
             self._set_notice(f"Loaded {plural(len(tab.tracks), 'song')} from {plural(progress['total'], 'album')}")
+        elif tab.kind == "folder":
+            songs, albums, _seconds = tab_numbers(tab)
+            self._set_notice(f"Loaded {plural(songs, 'song')} from {plural(albums, 'album')}")
         if index == self.current:
             self._show_current_tab()
         if play and tab.tracks:
@@ -1865,7 +1937,8 @@ class PlayerWindow:
                 self._load_tab_info(tab)
         mains = {i for i, t in enumerate(self.tabs) if t.main}
         self.bar.set_tabs([t.title for t in self.tabs], self.current, self.playing_tab, locked=mains, tinted=mains)
-        self._show_empty(not self.tabs)
+        self._show_empty(not self.tabs or self.tabs[self.current].blank if 0 <= self.current < len(self.tabs)
+                         else not self.tabs)
         if self._library_shown:
             self._library.opened()   # (its Add to tab button names the tab)
 
@@ -1873,7 +1946,7 @@ class PlayerWindow:
         """Look up a tab's album name without loading the whole album, so every tab is
         labelled properly (and shows its cover when flicked to) before you've opened it."""
         tab.info_requested = True
-        if tab.kind in ("library", "playlist"):
+        if tab.kind in ("library", "playlist", "new"):
             return
 
         def work():
@@ -2053,6 +2126,8 @@ class PlayerWindow:
 
         while True:
             path = self._peak_jobs.get()
+            if path is _STOP_WORKER:
+                return
             if isinstance(path, tuple):   # ("level", path): volume levelling's tags, loudness and peak
                 self._measure_for_levelling(path[1])
                 continue
@@ -2148,7 +2223,10 @@ class PlayerWindow:
         """Background worker: an album's loudness, all its tracks as one programme (for Album
         levelling when its tags have no album gain). Given up when another album is wanted."""
         while True:
-            folder, track_path = self._album_jobs.get()
+            job = self._album_jobs.get()
+            if job is _STOP_WORKER:
+                return
+            folder, track_path = job
             if folder in self._album_lufs or folder != self._album_wanted:
                 continue
             cancel = self._album_cancel
@@ -2738,7 +2816,7 @@ class PlayerWindow:
     # -- opening things ------------------------------------------------------
     def choose_folder(self):
         tab = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
-        initial = tab.path if tab else str(self._library_root())
+        initial = tab.path if tab and tab.path else str(self._library_root())
         folder = filedialog.askdirectory(title="Choose a folder of music", initialdir=initial, mustexist=True)
         if folder:
             self.open_tab("folder", folder, play=True)
@@ -2810,8 +2888,8 @@ class PlayerWindow:
         changed in Settings since, they're made afresh for the new folders."""
         if self.mini_mode:
             self.toggle_mini()
-        if self.root.state() == "iconic":
-            self.root.deiconify()
+        if winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         main = self._main_tab(make=True)
         if self.current != main:
@@ -2940,7 +3018,7 @@ class PlayerWindow:
             return index.albums()
         return find_albums(root) if root.is_dir() else []
 
-    def _library_tracks(self, albums: list) -> list[Track]:
+    def _library_tracks(self, albums: list, progress: loadprogress.Reporter | None = None) -> list[Track]:
         """Every song of these albums, in this order: from the database (nothing on disk is looked at
         again, so a whole library loads quickly), else read from the files. (A worker thread's work.)
         When the database holds every one of the albums, the list holds just the songs' ids and reads
@@ -2952,18 +3030,20 @@ class PlayerWindow:
             return light
         stored = index.albums_tracks([album.path for album in albums])
         tracks: list[Track] = []
-        for album in albums:
+        for done, album in enumerate(albums):
             found = stored.get(album.path)
+            if found is None and progress is not None:   # (read from the files: slow on a network drive)
+                progress.say(loadprogress.album_text(Path(album.path).name, done, len(albums)))
             tracks += found if found is not None else self._scan(album.path)
         return tracks
 
-    def _scan(self, folder: Path, whole_tree: bool = False) -> list[Track]:
+    def _scan(self, folder: Path, whole_tree: bool = False, progress: library.Progress | None = None) -> list[Track]:
         """An album's (or a whole folder's) tracks in play order: from the index when it's up to
-        date for that folder, else read from the files."""
+        date for that folder, else read from the files (`progress` told how far: loadprogress.py)."""
         tracks = self._index().album_tracks(Path(folder), whole_tree=whole_tree)
         if tracks is not None:
             return tracks
-        return scan_folder(folder) if whole_tree else scan_album(folder)
+        return scan_folder(folder, progress) if whole_tree else scan_album(folder, progress)
 
     # -- the search box's Whole library toggle (0.40.0) --------------------------------------------------
     def _scope_changed(self, on: bool):
@@ -3796,7 +3876,7 @@ class PlayerWindow:
         self.exclusive.set(not self.exclusive.get())
         self._toggle_exclusive()
         self._set_notice("Bit-perfect on: other apps go quiet while this plays" if self.exclusive.get()
-                         else "Bit-perfect off: sound goes through the Windows mixer", 3000)
+                         else f"Bit-perfect off: sound goes through the {MIXER} mixer", 3000)
 
     def _paint_lock(self):
         if self.lock_button is not None:
@@ -3812,10 +3892,10 @@ class PlayerWindow:
             guard = (" The clipping guard comes first: a track that would clip the converter is turned down "
                      "just enough, so that one track isn't bit-perfect." if self.clip_guard.get() else "")
             exact = ("the device gets the file's exact samples" if setting == "off"
-                     else "Windows' mixer is bypassed")
+                     else "Windows' mixer is bypassed" if platforms.IS_WINDOWS else f"the {MIXER} mixer is bypassed")
             return (f"Bit-perfect is locked on: {exact}, and other apps go quiet while this plays."
                     f"{guard}{levelled} Click to turn Bit-perfect off.")
-        return (f"Bit-perfect is off: Windows mixes the sound and may resample it.{levelled} "
+        return (f"Bit-perfect is off: sound goes through the {MIXER} mixer, which may resample it.{levelled} "
                 "Click to lock Bit-perfect on.")
 
     def _change_output(self, _event=None):
@@ -3832,8 +3912,9 @@ class PlayerWindow:
 
     def _protect_ears(self, hardware_volume: bool | None):
         """Bit-perfect bypasses the Windows mixer. If the device can't turn itself down,
-        the system volume slider stops working — so drop the player volume first. Not on an output
-        whose volume is set on the amplifier it feeds (Settings → Volume on my amplifier)."""
+        the system volume slider stops working — so drop the player volume first. (A Mac never
+        turns such a device down at all, but bit-perfect needs the player at 100%: same care.) Not on
+        an output whose volume is set on the amplifier it feeds (Settings → Volume on my amplifier)."""
         if hardware_volume or self.player.amp_volume or self.player.volume <= SAFE_VOLUME:
             return
         self.player.set_volume(SAFE_VOLUME)
@@ -3845,7 +3926,7 @@ class PlayerWindow:
         # background, amber edge and warning sign. It waits for OK.
         self._for_prompt()
         popups.tell(self.root, "Volume turned down to protect your ears",
-                    f"{reason}, so the Windows volume slider may not work in bit-perfect mode. "
+                    f"{reason}, so the {VOLUME_CONTROL} may not work in bit-perfect mode. "
                     f"The player's volume is now {SAFE_VOLUME:.0%}.",
                     detail="Raise it slowly, or use your headphone or amp volume.",
                     tone="warn", cover=True, ok="I understand")
@@ -3970,14 +4051,17 @@ class PlayerWindow:
         else:
             self._about = self._with_keys(AboutWindow(self.root, self.prefs))
 
-    # -- media keys, Windows' media panel, taskbar buttons (mediakeys.py) -------------------------
+    # -- media keys, the desktop's media panel, taskbar buttons (mediakeys.py, mpris.py) ----------
     def _start_media(self):
-        """Hand the window to Windows' media controls (and the taskbar's buttons). Anything that
-        fails is logged and left off; the player works the same without it."""
-        if self._windows_media is not None or not mediakeys.AVAILABLE:
+        """Hand the window to the desktop's media controls: Windows' (and the taskbar's buttons), or
+        MPRIS on Linux. Anything that fails is logged and left off; the player works the same."""
+        if self._windows_media is not None:
             return
         try:
-            self._windows_media = mediakeys.start_windows(self.media, chrome._hwnd(self.root))
+            if mediakeys.AVAILABLE:
+                self._windows_media = mediakeys.start_windows(self.media, chrome._hwnd(self.root))
+            elif mpris.AVAILABLE:
+                self._windows_media = mpris.start(self.media, settings.cache_folder() / "MediaControls")
         except Exception:
             log.exception("media controls: couldn't start")
             self._windows_media = None
@@ -4053,10 +4137,19 @@ class PlayerWindow:
             widget = self.root.winfo_containing(x_root, y_root)
         except (KeyError, tk.TclError):
             widget = None
+        if widget is None and self._inside_window(x_root, y_root):
+            # On X11 the program the drag comes from (Nemo, Nautilus) draws what's dragged as a
+            # window of its own, right under the pointer, so Tk finds none of ours there. The drop
+            # events come to this window alone: a point inside it is over it.
+            widget = self.root
         if widget is None or widget.winfo_toplevel() is not self.root:
             return None
         index = self.bar.tab_at(x_root, y_root) if not self.mini_mode else None
         return ("tab", index) if index is not None else ("window", None)
+
+    def _inside_window(self, x_root: int, y_root: int) -> bool:
+        x, y = x_root - self.root.winfo_rootx(), y_root - self.root.winfo_rooty()
+        return 0 <= x < self.root.winfo_width() and 0 <= y < self.root.winfo_height()
 
     def _show_drop_target(self, target, what: str = ""):
         """Light up where a drag would land: a tab gets an outline, the window a green edge.
@@ -4207,8 +4300,7 @@ class PlayerWindow:
                 return
         tab = Tab("files", str(files[0].parent))
         tab.extras = extras
-        self.tabs.append(tab)
-        self.select_tab(len(self.tabs) - 1, then_play=play)
+        self.select_tab(place_new_tab(self.tabs, self.current, tab), then_play=play)
 
     @staticmethod
     def _asked_for(actions: list, plan: dragdrop.DropPlan):
@@ -4274,6 +4366,11 @@ class PlayerWindow:
             except queue.Empty:
                 break
             arrived = True
+            if request.command:   # a remote control: the same as a press of that media key
+                self.media.press(request.command)
+                log.info("a remote control asked for %s", request.command)
+                if not request.paths and not request.front:
+                    continue
             front = front or request.front
             if request.paths:
                 self._named.append(request.paths)
@@ -4291,8 +4388,8 @@ class PlayerWindow:
 
     def bring_to_front(self):
         """Show the window in front of the others (from the taskbar if it was minimised)."""
-        if self.root.state() in ("iconic", "withdrawn"):
-            self.root.deiconify()
+        if self.root.state() == "withdrawn" or winstate.minimised(self.root):
+            winstate.restore(self.root)
         self.root.lift()
         if not self.on_top.get():   # in front once, without staying on top
             self.root.attributes("-topmost", True)
@@ -4508,7 +4605,6 @@ class PlayerWindow:
         on top swaps too: each mode has its own (prefs `always_on_top` / `mini_on_top`)."""
         self.prefs["mini_on_top" if self.mini_mode else "always_on_top"] = self.on_top.get()
         self.mini_mode = on
-        self.prefs["mini_mode"] = on
         self.on_top.set(bool(self.prefs["mini_on_top" if on else "always_on_top"]))
         self.root.attributes("-topmost", self.on_top.get())
         # Tk keeps sending keys to a hidden widget that has the keyboard (Enter, Delete, Alt+↑ / ↓ would
@@ -4626,6 +4722,8 @@ class PlayerWindow:
         text = self._status_text
         width = self.status_label.winfo_width()
         link = (self.undo_link.winfo_reqwidth() + theme.px(theme.GAP_LARGE)) if self.undo_link.winfo_manager() else 0
+        if self.elsewhere_button.winfo_manager():
+            link += self.elsewhere_button.winfo_reqwidth() + theme.px(theme.GAP)
         key = (text, width, link)
         if key == self._status_fitted:
             return
@@ -4735,8 +4833,9 @@ class PlayerWindow:
         self.empty_mark.configure(image=self._empty_photo)
 
     def _show_empty(self, empty: bool):
-        """No tabs open: the empty view in place of the cover, transport and track list (the status
-        line stays). A tab opening packs them back."""
+        """No tabs open, or a blank tab on show: the empty view (its page: every way to open music) in
+        place of the cover, transport and track list (the status line stays). A tab opening packs them
+        back."""
         if empty == self._empty_shown:
             return
         self._empty_shown = empty
@@ -4764,6 +4863,8 @@ class PlayerWindow:
         self._paint_order_buttons()
         self._paint_lock()
         self._paint_empty_mark()
+        self.elsewhere_button.repaint()
+        self.settings.close_button.repaint()
 
     # -- refresh -------------------------------------------------------------
     def _album_summary(self, tab: Tab) -> str:
@@ -4915,6 +5016,7 @@ class PlayerWindow:
         shown = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
         # A song from Up next with no tab behind it is shown as a playing tab's song would be.
         viewing_playing = (shown is not None and self.current == self.playing_tab) or from_queue
+        going = False   # (on another tab: is the music going, or paused?)
 
         # The top of the window follows the tab you're looking at. On the playing tab that's
         # the song; flick to another album and you see that album (press play to start it).
@@ -4950,6 +5052,8 @@ class PlayerWindow:
                 self._set_head(view.title, view.display_artist_album or view.path.parent.name,
                                f"Paused at {fmt_time(shown.resume_at)} of {fmt_time(view.duration)} · press play "
                                "to carry on")
+            elif shown.blank:
+                self._set_head(shown.title, "Open your library, a folder or a playlist", "")
             elif shown.kind == "library" and shown.last_index < 0:   # (its first album's artist would mislead)
                 self._set_head(shown.title, "Press play to start", self._album_summary(shown))
             else:
@@ -4958,8 +5062,11 @@ class PlayerWindow:
                                self._album_summary(shown))
             text, tone = "", "plain"
             showing_playing = False
-            elsewhere = (f"♪ Playing in another tab: {track.title}" + (f" — {track.album}" if track.album else "")
-                         if track else "")
+            # (Preparing or waiting for the network with the intent to play counts as playing, as on the transport.)
+            going = (status.state is State.PLAYING
+                     or bool(getattr(status, "network", None) is not None and status.network.auto))
+            elsewhere = (f"♪ {'Playing' if going else 'Paused'} in another tab: {track.title}"
+                         + (f" — {track.album}" if track.album else "") if track else "")
         else:
             self._request_art(None)
             self._set_head("Nothing playing", "Open your library: Ctrl+L", "")
@@ -5016,7 +5123,11 @@ class PlayerWindow:
         if not self.seek.dragging:
             self._show_times(position, duration)
         self._paint_undo_link()
-        self._show_status(self._notice or status.message or network_text or self._sleep_line(status) or elsewhere)
+        line = self._notice or status.message or network_text or self._sleep_line(status) or elsewhere
+        self._show_status(line)
+        # The pause / play button goes with the "in another tab" line, and only that line.
+        self.elsewhere_button.show(bool(elsewhere) and line == elsewhere and not self.mini_mode,
+                                   playing=showing_playing or going)
         # The mini strip shows the same as the top of the full window.
         self._mini_state = dict(title=self._head_full[0], artist=self._head_full[1],
                                 position=position, duration=duration, playing=playing_now,
@@ -5143,10 +5254,16 @@ class PlayerWindow:
             log.warning("closing: a favourite change wasn't stored in time")
 
     def _stop_timers(self):
+        """The timers, and the background workers: off-thread reads, and the true-peak and
+        album-loudness threads, which end after the job in hand (an album's loudness is cancelled) —
+        so a window closed while the process goes on (each test's) leaves no threads behind."""
         self.work.close()
         for job in (self._poll_job, self._media_job, self._art_job):
             if job is not None:
                 self.root.after_cancel(job)
+        self._album_cancel.set()
+        self._peak_jobs.put(_STOP_WORKER)
+        self._album_jobs.put(_STOP_WORKER)
 
     def _last_tag_tries(self):
         """The player has let go of its files: a last quick try for the songs still waiting (a save

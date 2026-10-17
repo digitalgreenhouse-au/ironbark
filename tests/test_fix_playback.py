@@ -839,3 +839,75 @@ def test_the_player_thread_survives_an_error(monkeypatch):
     del p._ended                                               # (back to the real one)
     p._ended_events.put(("end", fake))
     assert wait_for(lambda: p._message == "End of album") and closed
+
+
+# -- a position handed back as seconds starts on its own frame -------------------------------------
+def test_a_position_handed_back_as_seconds_starts_on_that_very_frame(tmp_path, fake_card):
+    """A resume (after the network, a lost device, another tab) hands the session the position it
+    left at, frames / rate as seconds. For about one position in twelve that float times the rate
+    comes back a hair under the whole frame, and cutting it down started one frame early: the
+    frame before the resume was heard twice."""
+    path, ref = wav(tmp_path, "t.wav", RATE)
+    early = [n for n in range(RATE // 4, RATE // 2) if int(n / RATE * RATE) != n][:3]
+    assert len(early) == 3
+    for n in early:
+        s = _Session(path, lambda p: 1.0, lambda s: None, start_at=n / RATE)
+        assert s.frames_played == n
+        s.start()
+        got = pump(s)
+        s.close()
+        assert np.array_equal(got[: RATE - n], ref[n:])
+
+
+def test_a_pause_in_bit_perfect_lets_go_of_the_device_after_a_while(tmp_path, exclusive_card, monkeypatch):
+    """Paused in bit-perfect the device is held, so other apps are silent: on the Mac and Linux, after
+    PAUSE_RELEASE_S it's let go, and play carries on from the same spot. Shared mode holds nothing, so
+    nothing changes there."""
+    monkeypatch.setattr(engine.platforms, "PAUSE_RELEASES_DEVICE", True)
+    monkeypatch.setattr(engine, "PAUSE_RELEASE_S", 0.3)
+    path, _ = wav(tmp_path, "t.wav", RATE * 10)
+    p = Player()
+    p.refresh_hardware_volume()                       # (the window's check, as bit-perfect goes on)
+    p.set_exclusive(True)
+    p.set_tracks([Track(path, "t", duration=10.0)])
+    p.play(0, start_at=3.0)
+    assert p._session is not None and p._session.exclusive
+    p.pause()
+    assert wait_for(lambda: p._session is None, timeout=4)
+    status = p.status()
+    assert status.state is State.PAUSED and status.position == pytest.approx(3.0, abs=0.2)
+    p.play()
+    assert p._session is not None and p.status().position == pytest.approx(3.0, abs=0.2)
+    p.close()
+
+
+def test_on_windows_a_pause_in_bit_perfect_keeps_the_device(tmp_path, exclusive_card, monkeypatch):
+    """Windows keeps the exclusive stream open while paused, as it always has: let go, another app
+    could take the device and bit-perfect would come back as shared."""
+    monkeypatch.setattr(engine.platforms, "PAUSE_RELEASES_DEVICE", False)
+    monkeypatch.setattr(engine, "PAUSE_RELEASE_S", 0.2)
+    path, _ = wav(tmp_path, "t.wav", RATE * 10)
+    p = Player()
+    p.refresh_hardware_volume()
+    p.set_exclusive(True)
+    p.set_tracks([Track(path, "t", duration=10.0)])
+    p.play(0)
+    session = p._session
+    assert session is not None and session.exclusive
+    p.pause()
+    time.sleep(1.5)   # (the player's own thread looks every second)
+    assert p._session is session and session.paused
+    p.close()
+
+
+def test_a_pause_in_shared_mode_keeps_its_session(tmp_path, fake_card, monkeypatch):
+    monkeypatch.setattr(engine, "PAUSE_RELEASE_S", 0.2)
+    path, _ = wav(tmp_path, "t.wav", RATE * 10)
+    p = Player()
+    p.set_tracks([Track(path, "t", duration=10.0)])
+    p.play(0)
+    session = p._session
+    p.pause()
+    time.sleep(1.5)   # (the player's own thread looks every second)
+    assert p._session is session and session.paused
+    p.close()

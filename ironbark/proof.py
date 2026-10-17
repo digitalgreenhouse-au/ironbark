@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import audiofile
+from . import audiofile, platforms
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,9 @@ INT32_MAX = 2**31 - 1
 PROOF_PATIENCE_S = 2.0  # how long the second decode waits for a downloading copy's bytes (playback already read them)
 QUIET = 1e-5  # RMS below this (about -100 dBFS) is too quiet to compare
 AUDIBLE_CHECK_HZ = 18000  # when Windows resamples, compare below this (see compare_paths)
+_WHO, _WHOSE = platforms.SOUND_SYSTEM, platforms.SOUND_SYSTEMS   # "Windows" / "the sound server"
+_VOLUME_MIXER = "Windows' Volume mixer" if platforms.IS_WINDOWS else "the desktop's sound settings"
+_THE_MIXER = "the Windows mixer" if platforms.IS_WINDOWS else "the sound server's mixer"
 
 
 def apply_gain(block: np.ndarray, gain: float, out: np.ndarray | None = None) -> np.ndarray:
@@ -378,19 +381,19 @@ def describe_path(check: PathCheck) -> list[tuple[str, str, str]]:
     if check.verdict == "too_quiet":
         return [("Result", "Too quiet to check: try again while the music is playing (volume above 0)", "plain")]
     if check.verdict == "no_match":
-        return [("Result", "Couldn't find the music in what Windows played: another app may hold the device, "
-                           "or Windows' recording isn't available for it", "warn")]
+        return [("Result", f"Couldn't find the music in what {_WHO} played: another app may hold the device, "
+                           f"or {_WHOSE} recording isn't available for it", "warn")]
     lines = []
     if check.identical:
-        lines.append(("Result", "✓ Untouched: Windows played exactly what the player sent", "good"))
+        lines.append(("Result", f"✓ Untouched: {_WHO} played exactly what the player sent", "good"))
         return lines
     if check.resampled:
         a, b = check.resampled
-        lines.append(("Resampled", f"{a / 1000:g} → {b / 1000:g} kHz by the Windows mixer (normal in shared mode; "
+        lines.append(("Resampled", f"{a / 1000:g} → {b / 1000:g} kHz by {_THE_MIXER} (normal in shared mode; "
                                    "bit-perfect avoids it). The rest is compared below 18 kHz, where "
                                    "resamplers agree", "warn"))
     if abs(check.level_db) >= 0.05:
-        lines.append(("Level", f"changed by {check.level_db:+.1f} dB (an app volume in Windows' Volume mixer?)",
+        lines.append(("Level", f"changed by {check.level_db:+.1f} dB (an app volume in {_VOLUME_MIXER}?)",
                       "warn"))
     if check.polarity_flipped:
         lines.append(("Polarity", "flipped (the waveform is upside down)", "warn"))

@@ -129,6 +129,15 @@ def test_every_format_round_trips_with_the_sound_untouched(tmp_path, kind, name)
     assert not tag_editor.temp_path(path).exists()
 
 
+def test_saves_are_named_in_the_order_they_were_made_across_a_second(monkeypatch):
+    # (the seconds and the microseconds come from one reading of the clock)
+    second = 1_760_000_000 * 1_000_000_000
+    readings = iter([second - 1_000, second + 1_000])   # 1 µs before a second turns over, 1 µs after
+    monkeypatch.setattr(tag_editor.time, "time_ns", lambda: next(readings))
+    first, then = TagSave([], "First"), TagSave([], "Then")
+    assert first.id < then.id and first.id.endswith("_999999") and then.id.endswith("_000001")
+
+
 @pytest.mark.parametrize("kind,name", FORMATS)
 def test_undo_restores_exactly(tmp_path, kind, name):
     path = make(tmp_path / "Album" / name, kind)

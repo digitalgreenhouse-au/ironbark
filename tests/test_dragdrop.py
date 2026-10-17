@@ -275,3 +275,16 @@ def test_tab_bar_finds_and_lights_up_the_tab_under_the_pointer(root):
     bar.highlight(None)
     root.update()
     assert all(bar.canvas.itemcget(item, "state") == "hidden" for item in bar._ring)
+
+
+def test_a_drag_drawn_under_the_pointer_still_lands_on_the_window():
+    # On X11 the file manager draws what's dragged as a window of its own under the pointer, so Tk
+    # finds none of the player's windows there (winfo_containing: None).
+    root = SimpleNamespace(winfo_containing=lambda x, y: None, winfo_rootx=lambda: 100, winfo_rooty=lambda: 50,
+                           winfo_width=lambda: 400, winfo_height=lambda: 500)
+    root.winfo_toplevel = lambda: root
+    w = SimpleNamespace(root=root, mini_mode=False, bar=SimpleNamespace(tab_at=lambda x, y: 2 if y < 80 else None))
+    w._inside_window = lambda x, y: PlayerWindow._inside_window(w, x, y)
+    assert PlayerWindow._drop_target(w, 300, 300) == ("window", None)
+    assert PlayerWindow._drop_target(w, 300, 60) == ("tab", 2)
+    assert PlayerWindow._drop_target(w, 99, 300) is None and PlayerWindow._drop_target(w, 300, 550) is None

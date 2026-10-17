@@ -131,8 +131,12 @@
     if (!tags || !tags.md5) {
       return { ok: null, verdict: "No fingerprint to check", detail: "This file's encoder stored no MD5, so there is nothing to compare against." };
     }
-    // the browser decodes the whole song into memory first (4 bytes a sample)
-    const need = (tags.duration || 0) * (tags.sampleRate || 0) * (tags.channels || 2) * 4;
+    // the browser decodes the whole song into memory first (4 bytes a sample). A file whose length
+    // isn't known is judged by its size: FLAC is rarely smaller than a quarter of its 16-bit audio,
+    // so 8 bytes of decoded audio per byte of file is the most it can come to.
+    const need = tags.duration && tags.sampleRate
+      ? tags.duration * tags.sampleRate * (tags.channels || 2) * 4
+      : (file && file.size || 0) * 8;
     if (need > MAX_DECODE) {
       return { ok: null, verdict: "Too long to check in a browser", detail: "Checking it would take about " + (need / 1073741824).toFixed(1) + " GB of memory. The desktop Ironbark checks files of any length." };
     }

@@ -82,6 +82,7 @@ class CompareWindow(toolwin.ToolWindow):
         self._thread: threading.Thread | None = None
         self._progress = 0.0
         self._outcome = None        # a Comparison, or an error message
+        self._comparing: toolwin.Handback | None = None   # the comparison's progress and outcome, from its thread
         self._job = None
         self.result: compare.Comparison | None = None
         # The paths themselves: a CUE sheet track's path carries which part of the file it is.
@@ -111,14 +112,16 @@ class CompareWindow(toolwin.ToolWindow):
         self._show([])
         self.status.configure(text="Comparing…")
         cancel = self._cancel
+        # The thread fills this in and _tick copies it across (it never holds the window: toolwin.Handback).
+        self._comparing = job = toolwin.Handback(progress=0.0, outcome=None)
 
         def work():
             try:
                 outcome = compare.compare_files(a, b, cancel=cancel,
-                                                progress=lambda f: setattr(self, "_progress", f))
+                                                progress=lambda f: setattr(job, "progress", f))
             except Exception as exc:  # noqa: BLE001 — an unreadable file is a result to show, not a crash
                 outcome = f"Couldn't compare: {exc}"
-            self._outcome = outcome
+            job.outcome = outcome
 
         self._thread = threading.Thread(target=work, name="compare", daemon=True)
         self._thread.start()
@@ -129,11 +132,14 @@ class CompareWindow(toolwin.ToolWindow):
         self._job = None
         if not self.win.winfo_exists():
             return
+        job = self._comparing
+        if job is not None:
+            self._progress, self._outcome = job.progress, job.outcome
         if self._outcome is None:
             self.status.configure(text=f"Comparing… {self._progress:.0%}")
             self._job = self.win.after(100, self._tick)
             return
-        outcome, self._thread = self._outcome, None
+        outcome, self._thread, self._comparing = self._outcome, None, None
         self._refresh_button()
         if isinstance(outcome, str):
             self.status.configure(text="")

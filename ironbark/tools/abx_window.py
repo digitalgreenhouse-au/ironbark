@@ -437,3 +437,6 @@ class AbxWindow(toolwin.ToolWindow):
         if self.audition is not None:
             self.audition.stop()
         toolwin.give_back_sound(self)
+        # Its Tk variables go here, on Tk's thread: the closed window may be freed by the cycle
+        # collector, which runs on whichever thread it likes (the switch lets go of its own too).
+        self.trials = self.length = self.match = None

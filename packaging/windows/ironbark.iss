@@ -121,6 +121,14 @@ Root: HKCU; Subkey: "Software\Classes\.m3u8\OpenWithProgids"; ValueType: string;
 Filename: "{app}\Ironbark.exe"; Description: "{cm:LaunchProgram,Ironbark}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+{ The Tasks page's tick boxes sit flush with the list's left edge, and with the modern wizard style
+  their left side is cut off (seen at 150% display scaling, Inno Setup 6.7.3). A little more space
+  before each box shows it whole. }
+procedure InitializeWizard();
+begin
+  WizardForm.TasksList.Offset := WizardForm.TasksList.Offset + ScaleX(4);
+end;
+
 { The running player holds this mutex (ironbark/instance.py, INSTALLER_MUTEX). Uninstalling while it
   runs would leave its files behind, so ask for it to be closed first. Setup itself doesn't need
   this: CloseApplications offers to close it. }

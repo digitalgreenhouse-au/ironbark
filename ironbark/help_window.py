@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from . import APP_NAME, __version__, controls, experiments, keys, placement, platforms, theme
+from . import APP_NAME, __version__, controls, experiments, keys, placement, platforms, theme, winstate
 from .playlist_view import fit_columns
 from .searchfold import fold
 from .virtual_list import CELL_ROOM, ELLIPSIS
@@ -93,6 +93,10 @@ def licence_folder() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
     folder = Path(sys.executable).resolve().parent / "licenses"
+    if not folder.is_dir() and platforms.IS_MAC:
+        # In the Mac app bundle the build's files sit with the libraries (Contents/Frameworks,
+        # PyInstaller's sys._MEIPASS), not beside the program itself (Contents/MacOS).
+        folder = Path(getattr(sys, "_MEIPASS", folder.parent)) / "licenses"
     return folder if folder.is_dir() else None
 
 
@@ -368,8 +372,8 @@ class HelpWindow:
 
     def _rewrap(self, event):
         width = max(theme.px(160), event.width - 2 * theme.px(theme.GAP_WIDE))
-        self.note.configure(wraplength=width)
-        self.full.configure(wraplength=width)
+        theme.wrap_inside(self.note, width)
+        theme.wrap_inside(self.full, width)
 
     def _moved(self, event):
         if event.widget is self.win:
@@ -378,7 +382,7 @@ class HelpWindow:
                 self.prefs["help_geometry"] = geometry
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
         self.win.focus_force()
 
@@ -507,8 +511,8 @@ class AboutWindow:
         width = max(theme.px(160), event.width - 2 * theme.px(theme.GAP_WIDE))
         if width != self._wrap_width:
             self._wrap_width = width
-            for label in self.wrapped:
-                label.configure(wraplength=width)
+            for label in self.wrapped:   # (inside the page's width: see theme.wrap_inside)
+                theme.wrap_inside(label, width)
         self._fit_text_later()
 
     def _fit_text_later(self):
@@ -537,7 +541,7 @@ class AboutWindow:
                 self.prefs["about_geometry"] = geometry
 
     def lift(self):
-        self.win.deiconify()
+        winstate.restore(self.win)
         self.win.lift()
         self.win.focus_force()
 

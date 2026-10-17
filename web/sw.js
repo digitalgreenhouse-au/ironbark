@@ -3,7 +3,7 @@
    the page's own files; songs are never fetched (they're read from the listener's disk). */
 "use strict";
 
-const VERSION = "0.49.2";
+const VERSION = "0.51.0";
 const CACHE = "ironbark-web-" + VERSION;
 const FILES = [
   "./", "index.html", "ironbark.css", "manifest.webmanifest",
@@ -32,7 +32,11 @@ self.addEventListener("fetch", (ev) => {
   ev.respondWith(
     fetch(ev.request, { cache: "no-cache" })
       .then((res) => {
-        if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(ev.request, copy)); }
+        if (res.ok) {
+          // the browser may stop this worker once it has answered: it's told to wait for the copy too
+          const copy = res.clone();
+          ev.waitUntil(caches.open(CACHE).then((c) => c.put(ev.request, copy)).catch(() => {}));
+        }
         return res;
       })
       .catch(() => caches.match(ev.request, { ignoreSearch: true }).then((hit) => hit || Response.error())),

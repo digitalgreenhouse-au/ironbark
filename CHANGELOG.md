@@ -4,6 +4,139 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.51.0 — 17/10/2026
+
+Downloads for Windows, macOS and Linux, all built from this version.
+
+- **Ironbark on the Mac (experimental).** The same player, as a Mac app (Apple silicon), unsigned
+  for now. **Bit-perfect on a Mac:** Ironbark takes the output for itself while it plays and
+  switches it to the song's own sample rate and its deepest format, so Core Audio passes the
+  samples through untouched; the output is put back as it was when you stop or quit, or after
+  30 seconds paused (play carries on from the same spot). Devices plugged in after Ironbark starts
+  show up in Output; ⌘Q closes it as usual.
+- Mac: a playlist on another disk or a network share is deleted for good after Ironbark says so
+  (it can't go to the Bin from there); one on the Mac's own disk goes to the Bin as before.
+- Mac: **Test signals** plays and records through one audio interface (a loopback cable from its
+  output to its input) without hanging, and every recording now has a time limit. The Windows-only
+  "Windows loopback" choice isn't offered on a Mac.
+- **Linux: bit-perfect.** Choose the sound card's own output (a name ending in `(hw:…)`) under
+  Output and switch on Bit-perfect: Ironbark plays straight to the card at the song's own rate,
+  and other apps are silent meanwhile. Paused for 30 seconds, it lets the card go; play carries on
+  from the same spot. The shared outputs (the sound server) play as before.
+- Test signals: if the input you last recorded from isn't connected, it starts on the system's
+  own loopback (Windows), the sound server's monitor (Linux) or the first input (Mac) instead of
+  the missing name.
+- **Linux: the system check** listens to the sound server's own monitor and says whether the
+  server played exactly what Ironbark sent, naming the sound server rather than Windows.
+- **Linux: media keys and the desktop's sound menu** (MPRIS): play, pause, next and previous, with
+  the song, artist and cover shown. New dependency on Linux: jeepney (MIT).
+- **Linux: network folders** (an SMB or NFS share mounted by the desktop or by `mount`) are
+  network folders: *Local network access* and the network cache now apply to them.
+- **Quitting cleanly when the system asks** (a logout, `kill`): on the Mac and Linux, Ironbark now
+  closes as if you had closed its window, saving where you were and putting the output back as it
+  was, instead of crashing.
+- Known limits on the Mac for now: a few button symbols show as letters, shortcut hints say Ctrl
+  (⌘ works too), opening a song from Finder with a double-click doesn't reach the player yet, and
+  the app isn't signed, so macOS asks you to allow it once (see the README).
+- Known limits on Linux for now: the desktop's sound menu has no position bar or seeking; in the
+  Output list the card's own output comes last and its name can be cut off; an open network tab
+  fills only once you press play after switching *Local network access* on; opening Now Playing
+  for a song on a network share can cause a short dropout. Wayland hasn't been tested.
+
+## 0.50.5 — 16/10/2026
+
+- Linux: the list of third-party software now names BLT 2.5 (MIT licence), which the Linux
+  download includes because the distribution's tkinter is linked to it. Its licence text was
+  already in the download's `licenses` folder. No change to the player.
+
+## 0.50.4 — 16/10/2026
+
+- **Fixed: no sample played twice when a song carries on from where it stopped.** Carrying on
+  after a pause for the network, after the sound device went away, or on another tab could start
+  one sample early — about one spot in twelve — so the last sample before the stop was heard
+  twice. It now carries on from exactly the next sample.
+
+## 0.50.3 — 16/10/2026
+
+- **Tests only: the window tests give the same answer whatever order they run in.** One test of the
+  `--self-check` start-up switched the whole test run to Windows' real display scaling, which can't be
+  switched back, so windows made by later tests had text too wide for their layout and a few of them
+  failed, depending on which tests ran first (and one test of the About window passed only because of
+  it). No change to the player itself.
+
+## 0.50.2 — 16/10/2026
+
+- **Safer on a shared Mac or Linux computer.** When Ironbark is already open, a second launch hands
+  it the files to play through a small note only you can read: other people signed in to the same
+  computer could read it before, and so could make your player open files. On Windows, a later
+  launch now talks only to an Ironbark running in your own Windows session.
+- **Linux: the Linux improvements reach the main line** — bringing back a minimised window under
+  Cinnamon and GNOME, deleting a playlist to the Trash (so the file manager can put it back),
+  dropping files from Nemo, Windows' editing keys in text boxes, and the Library tab's plate under
+  its name.
+- **Linux: a playlist reached through a link is binned on the disk it's really on**, and a window
+  closed at the wrong moment can no longer end the program while Ironbark asks the desktop whether
+  it's minimised.
+- **The web player checks a very large file safely** even when the file doesn't say how long it
+  is, and keeps its offline copy reliably.
+- Messages on a Mac or Linux no longer mention Windows.
+- Behind the scenes: the automatic checks on GitHub now fail when the Linux tests fail, and a test
+  that hangs stops the run within minutes.
+
+## 0.50.1 — 16/10/2026
+
+- **Fixed (behind the scenes): the other tool windows are now always cleaned up on the right
+  thread too,** as the Clipping window was in 0.49.4. The background work in Now Playing (its
+  check, the album and rip-log checks, the stored-result look-up, the live-bitrate index), the
+  Spectrogram's whole-track picture, Test signals' measurement and Compare kept hold of their
+  window, so a window closed while that work was still going could be freed on the background
+  thread, where Tk objects must never be freed. The work now hands its results over without
+  holding the window. ABX, Meters, Spectrogram and Test signals also let go of their Tk settings
+  when they close, and Now Playing of its meter pictures. Nothing changes in how the windows look
+  or behave.
+- The web player's version number matches the desktop player's again (it had stayed at 0.49.4).
+
+## 0.50.0 — 16/10/2026
+
+- **Ironbark always opens as the full window.** It used to come back as the mini strip if that's
+  how it was left (so a fresh install could open as the strip). The strip is still there when you
+  want it (Z, the Mini player button, or double-click the cover), and it remembers its own place.
+- **Opening a folder says what it's doing.** A folder on a network drive can take a while: the
+  status line now shows *Opening…*, then *Looking for music in …* with the count found so far,
+  then *Reading … 12 of 40 songs (30%)* until the tab is ready, and ends with how many songs and
+  albums were loaded. A tab of many albums read from the files names the album it's on.
+- **The + button opens a blank tab, as a browser does.** Its page offers your library, a folder, a
+  new playlist and a playlist file; the first thing you open takes the blank tab's place. The old
+  menu is a right-click away on the + button. Ctrl+T does the same. A blank tab is remembered with
+  the others, and closing one leaves nothing to reopen.
+- **Pause the music from another tab.** While music plays in a tab you aren't looking at, the
+  status line's *♪ Playing in another tab: …* has a pause button at its end: pause and carry on from
+  there without leaving the tab on show (the line says *Paused in another tab* meanwhile). The
+  transport's play button still belongs to the tab you're looking at, and starts that one.
+- **Settings has an X at the top right**, next to Mini player: back to the player, like Done, Esc
+  and the gear.
+
+## 0.49.4 — 15/10/2026
+
+- **Fixed (behind the scenes): the Clipping window is now always cleaned up on the right thread.**
+  Its background work (reading the whole song, making the A/B loop) kept hold of the window, so if
+  that work finished after the window had closed, the window was freed on the background thread and
+  Tk printed "main thread is not in main loop". Nothing showed in the window, but Tk objects must
+  only ever be freed on Tk's own thread. The background work now hands its results over without
+  holding the window, and the window lets go of its Tk setting when it closes.
+
+## 0.49.3 — 15/10/2026
+
+- **Fixed: Ironbark could freeze on a small screen** (seen with 1024 × 768). Settings is laid out
+  while it's still hidden, and the descriptions under its switches could keep rewrapping against the
+  page's width without ever settling; the window then stopped responding. A wrapped description now
+  never asks for more room than it has, so the layout always settles. The About and Keyboard
+  shortcuts pages and the Library's status line follow the same rule.
+- Closing the player now also stops its background helper threads (they used to wait until the
+  program ended).
+- **Windows installer:** the tick boxes on the "Select Additional Tasks" page are no longer cut off
+  on the left.
+
 ## 0.49.2 — 14/10/2026
 
 - **A Linux download.** `Ironbark-0.49.2-linux-x86_64.tar.gz`: unpack it and run `Ironbark/Ironbark`

@@ -21,6 +21,8 @@
   caught, checked empty at the end.
 - A test run reaches nothing system-wide: no window registers with Windows' media panel or the
   taskbar, and no keyboard hook is installed (DG_LIVE_WINDOWS=1 allows the live checks that do).
+  No test makes the test process DPI-aware (that can't be undone, and would leave every later
+  test's text too wide for its layout).
   And it runs at below-normal priority, so the computer's other programs come first.
 - Nothing a test deletes goes to the computer's real Recycle Bin (recycle.py): it's deleted, and
   noted in `binned`.
@@ -173,16 +175,91 @@ class _NoKeyboardHook:
         pass
 
 
+def _dpi_awareness() -> int | None:
+    """This process's DPI awareness on Windows (0 = unaware, 1 = system aware); None elsewhere."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    value = ctypes.c_int()
+    try:
+        ctypes.windll.shcore.GetProcessDpiAwareness(None, ctypes.byref(value))
+    except (AttributeError, OSError):
+        return None
+    return value.value
+
+
 @pytest.fixture(autouse=True)
 def _nothing_system_wide(monkeypatch):
     """No test registers a window with Windows' media panel or the taskbar, or hooks the keyboard.
-    Tests that want those pieces put in stand-ins of their own (or are live checks)."""
-    if LIVE_WINDOWS:
-        return
-    from ironbark import mediakeys
+    Tests that want those pieces put in stand-ins of their own (or are live checks).
 
-    monkeypatch.setattr(mediakeys, "start_windows", lambda hub, hwnd: None)
-    monkeypatch.setattr(mediakeys, "KeyboardHook", _NoKeyboardHook)
+    Nor does a test make the test process DPI-aware, as the player's start does: Windows never lets
+    that be undone, and every Tk window made after it gets its fonts at the screen's real scaling
+    while Tk's own scaling (and so theme.px) stays at 100%, so text is too wide for its layout in
+    whichever tests happen to run later. A test that changes it anyway fails here, by name."""
+    from ironbark import __main__ as start
+
+    monkeypatch.setattr(start, "_enable_crisp_text_on_windows", lambda: None)
+    before = _dpi_awareness()
+    if not LIVE_WINDOWS:
+        from ironbark import mediakeys, mpris
+
+        monkeypatch.setattr(mediakeys, "start_windows", lambda hub, hwnd: None)
+        monkeypatch.setattr(mediakeys, "KeyboardHook", _NoKeyboardHook)
+        monkeypatch.setattr(mpris, "start", lambda hub, cover_folder=None: None)   # (never the real session bus)
+    yield
+    if _dpi_awareness() != before:
+        pytest.fail("this test made the test process DPI-aware: later tests' text would be laid out "
+                    "too wide (stand in for __main__._enable_crisp_text_on_windows)", pytrace=False)
+
+
+def minimise(window) -> None:
+    """Minimise `window` the way its window manager does, and wait (3 s at most) until it has: an X11
+    window manager applies it a moment later, and Cinnamon's keeps the window mapped (winstate.py)."""
+    import time
+
+    from ironbark import winstate
+
+    window.iconify()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and winstate.on_screen(window):
+        window.update()
+        time.sleep(0.01)
+
+
+def restore(window) -> None:
+    """Bring `window` back from `minimise`, as the player does (winstate.restore: Tk's deiconify
+    doesn't on Cinnamon), and wait (3 s at most) until it's on screen again."""
+    import time
+
+    from ironbark import winstate
+
+    winstate.restore(window)
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not winstate.on_screen(window):
+        window.update()
+        time.sleep(0.01)
+
+
+@pytest.fixture(autouse=True)
+def _never_hold_a_real_device(monkeypatch):
+    """Bit-perfect on a Mac hogs the device and changes its format. Tests that switch it on
+    with stand-in streams must never do that to the real sound card they run beside. (Linux's
+    claim only reads the device's name, never the card: its rule is kept, as it decides what plays.)"""
+    from ironbark import devices
+
+    real = devices.claim
+
+    def claim(index, rate):
+        # (a stand-in device the test calls bit-perfect-capable is a sound card's own on Linux too:
+        # Linux's rule is kept for the tests that set out the device list themselves)
+        if devices.IS_LINUX and getattr(devices, "_tests_name_devices", False):
+            return real(index, rate)
+        return devices.Claim()
+
+    monkeypatch.setattr(devices, "claim", claim)
+    monkeypatch.setattr(devices, "restore_formats", lambda keep=None: None)
 
 
 binned: list[str] = []   # what tests "sent to the Recycle Bin" (deleted instead, and noted here)
@@ -200,6 +277,7 @@ def _no_real_recycle_bin(monkeypatch):
 
     monkeypatch.setattr(recycle, "_shell_delete", delete)
     monkeypatch.setattr(recycle, "_to_mac_bin", delete)
+    monkeypatch.setattr(recycle, "_to_trash", delete)
 
 
 @pytest.fixture

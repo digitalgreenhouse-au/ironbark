@@ -9,6 +9,7 @@ authors = [{ name = "Digital Greenhouse", email = "info@digitalgreenhouse.com.au
 requires-python = ">=3.11"
 dependencies = [
     "comtypes>=1.4.8; sys_platform == 'win32'",   # used directly (media controls, devices), not only via pycaw
+    "jeepney>=0.9; sys_platform == 'linux'",   # D-Bus, pure Python (MIT): MPRIS media controls on Linux
     "numpy>=1.26",
     "pillow>=10",
     "pycaw>=20260927; sys_platform == 'win32'",
@@ -122,6 +123,7 @@ forbidden_modules = [
 # netcache/manager.py (52). Modules a listed one imports are read but not reported (follow_imports).
 [tool.mypy]
 python_version = "3.11"
+platform = "win32"   # checked as Windows wherever it runs (a CI runner is Linux): the Windows-only branches are typed against Windows
 files = [
     "ironbark/tagio/__init__.py", "ironbark/tagio/_files.py", "ironbark/tagio/flac.py", "ironbark/tagio/genres.py",
     "ironbark/tagio/id3.py", "ironbark/tagio/mp4.py", "ironbark/tagio/riff.py", "ironbark/tagio/vorbis.py",

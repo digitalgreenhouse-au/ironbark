@@ -289,7 +289,12 @@ def test_fitted_text_really_fits_and_is_measured_without_asking_tk_for_every_cel
             kept = fitted[:-1]
             assert fitted.endswith(ELLIPSIS) and text.startswith(kept)
             more = len(kept) + len(text[len(kept):]) - len(text[len(kept):].lstrip()) + 1
-            assert real_measure(text[:more] + ELLIPSIS) > room - theme.px(6)   # (one more letter wouldn't fit)
+            # One more letter wouldn't fit. (The fitter adds up single characters' widths; a string
+            # measured whole can come out narrower than that — kerning, and on a Mac ligatures such
+            # as "ffi" — so that saving is allowed for.)
+            candidate = text[:more] + ELLIPSIS
+            saved = sum(real_measure(ch) for ch in candidate) - real_measure(candidate)
+            assert real_measure(candidate) > room - theme.px(6) - saved, (candidate, room, saved)
     assert cut > 100
 
 

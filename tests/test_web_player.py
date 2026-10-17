@@ -63,6 +63,8 @@ def test_no_outside_addresses_or_network_calls():
             assert call not in body, f"{path.name} uses {call}"
     # the offline copy fetches only the page's own files, from where the page came from
     assert "url.origin !== self.location.origin" in text(WEB / "sw.js")
+    # …and the browser waits for each saved copy to be written before it may stop the worker
+    assert "ev.waitUntil(caches.open(CACHE).then((c) => c.put(" in text(WEB / "sw.js")
 
 
 def test_nothing_inline_that_the_lock_would_block():
@@ -120,6 +122,9 @@ def test_the_shortcuts_sheet_and_the_desktop_player_agree_on_the_common_keys():
 def test_the_javascript_tests_pass():
     tests = sorted(str(p) for p in (WEB / "tests").glob("*.test.js"))
     assert tests
-    run = subprocess.run(["node", "--test", *tests], capture_output=True, text=True, encoding="utf-8", timeout=120)
+    # The TAP reporter, named: Node's default differs by version and by whether output is a terminal.
+    run = subprocess.run(["node", "--test", "--test-reporter=tap", *tests], capture_output=True, text=True,
+                         encoding="utf-8", timeout=120)
     assert run.returncode == 0, run.stdout[-4000:] + run.stderr[-2000:]
-    assert re.search(r"^ℹ fail 0", run.stdout, re.M), run.stdout[-2000:]
+    assert re.search(r"^# fail 0$", run.stdout, re.M), run.stdout[-2000:]
+    assert not re.search(r"^# pass 0$", run.stdout, re.M), run.stdout[-2000:]   # (and something ran)

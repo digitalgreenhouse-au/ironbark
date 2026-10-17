@@ -53,8 +53,21 @@ _REFUSED = {5, 32, 33}   # access denied, open in another program, part of it lo
 
 
 def _where(path) -> str:
-    """Where a song was, in a few words: `\\\\server\\share`, a drive letter, or "the drive"."""
-    text = os.fspath(path).replace("/", "\\") if path else ""
+    """Where a song was, in a few words: `\\\\server\\share`, a drive letter, or "the drive" (Linux:
+    the share's folder, `//server/share`, or the folder it was in)."""
+    raw = os.fspath(path) if path else ""
+    if raw.startswith("/") and not raw.startswith("//"):
+        from .. import places
+
+        try:
+            key = places.source_key(raw)
+        except Exception:   # noqa: BLE001 — only wording: never let it hide the real error
+            key = ""
+        if key.startswith("smb://"):
+            parts = key[len("smb://"):].split("/")
+            return "//" + "/".join(parts[:2]) if len(parts) >= 2 else "the network folder"
+        return "the network folder" if key.startswith("smb:") else "the drive"
+    text = raw.replace("/", "\\")
     if text.startswith("\\\\"):
         parts = text[2:].split("\\")
         if len(parts) >= 2 and parts[0] and parts[1]:

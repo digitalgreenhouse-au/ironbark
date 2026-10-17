@@ -8,6 +8,7 @@ import time
 import tkinter as tk
 from types import SimpleNamespace
 
+import conftest
 import numpy as np
 import pytest
 import soundfile as sf
@@ -342,15 +343,13 @@ def test_scope_draws_nothing_while_minimised(root, monkeypatch):
     win = scope_window.ScopeWindow(root, FakePlayer(), {})
     win.win.update()
     made = count_pictures(monkeypatch, scope_window)
-    win.win.iconify()
-    win.win.update()
+    conftest.minimise(win.win)
     a = noise(0.5)
     data = (np.hstack([a, a]) * 2**31 * 0.5).astype(np.int32)
     win.engine.process(data, RATE, time.perf_counter() - 0.3, "t.flac")
     tick(win, 3)
     assert made == []                        # minimised: no frames made
-    win.win.deiconify()
-    win.win.update()
+    conftest.restore(win.win)
     tick(win)
     assert made                              # shown again: drawn at once
     win.close()

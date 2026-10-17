@@ -1141,10 +1141,14 @@ class TagSave:
         self.undo_of = undo_of
         self.results = [FileResult(job.path) for job in jobs]
         self._prepared: dict[Path, Prepared] = {}
-        stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() // 1000 % 1000000:06d}"
+        # One reading of the clock for the seconds and the microseconds: read twice, a second turning
+        # over in between would name a later save before an earlier one (history() sorts by the name).
+        now = time.time_ns()
+        local = time.localtime(now // 1_000_000_000)
+        stamp = time.strftime("%Y%m%d_%H%M%S", local) + f"_{now // 1000 % 1000000:06d}"
         self.id = stamp
         self.history_file = history_folder() / f"TagEdit_{stamp}.json"
-        self.entry = {"format": HISTORY_FORMAT, "id": stamp, "when": time.strftime("%d/%m/%Y %H:%M:%S"),
+        self.entry = {"format": HISTORY_FORMAT, "id": stamp, "when": time.strftime("%d/%m/%Y %H:%M:%S", local),
                       "summary": summary, "undo_of": undo_of.get("id") if undo_of else None, "files": []}
         self.progress = (0, len(jobs))
         self.done = False

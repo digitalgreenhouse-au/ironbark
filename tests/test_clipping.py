@@ -7,8 +7,10 @@ from __future__ import annotations
 import gc
 import math
 import queue
+import threading
 import time
 import tkinter as tk
+import weakref
 from types import SimpleNamespace
 
 import numpy as np
@@ -324,7 +326,7 @@ def wait_for(win, condition, seconds=20):
     while not condition() and time.time() < deadline:
         win.win.update()
         time.sleep(0.05)
-        win._tick()
+        win._step()     # (not _tick: that books another refresh each time, which close() can't cancel)
     assert condition()
 
 
@@ -418,6 +420,39 @@ def test_clip_audition_lets_go_of_the_last_song_s_loop(root, tmp_path, no_device
     win.close()
 
 
+@pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
+def test_a_closed_clip_window_is_freed_here_while_its_threads_work_on(root, tmp_path, no_device, monkeypatch):
+    """The window's threads hold what they hand back, never the window: one still at work after the
+    window closed would otherwise be the last to let go of it, and the window's Tk variable would be
+    freed on that thread ("main thread is not in main loop" in Variable.__del__)."""
+    from ironbark.tools.clip_window import ClipWindow
+    path, x, places = bursts_file(tmp_path)
+    go_on = threading.Event()
+    real_versions = clipping.listening_versions
+
+    def slow_versions(*args, **kwargs):
+        go_on.wait(20)
+        return real_versions(*args, **kwargs)
+    monkeypatch.setattr(clipping, "listening_versions", slow_versions)
+    win = ClipWindow(root, WindowPlayer(path), {}, stream_factory=FakeStream)
+    win.win.update()
+    wait_for(win, lambda w=win: w._loading is not None)            # the A/B loop is being made…
+    thread = win._loading
+    win.close()
+    assert not [name for name, value in vars(win).items() if isinstance(value, tk.Variable)]
+    gone = weakref.ref(win)
+    del win
+    gc.collect()                                                  # (here, on the main thread)
+    try:
+        assert thread.is_alive()                                  # …and still is,
+        assert gone() is None                                     # but the window is already freed
+    finally:
+        go_on.set()
+        thread.join(20)
+    assert not thread.is_alive()
+
+
+@pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
 def test_clip_window_says_so_when_its_work_fails(root, tmp_path, no_device, monkeypatch):
     from ironbark.tools.clip_window import ClipWindow
     path, x, places = bursts_file(tmp_path)

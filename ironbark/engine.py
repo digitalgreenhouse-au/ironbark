@@ -16,10 +16,12 @@ Output goes to the device the user picked (or the system default) — see device
 Two output modes:
 - shared (default): float32 through the OS mixer, which resamples to its own
   rate and mixes with other apps. On Windows this is WASAPI shared mode.
-- exclusive (Windows/WASAPI): the player takes the device at the file's own
-  rate and sends left-justified int32 samples with dithering off, so at 100%
-  volume the device receives the file's samples untouched ("bit-perfect").
-  Other apps go silent while it plays. Falls back to shared if the device
+- exclusive: the player takes the device at the file's own rate and sends
+  left-justified int32 samples with dithering off, so at 100% volume the device
+  receives the file's samples untouched ("bit-perfect"). Other apps go silent
+  while it plays. On Windows that's WASAPI exclusive mode; on a Mac the device is
+  hogged and switched to the file's rate and its deepest format first (see
+  devices.claim). Falls back to shared if the device
   refuses — but never to another device: if the chosen one isn't connected, it
   doesn't play (full scale on a device with no volume control of its own could
   be far too loud).
@@ -57,7 +59,7 @@ from enum import Enum
 
 import sounddevice as sd
 
-from . import audiofile, devices
+from . import audiofile, devices, platforms
 from .library import Track, album_folder
 from .proof import Proof
 from .session import (  # noqa: F401 — re-exported: the rest of the program gets these from the engine
@@ -91,6 +93,8 @@ from .session import (  # noqa: F401 — re-exported: the rest of the program ge
 
 log = logging.getLogger(__name__)
 
+DEFAULT_OWNER = "Windows'" if platforms.IS_WINDOWS else "The system's"   # (whose default output it is)
+
 
 RESTART_THRESHOLD = 3.0  # "previous" within this many seconds goes back a track
 
@@ -111,6 +115,10 @@ STOP_AFTER_MODES = ("song", "album")   # stop at the end of this song / of this 
 
 
 HOLD_RELEASE_S = 30.0     # silent this long, waiting for the network: the sound device is let go
+# Paused by hand this long in bit-perfect: the device is let go (other apps are silent while it's
+# held), and play carries on from the same spot, as after suspend(). Shared mode holds nothing.
+# Only where platforms.PAUSE_RELEASES_DEVICE says so.
+PAUSE_RELEASE_S = 30.0
 
 
 AUTO_RESUME_S = 300.0     # a song starts (or carries on) by itself only within this long
@@ -885,7 +893,7 @@ class Player:
     def check_default(self) -> str | None:
         """Bit-perfect on the system default: the device to play on — the one whose volume control
         was checked (refresh_hardware_volume), by name — as long as it's still Windows' default.
-        If Windows has made another device the default since, this raises devices.DefaultChanged,
+        If the system has made another device the default since, this raises devices.DefaultChanged,
         and nothing plays in bit-perfect until that device has been checked too (`volume_check_due`):
         it may have no volume control of its own, and bit-perfect sends the file at full scale."""
         name = devices.default_output_name()
@@ -895,7 +903,7 @@ class Player:
             self.hardware_volume = None   # (not known for this device: the ear checks treat it as none)
             self.amp_volume = False
             self.volume_check_due = True
-        raise devices.DefaultChanged(f"Windows' default output is now {name or 'another device'}")
+        raise devices.DefaultChanged(f"{DEFAULT_OWNER} default output is now {name or 'another device'}")
 
     @property
     def output_device(self) -> str | None:
@@ -977,7 +985,10 @@ class Player:
             return status
 
     def close(self):
+        """Stop playing for good: the player's control thread ends too (after close, nothing more
+        is played)."""
         self.stop()
+        self._ended_events.put(("quit", None))
 
     def monitor(self) -> queue.Queue:
         """A live feed of every block sent to the device (see _Session._feed_monitors), until
@@ -1023,7 +1034,11 @@ class Player:
 
     def _start_now(self, index, start_at: float, transition: str, force: bool, resume: bool,
                    deadline: float | None = None):
-        self._close_session()
+        self._close_session(restore=False)
+        if devices.formats_changed():
+            # Bit-perfect changed a device's rate and format: put it back unless it's about to be
+            # used bit-perfect again (no relocking the DAC twice between tracks).
+            devices.restore_formats(keep=devices.core_audio_device(self._device) if self._exclusive else None)
         self._message = ""
         self._fade = self._resume_with = None
         self.transition = transition
@@ -1080,6 +1095,8 @@ class Player:
                 if isinstance(exc, devices.DefaultChanged):
                     self._message = (f"{exc}, so bit-perfect stopped here to check its volume first · press play "
                                      "to carry on")
+                elif isinstance(exc, devices.DeviceBusy):
+                    self._message = f"{exc}, then press play."
                 elif isinstance(exc, devices.DeviceMissing):
                     self._message = (f"{exc}. Bit-perfect mode plays only on the output you chose: connect it, "
                                      "or pick another under Output, then press play.")
@@ -1099,7 +1116,8 @@ class Player:
         self.queued_now = None
         self._message = self._message or "End of album"
 
-    def _close_session(self):
+    def _close_session(self, restore: bool = True):
+        """Close the stream; `restore` also puts back any device format bit-perfect changed."""
         self._suspended_at = None
         self.queued_now = None
         prep, self._preparing = self._preparing, None
@@ -1108,6 +1126,8 @@ class Player:
         if self._session:
             self._session.close()
             self._session = None
+        if restore:
+            devices.restore_formats()
         self._plan_changed()   # (the cache lets go of what this was downloading, unless it plays on)
 
     # -- songs waiting for the network (the network playback cache) ------------------------
@@ -1227,6 +1247,15 @@ class Player:
                  silent_for)
         self._wait_to_start(at, position, "carried on after a pause for the network", resume=True,
                             deadline=self._clock() - silent_for + AUTO_RESUME_S)
+
+    def _release_paused(self, session: _Session):
+        """Paused by hand for PAUSE_RELEASE_S in bit-perfect: let go of the device, as suspend() does
+        (the same spot, the same song; play carries on from there)."""
+        position, queued = session.position, self.queued_now
+        log.info("%s: paused for %.0f s in bit-perfect; the sound device is let go", session._track_name,
+                 PAUSE_RELEASE_S)
+        self._close_session()
+        self._suspended_at, self.queued_now = position, queued
 
     def _network_view(self, track, session, prep) -> NetworkView | None:
         """Status.network: how a song on a network drive is getting on (None for a local song)."""
@@ -1355,6 +1384,8 @@ class Player:
                 kind, session, *details = self._ended_events.get(timeout=WATCH_SECONDS)
             except queue.Empty:
                 kind, session, details = "watch", None, []
+            if kind == "quit":   # (close)
+                return
             try:
                 with self._lock:
                     if kind == "ready":   # a song waiting for the network may start (no session yet)
@@ -1370,6 +1401,9 @@ class Player:
                             self._faded()
                         elif session is not None and session.waiting_for(now) > HOLD_RELEASE_S:
                             self._release_for_network(session)
+                        elif (platforms.PAUSE_RELEASES_DEVICE and session is not None and session.exclusive
+                              and session.paused_for(now) > PAUSE_RELEASE_S):
+                            self._release_paused(session)
                         self._watch_preparing()
                         continue
                     if session is not self._session:

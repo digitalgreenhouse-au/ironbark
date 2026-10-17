@@ -108,7 +108,8 @@ def test_album_column_shows_the_tag_and_long_names_end_with_an_ellipsis(root, tm
     root.update()
     root.update()
     shown = w.tree.set(w.tree.get_children()[0], "album")
-    assert shown.endswith("…") and long.startswith(shown[:-1].rstrip())
+    name = f"Band – {long}" if w._narrow else long       # (a narrow list has no Artist column: "Artist – Album")
+    assert shown.endswith("…") and name.startswith(shown[:-1].rstrip())
     # The narrow columns keep their room however narrow the window: nothing runs past its right edge.
     displayed = [str(c) for c in w.tree.cget("displaycolumns")]
     widths = sum(int(w.tree.column(c, "width")) for c in displayed)

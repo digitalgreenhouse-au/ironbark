@@ -535,6 +535,39 @@ def pad(*values: float):
     return scaled[0] if len(scaled) == 1 else scaled
 
 
+def wrap_inside(label: tk.Misc, width: int) -> None:
+    """Wrap `label`'s text so the whole label asks for no more than `width` px — for a label that
+    follows the width it's laid out at (a <Configure> handler).
+
+    Wrapping at the full width lets a label ask for a few pixels more than it was given (its border
+    and padding, and a line's last space may run past the wrap). Where nothing outside fixes that
+    width (a page built but not yet shown, a scroll panel not yet laid out), the width then grows
+    to match, the text wraps again, and on some widths the two never settle: Tk's idle loop runs
+    for ever and the window freezes. So the wrap is measured: narrowed until the label fits. (The
+    answer depends on `width` alone, so a width can only shrink toward one that fits.)"""
+    def pixels(value) -> int:   # (a Tk distance — "2", "1p", a Tcl object — or "" for none)
+        text = str(value).strip()
+        return label.winfo_pixels(text) if text else 0
+
+    if isinstance(label, ttk.Widget):
+        padding = str(label.cget("padding")).split()   # (left [top [right [bottom]]]: right = left)
+        inset = (pixels(padding[0]) + pixels(padding[2] if len(padding) > 2 else padding[0])) if padding else 0
+    else:
+        inset = 2 * sum(pixels(label.cget(option)) for option in ("borderwidth", "padx", "highlightthickness"))
+    first = wrap = max(1, width - inset)
+    label.configure(wraplength=wrap)
+    for _ in range(8):   # (lines break at words, so a narrower wrap can take a step or two to tell)
+        over = label.winfo_reqwidth() - width
+        if over <= 0:
+            return
+        if wrap <= 1:
+            break
+        wrap = max(1, wrap - over)
+        label.configure(wraplength=wrap)
+    if label.winfo_reqwidth() > width:   # one word wider than the line: no wrap fits it, so the
+        label.configure(wraplength=first)   # first (the label then asks for that word, whatever the width)
+
+
 # -- ttk styles ----------------------------------------------------------------------------
 def _elements(root: tk.Tk, style: ttk.Style) -> None:
     """The ttk image elements the styles draw with: fields, the drop-downs' chevron, the list

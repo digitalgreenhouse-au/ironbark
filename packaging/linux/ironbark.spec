@@ -27,7 +27,8 @@ a = Analysis(
     pathex=[str(REPO)],
     datas=collect_data_files("ironbark", includes=["assets/*"]),
     # Pillow's ImageTk finds Tk through this module on Linux, imported in a way PyInstaller doesn't see.
-    hiddenimports=["PIL._tkinter_finder"],
+    # jeepney (mpris.py, the media keys) is imported only once they're switched on, inside a function.
+    hiddenimports=["PIL._tkinter_finder", "jeepney", "jeepney.io.blocking", "jeepney.bus_messages"],
     # yaml: numpy's optional config printout imports it when the development tools have installed it.
     # readline, curses and dbm.gnu: the distribution's Python builds them against GPL libraries
     # (libreadline, libgdbm); Ironbark uses none of them.

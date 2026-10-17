@@ -91,6 +91,7 @@ class SpectrogramWindow(toolwin.ToolWindow):
         self._picture: spectrum.TrackPicture | None = None
         self._progress = 0.0
         self._failed = False
+        self._reading: toolwin.Handback | None = None   # the whole-track reading's progress and picture, from its thread
         self._cancel = threading.Event()
         self._relayout_job = None
         self._made_total = 0       # live columns made so far (to redraw only when there's news)
@@ -155,6 +156,7 @@ class SpectrogramWindow(toolwin.ToolWindow):
     def _start_track(self):
         track = self.player.status().track
         self._cancel.set()
+        self._reading = None
         if track is None:
             self._track_path, self._picture = None, None
             return
@@ -163,22 +165,32 @@ class SpectrogramWindow(toolwin.ToolWindow):
         self._lossy_by_design = bool(getattr(track, "lossy", False))  # MP3, Vorbis, Opus
         _, _, width, height = self._plot
         path = track.path
+        # The thread fills this in and _take_track copies it across (it never holds the window: toolwin.Handback).
+        self._reading = job = toolwin.Handback(progress=0.0, failed=False, picture=None)
 
         def work():
             try:
                 picture = spectrum.track_picture(path, max(10, width), max(10, height),
-                                                 progress=lambda p: setattr(self, "_progress", p), cancel=cancel)
+                                                 progress=lambda p: setattr(job, "progress", p), cancel=cancel)
             except (OSError, RuntimeError, ValueError):
                 picture = None
-                self._failed = not cancel.is_set()
+                job.failed = not cancel.is_set()
             except Exception:  # noqa: BLE001 — said in the window ("couldn't be read"), never a spinner for ever
                 log.exception("reading the whole track for the spectrogram")
                 picture = None
-                self._failed = not cancel.is_set()
+                job.failed = not cancel.is_set()
             if picture is not None and not cancel.is_set():
-                self._picture = picture
+                job.picture = picture
 
         threading.Thread(target=work, name="spectrogram", daemon=True).start()
+
+    def _take_track(self):
+        """The whole-track reading's progress and picture, from its thread."""
+        job = self._reading
+        if job is not None:
+            self._progress, self._failed = job.progress, job.failed
+            if self._picture is None and job.picture is not None:
+                self._picture = job.picture
 
     def _step(self):
         self._drain()
@@ -186,6 +198,7 @@ class SpectrogramWindow(toolwin.ToolWindow):
             track = self.player.status().track
             if (track.path if track else None) != self._track_path:
                 self._start_track()
+        self._take_track()
         if toolwin.on_screen(self.win):   # minimised: nothing drawn
             self._draw()
 
@@ -379,3 +392,5 @@ class SpectrogramWindow(toolwin.ToolWindow):
             self.win.after_cancel(self._relayout_job)
         self.player.unmonitor(self.feed)
         self._photo = self._live_photo = self._key_photo = None   # its pictures go with the window, on this thread
+        self._reading = None
+        self.view = None   # and its Tk variable (the choice row lets go of it too)

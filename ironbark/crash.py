@@ -35,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import APP_NAME, __version__, platforms
+from . import APP_NAME, __version__, platforms, winstate
 
 log = logging.getLogger(__name__)
 
@@ -208,7 +208,7 @@ def attach(root, before: Callable[[], None] | None = None, folder: Callable[[], 
 
 def _on_screen(root) -> bool:
     try:
-        return root.state() not in ("iconic", "withdrawn")
+        return root.state() != "withdrawn" and not winstate.minimised(root)
     except Exception:  # noqa: BLE001 — the window has gone
         return False
 

@@ -158,6 +158,10 @@ class FakePlayer:
 
 
 class FakeClassifier(sources.Classifier):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._mounts = None   # (never this computer's mount table: the tests' paths are Windows-style)
+
     def refresh(self, force: bool = False) -> None:
         pass
 

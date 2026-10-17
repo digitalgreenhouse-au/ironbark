@@ -18,6 +18,7 @@ import os
 import re
 import struct
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -625,7 +626,15 @@ def _read_mp3(path: Path) -> Track:
     )
 
 
-def scan_folder(folder: str | Path) -> list[Track]:
+# How far a scan has got, told to the caller as it goes: progress(stage, done, total) — stage is
+# LOOKING (done = music files found so far, total = 0: not known yet) or READING (done of total files
+# read). Called on the scanning thread, often: the caller keeps it cheap (or throttles it).
+Progress = Callable[[str, int, int], None]
+LOOKING = "looking"
+READING = "reading"
+
+
+def scan_folder(folder: str | Path, progress: Progress | None = None) -> list[Track]:
     """Every audio file under `folder` (including Disc 1/Disc 2 style subfolders), in play order.
 
     Order: subfolder, album tag (so a flat folder of several albums doesn't
@@ -634,28 +643,44 @@ def scan_folder(folder: str | Path) -> list[Track]:
     """
     folder = Path(folder)
     paths = []
+    if progress is not None:
+        progress(LOOKING, 0, 0)
     for here, dirs, names in os.walk(folder):
         dirs[:] = [d for d in dirs if not skip_folder(d)]
         paths += [Path(here, name) for name in names if is_music_name(name)]
-    return read_in_play_order(folder, paths)
+        if progress is not None:
+            progress(LOOKING, len(paths), 0)
+    return read_in_play_order(folder, paths, progress)
 
 
-def scan_album(folder: str | Path) -> list[Track]:
+def scan_album(folder: str | Path, progress: Progress | None = None) -> list[Track]:
     """Just this album: its own audio files plus "CD1"/"Disc 2" subfolders — not other albums
     that happen to sit in folders underneath it."""
     folder = Path(folder)
     paths = []
+    if progress is not None:
+        progress(LOOKING, 0, 0)
     for entry in folder.iterdir():
         if entry.is_file() and is_music_name(entry.name):
             paths.append(entry)
         elif entry.is_dir() and DISC_FOLDER.match(entry.name):
             paths += [p for p in entry.iterdir() if p.is_file() and is_music_name(p.name)]
-    return read_in_play_order(folder, paths)
+    if progress is not None:
+        progress(LOOKING, len(paths), 0)
+    return read_in_play_order(folder, paths, progress)
 
 
-def read_in_play_order(folder: Path, paths: list[Path]) -> list[Track]:
+def read_in_play_order(folder: Path, paths: list[Path], progress: Progress | None = None) -> list[Track]:
     """The tracks of these files (read now), in play order (a CUE image once, as its tracks)."""
-    return play_order(folder, split_cue_images([read_track(p) for p in paths]))
+    if progress is None:
+        tracks = [read_track(p) for p in paths]
+    else:
+        tracks = []
+        for done, path in enumerate(paths):
+            progress(READING, done, len(paths))
+            tracks.append(read_track(path))
+        progress(READING, len(paths), len(paths))
+    return play_order(folder, split_cue_images(tracks))
 
 
 def play_order(folder: Path, tracks: list[Track]) -> list[Track]:

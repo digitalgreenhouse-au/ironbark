@@ -103,7 +103,7 @@ DEFAULTS = {
     "about_geometry": "",        # the About Ironbark window
     "new_music": None,           # {"since": when new music started to count, "opened": {album folder: when opened}}
     "theme": "dark",             # Settings → Window → Theme: "dark" or "light" (a saved "system" is settled once at start)
-    "mini_mode": False,          # the window was last left as the mini strip (it opens that way again)
+    "mini_mode": False,          # (unused: the player opens as the full window; kept so older settings files load as they are)
     "mini_geometry": "",         # where (and how big) the mini strip was last left
     # Network playback (the Experimental "Network playback cache"): songs on network drives play from a copy
     "net_mode": "intelligent",   # "intelligent", "fast" (start after the initial buffer) or "complete"
@@ -156,14 +156,20 @@ def cache_folder() -> Path:
 problem = ""
 
 
-def write_file(path: Path, text: str, errors: str = "strict") -> None:
+def write_file(path: Path, text: str, errors: str = "strict", private: bool = False) -> None:
     """Write a text file (UTF-8) so that a crash or a power cut leaves the old file or the new one,
     never part of one: written beside it under a name no other writer is using, flushed to the
-    disk, then swapped in. Raises OSError, or ValueError for text that can't be encoded."""
+    disk, then swapped in. Raises OSError, or ValueError for text that can't be encoded.
+    `private`: on a Mac or Linux the file can be read by this user only (0600) from the moment it
+    exists, whatever the umask; on Windows the user's own AppData folder already sees to that."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}-{threading.get_ident()}.tmp")
     try:
-        with open(temporary, "w", encoding="utf-8", errors=errors) as f:
+        mode = 0o600 if private else 0o666
+        handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), mode)
+        if private and not platforms.IS_WINDOWS:
+            os.fchmod(handle, 0o600)   # (an old temporary file of the same name kept its own mode)
+        with open(handle, "w", encoding="utf-8", errors=errors) as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
