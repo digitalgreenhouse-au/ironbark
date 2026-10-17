@@ -46,7 +46,7 @@ from . import artwork, platforms, theme
 
 log = logging.getLogger(__name__)
 
-AVAILABLE = platforms.MEDIA_CONTROLS
+AVAILABLE = platforms.MEDIA_CONTROLS and platforms.IS_WINDOWS   # (this module's backend; Linux's is mpris.py)
 
 # What a button or key asks for (the words that travel through the queue).
 PLAY, PAUSE, TOGGLE, NEXT, PREVIOUS, STOP = "play", "pause", "toggle", "next", "previous", "stop"

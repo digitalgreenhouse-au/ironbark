@@ -4,6 +4,45 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.51.0 — 17/10/2026
+
+Downloads for Windows, macOS and Linux, all built from this version.
+
+- **Ironbark on the Mac (experimental).** The same player, as a Mac app (Apple silicon), unsigned
+  for now. **Bit-perfect on a Mac:** Ironbark takes the output for itself while it plays and
+  switches it to the song's own sample rate and its deepest format, so Core Audio passes the
+  samples through untouched; the output is put back as it was when you stop or quit, or after
+  30 seconds paused (play carries on from the same spot). Devices plugged in after Ironbark starts
+  show up in Output; ⌘Q closes it as usual.
+- Mac: a playlist on another disk or a network share is deleted for good after Ironbark says so
+  (it can't go to the Bin from there); one on the Mac's own disk goes to the Bin as before.
+- Mac: **Test signals** plays and records through one audio interface (a loopback cable from its
+  output to its input) without hanging, and every recording now has a time limit. The Windows-only
+  "Windows loopback" choice isn't offered on a Mac.
+- **Linux: bit-perfect.** Choose the sound card's own output (a name ending in `(hw:…)`) under
+  Output and switch on Bit-perfect: Ironbark plays straight to the card at the song's own rate,
+  and other apps are silent meanwhile. Paused for 30 seconds, it lets the card go; play carries on
+  from the same spot. The shared outputs (the sound server) play as before.
+- Test signals: if the input you last recorded from isn't connected, it starts on the system's
+  own loopback (Windows), the sound server's monitor (Linux) or the first input (Mac) instead of
+  the missing name.
+- **Linux: the system check** listens to the sound server's own monitor and says whether the
+  server played exactly what Ironbark sent, naming the sound server rather than Windows.
+- **Linux: media keys and the desktop's sound menu** (MPRIS): play, pause, next and previous, with
+  the song, artist and cover shown. New dependency on Linux: jeepney (MIT).
+- **Linux: network folders** (an SMB or NFS share mounted by the desktop or by `mount`) are
+  network folders: *Local network access* and the network cache now apply to them.
+- **Quitting cleanly when the system asks** (a logout, `kill`): on the Mac and Linux, Ironbark now
+  closes as if you had closed its window, saving where you were and putting the output back as it
+  was, instead of crashing.
+- Known limits on the Mac for now: a few button symbols show as letters, shortcut hints say Ctrl
+  (⌘ works too), opening a song from Finder with a double-click doesn't reach the player yet, and
+  the app isn't signed, so macOS asks you to allow it once (see the README).
+- Known limits on Linux for now: the desktop's sound menu has no position bar or seeking; in the
+  Output list the card's own output comes last and its name can be cut off; an open network tab
+  fills only once you press play after switching *Local network access* on; opening Now Playing
+  for a song on a network share can cause a short dropout. Wayland hasn't been tested.
+
 ## 0.50.5 — 16/10/2026
 
 - Linux: the list of third-party software now names BLT 2.5 (MIT licence), which the Linux
@@ -76,7 +115,6 @@ bottom of Settings. Dates are dd/mm/yyyy. Newest first.
   transport's play button still belongs to the tab you're looking at, and starts that one.
 - **Settings has an X at the top right**, next to Mini player: back to the player, like Done, Esc
   and the gear.
-- Windows installer: the tick boxes on the Tasks page are no longer cut off.
 
 ## 0.49.4 — 15/10/2026
 

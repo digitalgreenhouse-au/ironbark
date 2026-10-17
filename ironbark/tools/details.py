@@ -20,7 +20,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from .. import APP_NAME, audiofile, controls, placement, shapes, theme, toolwin, winstate
+from .. import APP_NAME, audiofile, controls, placement, platforms, shapes, theme, toolwin, winstate
 from ..analysis import CLIP_RUN, UPSAMPLED_BELOW_HZ, AlbumResult, Analysis, album_measure, analyse, lossy_below
 from ..engine import Health, OutputInfo, PlaybackEvent, Player, State
 from ..flacframes import FrameIndex, build_index
@@ -50,6 +50,8 @@ from .meters import album_files
 log = logging.getLogger(__name__)
 
 CHECK_MIXER = f"Check what {MIXER} does to the sound"   # the Proof section's button, named in its line
+WHO_MIXES = platforms.SOUND_SYSTEM   # in the check's results: "Windows" / "the sound server"
+WHOSE_RECORDING = platforms.SOUND_SYSTEMS[:1].upper() + platforms.SOUND_SYSTEMS[1:]   # starting a sentence
 
 METER_FLOOR_DB = -60.0
 METER_FALL_DB = 2.0  # how far the bars fall back per refresh, so they're readable
@@ -147,8 +149,8 @@ def _describe_proof(proof: Proof | None, output: OutputInfo | None, gain: float,
             return (f"Sent exactly as in the file ({checked}), but the device takes {output.device_bits}-bit "
                     f"samples, so it isn't bit-perfect", "warn")
         return f"✓ Bit-perfect, proven: every sample sent is identical to the file ({checked})", "good"
-    return (f"✓ The player sent every sample unchanged ({checked}). In shared mode {MIXER} mixes it next: "
-            f"use “{CHECK_MIXER}” below to see what that does", "plain")
+    hint = f": use “{CHECK_MIXER}” below to see what that does" if loopback.AVAILABLE else ""
+    return f"✓ The player sent every sample unchanged ({checked}). In shared mode {MIXER} mixes it next{hint}", "plain"
 
 
 def describe_health(health: Health | None, dropouts: int) -> tuple[str, str]:
@@ -504,9 +506,11 @@ class NowPlayingWindow:
             value = ttk.Label(proof, text="—", anchor="w", justify="left", wraplength=theme.px(VALUE_WRAP))
             value.grid(row=row, column=1, sticky="w", pady=theme.px(1))
             self.values[key] = value
-        self._label(proof, 3, MIXER, theme.pad(theme.GAP, 1))
+        # Recording what the mixer does to the sound needs a loopback of the output: Windows only.
         self.windows_frame = ttk.Frame(proof)
-        self.windows_frame.grid(row=3, column=1, sticky="w", pady=theme.pad(theme.GAP, 1))
+        if loopback.AVAILABLE:
+            self._label(proof, 3, MIXER, theme.pad(theme.GAP, 1))
+            self.windows_frame.grid(row=3, column=1, sticky="w", pady=theme.pad(theme.GAP, 1))
         self.windows_button = controls.FlatButton(self.windows_frame, CHECK_MIXER,
                                                   self._start_windows_check)
         self.windows_button.grid(row=0, column=0, columnspan=2, sticky="w")
@@ -1075,9 +1079,7 @@ class NowPlayingWindow:
 
         def work():
             try:
-                import comtypes
-
-                comtypes.CoInitialize()
+                loopback.thread_ready()
                 status = player.status()
                 device = status.output.device if status.output else None
                 recording: dict = {}
@@ -1085,7 +1087,7 @@ class NowPlayingWindow:
 
                 def listen():
                     try:
-                        comtypes.CoInitialize()
+                        loopback.thread_ready()
                         recording["take"] = loopback.record(device, WINDOWS_CHECK_SECONDS + 3.0, flowing)
                     except Exception as exc:  # noqa: BLE001
                         recording["error"] = exc
@@ -1106,8 +1108,8 @@ class NowPlayingWindow:
                 take = recording.get("take")
                 result["settings"] = loopback.settings(device)
                 if take is None or not len(take.audio):
-                    reason = recording.get("error") or "Windows sent nothing to record"
-                    result["note"] = f"Couldn't record what {MIXER} played ({reason})"
+                    reason = recording.get("error") or f"{WHO_MIXES} sent nothing to record"
+                    result["note"] = f"Couldn't record what {WHO_MIXES} played ({reason})"
                     return
                 result["check"] = compare_paths(tap["audio"][: tap["filled"]], rate, take.audio, take.rate)
                 result["gaps"] = take.gaps
@@ -1141,7 +1143,7 @@ class NowPlayingWindow:
                 lines.append(("Settings", " · ".join(facts) + ". (The device slider may not show in the "
                               "recording above.)", "plain"))
         if result.get("gaps"):
-            lines.append(("Note", f"{MIXER}' recording had {result['gaps']} break(s); try again if the "
+            lines.append(("Note", f"{WHOSE_RECORDING} recording had {result['gaps']} break(s); try again if the "
                                   "result looks odd", "plain"))
         for row, (label, text, tone) in enumerate(lines, start=2):
             name = ttk.Label(self.windows_frame, text=label, style="Muted.TLabel")

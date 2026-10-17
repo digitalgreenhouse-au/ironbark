@@ -116,6 +116,7 @@ from . import (
     logs,
     loudness,
     mediakeys,
+    mpris,
     offthread,
     passthrough,
     placement,
@@ -158,6 +159,7 @@ from .playlist_view import PlaylistView
 from .searchfold import fold
 from .settings_view import SETTINGS_WIDTH, VOLUME_STEP
 from .statustext import (
+    MIXER,
     cache_mark,
     copy_failed_text,
     copy_note,
@@ -182,6 +184,8 @@ READ_HERE_MOST = 2_000   # songs of a library tab read on Tk's thread for an act
 MEDIA_POLL_MS = 60   # how often presses from media keys / Windows' media panel are picked up
 AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
+VOLUME_CONTROL = ("Mac's volume keys" if platforms.IS_MAC else "Windows volume slider" if platforms.IS_WINDOWS
+                  else "desktop's volume control")
 SEEK_STEP = 5.0
 LONG_SEEK_STEP = 30.0  # Shift+← / →
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
@@ -630,7 +634,7 @@ class PlayerWindow:
         self._held_key = None    # what the songs held round the one playing were worked out for
         self._opened_key = None                  # the song last marked as opening its album
         self.media = mediakeys.MediaKeys()        # presses from media keys / Windows arrive here
-        self._windows_media = None                # mediakeys.WindowsMedia while switched on
+        self._windows_media = None                # mediakeys.WindowsMedia (mpris.MprisMedia on Linux) while on
         self._drop_overlay: list[tk.Frame] = []   # the green edge shown while something is dragged over
         self._drop_shown = None                   # what's lit up for a drag now: ("tab", i) / ("window", None)
         experiments.tidy(self.prefs)  # forget switches for experiments since rolled in or dropped
@@ -710,6 +714,10 @@ class PlayerWindow:
         self._polls = 0
         self._saved_snapshot = json.dumps(self.prefs, sort_keys=True)
         root.protocol("WM_DELETE_WINDOW", self.quit)
+        if platforms.IS_MAC:
+            # Cmd+Q, or Quit from the Dock, reaches Tk as an Apple event that Tk would answer by
+            # ending the program on the spot: it closes the player the ordinary way instead.
+            root.createcommand("::tk::mac::Quit", self.quit)
         if self.exclusive.get():
             # Bit-perfect from the start: the device may not be last time's (a different Windows
             # default, or the chosen one unplugged), so the same ear check as switching it on —
@@ -1388,7 +1396,8 @@ class PlayerWindow:
         loud = "full level" if level >= 1.0 else volume_words(level)
         self._for_prompt()
         return popups.confirm(self.root, f"Turn the volume up to {level:.0%}?",
-                              f"{reason}, and bit-perfect goes round the Windows volume: the music will "
+                              f"{reason}, and bit-perfect goes round the "
+                              f"{'Windows volume' if platforms.IS_WINDOWS else VOLUME_CONTROL}: the music will "
                               f"play at {loud} (the volume is {volume_words(self.player.volume)} now). "
                               "Turn your headphone or amp volume down first.",
                               ok="Turn it up", danger=True, tone="warn")
@@ -3867,7 +3876,7 @@ class PlayerWindow:
         self.exclusive.set(not self.exclusive.get())
         self._toggle_exclusive()
         self._set_notice("Bit-perfect on: other apps go quiet while this plays" if self.exclusive.get()
-                         else "Bit-perfect off: sound goes through the Windows mixer", 3000)
+                         else f"Bit-perfect off: sound goes through the {MIXER} mixer", 3000)
 
     def _paint_lock(self):
         if self.lock_button is not None:
@@ -3883,10 +3892,10 @@ class PlayerWindow:
             guard = (" The clipping guard comes first: a track that would clip the converter is turned down "
                      "just enough, so that one track isn't bit-perfect." if self.clip_guard.get() else "")
             exact = ("the device gets the file's exact samples" if setting == "off"
-                     else "Windows' mixer is bypassed")
+                     else "Windows' mixer is bypassed" if platforms.IS_WINDOWS else f"the {MIXER} mixer is bypassed")
             return (f"Bit-perfect is locked on: {exact}, and other apps go quiet while this plays."
                     f"{guard}{levelled} Click to turn Bit-perfect off.")
-        return (f"Bit-perfect is off: Windows mixes the sound and may resample it.{levelled} "
+        return (f"Bit-perfect is off: sound goes through the {MIXER} mixer, which may resample it.{levelled} "
                 "Click to lock Bit-perfect on.")
 
     def _change_output(self, _event=None):
@@ -3903,8 +3912,9 @@ class PlayerWindow:
 
     def _protect_ears(self, hardware_volume: bool | None):
         """Bit-perfect bypasses the Windows mixer. If the device can't turn itself down,
-        the system volume slider stops working — so drop the player volume first. Not on an output
-        whose volume is set on the amplifier it feeds (Settings → Volume on my amplifier)."""
+        the system volume slider stops working — so drop the player volume first. (A Mac never
+        turns such a device down at all, but bit-perfect needs the player at 100%: same care.) Not on
+        an output whose volume is set on the amplifier it feeds (Settings → Volume on my amplifier)."""
         if hardware_volume or self.player.amp_volume or self.player.volume <= SAFE_VOLUME:
             return
         self.player.set_volume(SAFE_VOLUME)
@@ -3916,7 +3926,7 @@ class PlayerWindow:
         # background, amber edge and warning sign. It waits for OK.
         self._for_prompt()
         popups.tell(self.root, "Volume turned down to protect your ears",
-                    f"{reason}, so the Windows volume slider may not work in bit-perfect mode. "
+                    f"{reason}, so the {VOLUME_CONTROL} may not work in bit-perfect mode. "
                     f"The player's volume is now {SAFE_VOLUME:.0%}.",
                     detail="Raise it slowly, or use your headphone or amp volume.",
                     tone="warn", cover=True, ok="I understand")
@@ -4041,14 +4051,17 @@ class PlayerWindow:
         else:
             self._about = self._with_keys(AboutWindow(self.root, self.prefs))
 
-    # -- media keys, Windows' media panel, taskbar buttons (mediakeys.py) -------------------------
+    # -- media keys, the desktop's media panel, taskbar buttons (mediakeys.py, mpris.py) ----------
     def _start_media(self):
-        """Hand the window to Windows' media controls (and the taskbar's buttons). Anything that
-        fails is logged and left off; the player works the same without it."""
-        if self._windows_media is not None or not mediakeys.AVAILABLE:
+        """Hand the window to the desktop's media controls: Windows' (and the taskbar's buttons), or
+        MPRIS on Linux. Anything that fails is logged and left off; the player works the same."""
+        if self._windows_media is not None:
             return
         try:
-            self._windows_media = mediakeys.start_windows(self.media, chrome._hwnd(self.root))
+            if mediakeys.AVAILABLE:
+                self._windows_media = mediakeys.start_windows(self.media, chrome._hwnd(self.root))
+            elif mpris.AVAILABLE:
+                self._windows_media = mpris.start(self.media, settings.cache_folder() / "MediaControls")
         except Exception:
             log.exception("media controls: couldn't start")
             self._windows_media = None
@@ -4353,6 +4366,11 @@ class PlayerWindow:
             except queue.Empty:
                 break
             arrived = True
+            if request.command:   # a remote control: the same as a press of that media key
+                self.media.press(request.command)
+                log.info("a remote control asked for %s", request.command)
+                if not request.paths and not request.front:
+                    continue
             front = front or request.front
             if request.paths:
                 self._named.append(request.paths)

@@ -37,6 +37,7 @@ listed and matched to their licences on 07/10/2026; the build now stops if one h
 | [pycaw](https://github.com/AndreMiras/pycaw) | MIT | Windows only: Windows' audio settings. |
 | [comtypes](https://github.com/enthought/comtypes) | MIT | Windows only: Windows' media controls and taskbar buttons, and used by pycaw. |
 | [psutil](https://github.com/giampaolo/psutil) | BSD-3-Clause | Windows only: used by pycaw. |
+| [jeepney](https://gitlab.com/takluyver/jeepney) | MIT | Linux only: talks to the desktop over D-Bus, for the media keys and the sound menu (MPRIS). Pure Python. |
 | [cffi](https://cffi.readthedocs.io) | MIT-0 | Used by soundfile and sounddevice. |
 | [pycparser](https://github.com/eliben/pycparser) | BSD-3-Clause | Used by cffi. |
 | [typing-extensions](https://github.com/python/typing_extensions) | PSF-2.0 | Used by soundfile. |

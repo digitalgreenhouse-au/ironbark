@@ -172,7 +172,14 @@ def _check_windows_audio() -> str:
 
 def _check_media_controls() -> str:
     """Windows' media controls (SMTC) and the taskbar's thumbnail buttons can be reached. Only
-    the starting points are made: nothing is attached to a window, so nothing appears."""
+    the starting points are made: nothing is attached to a window, so nothing appears. On Linux:
+    the D-Bus code the media keys use (jeepney) is in the build; the desktop's bus isn't touched,
+    as a check run where there's none (a build machine) must still pass."""
+    if platforms.IS_LINUX:
+        import jeepney.bus_messages  # noqa: F401
+        import jeepney.io.blocking  # noqa: F401
+
+        return f"D-Bus for the media keys (jeepney {jeepney.__version__}) included"
     if not platforms.IS_WINDOWS:
         return "not used on this system"
     import comtypes

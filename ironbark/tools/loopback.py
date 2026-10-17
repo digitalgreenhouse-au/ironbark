@@ -1,6 +1,7 @@
 """Windows' own recording of what a device is playing ("loopback"), plus the Windows
-settings that can change the sound in shared mode. Windows only; read-only — nothing
-here changes any setting.
+settings that can change the sound in shared mode. Read-only — nothing here changes any
+setting. On Linux `record` and `settings` hand over to monitor_linux.py, which records the sound
+server's monitor of the output (PipeWire / PulseAudio): the same answer, the system's way.
 
 PortAudio as shipped with sounddevice can't record loopback, so this talks to Windows'
 audio service directly through comtypes/pycaw (already used by devices.py), with the one
@@ -27,6 +28,16 @@ from .. import platforms
 log = logging.getLogger(__name__)
 
 AVAILABLE = platforms.LOOPBACK_RECORDING
+ON_WINDOWS = platforms.IS_WINDOWS
+
+
+def thread_ready() -> None:
+    """Call first on a worker thread that records or reads settings: Windows' audio service needs
+    COM set up on it. Nothing to do elsewhere."""
+    if ON_WINDOWS:
+        import comtypes
+
+        comtypes.CoInitialize()
 
 AUDCLNT_SHAREMODE_SHARED = 0
 AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
@@ -122,6 +133,11 @@ def settings(device_name: str | None) -> WindowsSettings:
     found = WindowsSettings()
     if not AVAILABLE:
         return found
+    if not ON_WINDOWS:
+        from . import monitor_linux
+
+        found.mixer_rate, found.mixer_bits = monitor_linux.mixer(device_name)
+        return found
     device = _device(device_name)
     if device is None:
         return found
@@ -159,6 +175,11 @@ def record(device_name: str | None, seconds: float, flowing=None) -> Recording |
     (a threading.Event) is set once the recording is actually receiving sound."""
     if not AVAILABLE:
         return None
+    if not ON_WINDOWS:
+        from . import monitor_linux
+
+        take = monitor_linux.record(device_name, seconds, flowing)
+        return Recording(take.rate, take.audio, take.gaps) if take is not None else None
     IAudioCaptureClient = _interfaces()
     device = _device(device_name)
     if device is None:

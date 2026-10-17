@@ -289,7 +289,7 @@ def _portaudio_version() -> str:
 
 
 def audio_outputs() -> tuple[str | None, list[str]]:
-    """(the default output, the outputs connected now) — Windows' own list."""
+    """(the default output, the outputs connected now) — the system's own list, live."""
     from . import devices
 
     return devices.default_output_name(), devices.output_names()
@@ -305,7 +305,7 @@ def outputs_text(redactor: Redactor, default: str | None, connected: list[str], 
         here = "connected" if chosen in connected else "not connected now"
         lines.append(f"Chosen in Settings: {redactor.word(chosen, 'device')} ({here})")
     else:
-        lines.append("Chosen in Settings: Windows' default output")
+        lines.append("Chosen in Settings: the system's default output")
     lines.append("(Output names are left out: <device 1>, <device 2>... stand for them in every file.)")
     return "\n".join(lines) + "\n"
 

@@ -275,16 +275,23 @@ def analyse_tone(x: np.ndarray, rate: int, frequency: float = TONE_HZ, size: int
     lobe = power[first: k0 + LOBE + 1]
     fundamental = float(np.sum(lobe))
     measured = float(np.sum(lobe * np.arange(first, first + len(lobe))) / fundamental) * bin_hz if fundamental else 0.0
+    # What's left is added up bin by bin, never taken as a difference of two near-equal sums: that
+    # would be rounding noise (one unit in the last place of the total reads as about -157 dB).
+    rest = np.zeros(len(power), dtype=bool)
+    rest[band] = True
+    rest[first: k0 + LOBE + 1] = False
+    residual = float(np.sum(power[rest]))
     harmonics, harmonic_power = [], 0.0
     for n in HARMONICS:
         f = n * (measured or frequency)
         if f > hi:
             break
-        p = _lobe(power, int(round(f / bin_hz)))
+        k = int(round(f / bin_hz))
+        p = _lobe(power, k)
         harmonic_power += p
+        rest[max(0, k - LOBE): k + LOBE + 1] = False
         harmonics.append((n, f, db(p / fundamental) if fundamental else QUIET_DB))
-    residual = max(0.0, total - fundamental)
-    noise = max(0.0, residual - harmonic_power)
+    noise = float(np.sum(power[rest]))
     return ToneResult(
         frequency=measured, level_db=db(fundamental / FULL_SINE_POWER),
         thd_n_db=db(residual / total) if total else QUIET_DB,

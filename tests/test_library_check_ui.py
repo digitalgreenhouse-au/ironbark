@@ -329,11 +329,10 @@ def test_recycle_says_where_a_bin_exists_and_never_runs_on_tk(tmp_path, monkeypa
 
     from ironbark import cuesheet, recycle
 
-    if sys.platform == "win32":
-        assert recycle.can_recycle("\\\\server\\share\\Mix.m3u8") is False      # a network share: no bin
     with pytest.raises(FileNotFoundError):
         recycle.recycle(tmp_path / "gone.m3u8")
     if sys.platform == "win32":
+        assert recycle.can_recycle("\\\\server\\share\\Mix.m3u8") is False      # a network share: no bin
         assert recycle.can_recycle(tmp_path / "Mix.m3u8") is (os.path.splitdrive(str(tmp_path))[0].upper() == "C:")
     threads = []
     monkeypatch.setattr(recycle, "_shell_delete", lambda full: threads.append(threading.current_thread())

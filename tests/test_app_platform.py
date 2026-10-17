@@ -201,6 +201,14 @@ def test_requests_without_the_key_or_in_bad_shape_are_ignored():
     assert instance._read_frame(long.read) is None   # an absurd length is refused before reading
 
 
+def test_a_request_can_carry_a_media_key_command():
+    body = instance.encode([], front=False, key="secret", command="next")[4:]
+    assert instance.decode(body, "secret") == instance.Request((), False, "next")
+    assert instance.encode(["a"], key="k") == instance.encode(["a"], key="k", command="")   # (none: as before)
+    for bad in (b'{"paths": [], "command": "eject"}', b'{"paths": [], "command": 3}'):
+        assert instance.decode(bad) is None
+
+
 def test_paths_are_made_absolute_where_the_later_launch_started(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert instance.absolute(["song.flac", "", str(tmp_path / "x")]) == [str(tmp_path / "song.flac"),

@@ -203,10 +203,11 @@ def _nothing_system_wide(monkeypatch):
     monkeypatch.setattr(start, "_enable_crisp_text_on_windows", lambda: None)
     before = _dpi_awareness()
     if not LIVE_WINDOWS:
-        from ironbark import mediakeys
+        from ironbark import mediakeys, mpris
 
         monkeypatch.setattr(mediakeys, "start_windows", lambda hub, hwnd: None)
         monkeypatch.setattr(mediakeys, "KeyboardHook", _NoKeyboardHook)
+        monkeypatch.setattr(mpris, "start", lambda hub, cover_folder=None: None)   # (never the real session bus)
     yield
     if _dpi_awareness() != before:
         pytest.fail("this test made the test process DPI-aware: later tests' text would be laid out "
@@ -239,6 +240,26 @@ def restore(window) -> None:
     while time.monotonic() < deadline and not winstate.on_screen(window):
         window.update()
         time.sleep(0.01)
+
+
+@pytest.fixture(autouse=True)
+def _never_hold_a_real_device(monkeypatch):
+    """Bit-perfect on a Mac hogs the device and changes its format. Tests that switch it on
+    with stand-in streams must never do that to the real sound card they run beside. (Linux's
+    claim only reads the device's name, never the card: its rule is kept, as it decides what plays.)"""
+    from ironbark import devices
+
+    real = devices.claim
+
+    def claim(index, rate):
+        # (a stand-in device the test calls bit-perfect-capable is a sound card's own on Linux too:
+        # Linux's rule is kept for the tests that set out the device list themselves)
+        if devices.IS_LINUX and getattr(devices, "_tests_name_devices", False):
+            return real(index, rate)
+        return devices.Claim()
+
+    monkeypatch.setattr(devices, "claim", claim)
+    monkeypatch.setattr(devices, "restore_formats", lambda keep=None: None)
 
 
 binned: list[str] = []   # what tests "sent to the Recycle Bin" (deleted instead, and noted here)
