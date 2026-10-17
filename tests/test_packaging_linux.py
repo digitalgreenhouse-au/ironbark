@@ -82,3 +82,20 @@ def test_the_launcher_entry_is_valid_and_names_the_window_class():
     found = subprocess.run(["desktop-file-validate", str(entry)], capture_output=True, text=True)
     assert found.returncode == 0 and not found.stdout.strip(), found.stdout
     assert "StartupWMClass=Ironbark\n" in entry.read_text(encoding="utf-8")
+
+
+def test_every_runtime_dependency_for_linux_ships_its_licence():
+    """The build copies the licence files of the packages in the spec's SHIPPED list: a dependency
+    missing from it would ship without its licence (MIT and BSD ask for the notice to go along)."""
+    import re
+    import tomllib
+
+    spec = (LINUX / "ironbark.spec").read_text(encoding="utf-8")
+    shipped = {name.lower() for name in re.findall(r'"([^"]+)"', re.search(r"SHIPPED = \[(.*?)\]", spec).group(1))}
+    project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    for requirement in project["dependencies"]:
+        name, _, marker = requirement.partition(";")
+        if "sys_platform" in marker and "linux" not in marker:
+            continue   # (Windows or Mac only)
+        name = re.split(r"[<>=!~\[ ]", name.strip(), maxsplit=1)[0].lower()
+        assert name in shipped, f"{name} ships on Linux but its licence isn't copied (SHIPPED in ironbark.spec)"
