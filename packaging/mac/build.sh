@@ -10,8 +10,12 @@
 #
 # Run from anywhere:  sh packaging/mac/build.sh [--skip-tests] [--no-sync] [--out <folder>]
 # --no-sync: don't update the environment first.
-# Unsigned: the first time a downloaded copy is opened, macOS refuses it (Gatekeeper). How to let
-# it in depends on the macOS version: to be confirmed on the Mac and written here (and in the README).
+# Unsigned: the first time a downloaded copy is opened, macOS refuses it (Gatekeeper: "Ironbark" Not
+# Opened. Apple could not verify…, with only Done / Move to Bin). On macOS 26 a right-click → Open no
+# longer gets past it. To let it in: Done, then System Settings → Privacy & Security → Security, where
+# "Ironbark" was blocked to protect your Mac → Open Anyway, give the password or Touch ID, then Open
+# Anyway once more. From Terminal instead: xattr -dr com.apple.quarantine /Applications/Ironbark.app
+# Build into a folder of its own (--out dist/mac-<version>) when an Ironbark you use is in dist/mac.
 set -eu
 
 cd "$(dirname "$0")/../.."

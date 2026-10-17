@@ -184,7 +184,8 @@ READ_HERE_MOST = 2_000   # songs of a library tab read on Tk's thread for an act
 MEDIA_POLL_MS = 60   # how often presses from media keys / Windows' media panel are picked up
 AUTOSAVE_EVERY = 8   # polls, i.e. settings are saved within ~2 s of a change
 SAFE_VOLUME = 0.3    # player volume when bit-perfect is switched on without a device volume control
-VOLUME_CONTROL = "Mac's volume keys" if platforms.IS_MAC else "Windows volume slider"
+VOLUME_CONTROL = ("Mac's volume keys" if platforms.IS_MAC else "Windows volume slider" if platforms.IS_WINDOWS
+                  else "desktop's volume control")
 SEEK_STEP = 5.0
 LONG_SEEK_STEP = 30.0  # Shift+← / →
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
@@ -1395,7 +1396,8 @@ class PlayerWindow:
         loud = "full level" if level >= 1.0 else volume_words(level)
         self._for_prompt()
         return popups.confirm(self.root, f"Turn the volume up to {level:.0%}?",
-                              f"{reason}, and bit-perfect goes round the Windows volume: the music will "
+                              f"{reason}, and bit-perfect goes round the "
+                              f"{'Windows volume' if platforms.IS_WINDOWS else VOLUME_CONTROL}: the music will "
                               f"play at {loud} (the volume is {volume_words(self.player.volume)} now). "
                               "Turn your headphone or amp volume down first.",
                               ok="Turn it up", danger=True, tone="warn")
@@ -3890,7 +3892,7 @@ class PlayerWindow:
             guard = (" The clipping guard comes first: a track that would clip the converter is turned down "
                      "just enough, so that one track isn't bit-perfect." if self.clip_guard.get() else "")
             exact = ("the device gets the file's exact samples" if setting == "off"
-                     else "Windows' mixer is bypassed")
+                     else "Windows' mixer is bypassed" if platforms.IS_WINDOWS else f"the {MIXER} mixer is bypassed")
             return (f"Bit-perfect is locked on: {exact}, and other apps go quiet while this plays."
                     f"{guard}{levelled} Click to turn Bit-perfect off.")
         return (f"Bit-perfect is off: sound goes through the {MIXER} mixer, which may resample it.{levelled} "

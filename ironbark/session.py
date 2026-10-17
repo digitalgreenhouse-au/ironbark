@@ -315,6 +315,7 @@ class _Session:
         self._nudge = threading.Event()   # wakes the decoder from a wait (a seek, a change, closing)
         self._decoder_started = False
         self.paused = False
+        self._paused_since: float | None = None   # when it was paused by hand (paused_for)
         self.frames_played = 0     # in the file being heard
         self._ended = False
         self._pending = None       # the rest of a queued block, carried into the next request
@@ -347,7 +348,7 @@ class _Session:
             index = devices.find_device(device)
             if index is None and device is not None:
                 if want_exclusive:
-                    raise devices.DeviceMissing(f"{device} isn't connected")
+                    raise devices.missing(device)
                 self.note = f"{device} isn't connected — playing on the system default"
                 index = devices.find_device(None)
             outputs = devices.max_output_channels(index)
@@ -460,7 +461,8 @@ class _Session:
                     return stream, True
                 except devices.Refused as exc:
                     log.info("bit-perfect refused: %s", exc)
-                    self.note = f"Bit-perfect isn't possible here ({exc}) — playing shared"
+                    self.note = (f"Bit-perfect: {exc} — playing shared for now" if exc.advice
+                                 else f"Bit-perfect isn't possible here ({exc}) — playing shared")
                 except sd.PortAudioError as exc:
                     log.info("exclusive mode refused: %s", exc)
                     if stream is not None:
@@ -1334,6 +1336,12 @@ class _Session:
             return 0.0
         return max(0.0, now - wait.silent_since)
 
+    def paused_for(self, now: float) -> float:
+        """Seconds paused by hand so far (0 when playing)."""
+        if not self.paused or self._paused_since is None:
+            return 0.0
+        return max(0.0, now - self._paused_since)
+
     @property
     def network_wait(self) -> WaitInfo | None:
         """The pause for the network the listener hears (committed, or already silent), if any."""
@@ -1350,6 +1358,7 @@ class _Session:
         if paused == self.paused:
             return
         self.paused = paused
+        self._paused_since = time.perf_counter() if paused else None
         self._last_callback = None  # the pause itself isn't a late request
         self._primed = False
         wait = self.waiting
@@ -1365,6 +1374,7 @@ class _Session:
             log.exception("pause/resume")
             if not paused:
                 self.paused = True  # it isn't playing: say so, rather than show "playing" in silence
+                self._paused_since = time.perf_counter()
                 self.note = f"The sound device wouldn't start again ({exc}): check Output, then press play"
 
     def seek(self, seconds: float):

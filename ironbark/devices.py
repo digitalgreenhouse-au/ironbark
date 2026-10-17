@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import re
 import threading
 import weakref
 from collections.abc import Callable
@@ -35,6 +36,7 @@ log = logging.getLogger(__name__)
 
 IS_WINDOWS = platforms.IS_WINDOWS
 IS_MAC = platforms.IS_MAC
+IS_LINUX = platforms.IS_LINUX
 T = TypeVar("T")
 
 _FRIENDLY_NAME = ("{A45C254E-DF1C-4EFD-8020-67D146A850E0}", 14)   # PKEY_Device_FriendlyName
@@ -50,6 +52,20 @@ class DeviceMissing(sd.PortAudioError):
 class DefaultChanged(DeviceMissing):
     """Bit-perfect on the system default: Windows has made another device the default since its
     volume control was checked (that one may have none, and bit-perfect sends full scale)."""
+
+
+class DeviceBusy(DeviceMissing):
+    """Linux: the chosen card's own (hw:) device is there, but the sound server or another app has
+    it open, so PortAudio can't (`missing`)."""
+
+
+def missing(name: str) -> DeviceMissing:
+    """The error for output `name` not found to play on: DeviceBusy for a card's own device that ALSA
+    lists (busy, not gone), else DeviceMissing ("isn't connected")."""
+    if IS_LINUX and alsa_card(name) is not None and name in (alsa_playback_names() or []):
+        return DeviceBusy(f"{name} is busy: the sound server or another app is playing on it. Stop that "
+                          "sound and wait a few seconds for the sound server to let go of it")
+    return DeviceMissing(f"{name} isn't connected")
 
 
 def _com_call(fn: Callable[[], T], default: T | None = None, timeout: float = 3.0) -> T | None:
@@ -190,7 +206,7 @@ def rescan() -> None:
 
 def _live_output_names() -> list[str] | None:
     """The system's own list of the outputs connected right now (PortAudio's is from start-up).
-    None = can't tell: not Windows or a Mac, or the query failed."""
+    None = can't tell: the query failed, or a system with no list of its own."""
     if IS_WINDOWS:
         return _com_call(lambda: [name for name, _ in _active_outputs()])
     if IS_MAC:
@@ -200,7 +216,24 @@ def _live_output_names() -> list[str] | None:
             return coreaudio.output_names()
         except OSError:
             log.info("core audio device list failed", exc_info=True)
+    if IS_LINUX:
+        return _linux_output_names()
     return None
+
+
+def _linux_output_names() -> list[str] | None:
+    """PortAudio's outputs with its cards' own (hw:) devices brought up to date from ALSA's list.
+    PortAudio skips a card's device it can't open at start-up — one the sound server is playing on
+    just then — and never looks again; ALSA lists it whatever is using it. None = no ALSA list."""
+    cards = alsa_playback_names()
+    if cards is None:
+        return None
+    try:
+        portaudio = [name for _, name in _portaudio_outputs()]
+    except sd.PortAudioError:
+        portaudio = []
+    kept = [name for name in portaudio if alsa_card(name) is None or name in cards]   # (an unplugged card goes)
+    return kept + [name for name in cards if name not in kept]
 
 
 def _system_lists(name: str) -> bool:
@@ -217,9 +250,12 @@ def exclusive_supported() -> bool:
 
 def exclusive_settings():
     """PortAudio's settings for a bit-perfect stream: WASAPI exclusive on Windows; on a Mac,
-    run the device at the stream's own rate and refuse to open rather than resample."""
+    run the device at the stream's own rate and refuse to open rather than resample. On Linux
+    none: a hw: device takes the stream as it is or refuses it."""
     if IS_WINDOWS:
         return sd.WasapiSettings(exclusive=True)
+    if IS_LINUX:
+        return None
     return sd.CoreAudioSettings(change_device_parameters=True, fail_if_conversion_required=True)
 
 
@@ -230,7 +266,12 @@ def shared_settings(index: int | None):
 
 
 class Refused(Exception):
-    """The device can't be held for bit-perfect playback; the message says why, for the user."""
+    """The device can't be held for bit-perfect playback; the message says why, for the user.
+    `advice`: the message is what to do ("choose … under Output"), so it's shown first."""
+
+    def __init__(self, message: str, advice: bool = False):
+        super().__init__(message)
+        self.advice = advice
 
 
 class Claim:
@@ -262,9 +303,28 @@ def _core_audio_id(index: int) -> int | None:
     return coreaudio.find_device(name, nth)
 
 
+def _hw_hint() -> str:
+    """Why a sound-server output can't be bit-perfect on Linux, short, with what to choose first —
+    the card's own name when there's one — so a narrow status line keeps the part that matters."""
+    cards = [name for name in (alsa_playback_names() or []) if "HDMI" not in name.upper()]
+    pick = f"“{cards[0]}”" if len(cards) == 1 else "a sound card ending in (hw:…)"
+    return f"choose {pick} under Output: bit-perfect on Linux plays straight to the card"
+
+
 def claim(index: int, rate: int) -> Claim:
     """Hold output `index` for bit-perfect playback at `rate`, before opening its stream.
     Raises Refused if it can't be done."""
+    if IS_LINUX:
+        # Bit-perfect is the sound card's own device (hw:): no resampler or mixer between. A
+        # sound-server output (pipewire, default) mixes; the card behind it isn't guessed (never
+        # another device than the one chosen), so the listener picks the card under Output.
+        try:
+            name = sd.query_devices(index)["name"]
+        except (sd.PortAudioError, ValueError, KeyError, TypeError):
+            name = ""
+        if alsa_card(name) is None:
+            raise Refused(_hw_hint(), advice=True)
+        return Claim()
     if not IS_MAC:
         return Claim()
     from . import coreaudio
@@ -462,6 +522,68 @@ class _WaveFormat(ctypes.Structure):
 _WAVE_FORMAT_PCM, _WAVE_FORMAT_FLOAT, _WAVE_FORMAT_EXTENSIBLE = 1, 3, 0xFFFE
 FLOAT32_BITS = 24   # a float32 sample holds a 24-bit integer exactly (its mantissa)
 
+# -- Linux: the sound card's own device ----------------------------------------------
+# PortAudio names an ALSA device "<card name>: <device name> (hw:<card>,<device>)" for the card's
+# own device, and plain names ("pipewire", "default", "sysdefault") for the sound server's.
+_ALSA_HW = re.compile(r"\(hw:(\d+),(\d+)\)\s*$")
+_ALSA_PCM = "/proc/asound/card{card}/pcm{device}p/sub{sub}/hw_params"
+# ALSA's sample formats, and the bits each carries (S32 may hold 24 in a 32-bit slot: the card's
+# own word length, which ALSA doesn't say; counted as 32, the widest it could be).
+_ALSA_FORMAT_BITS = {"S16_LE": 16, "S16_BE": 16, "S24_3LE": 24, "S24_3BE": 24, "S24_LE": 24,
+                     "S24_BE": 24, "S32_LE": 32, "S32_BE": 32, "FLOAT_LE": FLOAT32_BITS, "U8": 8, "S8": 8}
+
+
+def alsa_card(name: str) -> tuple[int, int] | None:
+    """(card, device) when the PortAudio device `name` is a sound card's own (hw:) device, else None."""
+    match = _ALSA_HW.search(name or "")
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+_ALSA_CARD_LINE = re.compile(r"^\s*(\d+)\s+\[[^\]]*\]:\s.*?\s-\s(.+?)\s*$")   # " 0 [PCH  ]: HDA-Intel - HDA Intel PCH"
+# "00-00: <id> : <name> : playback 1 : capture 1" — PortAudio names a device by its name (the second)
+_ALSA_PCM_LINE = re.compile(r"^(\d+)-(\d+):\s*.*?\s:\s(.*?)\s*:\s*playback\s+\d+")
+
+
+def alsa_playback_names(root: str = "") -> list[str] | None:
+    """Every sound card's own playback device as ALSA lists it now, named the way PortAudio names
+    it ("HDA Intel PCH: CX20751/2 Analog (hw:0,0)"): from /proc/asound/cards (the card's name) and
+    /proc/asound/pcm (each device's name, and whether it plays). None when ALSA's list can't be read."""
+    try:
+        with open(root + "/proc/asound/cards", encoding="utf-8", errors="replace") as f:
+            card_lines = f.read().splitlines()
+        with open(root + "/proc/asound/pcm", encoding="utf-8", errors="replace") as f:
+            pcm_lines = f.read().splitlines()
+    except OSError:
+        return None
+    cards = {}
+    for line in card_lines:
+        match = _ALSA_CARD_LINE.match(line)
+        if match:
+            cards[int(match.group(1))] = match.group(2)
+    names = []
+    for line in pcm_lines:
+        match = _ALSA_PCM_LINE.match(line)
+        if match and int(match.group(1)) in cards:
+            card, device = int(match.group(1)), int(match.group(2))
+            names.append(f"{cards[card]}: {match.group(3)} (hw:{card},{device})")
+    return names
+
+
+def alsa_open_bits(card: int, device: int, root: str = "") -> int | None:
+    """The bits per sample the card's device is open with now, from ALSA's own status file (the
+    first busy sub-device). None when it isn't open or can't be read."""
+    for sub in range(8):
+        try:
+            with open(root + _ALSA_PCM.format(card=card, device=device, sub=sub), encoding="ascii") as f:
+                text = f.read()
+        except OSError:
+            break
+        for line in text.splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() == "format":
+                return _ALSA_FORMAT_BITS.get(value.strip())
+    return None
+
 
 def sample_bits(raw: bytes) -> int | None:
     """The bits per sample a device takes, from its WAVEFORMATEX(TENSIBLE): the valid bits for an
@@ -496,7 +618,14 @@ def exclusive_bits(stream) -> int | None:
     """The bits per sample an open exclusive (WASAPI) output stream actually sends its device.
     PortAudio picks the nearest format the device takes when it refuses the one asked for, and
     converts to it — so a 24-bit file on a 16-bit-only device loses its low bits there, however
-    exactly the player hands its samples over. None = can't tell (not Windows, or a stand-in)."""
+    exactly the player hands its samples over. On Linux, what the card itself was opened with
+    (ALSA's own status file). None = can't tell (a Mac, or a stand-in)."""
+    if IS_LINUX:
+        try:
+            card = alsa_card(sd.query_devices(stream.device)["name"])
+        except (AttributeError, sd.PortAudioError, ValueError, KeyError, TypeError):
+            return None
+        return alsa_open_bits(*card) if card is not None else None
     if not IS_WINDOWS:
         return None
     try:

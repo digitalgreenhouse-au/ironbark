@@ -20,6 +20,11 @@ Each slot has its own gain (level matching: turn the louder version down), and t
 
 `seamless=True` (the hardware test's signals, testsignals.py) loops with no dip at the seam:
 only for sound that is exactly periodic over the loop, so going round is just the next sample.
+
+`record_input` (Test signals with the same device to play on and record from, where the platform
+needs it: platforms.DUPLEX_SAME_DEVICE): the stream is one duplex stream on that device, and
+`recording(seconds)` hands back what its input heard — a second, separate input stream beside the
+output on one Core Audio device never delivers anything.
 """
 
 from __future__ import annotations
@@ -206,14 +211,20 @@ class Audition:
     sounddevice.OutputStream in tests (no sound device is ever opened there). `default_check`:
     for bit-perfect on the system default (device None), asked for the device just before it's
     opened — the player's check_default, which raises devices.DefaultChanged when Windows' default
-    is no longer the device whose volume control was checked."""
+    is no longer the device whose volume control was checked. `record_input`: (index, channels)
+    of the same device's input, to play and record through one duplex stream (see the module's
+    note); `duplex_factory` stands in for sounddevice.Stream then."""
 
     def __init__(self, switcher: Switcher, device: str | None = None, exclusive: bool = False,
-                 stream_factory=None, default_check=None):
+                 stream_factory=None, default_check=None, record_input: tuple[int, int] | None = None,
+                 duplex_factory=None):
         self.switcher = switcher
         self.device, self.want_exclusive = device, exclusive
         self._default_check = default_check
         self._factory = stream_factory or sd.OutputStream
+        self._record_input = record_input
+        self._duplex_factory = duplex_factory or sd.Stream
+        self._take: Take | None = None   # the recording asked for, filled by the duplex callback
         self._stream = None
         self.exclusive = False
         self.device_name = ""
@@ -223,6 +234,11 @@ class Audition:
     @property
     def playing(self) -> bool:
         return self._stream is not None
+
+    @property
+    def records(self) -> bool:
+        """Is this a duplex stream that also records (`record_input`)?"""
+        return self._record_input is not None
 
     def play(self, slot: int | None = None):
         """Start (from the loop's start) on `slot`, or switch to it if already playing."""
@@ -243,11 +259,13 @@ class Audition:
             if self.want_exclusive:
                 # As the player: bit-perfect mode never moves to another device by itself (it could
                 # have no volume control of its own).
-                raise devices.DeviceMissing(f"{device} isn't connected")
+                raise devices.missing(device)
             self.note = f"{device} isn't connected — playing on the system default"
             index = devices.find_device(None)
         kwargs = dict(samplerate=self.switcher.rate, channels=self.switcher.channels, blocksize=BLOCK_FRAMES,
                       latency="low", callback=self._callback)
+        if self._record_input is not None:
+            return self._open_duplex(index, kwargs)
         if self.want_exclusive and index is not None and devices.exclusive_supported():
             stream = claim = None
             try:
@@ -274,10 +292,25 @@ class Audition:
         self.device_name = self._name(stream)
         return stream
 
+    def _open_duplex(self, index, kwargs):
+        """One stream that plays the signal and records the same device's input (shared: a test
+        signal is never bit-perfect anyway, and the device runs at the signal's own rate)."""
+        in_index, in_channels = self._record_input
+        kwargs = dict(kwargs, channels=(in_channels, self.switcher.channels), callback=self._duplex_callback)
+        stream = self._duplex_factory(device=(in_index, index), dtype="float32", **kwargs)
+        stream.start()
+        devices.holding(stream)
+        self.exclusive = False
+        if self.want_exclusive:
+            self.note = "Playing and recording one device: shared mode, so the test can hear itself"
+        self.device_name = self._name(stream)
+        return stream
+
     @staticmethod
     def _name(stream) -> str:
         try:
-            return sd.query_devices(stream.device)["name"]
+            device = stream.device
+            return sd.query_devices(device[1] if isinstance(device, (tuple, list)) else device)["name"]
         except (sd.PortAudioError, ValueError, TypeError):
             return "Output device"
 
@@ -288,8 +321,38 @@ class Audition:
         else:
             outdata[:] = sound
 
+    def _duplex_callback(self, indata, outdata, frames, time_info, status):
+        outdata[:] = self.switcher.render(frames)
+        take = self._take
+        if take is not None:
+            take.add(indata, bool(status and status.input_overflow))
+
+    def recording(self, seconds: float, timeout: float | None = None) -> tuple[np.ndarray, bool]:
+        """(audio, overflowed): the next `seconds` the duplex stream's input hears. Blocks: call it
+        on a worker thread. Raises TimeoutError if the device stops delivering (`timeout`, by
+        default the recording's length plus 5 s), RuntimeError if there's no duplex stream."""
+        if self._record_input is None or self._stream is None:
+            raise RuntimeError("not recording: no duplex stream")
+        take = Take(int(round(seconds * self.switcher.rate)), self._record_input[1])
+        self._take = take
+        if self._stream is None:   # (stopped just now, before the take was in place)
+            take.stop()
+        try:
+            take.full.wait(seconds + 5.0 if timeout is None else timeout)
+            if take.filled < take.audio.shape[0]:
+                if take.stopped:
+                    raise RuntimeError("stopped before the recording was complete")
+                raise TimeoutError(f"the device stopped sending sound after {take.filled} of {take.audio.shape[0]} "
+                                   "samples")
+        finally:
+            self._take = None
+        return take.audio.astype(np.float64), take.overflowed
+
     def stop(self):
-        """Stop and let go of the sound device."""
+        """Stop and let go of the sound device (a recording being made ends at once: `recording`)."""
+        take = self._take
+        if take is not None:
+            take.stop()
         stream, self._stream = self._stream, None
         if stream is not None:
             try:
@@ -304,6 +367,31 @@ class Audition:
             self._claim = None
 
     close = stop
+
+
+class Take:
+    """A recording filled block by block from a stream's callback (on the sound thread): `full` is set
+    once it has its length. Used by the duplex stream here and by Test signals' own input stream."""
+
+    def __init__(self, frames: int, channels: int):
+        self.audio = np.zeros((frames, channels), np.float32)
+        self.filled, self.overflowed, self.stopped = 0, False, False
+        self.full = threading.Event()
+
+    def stop(self):
+        """No more is coming: whoever waits on `full` is woken (and sees `stopped`)."""
+        self.stopped = True
+        self.full.set()
+
+    def add(self, block, overflowed: bool):
+        if self.full.is_set():
+            return
+        n = min(len(block), self.audio.shape[0] - self.filled)
+        self.audio[self.filled: self.filled + n] = block[:n]
+        self.filled += n
+        self.overflowed |= overflowed
+        if self.filled >= self.audio.shape[0]:
+            self.full.set()
 
 
 def level_gains(difference_db: float) -> tuple[float, float]:

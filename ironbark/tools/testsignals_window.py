@@ -26,12 +26,19 @@ from tkinter import ttk
 
 import numpy as np
 
-from .. import controls, devices, popups, theme, toolwin
+from .. import controls, devices, platforms, popups, theme, toolwin
 from ..engine import State
 from . import audition, loopback, testsignals
 
 REFRESH_MS = 100
-LOOPBACK = "Windows loopback (what the output plays)"
+# What the output plays, recorded by the system itself: Windows' loopback, the sound server's
+# monitor on Linux. None where there's no such recording (a Mac): then only real inputs are listed.
+LOOPBACK = (None if not loopback.AVAILABLE else "Windows loopback (what the output plays)" if devices.IS_WINDOWS
+            else "The sound server's monitor (what the output plays)")
+RECORD_TIMEOUT_S = 5.0   # past the recording's length: a device that stops sending sound is given up on
+WHO = platforms.SOUND_SYSTEM[:1].upper() + platforms.SOUND_SYSTEM[1:]   # "Windows" / "The sound server"
+WHOSE = platforms.SOUND_SYSTEMS   # "Windows'" / "the sound server's"
+WHOSE_OWN = WHOSE[:1].upper() + WHOSE[1:]   # starting a sentence
 KINDS = (("tone", "1 kHz tone (THD+N)"), ("jtest", "J-test (jitter)"), ("sweep", "Sweep (frequency response)"))
 TONES = {"good": "GoodValue.TLabel", "warn": "WarnValue.TLabel", "plain": "TLabel"}
 PLOT_HEIGHT = 150
@@ -40,14 +47,14 @@ PLOT_HEIGHT = 150
 def record(input_name: str, output: str | None, rate: int, seconds: float) -> tuple[np.ndarray, int, list[str]]:
     """Record `seconds` from the input (frames × channels, full scale 1.0). Blocks: call it on a
     worker thread. Returns (audio, rate, notes)."""
-    if input_name == LOOPBACK:
-        import comtypes
-
-        comtypes.CoInitialize()
+    if LOOPBACK is not None and input_name == LOOPBACK:
+        loopback.thread_ready()
         take = loopback.record(output, seconds)
         if take is None:
-            raise RuntimeError("Windows wouldn't record this output")
-        notes = [f"Windows reported {take.gaps} break(s) in its recording"] if take.gaps else []
+            raise RuntimeError(f"{WHO} wouldn't record this output" + (
+                "" if devices.IS_WINDOWS else " (choose the sound server's output, not a card's own hw: one, "
+                "and check pactl and parec are installed)"))
+        notes = [f"{WHO} reported {take.gaps} break(s) in its recording"] if take.gaps else []
         return take.audio, take.rate, notes
     import sounddevice as sd
 
@@ -56,15 +63,44 @@ def record(input_name: str, output: str | None, rate: int, seconds: float) -> tu
         raise RuntimeError(f"{input_name} isn't connected")
     channels = max(1, min(2, int(sd.query_devices(index)["max_input_channels"])))
     extra = sd.WasapiSettings(auto_convert=True) if devices.IS_WINDOWS else None
+    # Filled from the stream's callback and waited for with a time limit: a blocking read would
+    # wait for good on a device that stops sending sound.
+    take = audition.Take(int(round(seconds * rate)), channels)
+
+    def heard(indata, frames, time_info, status):
+        take.add(indata, bool(status and status.input_overflow))
+
     stream = sd.InputStream(device=index, channels=channels, samplerate=rate, dtype="float32",
-                            extra_settings=extra)
+                            extra_settings=extra, callback=heard)
     devices.holding(stream)   # (a PortAudio re-scan would cut it off: none while it's open)
     try:
         with stream:
-            audio, overflowed = stream.read(int(seconds * rate))
+            if not take.full.wait(seconds + RECORD_TIMEOUT_S):
+                raise RuntimeError(f"{input_name} stopped sending sound ({take.filled / rate:.1f} of "
+                                   f"{seconds:.1f} s recorded)")
     finally:
         devices.released(stream)
-    return np.asarray(audio, dtype=np.float64), rate, (["The recording overflowed (samples lost)"] if overflowed else [])
+    notes = ["The recording overflowed (samples lost)"] if take.overflowed else []
+    return take.audio.astype(np.float64), rate, notes
+
+
+def same_device(output: str, input_name: str) -> tuple[int, int] | None:
+    """(input index, channels) when Test signals would play on and record from one device — its
+    own input, where the platform needs a single duplex stream for that (DUPLEX_SAME_DEVICE). None
+    otherwise, or when either isn't connected."""
+    if not platforms.DUPLEX_SAME_DEVICE or (LOOPBACK is not None and input_name == LOOPBACK):
+        return None
+    import sounddevice as sd
+
+    try:   # (a failed look-up means "not the same device", never an error out of measure())
+        in_index, out_index = devices.find_input(input_name), devices.find_device(output, rescan_ok=False)
+        if in_index is None or out_index is None:
+            return None
+        out_name = sd.query_devices(out_index)["name"]
+        channels = max(1, min(2, int(sd.query_devices(in_index)["max_input_channels"])))
+    except (sd.PortAudioError, ValueError, KeyError, TypeError):
+        return None
+    return (in_index, channels) if in_index == out_index or out_name == input_name else None
 
 
 def confirm_play(parent, signal: testsignals.TestSignal, output: str) -> bool:
@@ -88,17 +124,22 @@ class TestSignalsWindow(toolwin.ToolWindow):
     REFRESH_MS = REFRESH_MS
 
     def __init__(self, parent: tk.Misc, player, prefs: dict, on_close=lambda: None, stream_factory=None,
-                 recorder=record, confirm=confirm_play):
+                 recorder=record, confirm=confirm_play, duplex_factory=None):
         self.player = player
         self._stream_factory, self._recorder, self._confirm = stream_factory, recorder, confirm
+        self._duplex_factory = duplex_factory
         super().__init__(parent, prefs, on_close)
 
         outer = ttk.Frame(self.win, padding=theme.px(theme.GAP_WIDE))
         outer.pack(fill="both", expand=True)
-        self.intro = ttk.Label(outer, style="Muted.TLabel", justify="left", wraplength=theme.px(480),
-                               text="Measure your DAC or amp: play a test signal, record it back, see what was "
-                                    "added. A real measurement needs a cable from the DAC's (or amp's) output into "
-                                    "a recording input; Windows loopback checks the software side only.")
+        intro = ("Measure your DAC or amp: play a test signal, record it back, see what was added. A real "
+                 "measurement needs a cable from the DAC's (or amp's) output into a recording input")
+        if LOOPBACK is not None:
+            intro += "; " + ("Windows loopback" if devices.IS_WINDOWS else "the sound server's monitor") + \
+                     " checks the software side only."
+        else:
+            intro += "."
+        self.intro = ttk.Label(outer, style="Muted.TLabel", justify="left", wraplength=theme.px(480), text=intro)
         self.intro.pack(fill="x")
 
         controls.section(outer, "Signal")
@@ -136,9 +177,11 @@ class TestSignalsWindow(toolwin.ToolWindow):
                                        values=devices.output_names(), postcommand=self._list_outputs)
         self.output_box.grid(row=0, column=1, sticky="ew", pady=theme.px(2))
         ttk.Label(route, text="Record from", style="Muted.TLabel").grid(row=1, column=0, sticky="w", padx=theme.pad(0, 8))
-        self.input = tk.StringVar(value=prefs.get("testsignals_input") or LOOPBACK)
-        self.input_box = ttk.Combobox(route, textvariable=self.input, state="readonly",
-                                      values=[LOOPBACK] + devices.input_names())
+        inputs = devices.input_names()
+        offered = ([LOOPBACK] if LOOPBACK is not None else []) + inputs
+        chosen = prefs.get("testsignals_input") or ""
+        self.input = tk.StringVar(value=chosen if chosen in offered else (offered[0] if offered else ""))
+        self.input_box = ttk.Combobox(route, textvariable=self.input, state="readonly", values=offered)
         self.input_box.grid(row=1, column=1, sticky="ew", pady=theme.px(2))
         for box in (self.output_box, self.input_box):
             box.bind("<<ComboboxSelected>>", lambda e: self._options_changed())
@@ -206,7 +249,7 @@ class TestSignalsWindow(toolwin.ToolWindow):
 
     @property
     def loopback(self) -> bool:
-        return self.input.get() == LOOPBACK
+        return LOOPBACK is not None and self.input.get() == LOOPBACK
 
     def _list_outputs(self):
         """The outputs as Windows lists them now: one plugged in since the window opened shows up."""
@@ -232,8 +275,10 @@ class TestSignalsWindow(toolwin.ToolWindow):
     def measuring(self) -> bool:
         return self._result is not None
 
-    def _start_sound(self) -> bool:
-        """Ask first, then play the signal on the chosen output. False if it didn't start."""
+    def _start_sound(self, measuring: bool = False) -> bool:
+        """Ask first, then play the signal on the chosen output. False if it didn't start. Measuring
+        from the output's own input where the platform needs it, playing and recording share one
+        duplex stream (same_device)."""
         output = self.output.get()
         found = devices.find_device(output, rescan_ok=False) if output else None
         # Plugged in since the player started: Windows lists it, but the sound system hasn't looked
@@ -266,8 +311,10 @@ class TestSignalsWindow(toolwin.ToolWindow):
             signal = self.build_signal()   # at the device's own rate, now that it can be asked
         self.signal, self.measurement = signal, None
         switcher = audition.Switcher([signal.stereo()], signal.rate, seamless=True)
+        duplex = same_device(output, self.input.get()) if measuring else None
         self.audition = audition.Audition(switcher, device=output, exclusive=self.exclusive.get(),
-                                          stream_factory=self._stream_factory)
+                                          stream_factory=self._stream_factory, record_input=duplex,
+                                          duplex_factory=self._duplex_factory)
         try:
             self.audition.play(0)
         except Exception as exc:  # noqa: BLE001 — a device that won't open is a message, not a crash
@@ -283,17 +330,23 @@ class TestSignalsWindow(toolwin.ToolWindow):
             self._refresh()
 
     def measure(self):
-        if self.measuring or not self._start_sound():
+        if self.measuring or not self._start_sound(measuring=True):
             return
         signal, output, source = self.signal, self.output.get(), self.input.get()
         result: dict = {}
         self._result = result
         # The thread holds the result and the recorder, never the window (see toolwin.Handback).
         recorder = self._recorder
+        duplex = self.audition if self.audition.records else None   # (an Audition: no Tk in it)
 
         def work():
             try:
-                audio, rate, notes = recorder(source, output, signal.rate, signal.seconds_needed())
+                if duplex is not None:   # (one duplex stream plays and records: same_device)
+                    audio, overflowed = duplex.recording(signal.seconds_needed(),
+                                                                signal.seconds_needed() + RECORD_TIMEOUT_S)
+                    rate, notes = signal.rate, ["The recording overflowed (samples lost)"] if overflowed else []
+                else:
+                    audio, rate, notes = recorder(source, output, signal.rate, signal.seconds_needed())
                 measurement = testsignals.measure(signal, audio, rate)
                 measurement.notes.extend(notes)
                 result["measurement"] = measurement
@@ -411,8 +464,8 @@ class TestSignalsWindow(toolwin.ToolWindow):
         except ValueError as exc:
             self.signal_line.configure(text=str(exc), style="WarnValue.TLabel")
         if self.loopback:
-            route = ("Windows' own recording of the output: shared mode only, so this measures the player and "
-                     "Windows' mixer — not the DAC.")
+            route = (f"{WHOSE_OWN} own recording of the output: shared mode only, so this measures the player "
+                     f"and {WHOSE} mixer — not the DAC.")
         else:
             route = ("Connect the DAC's or amp's output to this input (mind the levels: a speaker output needs "
                      "an attenuator). Measures everything in the chain, the input included.")

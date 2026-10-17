@@ -5,6 +5,7 @@ of a known filter. The seamless loop (audition.Switcher) and the window run thro
 no sound device is opened anywhere here."""
 import gc
 import math
+import threading
 import time
 import tkinter as tk
 from types import SimpleNamespace
@@ -306,6 +307,7 @@ def fake_devices(monkeypatch):
     monkeypatch.setattr(tw.devices, "mixer_rate", lambda index: RATE)
     monkeypatch.setattr(tw.devices, "output_names", lambda: list(connected))
     monkeypatch.setattr(tw.devices, "input_names", lambda: ["Line in"])
+    monkeypatch.setattr(tw.devices, "find_input", lambda name: None)   # "Line in" isn't the output's own input
     monkeypatch.setattr(tw.devices, "default_output_name", lambda: "Test out")
     monkeypatch.setattr(audition.devices, "find_device", lambda name, rescan_ok=True: connected.get(name))
     monkeypatch.setattr(audition.devices, "exclusive_supported", lambda: True)
@@ -329,8 +331,10 @@ def test_window_asks_first_then_plays_records_and_measures(root, fake_devices):
     prefs = {"testsignals_kind": "tone", "testsignals_level": -80.0}
     win = TestSignalsWindow(root, player, prefs, stream_factory=FakeStream, recorder=recorder,
                             confirm=lambda parent, signal, output: asked.append((signal.name, output)) or answer["ok"])
-    assert win.input.get() == LOOPBACK and not win.exclusive.get()        # loopback can't record exclusive mode
-    assert win.exclusive_check.instate(["disabled"])
+    source = LOOPBACK or "Line in"                                        # no loopback (a Mac): the first input
+    assert win.input.get() == source
+    if LOOPBACK is not None:
+        assert not win.exclusive.get() and win.exclusive_check.instate(["disabled"])   # loopback can't record exclusive
     win.measure()                                                         # said no: nothing plays
     assert asked == [("1 kHz tone at -80.0 dBFS", "Test out")] and not FakeStream.made and player.suspended == 0
     assert "Not played" in win.status.cget("text")
@@ -338,14 +342,15 @@ def test_window_asks_first_then_plays_records_and_measures(root, fake_devices):
     answer["ok"] = True
     win.measure()
     assert player.suspended == 1 and win.playing and win.measuring
-    assert FakeStream.made[-1].kwargs["dtype"] == "float32" and FakeStream.made[-1].kwargs["device"] == 3
+    dtype = "int32" if win.exclusive.get() else "float32"                # bit-perfect plays int32 (no loopback: kept on)
+    assert FakeStream.made[-1].kwargs["dtype"] == dtype and FakeStream.made[-1].kwargs["device"] == 3
     assert win.measure_button.instate(["disabled"])
     deadline = time.time() + 30
     while win.measuring and time.time() < deadline:
         win.win.update()
         time.sleep(0.05)
         win._tick()
-    assert recorded == [(LOOPBACK, "Test out", RATE)]
+    assert recorded == [(source, "Test out", RATE)]
     assert not win.playing and FakeStream.made[-1].closed                 # the sound stops once measured
     texts = {child.cget("text") for child in win.results.winfo_children()}
     assert "THD+N" in texts and any("both channels" in t for t in texts)
@@ -443,3 +448,81 @@ def test_a_dac_windows_doesn_t_know_still_plays_nothing(root, fake_devices, monk
     win.play_only()
     assert rescans == [] and not FakeStream.made and "nothing was played" in win.status.cget("text")
     win.close()
+
+
+def test_measuring_from_the_outputs_own_input_uses_one_duplex_stream(root, fake_devices, monkeypatch):
+    """Where the platform needs it (a Mac), the same device to play on and record from is one duplex
+    stream: the recorder for a separate input is never called."""
+    from ironbark import platforms
+    from ironbark.tools import testsignals_window as tw
+
+    monkeypatch.setattr(platforms, "DUPLEX_SAME_DEVICE", True)
+    monkeypatch.setattr(tw.devices, "input_names", lambda: ["Test out"])
+    monkeypatch.setattr(tw.devices, "find_input", lambda name: 3 if name == "Test out" else None)
+    monkeypatch.setattr(audition.sd, "query_devices", lambda device: {"name": "Test out", "max_input_channels": 2})
+    duplexes = []
+
+    class Duplex(FakeStream):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            duplexes.append(self)
+
+        def start(self):   # a cable from the output back into the input, block by block
+            def feed():
+                heard = np.zeros((2048, 2), np.float32)
+                while not self.closed:
+                    out = np.zeros((2048, 2), np.float32)
+                    self.callback(heard, out, 2048, None, None)
+                    heard = out
+                    time.sleep(0.001)
+            threading.Thread(target=feed, daemon=True).start()
+
+    def no_recorder(*args):
+        raise AssertionError("a separate input stream was opened")
+
+    win = tw.TestSignalsWindow(root, FakePlayer(), {"testsignals_kind": "tone", "testsignals_level": -20.0,
+                                                    "testsignals_input": "Test out"},
+                               stream_factory=FakeStream, recorder=no_recorder, confirm=lambda *a: True,
+                               duplex_factory=Duplex)
+    assert win.input.get() == "Test out"
+    win.measure()
+    assert duplexes and duplexes[0].kwargs["device"] == (3, 3) and win.audition.records
+    deadline = time.time() + 30
+    while win.measuring and time.time() < deadline:
+        win.win.update()
+        time.sleep(0.05)
+        win._tick()
+    assert win.measurement is not None, win.status.cget("text")
+    assert win.measurement.channels[0].thd_n_db < -100 and duplexes[0].closed
+    win.close()
+
+
+def test_a_saved_input_thats_gone_falls_back_to_one_offered(root, fake_devices, monkeypatch):
+    from ironbark.tools import testsignals_window as tw
+
+    win = tw.TestSignalsWindow(root, FakePlayer(), {"testsignals_input": "Unplugged interface"},
+                               stream_factory=FakeStream, confirm=lambda *a: True)
+    assert win.input.get() in win.input_box.cget("values")
+    win.close()
+
+
+def test_a_device_look_up_that_fails_means_not_the_same_device(monkeypatch):
+    """Where the duplex stream is used (a Mac), a PortAudio error or an odd device entry while
+    finding the devices gives "not the same device", never an error out of measure()."""
+    import sounddevice as sd
+
+    from ironbark import platforms
+    from ironbark.tools import testsignals_window as tw
+
+    monkeypatch.setattr(platforms, "DUPLEX_SAME_DEVICE", True)
+    monkeypatch.setattr(tw.devices, "find_device", lambda name, rescan_ok=True: 3)
+
+    def fails(name):
+        raise sd.PortAudioError("Can't list the devices")
+    monkeypatch.setattr(tw.devices, "find_input", fails)
+    assert tw.same_device("Test out", "Line in") is None
+
+    def no_channel_count(name):
+        raise KeyError("max_input_channels")
+    monkeypatch.setattr(tw.devices, "find_input", no_channel_count)
+    assert tw.same_device("Test out", "Line in") is None

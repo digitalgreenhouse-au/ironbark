@@ -71,6 +71,7 @@ def stand_in_devices(monkeypatch):
     monkeypatch.setattr(devices, "exclusive_supported", lambda: True)
     monkeypatch.setattr(devices, "output_names", lambda: list(connected))
     monkeypatch.setattr(devices, "input_names", lambda: ["Line in"])
+    monkeypatch.setattr(devices, "find_input", lambda name: None)   # "Line in" isn't the output's own input
     monkeypatch.setattr(devices, "default_output_name", lambda: "Test out")
     monkeypatch.setattr(devices, "mixer_rate", lambda index: RATE)
     monkeypatch.setattr(audition.sd, "query_devices", lambda device: {"name": "Test out"})

@@ -245,10 +245,20 @@ def restore(window) -> None:
 @pytest.fixture(autouse=True)
 def _never_hold_a_real_device(monkeypatch):
     """Bit-perfect on a Mac hogs the device and changes its format. Tests that switch it on
-    with stand-in streams must never do that to the real sound card they run beside."""
+    with stand-in streams must never do that to the real sound card they run beside. (Linux's
+    claim only reads the device's name, never the card: its rule is kept, as it decides what plays.)"""
     from ironbark import devices
 
-    monkeypatch.setattr(devices, "claim", lambda index, rate: devices.Claim())
+    real = devices.claim
+
+    def claim(index, rate):
+        # (a stand-in device the test calls bit-perfect-capable is a sound card's own on Linux too:
+        # Linux's rule is kept for the tests that set out the device list themselves)
+        if devices.IS_LINUX and getattr(devices, "_tests_name_devices", False):
+            return real(index, rate)
+        return devices.Claim()
+
+    monkeypatch.setattr(devices, "claim", claim)
     monkeypatch.setattr(devices, "restore_formats", lambda keep=None: None)
 
 

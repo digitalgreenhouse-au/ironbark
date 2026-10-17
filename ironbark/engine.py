@@ -115,6 +115,10 @@ STOP_AFTER_MODES = ("song", "album")   # stop at the end of this song / of this 
 
 
 HOLD_RELEASE_S = 30.0     # silent this long, waiting for the network: the sound device is let go
+# Paused by hand this long in bit-perfect: the device is let go (other apps are silent while it's
+# held), and play carries on from the same spot, as after suspend(). Shared mode holds nothing.
+# Only where platforms.PAUSE_RELEASES_DEVICE says so.
+PAUSE_RELEASE_S = 30.0
 
 
 AUTO_RESUME_S = 300.0     # a song starts (or carries on) by itself only within this long
@@ -1091,6 +1095,8 @@ class Player:
                 if isinstance(exc, devices.DefaultChanged):
                     self._message = (f"{exc}, so bit-perfect stopped here to check its volume first · press play "
                                      "to carry on")
+                elif isinstance(exc, devices.DeviceBusy):
+                    self._message = f"{exc}, then press play."
                 elif isinstance(exc, devices.DeviceMissing):
                     self._message = (f"{exc}. Bit-perfect mode plays only on the output you chose: connect it, "
                                      "or pick another under Output, then press play.")
@@ -1242,6 +1248,15 @@ class Player:
         self._wait_to_start(at, position, "carried on after a pause for the network", resume=True,
                             deadline=self._clock() - silent_for + AUTO_RESUME_S)
 
+    def _release_paused(self, session: _Session):
+        """Paused by hand for PAUSE_RELEASE_S in bit-perfect: let go of the device, as suspend() does
+        (the same spot, the same song; play carries on from there)."""
+        position, queued = session.position, self.queued_now
+        log.info("%s: paused for %.0f s in bit-perfect; the sound device is let go", session._track_name,
+                 PAUSE_RELEASE_S)
+        self._close_session()
+        self._suspended_at, self.queued_now = position, queued
+
     def _network_view(self, track, session, prep) -> NetworkView | None:
         """Status.network: how a song on a network drive is getting on (None for a local song)."""
         preparer = self._preparer
@@ -1386,6 +1401,9 @@ class Player:
                             self._faded()
                         elif session is not None and session.waiting_for(now) > HOLD_RELEASE_S:
                             self._release_for_network(session)
+                        elif (platforms.PAUSE_RELEASES_DEVICE and session is not None and session.exclusive
+                              and session.paused_for(now) > PAUSE_RELEASE_S):
+                            self._release_paused(session)
                         self._watch_preparing()
                         continue
                     if session is not self._session:
