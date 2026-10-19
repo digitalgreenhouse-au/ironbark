@@ -10,6 +10,17 @@ bottom of Settings. Dates are dd/mm/yyyy. Newest first.
   everything it has stored about your music and reads your library folders again from scratch, so
   a folder you deleted, moved or emptied no longer shows. Your music files aren't touched, and
   plays, favourites and quality checks are kept. It asks first.
+- **Building a big library shows its progress.** While the library is first read (a big drive can
+  take many minutes), the Library tab and the Library say how far it has got: folders looked
+  through, then songs read with a percentage, and the time so far. The Library's albums fill in
+  every few seconds as they're read, instead of all at the end.
+- Fixed: a library's first read could wait for ever, with nothing moving, if the helper
+  processes that read the tags never started (seen on Windows 10). After 90 seconds without an
+  answer they're given up and the reading carries on in the player itself. With Detailed logging
+  on, `app.log` notes each stage of a library read.
+- Fixed (Windows 10): dragging the window for a second or two could leave it running on to the
+  edge of the screen after you let go. Ironbark now moves the window itself, so it stops where
+  you let go. To snap it to a side, use Windows+← or Windows+→.
 
 ## 0.51.1 — 17/10/2026
 

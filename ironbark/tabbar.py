@@ -885,9 +885,10 @@ class TabBar(tk.Frame):
         """A press on a tab selects it (and may turn into a drag); on its × it waits for the
         release; on an empty part it drags the window."""
         self.tooltip._hide()
+        chrome.end_move(self.root)   # (one whose release went elsewhere — an Alt+Tab mid-drag — is over)
         i = self._slot_at(event.x, event.y)
         if i is None:
-            chrome.start_move(self.root)
+            chrome.start_move(self.root, event)
             return
         if i == self._x_shown and self._on_x(i, event.x, event.y):
             self._x_pressed = i
@@ -895,6 +896,8 @@ class TabBar(tk.Frame):
         self._press(i, event)
 
     def _released(self, event):
+        if chrome.end_move(self.root):
+            return
         i, self._x_pressed = self._x_pressed, None
         if i is not None and i < len(self._titles) and self._on_x(i, event.x, event.y):
             self.on_close(i)   # let go on the × it was pressed on (slid off: nothing, like any button)
@@ -947,6 +950,8 @@ class TabBar(tk.Frame):
         self.on_select(index)
 
     def _drag_motion(self, event):
+        if chrome.follow_move(self.root, event):
+            return
         drag = self._drag
         if drag is None or not self._titles:
             return

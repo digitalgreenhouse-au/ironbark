@@ -39,7 +39,9 @@ a network drive), open **Settings** (the ⚙ button at the top, or Ctrl+,) and u
 You can add several folders.
 
 The Library reads your folders once, in the background and at low priority, so the player stays
-responsive while it works. After that it only looks at what has changed. With **Watch for new
+responsive while it works. After that it only looks at what has changed. A big drive's first read
+can take a while: the status line says how far it has got (folders looked through, then songs read
+with a percentage) and how long it has taken so far, and the Library's albums fill in as it goes. With **Watch for new
 music** on (Settings → Library), albums you copy in later turn up by themselves, marked as new until
 you open them.
 
@@ -65,6 +67,9 @@ Ironbark is designed to live in a tall, narrow window at the side of your screen
 do other things. You can make it a little narrower or wider, and as tall as you like; it never
 becomes a wide or full-screen player. **Z** shrinks it to a **mini player**, a small strip that
 stays on top, and Z brings it back.
+
+Drag the window by the empty part of the strip at the top (or the mini player's empty parts). To
+snap it to a side of the screen, use Windows+← or Windows+→.
 
 To keep the window in a favourite spot, put it there and choose **Use current** in Settings →
 Window. **Snap to home** (or Ctrl+Shift+H, or a double-click on the empty strip at the top) brings
