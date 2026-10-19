@@ -46,8 +46,26 @@ jobs:
       - name: Build (tests, package, self-check, installer, zip, checksums)
         shell: pwsh
         run: |
+          # Only Python, uv, PowerShell and Windows' own folders on the path: the runner's PATH holds many
+          # tools whose DLLs (the C runtime, OpenSSL, zlib) PyInstaller would otherwise bundle, which a PC
+          # build doesn't, and the licence check rightly stops at.
+          $env:PATH = @((Split-Path $env:UV_PYTHON), (Join-Path (Split-Path $env:UV_PYTHON) "Scripts"),
+            (Split-Path (Get-Command uv).Source), (Split-Path (Get-Command pwsh).Source),
+            "$env:SystemRoot\System32", $env:SystemRoot, "$env:SystemRoot\System32\Wbem",
+            "$env:SystemRoot\System32\WindowsPowerShell\v1.0") -join ";"
           if ("${{ inputs.skip_tests }}" -eq "true") { packaging\windows\build.ps1 -SkipTests }
           else { packaging\windows\build.ps1 }
+      - name: Where the unlisted DLLs come from (only when the build failed)
+        if: failure()
+        shell: pwsh
+        run: |
+          "Python's own DLLs:"; Get-ChildItem (Join-Path (Split-Path $env:UV_PYTHON) "DLLs") -Filter *.dll | ForEach-Object Name
+          foreach ($name in "libcrypto-3.dll", "libssl-3.dll", "zlib1.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll") {
+            "${name}:"
+            $env:PATH -split ";" | Where-Object { $_ -and (Test-Path (Join-Path $_ $name)) } | ForEach-Object { "  $_" }
+          }
+          "Bundled DLLs:"; Get-ChildItem dist\windows\Ironbark\_internal -Recurse -Filter *.dll -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName.Substring((Resolve-Path dist\windows\Ironbark\_internal).Path.Length + 1) }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
         with:
           name: ironbark-windows
