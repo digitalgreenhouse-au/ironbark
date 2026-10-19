@@ -330,6 +330,31 @@ def _look_once(look: watcher.Watcher, index: library_index.LibraryIndex) -> None
         index.db.release()
 
 
+def _refresh_saying(index: library_index.LibraryIndex, progress: loadprogress.Reporter | None,
+                    every: float = 0.5) -> None:
+    """index.refresh() (a worker thread's work: it can take many minutes for a big library's first
+    look), while `progress` is told every `every` seconds how far the look has got and how long
+    it has taken (loadprogress.library_text), so the tab plainly isn't stuck."""
+    if progress is None:
+        index.refresh()
+        return
+    done = threading.Event()
+
+    def tell():
+        while True:
+            progress.say(loadprogress.library_text(index.indexer.progress, time.time()))
+            if done.wait(every):
+                return
+
+    teller = threading.Thread(target=tell, name="library-progress", daemon=True)
+    teller.start()
+    try:
+        index.refresh()
+    finally:
+        done.set()
+        teller.join(timeout=1)
+
+
 def _find_new_albums(index: library_index.LibraryIndex, since: float, results: queue.SimpleQueue) -> None:
     """The new albums, worked out on a worker thread (it reads the database) and handed to
     _watch_reports as a report with nothing changed."""
@@ -1762,7 +1787,7 @@ class PlayerWindow:
                     tracks = self._read_playlist(root, allowed=lambda song: places.allowed(song, self.prefs))
                     progress["missing"] = sum(1 for t in tracks if t.missing)
                 elif tab.kind == "library":
-                    albums = self._library_albums(root)
+                    albums = self._library_albums(root, reporter)
                     if tab.query:  # the same search as the Library window's
                         words = [fold(w) for w in tab.query.split()]
                         albums = [a for a in albums if browse.matches(a, words, fold)]
@@ -3007,14 +3032,15 @@ class PlayerWindow:
             return
         self.work.run(lambda: _look_once(self.watcher, index), name="library-start")
 
-    def _library_albums(self, root: Path | None) -> list:
+    def _library_albums(self, root: Path | None, progress: loadprogress.Reporter | None = None) -> list:
         """Every album in the library, from the database, when `root` is one of the library
         folders (a "library" tab: the Library's "Open all albums in a tab") or None (the main Library
-        tab: every folder); else every album found under `root`. (A worker thread's work.)"""
+        tab: every folder); else every album found under `root`. (A worker thread's work.) While the
+        first look is waited for, `progress` is told how far it has got, every half second."""
         index = self._index()
         if root is None or Path(root) in index.roots:
-            if not index.built:
-                index.refresh()   # the first look isn't finished: wait for it (it may be under way)
+            if not index.built:   # the first look isn't finished: wait for it (it may be under way)
+                _refresh_saying(index, progress)
             return index.albums()
         return find_albums(root) if root.is_dir() else []
 

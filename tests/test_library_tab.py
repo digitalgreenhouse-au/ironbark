@@ -170,3 +170,25 @@ def test_the_library_tabs_name_shows_on_its_plate_when_another_tab_is_selected(m
     assert bar.canvas.itemcget(bar._slots[0]["name"], "text") == "Library"
     holder.destroy()
     assert not errors
+
+
+def test_the_library_tab_says_how_far_a_first_look_has_got_while_it_waits():
+    """(Seen on Windows 10: a big drive's first look showed nothing, as if frozen.) While the main
+    Library tab waits for the first look, it's told every moment how far the look has got."""
+    from types import SimpleNamespace
+
+    from ironbark import loadprogress, ui
+    from ironbark.indexer import Progress
+
+    class Looking:
+        indexer = SimpleNamespace(progress=Progress("looking", 3, 0, "", time.time()))
+
+        def refresh(self):
+            time.sleep(0.35)
+            Looking.indexer.progress = Progress("reading", 50, 200, "", time.time())
+            time.sleep(0.35)
+
+    said: list[str] = []
+    ui._refresh_saying(Looking(), loadprogress.Reporter("Library", said.append), every=0.1)
+    assert said[0].startswith("Building the library: looking through your folders… 3 folders · 0:0")
+    assert any(text.startswith("Building the library: reading songs… 50 of 200 files (25%)") for text in said)

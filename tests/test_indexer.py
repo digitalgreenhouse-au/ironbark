@@ -469,6 +469,28 @@ def test_a_pool_that_breaks_carries_on_here(tmp_path, db):
     assert len(look.check([root]).added) == 4 and len(db.albums()) == 2
 
 
+def test_worker_processes_that_never_answer_are_given_up_and_the_reading_carries_on_here(tmp_path, db):
+    """(Seen on Windows 10: a big library's first look that never got anywhere.) Workers that
+    hand nothing back — they never started, or hung — are let go after `stall` seconds without an
+    answer, and every folder is read in this process instead."""
+    root = tree(tmp_path / "Music", {"A": 2, "B": 2, "C": 1})
+
+    class Silent:
+        shut = False
+
+        def submit(self, *args):
+            from concurrent.futures import Future
+            return Future()   # (never finishes)
+
+        def shutdown(self, **kwargs):
+            Silent.shut = True
+
+    look = Indexer(db, reader=Reader(), pool_min=0, pool_factory=lambda workers: Silent(), stall=0.5)
+    began = time.monotonic()
+    diff = look.check([root])
+    assert len(diff.added) == 5 and len(db.albums()) == 3 and Silent.shut
+    assert time.monotonic() - began < 10
+
 # -- prioritise, events, failures ---------------------------------------------------------------------
 def test_an_album_asked_for_is_read_next(tmp_path, db):
     root = tree(tmp_path / "Music", {f"{n:02d}": 1 for n in range(10)})

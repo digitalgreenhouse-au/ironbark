@@ -85,6 +85,7 @@ GENTLE_WORKERS = 2       # worker processes for a look at a library that's alrea
 PROGRESS_EVERY_S = 0.25  # Progress events at most this often
 ALBUMS_EVERY_S = 0.5     # AlbumsChanged events at most this often while a look stores folders
 _IN_FLIGHT = 2           # folders handed to each worker at a time (more would only wait, and delay a cancel)
+POOL_STALL_S = 90.0      # worker processes that answer nothing for this long are given up: read here instead
 
 
 def fast_workers() -> int:
@@ -248,6 +249,18 @@ def worker_check() -> dict:
             "player": any(name in sys.modules for name in ("ironbark.ui", "ironbark.engine"))}
 
 
+def _stop_pool(pool) -> None:
+    """Let a pool go that has stopped answering, its processes ended (a hung one would otherwise
+    stay, holding a file or a core)."""
+    processes = list((getattr(pool, "_processes", None) or {}).values())
+    pool.shutdown(wait=False, cancel_futures=True)
+    for process in processes:
+        try:
+            process.terminate()
+        except (OSError, AttributeError, ValueError):
+            pass
+
+
 def make_pool(workers: int) -> ProcessPoolExecutor | None:
     """Worker processes for reading tags (started as each is needed), or None if they can't be."""
     try:
@@ -264,13 +277,15 @@ class Indexer:
 
     def __init__(self, db: LibraryDB, reader: Callable[[Path], Track] | None = None, pool_min: int = POOL_MIN,
                  fast: int | None = None, gentle: int = GENTLE_WORKERS,
-                 pool_factory: Callable[[int], ProcessPoolExecutor | None] = make_pool):
+                 pool_factory: Callable[[int], ProcessPoolExecutor | None] = make_pool,
+                 stall: float = POOL_STALL_S):
         self.db = db
         self.reader = reader              # None: library.read_track
         self.pool_min = pool_min
         self.fast = fast if fast is not None else fast_workers()
         self.gentle = gentle
         self.pool_factory = pool_factory
+        self.stall = stall                # seconds without an answer before the worker processes are given up
         self.progress = Progress()        # replaced whole as a look goes on: read from any thread
         self.last_diff: Diff | None = None
         self.looked = 0.0                 # when a look last finished (this session)
@@ -504,6 +519,8 @@ class Indexer:
         closed: set[str] = set()
         if only is None:
             listed, unlisted, denied, closed = self._walk(root, started)
+            log.info("library look: %d folders listed in %s (%d couldn't be, %.1f s so far)", len(listed), root,
+                     len(unlisted), time.time() - started)
             if root in unlisted:
                 return f"Can't read the library folder {root}"
         else:
@@ -655,7 +672,10 @@ class Indexer:
     # -- reading and storing --
     def _store(self, jobs: list[_Job], workers: int, diff: Diff, started: float) -> None:
         """Read and store the jobs: the quick ones (nothing to read) first, then the reading, in
-        worker processes when there's enough of it."""
+        worker processes when there's enough of it. Workers that stop answering (they never start —
+        a slow disk, a virus scanner holding each new process — or hang) are given up after
+        `stall` seconds without an answer, and the reading carries on here: a look never waits for
+        ever with nothing moving."""
         quick = [job for job in jobs if job.names == []]
         reads = deque(job for job in jobs if job.names != [])
         total = sum(job.files for job in reads)
@@ -666,9 +686,12 @@ class Indexer:
             self._apply(folder_result(job.root, job.folder, job.listing, {}, cue_sig=job.cue_sig,
                                       listed_ok=job.listed_ok), job, diff)
         self._set_progress(Progress("reading", 0, total, "", started), force=True)
+        log.info("library look: %d files to read in %d folders (%.1f s so far)", total, len(reads),
+                 time.time() - started)
         pool = self.pool_factory(workers) if reads and total >= self.pool_min else None
         self.used_pool = pool is not None
         in_flight: dict[Future, _Job] = {}
+        answered = time.monotonic()   # (the last time a worker handed back a folder, or they started)
         try:
             while reads or in_flight:
                 self._check_cancel()
@@ -683,7 +706,15 @@ class Indexer:
                                               self.reader)] = job
                     finished, _rest = wait(in_flight, timeout=0.25, return_when=FIRST_COMPLETED)
                     if not finished:
+                        if time.monotonic() - answered >= self.stall:
+                            log.warning("the worker processes answered nothing for %.0f s: reading tags in this "
+                                        "process instead", self.stall)
+                            reads.extendleft(reversed(list(in_flight.values())))
+                            in_flight.clear()
+                            _stop_pool(pool)
+                            pool = None
                         continue
+                    answered = time.monotonic()
                     future = next(iter(finished))
                     job = in_flight.pop(future)
                     try:
@@ -702,6 +733,7 @@ class Indexer:
         finally:
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
+        log.info("library look: %d files read (%.1f s in all)", done, time.time() - started)
 
     def _now(self) -> float:
         """The time, never the same twice: what a look marks missing is always after the look

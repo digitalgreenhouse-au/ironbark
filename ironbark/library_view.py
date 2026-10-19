@@ -82,6 +82,7 @@ from . import (
     library_check,
     library_db,
     library_index,
+    loadprogress,
     places,
     platforms,
     popups,
@@ -123,6 +124,7 @@ NARROW_ALBUM_COLUMNS = ("album", "year")   # (the artist rides in the album's na
 # The sort each song view starts with ("": the order the list came in — newest favourite first).
 SONG_SORT = {"songs": ("title", False), "most_played": ("plays", True), "recently_played": ("added", True),
              "favourites": ("", False), "needs_look": ("found", False)}
+FILL_EVERY_S = 3.0       # during a first look (or a rebuild) the album list is read again this often, as it fills
 CHECK_REREAD_S = 3.0     # Needs a look reads the check's new results at most this often while it runs
 SONG_LIMIT = 1000        # songs the Songs view's search lists (the best ones; the status says how many match)
 PLAYED_LIMIT = 500       # songs Most played / Recently played list
@@ -733,6 +735,8 @@ class LibraryView:
             if isinstance(event, indexer.AlbumsChanged) and self._refresh is None:
                 self._want_albums()   # (during this window's own refresh, the list comes once at its end)
                 self._songs_have = None   # (the songs may have changed too: read again when next shown)
+            elif isinstance(event, indexer.AlbumsChanged):
+                self._filling(self._refresh)
         pages = False
         for answer in self._queries.drain():
             if answer.kind.startswith("page:"):
@@ -785,6 +789,19 @@ class LibraryView:
             self._paint_status()
         self._tick_job = self.frame.after(TICK_MS, self._tick) if self.shown else None
 
+    def _filling(self, job: dict):
+        """Albums were stored during this window's own refresh. A rescan's list comes once, at its
+        end; but a library folder's first look (one just added, or the very first) or a rebuild
+        can take many minutes on a big library, so its list is read again every FILL_EVERY_S as it
+        fills — albums can be browsed and played while the rest are read."""
+        if not (job.get("fresh") or job.get("first")):
+            return
+        job["filling"] = True
+        now = time.monotonic()
+        if now - job.get("filled", 0.0) >= FILL_EVERY_S and self._asked is None:
+            job["filled"] = now
+            self._ask_albums()
+
     def _start_refresh(self, fresh: bool = False):
         """Look through the library folders on a thread of its own (`fresh`: forget what's stored
         and read them all again — library_index.LibraryIndex.rebuild)."""
@@ -799,6 +816,7 @@ class LibraryView:
 
         def work():   # (holds the job and the index only: nothing of the window's, nothing of Tk's)
             try:
+                job["first"] = bool(job["index"].unbuilt())   # (a folder's first look: the list fills as it goes)
                 job["diff"] = job["index"].rebuild() if job["fresh"] else job["index"].refresh()
             except Exception as error:  # noqa: BLE001 — shown, never fatal: the index is only a speed-up
                 job["error"] = str(error)
@@ -1536,10 +1554,11 @@ class LibraryView:
         total = len(self.albums)
         job = self._refresh
         place = str(self.root_folder) if len(self.roots) == 1 else f"{len(self.roots)} library folders"
-        if job is not None and not total:
-            done, of = self.index.progress
-            building = "Rebuilding the library" if job.get("fresh") else "Building the library index (first time only)"
-            text = f"{building}… {done} of {of} files" if of else f"Looking through {place}…"
+        if job is not None and (not total or job.get("filling")):
+            what = "Rebuilding the library" if job.get("fresh") else "Building the library"
+            text = loadprogress.library_text(self.index.indexer.progress, time.time(), what)
+            if total:
+                text = f"{total:,} albums so far · {text}"
         elif self._problem and not total:
             text = self._problem
         elif self._loading and not total:
@@ -1552,8 +1571,8 @@ class LibraryView:
             words = self.search_var.get().strip()
             text = f"{len(self._shown)} of {total} albums" if words else f"{total} albums in {place}"
             if job is not None:
-                done, of = self.index.progress
-                text += f" · checking for changes… {done} of {of}" if of else " · checking for changes…"
+                text += " · " + loadprogress.library_text(self.index.indexer.progress, time.time(),
+                                                          "checking for changes")
             elif self.index.last_diff is not None and self.index.last_diff.error:
                 text += f" · {self.index.last_diff.error} just now, so these may be out of date"
             elif self.index.last_diff is not None and not self.index.last_diff.nothing:

@@ -22,6 +22,24 @@ def test_the_words_say_what_is_being_done():
     assert loadprogress.album_text("Blue", 2, 12) == "Reading album 3 of 12: “Blue”…"
 
 
+def test_a_library_look_says_how_far_it_has_got_and_for_how_long():
+    """A big library's first look takes minutes: each stage is named, with counts and the time so
+    far (it ticks every second, so it's plain nothing has frozen)."""
+    from ironbark.indexer import Progress
+
+    text = loadprogress.library_text
+    assert text(Progress("looking", 0, 0, "", 100.0), 100.4) == "Building the library: looking through your folders… · 0:00"
+    assert (text(Progress("looking", 1234, 0, "D:/Music/A", 100.0), 142.0)
+            == "Building the library: looking through your folders… 1,234 folders · 0:42")
+    assert (text(Progress("reading", 5000, 80000, "", 100.0), 290.0)
+            == "Building the library: reading songs… 5,000 of 80,000 files (6%) · 3:10")
+    assert (text(Progress("reading", 1, 2, "", 0.0), 3725.0, "Rebuilding the library")
+            == "Rebuilding the library: reading songs… 1 of 2 files (50%)")   # (no start time: no clock)
+    assert text(Progress("upgrading", 3, 4, "", 10.0), 11.0).startswith("Building the library: bringing the old")
+    assert text(Progress("tidying", 0, 0, "", 10.0), 3735.0) == "Building the library: tidying up… · 1:02:05"
+    assert text(Progress(), 5.0) == "Building the library…"   # (not started yet)
+
+
 def test_the_reporter_throttles_but_never_drops_the_end_of_a_stage():
     now = [0.0]
     said = []

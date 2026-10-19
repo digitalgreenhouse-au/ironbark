@@ -194,6 +194,30 @@ def test_rebuild_the_library_forgets_a_folder_that_has_gone(root, music, monkeyp
     w.close()
 
 
+def test_a_first_look_fills_the_album_list_as_it_goes(root, music, monkeypatch):
+    """A rescan's albums come once at its end; a first look's (or a rebuild's) are asked for again
+    every FILL_EVERY_S as albums are stored, so a big library can be browsed while it's read."""
+    from ironbark import library_view
+
+    w = LibraryView(root, [music], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    wait_for_albums(w, root)
+    asked = []
+    monkeypatch.setattr(w, "_ask_albums", lambda: asked.append(1))
+    w._filling({"first": False})                  # a rescan: nothing asked
+    assert asked == []
+    job = {"first": True}
+    w._filling(job)
+    w._filling(job)                               # (again at once: not yet)
+    assert asked == [1] and job["filling"]
+    job["filled"] -= library_view.FILL_EVERY_S
+    w._filling(job)
+    assert asked == [1, 1]
+    w._filling({"fresh": True})
+    assert asked == [1, 1, 1]
+    w.close()
+
+
 def test_adding_a_folder_inside_or_around_the_library_folders():
     """(0.31) No album is ever listed twice: a folder inside a library folder is already in the
     library; one that holds library folders takes their place."""
