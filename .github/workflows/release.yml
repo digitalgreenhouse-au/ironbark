@@ -31,6 +31,18 @@ jobs:
       # Actions are pinned to a commit (a tag can be moved to other code); the comment says which release.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
+      # Built with python.org's Python, as on a PC: left to itself uv fetches its own build of Python,
+      # which carries other DLLs (the C runtime, OpenSSL under other names, zlib) that the licence check
+      # rightly stops at. The runner's tool cache holds python.org's builds.
+      - name: python.org's Python 3.12 (from the runner's tool cache)
+        shell: pwsh
+        run: |
+          $found = Get-ChildItem "$env:RUNNER_TOOL_CACHE\Python\3.12.*\x64\python.exe" -ErrorAction SilentlyContinue |
+            Sort-Object { [version]$_.Directory.Parent.Name } | Select-Object -Last 1
+          if (-not $found) { throw "No python.org Python 3.12 in the runner's tool cache" }
+          & $found.FullName --version
+          "UV_PYTHON=$($found.FullName)" >> $env:GITHUB_ENV
+          "UV_PYTHON_PREFERENCE=only-system" >> $env:GITHUB_ENV
       - name: Build (tests, package, self-check, installer, zip, checksums)
         shell: pwsh
         run: |
