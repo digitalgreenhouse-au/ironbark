@@ -4,6 +4,13 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## Unreleased
+
+- **Rebuild the library.** The Library's ⋯ menu has **Rebuild the library…**: Ironbark forgets
+  everything it has stored about your music and reads your library folders again from scratch, so
+  a folder you deleted, moved or emptied no longer shows. Your music files aren't touched, and
+  plays, favourites and quality checks are kept. It asks first.
+
 ## 0.51.1 — 17/10/2026
 
 The first release with downloads for Windows, macOS and Linux: everything in 0.51.0 below, plus:

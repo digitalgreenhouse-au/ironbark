@@ -684,6 +684,32 @@ def test_plays_survive_the_tracks_being_stored_again(db):
     assert db.play_counts([key]) == {key: 1} and db.favourites() == [key]
 
 
+def test_clear_forgets_the_music_but_keeps_folders_plays_favourites_and_checks(db):
+    """Library → ⋯ → Rebuild the library: everything stored about the music goes (missing files
+    too), the library folders stay — as before their first look — and so do plays, favourites and
+    checks. A song id is never given again."""
+    folder, gone = ROOT / "A", ROOT / "B"
+    db.apply(result(folder, [song(folder, 1, "One"), song(folder, 2, "Two")]))
+    db.apply(result(gone, [song(gone, 1, "Three")]))
+    db.mark_missing([db.folders(ROOT)[str(gone)].id])
+    db.mark_built(ROOT)
+    db.set_volume(ROOT, 1234)
+    key = str(folder / "01 One.flac")
+    db.record_play(key, 300, 300)
+    db.set_favourite(key)
+    db.save_check(key, 1000, 5000, 1, "", 0.5, "")
+    top = max(row[0] for row in stored(db, "SELECT id FROM tracks"))
+    generation = db.generation
+    db.clear()
+    assert db.counts() == {"folders": 0, "files": 0, "missing": 0, "tracks": 0, "albums": 0}
+    assert db.roots() == [str(ROOT)] and not db.built(ROOT) and db.volume(ROOT) is None
+    assert db.play_counts([key]) == {key: 1} and db.favourites() == [key] and db.check_of(key) is not None
+    assert db.generation > generation
+    db.apply(result(folder, [song(folder, 1, "One")]))
+    assert min(row[0] for row in stored(db, "SELECT id FROM tracks")) > top
+    assert db.play_counts([key]) == {key: 1} and db.favourites() == [key]
+
+
 # -- search -----------------------------------------------------------------------------------------------------
 @pytest.fixture
 def searchable(db):

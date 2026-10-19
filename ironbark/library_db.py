@@ -880,6 +880,16 @@ class LibraryDB:
             _rekey(con, os.path.join(was, ""), os.path.join(str(Path(new)), ""), whole=True)
         return True
 
+    def clear(self) -> None:
+        """Forget every music folder, file and song stored, so the next look reads the library
+        folders afresh, as on their first look (Library → ⋯ → Rebuild the library). The library
+        folders stay, and so do plays, favourites and quality checks (they're keyed by the file,
+        not by row). Song ids are never given again (_TrackIds): a tab holding one shows it gone."""
+        with self._writing() as con:
+            con.execute("DELETE FROM folders")   # (their files, songs, albums and search entries go with them)
+            con.execute("UPDATE roots SET built = 0")
+            con.execute("DELETE FROM meta WHERE key LIKE 'volume:%'")   # (noted afresh by the next look)
+
     def volume(self, root: str | Path) -> tuple[int, float | None] | None:
         """The drive a library folder's music was found on (the indexer's volume_of), and since when
         another drive has been seen in its place (None: it hasn't); None when not noted yet."""

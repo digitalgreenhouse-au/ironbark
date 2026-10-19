@@ -6,11 +6,13 @@ Tk's: the view's own `after` loop picks it up, with the indexer's progress and n
 
 The views sit in one drop-down at the left of the search box (eleven words don't fit a 300 px window):
 Songs (the tab's own list, grouped by album), Albums, Artists, Genres, Years, Composers, Recently added,
-Most played, Recently played, Favourites, Needs a look. The ⋯ button beside the box holds Rescan, "Open
-all albums in a tab" and "Add folder…". Narrower than NARROW the lists show fewer columns: album views
-"Artist – Album" and Year (grouped views just the album), song views Title and Time with the artist
-riding in the title; the rest come back when the window is wider. Esc, an album opened or a song played
-put the track list back (`on_close`); "Songs" in the drop-down does the same (`on_songs`).
+Most played, Recently played, Favourites, Needs a look. The ⋯ button beside the box holds Rescan,
+"Rebuild the library…" (everything stored forgotten and the folders read again: for music that has
+gone but still shows), "Open all albums in a tab" and "Add folder…". Narrower than NARROW the lists
+show fewer columns: album views "Artist – Album" and Year (grouped views just the album), song views
+Title and Time with the artist riding in the title; the rest come back when the window is wider. Esc,
+an album opened or a song played put the track list back (`on_close`); "Songs" in the drop-down does
+the same (`on_songs`).
 
 Browse by Albums · Artists · Genres · Years · Composers · Recently added (the grouping rules are in
 browse.py); click a column heading to sort by it (again to reverse). Search matches album, artist,
@@ -554,7 +556,7 @@ class LibraryView:
         top.pack(fill="x")
         # The views, in one drop-down at the left; then the search box (controls.SearchBox: Esc empties
         # it — empty already, Esc goes on to the window, which puts the track list back); then the ⋯
-        # menu (Rescan, Open all albums in a tab, Add folder…).
+        # menu (Rescan, Rebuild the library…, Open all albums in a tab, Add folder…).
         self.view_button = controls.FlatButton(top, "", self._view_menu, fit="Recently played ● ▾",
                                                label="Which view: albums, artists, genres, years, composers, recently "
                                                      "added; most played, recently played, favourites, needs a look "
@@ -564,7 +566,7 @@ class LibraryView:
         self.search_var = self.search.query
         self._search_trace = self.search_var.trace_add("write", lambda *_: self._search_changed())
         self.more_button = controls.FlatButton(top, "⋯", self._more_menu,
-                                               label="Rescan · Open all albums in a tab · Add folder…")
+                                               label="Rescan · Rebuild the library · Open all albums in a tab · Add folder…")
         self.more_button.pack(side="right", padx=theme.pad(theme.GAP, 0))
         self.search.pack(side="left", fill="x", expand=True)
         search = self.search.entry
@@ -783,15 +785,21 @@ class LibraryView:
             self._paint_status()
         self._tick_job = self.frame.after(TICK_MS, self._tick) if self.shown else None
 
-    def _start_refresh(self):
+    def _start_refresh(self, fresh: bool = False):
+        """Look through the library folders on a thread of its own (`fresh`: forget what's stored
+        and read them all again — library_index.LibraryIndex.rebuild)."""
         if self._refresh is not None:
             return
-        job: dict = {"folders": list(self.roots), "index": self.index}
+        job: dict = {"folders": list(self.roots), "index": self.index, "fresh": fresh}
         self._refresh = job
+        if fresh:   # (what's on show is forgotten: the list fills again once the folders are read)
+            self._set_albums(([], {}))
+            self._songs_have = None
+            self._fill()
 
         def work():   # (holds the job and the index only: nothing of the window's, nothing of Tk's)
             try:
-                job["diff"] = job["index"].refresh()
+                job["diff"] = job["index"].rebuild() if job["fresh"] else job["index"].refresh()
             except Exception as error:  # noqa: BLE001 — shown, never fatal: the index is only a speed-up
                 job["error"] = str(error)
             finally:
@@ -803,6 +811,28 @@ class LibraryView:
 
     def rescan(self):
         self._start_refresh()
+
+    def rebuild(self):
+        """⋯ → Rebuild the library…: asked first, then everything stored for the library is
+        forgotten and its folders read again from scratch — for when the Library still shows
+        music that has gone (a folder deleted, moved or renamed)."""
+        if self._refresh is not None and self._refresh.get("fresh"):
+            return
+        place = str(self.root_folder) if len(self.roots) == 1 else f"your {len(self.roots)} library folders"
+        if not popups.confirm(
+                self.top, "Rebuild the library?",
+                f"Ironbark forgets everything it has stored about your music and reads {place} again "
+                "from scratch, so anything that's no longer there leaves the Library.",
+                detail=("Your music files aren't touched, and your plays, favourites and quality checks are "
+                        "kept. Recently added dates start again from when each file was made. A big library "
+                        "takes a while to read; you can keep listening meanwhile. A folder that can't be seen "
+                        "just now (a drive unplugged) comes back when it's next looked at."),
+                ok="Rebuild", cancel="Keep it", danger=True):
+            return
+        if self._refresh is not None:   # (a rescan under way is stopped: the rebuild waits for it)
+            self.index.indexer.cancel()
+            self._refresh = None
+        self._start_refresh(fresh=True)
 
     def reload(self):
         """Show the library again (after a tag edit updated it), keeping the view, sort and
@@ -879,9 +909,10 @@ class LibraryView:
         view_menu(self.top, self.view, self.set_view, self.on_songs, (x, y + theme.px(2)), new=bool(self._new))
 
     def _more_menu(self):
-        """The ⋯ button: Rescan, Open all (or these) albums in a tab, Add folder…"""
+        """The ⋯ button: Rescan, Rebuild the library…, Open all (or these) albums in a tab, Add folder…"""
         menu = popups.PopupMenu(self.top)
         menu.add("Rescan: look for added or changed music", self.rescan, keys.hint("library_rescan"))
+        menu.add("Rebuild the library…", self.rebuild)
         menu.add(self._load_all_text, self._load_all, enabled=self._load_all_ok and self.view not in SONG_VIEWS)
         menu.add_separator()
         menu.add("Add folder…", self._add_folder)
@@ -1507,8 +1538,8 @@ class LibraryView:
         place = str(self.root_folder) if len(self.roots) == 1 else f"{len(self.roots)} library folders"
         if job is not None and not total:
             done, of = self.index.progress
-            text = (f"Building the library index (first time only)… {done} of {of} files" if of
-                    else f"Looking through {place}…")
+            building = "Rebuilding the library" if job.get("fresh") else "Building the library index (first time only)"
+            text = f"{building}… {done} of {of} files" if of else f"Looking through {place}…"
         elif self._problem and not total:
             text = self._problem
         elif self._loading and not total:

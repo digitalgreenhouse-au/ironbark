@@ -112,6 +112,34 @@ def test_an_unplugged_library_folder_changes_nothing_and_nothing_comes_back_new(
     assert db.new_albums(since - 1, {}) == []     # nothing comes back "new"
 
 
+def test_a_fresh_look_forgets_what_a_normal_one_keeps_and_reads_everything_again(tmp_path, db):
+    """Library → ⋯ → Rebuild the library: a library folder that's gone (or emptied) keeps its music
+    on a normal look, never on a fresh one; what's there is read again, as on a first look, with
+    plays and favourites kept and nothing coming back "new"."""
+    music = tree(tmp_path / "Music", {"A": 2})
+    old = tree(tmp_path / "Old", {"B": 2})
+    reader = Reader()
+    look = Indexer(db, reader=reader)
+    events = look.listen()
+    look.check([music, old])
+    key = str(music / "A" / "01.flac")
+    db.record_play(key, 300, 300)
+    db.set_favourite(key)
+    since = time.time()
+    shutil.rmtree(old)
+    old.mkdir()                                   # (emptied: on a normal look, an unplugged drive's mount point)
+    assert look.check([music, old]).error and len(rows(db)) == 4
+    reader.read.clear()
+    drain(events)
+    diff = look.check([music, old], fresh=True)
+    assert sorted(rows(db)) == [key, str(music / "A" / "02.flac")]
+    assert sorted(reader.read) == [music / "A" / "01.flac", music / "A" / "02.flac"]   # (read again)
+    assert sorted(diff.added) == [music / "A" / "01.flac", music / "A" / "02.flac"]
+    assert db.built(music) and db.play_counts([key]) == {key: 1} and db.favourites() == [key]
+    assert db.new_albums(since - 1, {}) == []
+    assert any(isinstance(e, AlbumsChanged) and not e.album_ids for e in drain(events))
+
+
 def test_a_folder_that_cant_be_listed_keeps_everything_and_a_vanished_one_comes_back_with_its_dates(
         tmp_path, db, monkeypatch):
     root = tree(tmp_path / "Music", {"A": 2, "B": 2})

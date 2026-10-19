@@ -214,6 +214,16 @@ class LibraryIndex:
         self.last_diff = diff
         return diff
 
+    def rebuild(self) -> Diff:
+        """Forget everything stored for the library and read its folders again from scratch
+        (Library → ⋯ → Rebuild the library): for when the Library still shows music that has gone.
+        Plays, favourites and quality checks stay. Safe from any thread except Tk's."""
+        diff = self.indexer.check(self.roots, fresh=True)
+        if not diff.cancelled and not diff.error:
+            self.refreshed = time.time()
+        self.last_diff = diff
+        return diff
+
     def update(self, paths: Iterable[str | Path]) -> Diff:
         """These files have just changed (a tag edit was saved): read them again now."""
         diff = self.indexer.update(self.roots, paths)

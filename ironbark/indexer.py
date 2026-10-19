@@ -349,16 +349,18 @@ class Indexer:
     # -- a look --
     def check(self, roots: Iterable[str | Path], hold: Callable[[str, tuple], bool] | None = None,
               folders: Iterable[str | Path] | None = None, reason: str = "",
-              json_index: Path | None = None, dry: bool = False) -> Diff:
+              json_index: Path | None = None, dry: bool = False, fresh: bool = False) -> Diff:
         """Bring the database up to date with these library folders (they become the library's
         folders: one no longer listed is removed with everything stored for it). Returns what
         changed. `hold(path, (size, modified ns, created s))`: True leaves a new or changed file for
         the next look (it goes in the diff's `waiting`). `folders`: look only at these folders (not
         what's below them), e.g. again soon for a copy in progress; everything else is left for the
         next whole look. `json_index`: an old library_index.json to bring across before a library
-        folder's first look. `dry`: only compare, nothing read or stored (`changes`). A folder
-        inside another library folder is left out (library_db.outermost); no folders at all
-        changes nothing."""
+        folder's first look. `dry`: only compare, nothing read or stored (`changes`). `fresh`:
+        forget everything stored first (LibraryDB.clear: plays, favourites and checks stay), then
+        read the folders as on their first look — nothing gone is kept, not even the music of a
+        folder that can't be seen just now. A folder inside another library folder is left out
+        (library_db.outermost); no folders at all changes nothing."""
         roots = [str(r) for r in outermost(roots)]
         only = None if folders is None else {os.fspath(f) for f in folders}
         if not roots:
@@ -371,6 +373,10 @@ class Indexer:
             diff = Diff()
             self._read = (0, 0)
             try:
+                if fresh and not dry:
+                    self.db.clear()
+                    json_index = None   # (the old JSON index would bring back what was just forgotten)
+                    self._albums_changed(everything=True)
                 self._check(roots, hold, only, json_index, dry, started, diff)
             except _Cancelled:
                 diff.cancelled = True

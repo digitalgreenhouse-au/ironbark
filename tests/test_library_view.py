@@ -159,6 +159,41 @@ def test_several_library_folders_and_add_folder(root, music, tmp_path, monkeypat
     w.close()
 
 
+def test_rebuild_the_library_forgets_a_folder_that_has_gone(root, music, monkeypatch):
+    """⋯ → Rebuild the library…: asked first ("Keep it" changes nothing); then everything stored
+    is forgotten and the library folders read again, so an album whose folder has gone (one a
+    normal look keeps, here the library folder emptied) leaves the list, and plays stay."""
+    import shutil
+
+    from ironbark import popups
+
+    monkeypatch.setattr(LibraryView, "_sorts", {})
+    w = LibraryView(root, [music], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    assert column(w, "album") == ["21", "Hits", "Tommy"]
+    shown = []
+    monkeypatch.setattr(popups.PopupMenu, "popup", lambda self, x, y: shown.append(self))   # (not shown)
+    w._more_menu()
+    assert "Rebuild the library…" in shown[-1].labels()
+    key = str(music / "Hits" / "01.flac")
+    w.index.db.record_play(key, 300, 300)
+    for name in ("21", "Hits", "Tommy"):
+        shutil.rmtree(music / name)
+    flac(music / "Blue" / "01.flac", title="River", artist="Joni Mitchell", album="Blue", date="1971")
+    asked = []
+    monkeypatch.setattr(popups, "confirm", lambda *a, **k: asked.append((a[1], k.get("danger"))) or False)
+    w.rebuild()
+    assert asked == [("Rebuild the library?", True)] and w._refresh is None
+    assert column(w, "album") == ["21", "Hits", "Tommy"]
+    monkeypatch.setattr(popups, "confirm", lambda *a, **k: True)
+    w.rebuild()
+    assert w._refresh is not None and w._refresh["fresh"] and column(w, "album") == []
+    wait_for_index(w, root)
+    assert column(w, "album") == ["Blue"]
+    assert w.index.db.play_counts([key]) == {key: 1}
+    w.close()
+
+
 def test_adding_a_folder_inside_or_around_the_library_folders():
     """(0.31) No album is ever listed twice: a folder inside a library folder is already in the
     library; one that holds library folders takes their place."""
