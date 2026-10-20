@@ -117,6 +117,8 @@ from . import (
     loudness,
     mediakeys,
     mpris,
+    netcheck,
+    netcheck_view,
     offthread,
     passthrough,
     placement,
@@ -189,6 +191,7 @@ VOLUME_CONTROL = ("Mac's volume keys" if platforms.IS_MAC else "Windows volume s
 SEEK_STEP = 5.0
 LONG_SEEK_STEP = 30.0  # Shift+← / →
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
+DIAGNOSTICS_CHECK_S = 8.0   # Save diagnostics…: each step of its library folders check waits at most this long
 WHEEL_NOTCH = 120 if platforms.IS_WINDOWS else 1   # Tk's wheel delta for one notch (Windows: 120)
 ALBUM_AGAIN_S = 30.0   # a network album not all downloaded yet: its loudness is measured again after this long
 SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: its drive or server isn't answering
@@ -4547,11 +4550,15 @@ class PlayerWindow:
         prefs = json.loads(json.dumps(self.prefs))   # (a copy of its own for the thread)
         names = self._private_names()
         result: dict = {}
+        folders = [str(f) for f in netcheck_view.listed_folders(prefs) or [self._library_root()]]
+
+        def check() -> str:   # (a shorter time limit than the button's: a sleeping server mustn't hold the zip up)
+            return netcheck.report(folders, prefs, limit=DIAGNOSTICS_CHECK_S)[0]
 
         def work():
             try:
                 result["path"] = diagnostics.write_zip(Path(destination), prefs, settings.settings_path().parent,
-                                                       names=names)
+                                                       names=names, folders_check=check)
             except Exception as error:   # reported in the window
                 log.warning("couldn't save diagnostics", exc_info=True)
                 result["error"] = error

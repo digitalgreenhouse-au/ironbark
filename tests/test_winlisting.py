@@ -60,6 +60,57 @@ def test_a_listing_that_fails_with_a_bad_signature_is_listed_the_other_way(tmp_p
     assert sorted(winlisting.listdir(tmp_path)) == ["Disc 1", "a.flac"]
 
 
+class _PartListing:
+    """os.scandir's listing of a big folder on such a server: the first name comes, then the next
+    batch is refused — after os.scandir has returned, while the listing is read."""
+
+    def __init__(self, path, first):
+        self.path, self.first, self.given = path, first, 0
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.given += 1
+        if self.given == 1:
+            return self.first
+        raise _signature_error(self.path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed = True
+
+
+def test_a_listing_refused_partway_through_is_listed_the_other_way(tmp_path, monkeypatch):
+    (tmp_path / "Album 1").mkdir()
+    (tmp_path / "Album 2").mkdir()
+    real = os.scandir
+    first = next(iter(real(tmp_path)))
+    made = []
+
+    def part(path="."):
+        made.append(_PartListing(path, first))
+        return made[-1]
+
+    monkeypatch.setattr(winlisting, "_scandir", part)
+    found = [entry.name for entry in winlisting.scandir(str(tmp_path))]
+    assert sorted(found) == ["Album 1", "Album 2"]          # all of it, not the first name, then the error
+    assert made[0].closed                                     # (the refused listing was let go)
+    # os.walk, which the library's look relies on, sees the whole folder too.
+    monkeypatch.setattr(os, "scandir", winlisting.scandir)
+    assert sorted(next(os.walk(tmp_path))[1]) == ["Album 1", "Album 2"]
+
+
+def test_a_listing_read_whole_still_works_as_os_scandirs_does(tmp_path):
+    (tmp_path / "a.flac").write_bytes(b"123")
+    with winlisting.scandir(tmp_path) as entries:
+        listed = {entry.name: entry.stat().st_size for entry in entries}
+    assert listed == {"a.flac": 3}
+
+
 def test_when_the_other_way_fails_too_the_first_error_stands(tmp_path, monkeypatch):
     first = _signature_error(tmp_path)
 

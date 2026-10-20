@@ -188,7 +188,8 @@ def test_a_library_folder_that_cant_be_listed_is_tried_again_and_the_systems_wor
     fails["left"] = indexer.ROOT_TRIES
     diff = look.check([root])
     assert diff.error == (f"Can't read the library folder {root} "
-                          "(The specified network name is no longer available, error 64)")
+                          "(The specified network name is no longer available, error 64): the connection to "
+                          "the server dropped while reading (the server went to sleep, or the network blinked)")
     assert len(rows(db)) == 2                       # (nothing stored for it changes)
     assert indexer.error_text(PermissionError(13, "Access is denied")) == "Access is denied, error 13"
 

@@ -4,6 +4,22 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.52.0 — 21/10/2026
+
+- Fixed (Windows): a library folder on some network drives still couldn't be read after 0.51.5 —
+  "Invalid Signature, error -2146893818". The server gives the first name of a big folder, then
+  refuses the rest when asked the usual way; 0.51.5 only switched to File Explorer's way when the
+  listing failed at once, not partway through. It does now, so such a folder loads in full.
+- **Check folders…** in Settings → Library: for each library folder, whether its server and the
+  folder answer (and how fast), which way of listing it works, and what the Library gets, with
+  what any error means in plain words. It saves a report and opens it; nothing is changed or sent.
+  A folder on your network is only looked at while Local network access is on, and a server that
+  doesn't answer is reported as such after 20 seconds.
+- When the Library can't read a library folder, it now says what the error means, not only
+  Windows' words and number, and points to Check folders…. The log names the first few folders
+  inside a library folder that couldn't be listed, and why.
+- Save diagnostics… includes the same check (paths and names left out, as in the rest of the file).
+
 ## 0.51.5 — 20/10/2026
 
 - Fixed (Windows): a library folder on some network drives (a NAS or file server) couldn't be

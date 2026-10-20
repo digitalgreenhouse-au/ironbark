@@ -1,16 +1,19 @@
 """Folder listings on Windows from network file servers that answer only some ways of asking.
 
 Python lists a folder (os.scandir, os.listdir, and so os.walk and Path.iterdir) with
-FindFirstFileW, which asks the server for each name's short 8.3 name too. Some NAS boxes and
-file servers answer that request with a reply that isn't signed properly, and Windows refuses it:
-"Invalid Signature" (NTE_BAD_SIGNATURE, error -2146893818), while File Explorer, which asks
-without short names and in bigger batches, lists the same folder. Seen on a mapped network drive
-(Y:\\Music) that Explorer opened but the Library said it couldn't read.
+FindFirstFileW, which asks the server for the names a batch at a time. Some NAS boxes and file
+servers answer the second batch of a big folder with a reply that isn't signed properly, and
+Windows, which requires signed replies, refuses it: "Invalid Signature" (NTE_BAD_SIGNATURE, error
+-2146893818). File Explorer asks for large batches (FIND_FIRST_EX_LARGE_FETCH) and lists the same
+folder. Seen on a mapped network drive: the first name came, then the error; asked Explorer's way,
+all 1,846 names came in a tenth of a second. Its albums (small folders) listed either way.
 
 `install()` (run on Windows when the package is imported, in the player and in its worker
 processes) wraps os.scandir and os.listdir: they work as before, and only when one fails with
 such an error is the folder listed again the way Explorer asks (FindFirstFileExW, the basic
-information, large batches); if that fails too, the first error stands. The entries it gives
+information, large batches); if that fails too, the first error stands. The error can come at the
+start of a listing or partway through it, after os.scandir has returned, so os.scandir's listing
+is read whole before it's handed on. The entries it gives
 carry what os.scandir's do on Windows (name, path, is_dir / is_file / is_symlink / is_junction,
 and stat()'s size and times, from the listing itself), so the code that lists folders needn't know.
 """
@@ -130,9 +133,10 @@ class Entry:
 
 
 class Listing:
-    """os.scandir's iterator, for a folder listed the other way (a context manager, as its is)."""
+    """os.scandir's iterator over a listing already read — its os.DirEntry's, or Entry's for a
+    folder listed the other way (a context manager, as os.scandir's is)."""
 
-    def __init__(self, entries: list[Entry]):
+    def __init__(self, entries: list):
         self._entries = iter(entries)
 
     def __iter__(self) -> Iterator[Entry]:
@@ -224,11 +228,14 @@ def _stat_of(data) -> Stat:
 
 
 def scandir(path=None):
-    """os.scandir, and a folder it can't list for a reason in RETRY_ERRORS listed the other way."""
+    """os.scandir, and a folder it can't list for a reason in RETRY_ERRORS listed the other way —
+    whether the server refuses at the start or partway through (the listing is read whole here,
+    so an error while it's read is caught too)."""
     if path is None:
         path = "."
     try:
-        return _scandir(path)
+        with _scandir(path) as listing:
+            return Listing(list(listing))
     except OSError as error:
         if isinstance(path, (bytes, int)) or not needs_other_way(error):
             raise

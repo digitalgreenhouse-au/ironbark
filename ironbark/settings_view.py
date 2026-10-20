@@ -20,7 +20,7 @@ from collections.abc import Callable
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from . import controls, devices, experiments, keyfocus, keys, levelling, platforms, settings, theme
+from . import controls, devices, experiments, keyfocus, keys, levelling, netcheck_view, platforms, settings, theme
 from .analysis import GUARD_HEADROOM_CHOICES, headroom_index, headroom_label
 from .tabbar import IconButton, Popover, SettingRow, Tooltip
 
@@ -414,6 +414,11 @@ def build_controls(win, view: SettingsView):
     row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
     pop_button(row, "Add folder…", win._add_library_folder,
                      "Add another folder of music to the Library").pack(side="right")
+    win.check_folders_button = pop_button(
+        row, "Check folders…", lambda: netcheck_view.run(win),
+        "Why a library folder won't load: whether its server and the folder answer, and which way of "
+        "listing it works. Saves a report and opens it (nothing is changed or sent)")
+    win.check_folders_button.pack(side="left")
     setting(b, win.root, "Local network access", LOCAL_NETWORK_TEXT, win.local_network, win._local_network_changed)
 
     caption(b, "Help")

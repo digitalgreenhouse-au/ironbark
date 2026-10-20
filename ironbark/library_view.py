@@ -178,6 +178,8 @@ def empty_text(place: str, why: str) -> str:
         return f"No music found in {place}"
     if why.startswith("Can't see"):
         why += " (is its drive connected? A network drive may need opening once in File Explorer)"
+    if why.startswith("Can't read"):   # (Settings → Library → Check folders… says what does and doesn't work)
+        return f"{why}. Press F5 to look again; Settings → Library → Check folders… tells more"
     return f"{why}: press F5 to look again"
 
 

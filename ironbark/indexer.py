@@ -65,7 +65,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wai
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import audiofile, library_db, platforms
+from . import audiofile, library_db, netcheck, platforms
 from .library import Track, is_music_name, skip_folder
 from .library_db import (
     FileState,
@@ -87,6 +87,7 @@ ALBUMS_EVERY_S = 0.5     # AlbumsChanged events at most this often while a look 
 _IN_FLIGHT = 2           # folders handed to each worker at a time (more would only wait, and delay a cancel)
 POOL_STALL_S = 90.0      # worker processes that answer nothing for this long are given up: read here instead
 ROOT_TRIES = 3           # a library folder that can't be listed is tried this often (a network share can fail once)
+WALK_ERRORS_LOGGED = 3   # of the folders inside a library folder that couldn't be listed, the log names this many
 ROOT_RETRY_S = 1.0       # seconds between those tries
 
 
@@ -542,8 +543,17 @@ class Indexer:
             if root in unlisted:
                 why = f"Can't read the library folder {root}"
                 error = self._root_error
-                log.warning("library look: %s: %r", why, error)
-                return f"{why} ({error_text(error)})" if error is not None else why
+                log.warning("library look: %s: %r%s", why, error, f" — {netcheck.meaning(error)}" if error else "")
+                if error is None:
+                    return why
+                said = netcheck.meaning(error)
+                return f"{why} ({error_text(error)})" + (f": {said}" if said else "")
+            if self._walk_errors:   # (folders inside it that couldn't be listed: said once, the first few)
+                log.warning("library look: %d folder(s) in %s couldn't be listed; the first: %s",
+                            len(unlisted), root, "; ".join(
+                                f"{folder}: {error_text(error)}" + (f" — {netcheck.meaning(error)}"
+                                                                    if netcheck.meaning(error) else "")
+                                for folder, error in self._walk_errors))
         else:
             listed, unlisted = _list_some(root, only), []
         if only is not None:   # (a quick look: only its own folders' stored files)
@@ -601,6 +611,7 @@ class Indexer:
         closed: set[str] = set()
         stack = [root]
         self._root_error = None
+        self._walk_errors: list[tuple[str, OSError]] = []
         while stack:
             if self._cancel.is_set():
                 raise _Cancelled
@@ -610,6 +621,8 @@ class Indexer:
             except OSError as error:
                 if folder == root:
                     self._root_error = error
+                elif len(self._walk_errors) < WALK_ERRORS_LOGGED:
+                    self._walk_errors.append((folder, error))
                 unlisted.append(folder)
                 if isinstance(error, PermissionError):
                     denied.add(folder)
