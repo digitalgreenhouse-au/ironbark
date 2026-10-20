@@ -1,0 +1,31 @@
+name: Debug a Windows test hang (temporary)
+
+# Temporary, on this branch only: the full Windows suite hung in
+# test_release_windows.py::test_enter_or_down_straight_after_typing_a_song_search_acts_once_the_songs_are_here
+# with too many threads for the stack dump to reach the main thread. A few files on their own, a
+# short hang timeout and every thread's stack say where it waits.
+
+on:
+  push:
+    branches: [claude/intelligent-ritchie-styfer]
+    paths: [.github/workflows/debug-hang.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  hang:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        tests:
+          - tests/test_release_windows.py
+          - tests/test_release_widgets.py tests/test_release_windows.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
+      - run: uv sync --locked
+      - name: Run the tests (a test still running after 2 minutes prints every thread's stack)
+        run: uv run pytest -v -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true ${{ matrix.tests }}
