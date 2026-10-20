@@ -4,6 +4,12 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.51.4 — 20/10/2026
+
+- A library folder that can't be listed (a network share waking up or reconnecting) is tried again,
+  three times, before the look gives up; when it still can't be, the Library says what Windows
+  said, with its error number, and the log has it too.
+
 ## 0.51.3 — 20/10/2026
 
 - When the Library can't look at a library folder (its drive unplugged, or a network drive not

@@ -162,6 +162,37 @@ def test_a_rebuild_forgets_nothing_while_a_library_folder_cant_be_seen(tmp_path,
     assert not diff.error and sorted(rows(db)) == sorted(before)
 
 
+def test_a_library_folder_that_cant_be_listed_is_tried_again_and_the_systems_words_are_said(
+        tmp_path, db, monkeypatch):
+    """A network share's library folder can fail to list once (waking up, reconnecting): it's tried
+    again before the look gives up; when it still can't be, the diff says what the system said."""
+    from ironbark import indexer
+
+    root = tree(tmp_path / "Music", {"A": 2})
+    monkeypatch.setattr(indexer, "ROOT_RETRY_S", 0.01)
+    real = indexer._list
+    fails = {"left": 2}
+
+    def flaky(folder):
+        if folder == str(root) and fails["left"]:
+            fails["left"] -= 1
+            error = OSError(64, "The specified network name is no longer available")
+            error.winerror = 64
+            raise error
+        return real(folder)
+
+    monkeypatch.setattr(indexer, "_list", flaky)
+    look = Indexer(db, reader=Reader())
+    diff = look.check([root])
+    assert not diff.error and len(rows(db)) == 2 and fails["left"] == 0
+    fails["left"] = indexer.ROOT_TRIES
+    diff = look.check([root])
+    assert diff.error == (f"Can't read the library folder {root} "
+                          "(The specified network name is no longer available, error 64)")
+    assert len(rows(db)) == 2                       # (nothing stored for it changes)
+    assert indexer.error_text(PermissionError(13, "Access is denied")) == "Access is denied, error 13"
+
+
 def test_a_first_look_and_a_rebuild_say_so_while_they_run_and_a_routine_look_doesnt(tmp_path, db):
     """The player says how far a first look (or a rebuild) has got wherever it is
     (library_index.building); a routine look for changes is quick and says nothing."""

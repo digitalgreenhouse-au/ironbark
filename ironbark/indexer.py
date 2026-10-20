@@ -86,6 +86,8 @@ PROGRESS_EVERY_S = 0.25  # Progress events at most this often
 ALBUMS_EVERY_S = 0.5     # AlbumsChanged events at most this often while a look stores folders
 _IN_FLIGHT = 2           # folders handed to each worker at a time (more would only wait, and delay a cancel)
 POOL_STALL_S = 90.0      # worker processes that answer nothing for this long are given up: read here instead
+ROOT_TRIES = 3           # a library folder that can't be listed is tried this often (a network share can fail once)
+ROOT_RETRY_S = 1.0       # seconds between those tries
 
 
 def fast_workers() -> int:
@@ -304,6 +306,7 @@ class Indexer:
         self._sent_albums = 0.0
         self._read = (0, 0)               # (files read, files to read) by the look under way
         self._clock = 0.0                 # the last time handed out by _now
+        self._root_error: OSError | None = None   # why the library folder being walked couldn't be listed
 
     # -- listeners and control --
     def listen(self) -> queue.SimpleQueue:
@@ -537,7 +540,10 @@ class Indexer:
             log.info("library look: %d folders listed in %s (%d couldn't be, %.1f s so far)", len(listed), root,
                      len(unlisted), time.time() - started)
             if root in unlisted:
-                return f"Can't read the library folder {root}"
+                why = f"Can't read the library folder {root}"
+                error = self._root_error
+                log.warning("library look: %s: %r", why, error)
+                return f"{why} ({error_text(error)})" if error is not None else why
         else:
             listed, unlisted = _list_some(root, only), []
         if only is not None:   # (a quick look: only its own folders' stored files)
@@ -594,13 +600,16 @@ class Indexer:
         denied: set[str] = set()
         closed: set[str] = set()
         stack = [root]
+        self._root_error = None
         while stack:
             if self._cancel.is_set():
                 raise _Cancelled
             folder = stack.pop()
             try:
-                listing, sig, unknown, subfolders = _list(folder)
+                listing, sig, unknown, subfolders = self._list_root(folder) if folder == root else _list(folder)
             except OSError as error:
+                if folder == root:
+                    self._root_error = error
                 unlisted.append(folder)
                 if isinstance(error, PermissionError):
                     denied.add(folder)
@@ -611,6 +620,20 @@ class Indexer:
             stack += sorted(subfolders, key=str.lower, reverse=True)
             self._set_progress(Progress("looking", len(listed), 0, folder, started))
         return listed, unlisted, denied, closed
+
+    def _list_root(self, root: str):
+        """A library folder's own listing, as _list; tried ROOT_TRIES times before its OSError is
+        given up to (a network share can fail once, waking up or reconnecting)."""
+        for tried in range(1, ROOT_TRIES + 1):
+            try:
+                return _list(root)
+            except OSError as error:
+                if tried == ROOT_TRIES or isinstance(error, PermissionError):
+                    raise
+                log.info("library look: couldn't list %s (%r): trying again", root, error)
+                if self._cancel.wait(ROOT_RETRY_S):
+                    raise _Cancelled from error
+        raise AssertionError("unreachable")
 
     def _compare(self, root: str, folder: str, listing: dict, cue_sig: str, unknown: set[str],
                  state: FolderState | None, files: dict[str, FileState], held_cue_tracks: bool,
@@ -877,6 +900,14 @@ def _same_music(root: str, samples: list[tuple[str, int, int]]) -> bool:
             continue
         found += st.st_size == size and abs(st.st_mtime_ns - mtime) <= 2_000_000_000
     return found * 4 >= len(samples) * 3
+
+
+def error_text(error: OSError) -> str:
+    """What the system said about a file or folder it wouldn't open, in its own words, with its
+    number (Windows' error code where there is one: what to look up)."""
+    words = (error.strerror or str(error) or type(error).__name__).rstrip(". ")
+    code = getattr(error, "winerror", None) or error.errno
+    return f"{words}, error {code}" if code else words
 
 
 def _cant_open(error: OSError) -> bool:
