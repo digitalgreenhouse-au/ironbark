@@ -171,6 +171,16 @@ def unsearched_note(folders: list[Path], prefs: dict | None) -> str:
     return f"Not searched: {names} — on your network, and Local network access is off (Settings → Library)"
 
 
+def empty_text(place: str, why: str) -> str:
+    """The status line of a Library with no albums: why its folders couldn't be looked at (the
+    look's error: the folder or its drive can't be seen, say), else that no music was found."""
+    if not why:
+        return f"No music found in {place}"
+    if why.startswith("Can't see"):
+        why += " (is its drive connected? A network drive may need opening once in File Explorer)"
+    return f"{why}: press F5 to look again"
+
+
 def added_text(seconds: float) -> str:
     """When an album arrived, Australian style: 04/10/2026."""
     return time.strftime("%d/%m/%Y", time.localtime(seconds)) if seconds > 0 else ""
@@ -527,6 +537,7 @@ class LibraryView:
         self._albums_took = 0.0                # how long the last album list took to read (_filling)
         self._loading = True                   # no album list yet
         self._problem = ""                     # the album list couldn't be read
+        self._look_error = ""                  # why this window's last look at the folders failed
         self._tick_job = None
         self._status_text = ""
         # The song views: what's wanted, what's here (see _want_songs).
@@ -779,6 +790,7 @@ class LibraryView:
             job = self._refresh
             if job is not None and job.get("final") == answer.ask:
                 self._refresh = None   # the refresh's albums are on show: it's finished
+                self._look_error = f"Couldn't look through the library: {job['error']}" if job.get("error") else ""
                 self._songs_have = None   # (a song view read before it ended is read again)
             if self._again:
                 self._ask_albums()
@@ -850,8 +862,8 @@ class LibraryView:
                 "from scratch, so anything that's no longer there leaves the Library.",
                 detail=("Your music files aren't touched, and your plays, favourites and quality checks are "
                         "kept. Recently added dates start again from when each file was made. A big library "
-                        "takes a while to read; you can keep listening meanwhile. A folder that can't be seen "
-                        "just now (a drive unplugged) comes back when it's next looked at."),
+                        "takes a while to read; you can keep listening meanwhile. While a library folder can't "
+                        "be seen (its drive unplugged or asleep), nothing is forgotten."),
                 ok="Rebuild", cancel="Keep it", danger=True):
             return
         if self._refresh is not None:   # (a rescan under way is stopped: the rebuild waits for it)
@@ -1571,7 +1583,8 @@ class LibraryView:
         elif self._loading and not total:
             text = "Opening the library…"
         elif not total:
-            text = f"No music found in {place}"
+            last = self.index.last_diff
+            text = empty_text(place, self._look_error or (last.error if last is not None else ""))
         elif self.view in SONG_VIEWS:
             text = self._song_count_text()
         else:

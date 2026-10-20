@@ -447,12 +447,14 @@ clipping guard on one song).
 **Music is missing from the Library.** Check its folder is listed in Settings → Library (add it
 with **Add folder…**), then press **F5** in the Library. If a whole drive's music has gone quiet,
 the drive is probably unplugged or asleep: its albums come back when it does. A folder Windows can't
-open is named in the Library's status line.
+open is named in the Library's status line. If the Library is empty and says it **can't see the library
+folder**, its drive isn't there just now: plug it in, or for a network drive open it once in File
+Explorer so Windows connects it again, then press **F5**.
 
 **The Library still shows a folder you deleted.** Press **F5** in the Library first. If it's still
 there (say the folder was a whole library folder, or its drive is gone for good), use
 **⋯ → Rebuild the library…** in the Library: it reads your folders again from scratch, keeping your
-plays and favourites. To stop Ironbark reading a folder at all, take it out in Settings → Library
+plays and favourites (while a library folder can't be seen, it forgets nothing and says so). To stop Ironbark reading a folder at all, take it out in Settings → Library
 (**Remove**, or **Change…** when it's the only one).
 
 **A playlist says "file not found".** The song was moved, renamed or is on a drive that isn't

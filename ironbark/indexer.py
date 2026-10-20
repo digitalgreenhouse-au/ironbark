@@ -375,8 +375,9 @@ class Indexer:
         next whole look. `json_index`: an old library_index.json to bring across before a library
         folder's first look. `dry`: only compare, nothing read or stored (`changes`). `fresh`:
         forget everything stored first (LibraryDB.clear: plays, favourites and checks stay), then
-        read the folders as on their first look — nothing gone is kept, not even the music of a
-        folder that can't be seen just now. A folder inside another library folder is left out
+        read the folders as on their first look — nothing gone is kept. Not while a library folder
+        can't be seen (its drive unplugged, or a network drive asleep): then nothing is forgotten,
+        and the diff's `error` says which. A folder inside another library folder is left out
         (library_db.outermost); no folders at all changes nothing."""
         roots = [str(r) for r in outermost(roots)]
         only = None if folders is None else {os.fspath(f) for f in folders}
@@ -393,11 +394,18 @@ class Indexer:
                 if not dry:   # (said wherever the player is: loadprogress.library_text, library_index.building)
                     self.building = "rebuild" if fresh else (
                         "build" if any(not self.db.built(root) for root in self._as_stored(roots)) else "")
-                if fresh and not dry:
+                unseen = [root for root in roots if not os.path.isdir(root)] if fresh and not dry else []
+                for root in unseen:   # (a drive unplugged or asleep: forgetting now would empty the Library)
+                    why = f"Can't see the library folder {root}"
+                    log.warning("library rebuild: %s, so nothing was forgotten", why)
+                    diff.error = f"{diff.error}; {why}" if diff.error else why
+                    self._send(Unreachable(root, why))
+                if fresh and not dry and not unseen:
                     self.db.clear()
                     json_index = None   # (the old JSON index would bring back what was just forgotten)
                     self._albums_changed(everything=True)
-                self._check(roots, hold, only, json_index, dry, started, diff)
+                if not unseen:
+                    self._check(roots, hold, only, json_index, dry, started, diff)
             except _Cancelled:
                 diff.cancelled = True
             except Exception as error:   # (a full disk, a damaged file): said, and the next look tries again
@@ -431,6 +439,7 @@ class Indexer:
             plan = _Root(root)
             why = self._plan(plan, hold, only, diff, started, json_index, dry)
             if why:
+                log.warning("library look: %s", why)
                 diff.error = f"{diff.error}; {why}" if diff.error else why
                 self._send(Unreachable(root, why))
                 continue

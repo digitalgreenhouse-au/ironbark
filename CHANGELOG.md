@@ -4,6 +4,13 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.51.3 — 20/10/2026
+
+- When the Library can't look at a library folder (its drive unplugged, or a network drive not
+  connected), an empty Library says so, and what to do, instead of "No music found".
+- **Rebuild the library** forgets nothing while a library folder can't be seen: it used to empty
+  the Library, with nothing there to read back. It says which folder, and works once the drive is back.
+
 ## 0.51.2 — 20/10/2026
 
 Downloads for Windows, macOS (Apple silicon) and Linux, all built by the release workflow from this version.

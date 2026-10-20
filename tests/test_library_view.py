@@ -14,7 +14,7 @@ import soundfile as sf
 from ironbark import library_index, settings, theme
 from ironbark.engine import Player
 from ironbark.library import Track
-from ironbark.library_view import LibraryView, added_text
+from ironbark.library_view import LibraryView, added_text, empty_text
 from ironbark.playlist_view import PlaylistView
 from ironbark.tabbar import MenuRow, Popover
 from ironbark.tagio.flac import FLACFile
@@ -192,6 +192,24 @@ def test_rebuild_the_library_forgets_a_folder_that_has_gone(root, music, monkeyp
     assert column(w, "album") == ["Blue"]
     assert w.index.db.play_counts([key]) == {key: 1}
     w.close()
+
+
+def test_an_empty_library_says_why_its_folder_couldnt_be_looked_at(root, tmp_path, monkeypatch):
+    """A library folder that can't be seen (a drive unplugged, a network drive not connected) isn't
+    "No music found": the status line says so, and what to do."""
+    monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
+    gone = tmp_path / "Y" / "MUSIC"
+    w = LibraryView(root, [gone], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    wait_for_albums(w, root)
+    w._paint_status()
+    text = w._status_text
+    assert text.startswith(f"Can't see the library folder {gone}") and "No music found" not in text
+    assert "is its drive connected?" in text and text.endswith("press F5 to look again")
+    w.close()
+    assert empty_text("D:\\Music", "") == "No music found in D:\\Music"
+    assert empty_text("D:\\Music", "A different drive is at D:\\Music") == \
+        "A different drive is at D:\\Music: press F5 to look again"
 
 
 def test_a_first_look_fills_the_album_list_as_it_goes(root, music, monkeypatch):

@@ -140,6 +140,28 @@ def test_a_fresh_look_forgets_what_a_normal_one_keeps_and_reads_everything_again
     assert any(isinstance(e, AlbumsChanged) and not e.album_ids for e in drain(events))
 
 
+def test_a_rebuild_forgets_nothing_while_a_library_folder_cant_be_seen(tmp_path, db):
+    """Rebuild the library with a drive unplugged, or a network drive asleep: forgetting then would
+    leave the Library empty, with nothing there to read back. Nothing is forgotten, and the diff
+    says which folder can't be seen."""
+    music = tree(tmp_path / "Music", {"A": 2})
+    other = tree(tmp_path / "Other", {"B": 2})
+    look = Indexer(db, reader=Reader())
+    events = look.listen()
+    look.check([music, other])
+    before = rows(db)
+    away = tmp_path / "Away"
+    other.rename(away)
+    drain(events)
+    diff = look.check([music, other], fresh=True)
+    assert diff.error == f"Can't see the library folder {other}" and rows(db) == before
+    assert db.built(music) and db.built(other) and look.building == ""
+    assert any(isinstance(e, Unreachable) and e.root == str(other) for e in drain(events))
+    away.rename(other)                            # back: the rebuild goes ahead
+    diff = look.check([music, other], fresh=True)
+    assert not diff.error and sorted(rows(db)) == sorted(before)
+
+
 def test_a_first_look_and_a_rebuild_say_so_while_they_run_and_a_routine_look_doesnt(tmp_path, db):
     """The player says how far a first look (or a rebuild) has got wherever it is
     (library_index.building); a routine look for changes is quick and says nothing."""
