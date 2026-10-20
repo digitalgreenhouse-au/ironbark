@@ -10,10 +10,13 @@ bottom of Settings. Dates are dd/mm/yyyy. Newest first.
   everything it has stored about your music and reads your library folders again from scratch, so
   a folder you deleted, moved or emptied no longer shows. Your music files aren't touched, and
   plays, favourites and quality checks are kept. It asks first.
-- **Building a big library shows its progress.** While the library is first read (a big drive can
-  take many minutes), the Library tab and the Library say how far it has got: folders looked
-  through, then songs read with a percentage, and the time so far. The Library's albums fill in
-  every few seconds as they're read, instead of all at the end.
+- **Building a big library shows its progress.** While a library folder is first read (or the
+  library rebuilt) — many minutes, or hours, for a very large drive — the status line says how far
+  it has got, whichever tab is on show: folders looked through, then songs read with a
+  percentage, the time so far and, once it's well under way, about how long is left. It never
+  hides anything else the line has to say. The Library's albums fill in every few seconds as
+  they're read, instead of all at the end (less often for a very large library, so it doesn't slow
+  the reading).
 - Fixed: a library's first read could wait for ever, with nothing moving, if the helper
   processes that read the tags never started (seen on Windows 10). After 90 seconds without an
   answer they're given up and the reading carries on in the player itself. With Detailed logging

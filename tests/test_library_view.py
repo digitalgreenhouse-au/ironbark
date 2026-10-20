@@ -239,6 +239,28 @@ def test_the_status_line_wraps_once_per_width_for_each_text(root, music, monkeyp
     w.close()
 
 
+def test_a_slow_album_list_is_read_again_less_often(root, music, monkeypatch):
+    """A very big library's album list takes a while to read: during a first look it's read again
+    no more than every FILL_EVERY_S, and less often still when it's slow (at most FILL_SHARE of the time)."""
+    from ironbark import library_view
+
+    w = LibraryView(root, [music], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    wait_for_albums(w, root)
+    asked = []
+    monkeypatch.setattr(w, "_ask_albums", lambda: asked.append(1))
+    w._albums_took = 2.0                           # (2 s to read: every 8 s at most)
+    job = {"first": True}
+    w._filling(job)
+    job["filled"] -= library_view.FILL_EVERY_S + 0.1
+    w._filling(job)
+    assert asked == [1]
+    job["filled"] -= 2.0 / library_view.FILL_SHARE
+    w._filling(job)
+    assert asked == [1, 1]
+    w.close()
+
+
 def test_adding_a_folder_inside_or_around_the_library_folders():
     """(0.31) No album is ever listed twice: a folder inside a library folder is already in the
     library; one that holds library folders takes their place."""

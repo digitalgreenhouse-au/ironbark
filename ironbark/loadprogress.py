@@ -47,11 +47,28 @@ def elapsed_text(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
+ETA_AFTER_S = 20.0   # a look's reading says how long the rest will take once it has read this long…
+ETA_AFTER_SHARE = 0.01   # …and this much of it (the first files, and starting the workers, are slower)
+
+
+def left_text(seconds: float) -> str:
+    """How long something has left, roughly: "less than a minute left", "about 12 min left",
+    "about 1 h 20 min left"."""
+    minutes = round(seconds / 60)
+    if minutes < 1:
+        return "less than a minute left"
+    if minutes < 60:
+        return f"about {minutes} min left"
+    hours, minutes = divmod(minutes, 60)
+    return f"about {hours} h {minutes} min left" if minutes else f"about {hours} h left"
+
+
 def library_text(progress, now: float, what: str = "Building the library") -> str:
     """One line for where a library look has got (`progress`: an indexer.Progress), with the time
-    it has taken so far, so a big library's first look — minutes on a large drive — is plainly
+    it has taken so far — and, once the reading is well under way, about how long the rest will
+    take — so a big library's first look (minutes, or hours on a very large drive) is plainly
     still going: "Building the library: looking through your folders… 1,234 folders · 0:42",
-    "Building the library: reading songs… 5,000 of 80,000 (6%) · 3:10"."""
+    "Building the library: reading songs… 5,000 of 80,000 (6%) · 3:10 · about 45 min left"."""
     phase, done, total = progress.phase, progress.done, progress.total
     if phase == "looking":
         text = f"{what}: looking through your folders… {plural(done, 'folder')}" if done else \
@@ -67,6 +84,10 @@ def library_text(progress, now: float, what: str = "Building the library") -> st
         text = f"{what}…"
     if progress.started and phase:
         text += f" · {elapsed_text(now - progress.started)}"
+    reading_for = now - progress.since if progress.since else 0.0
+    if (phase == "reading" and 0 < done < total and reading_for >= ETA_AFTER_S
+            and done >= total * ETA_AFTER_SHARE):
+        text += f" · {left_text(reading_for / done * (total - done))}"
     return text
 
 

@@ -1833,6 +1833,17 @@ class PlayerWindow:
 
         start()
 
+    def _building_line(self) -> str:
+        """While a library folder's first look (or a rebuild) is under way — many minutes for a big
+        library — the status line says how far it has got whichever tab is on show, when it has
+        nothing else to say (loadprogress.library_text). From memory only: safe every poll."""
+        found = library_index.building()
+        if found is None or not found[1].phase:
+            return ""
+        kind, progress = found
+        return loadprogress.library_text(progress, time.time(),
+                                         "Rebuilding the library" if kind == "rebuild" else "Building the library")
+
     def _say_loading(self, tab: Tab, progress: dict):
         """A tab's worker says how far its load has got (on Tk's thread, through the queue): the
         status line shows it until the load ends (loadprogress.py has the words) — while that tab is
@@ -5166,7 +5177,8 @@ class PlayerWindow:
         if not self.seek.dragging:
             self._show_times(position, duration)
         self._paint_undo_link()
-        line = self._notice or status.message or network_text or self._sleep_line(status) or elsewhere
+        line = (self._notice or status.message or network_text or self._sleep_line(status) or elsewhere
+                or self._building_line())
         self._show_status(line)
         # The pause / play button goes with the "in another tab" line, and only that line.
         self.elsewhere_button.show(bool(elsewhere) and line == elsewhere and not self.mini_mode,

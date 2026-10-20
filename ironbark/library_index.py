@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import audiofile, library_db, settings
-from .indexer import Diff, Indexer
+from .indexer import Diff, Indexer, Progress
 from .library import Album, Track, read_track
 from .library_db import LibraryDB, track_from_dict  # noqa: F401
 
@@ -283,6 +283,18 @@ class LibraryIndex:
 
 _shared: LibraryIndex | None = None
 _shared_lock = threading.Lock()
+
+
+def building() -> tuple[str, Progress] | None:
+    """A first look ("build") or a rebuild ("rebuild") under way, and how far it has got — or None.
+    Read from memory, nothing from the database: safe on Tk's thread, every poll. (A routine look
+    for changes isn't one: it's quick, and nothing needs saying.)"""
+    opened = _open
+    if opened is None:
+        return None
+    indexer = opened[2]
+    kind = indexer.building
+    return (kind, indexer.progress) if kind else None
 
 
 def shared(root: str | Path | Iterable[str | Path]) -> LibraryIndex:

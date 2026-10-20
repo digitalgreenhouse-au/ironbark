@@ -127,3 +127,27 @@ def test_a_tab_still_loading_speaks_on_the_status_line_only_while_it_is_on_show(
     window._loading_notice_follows(loading, window.tabs[0])       # left: the line is the other tab's again
     window.current = 0
     assert window._notice == ""
+
+
+def test_a_first_look_says_how_far_it_has_got_on_any_tab_when_the_line_is_free(make_window, monkeypatch):
+    """Adding a big folder (Settings → Library) starts a first look that can take a long time: the
+    status line says how far it has got on whatever tab is on show, below anything else it has to say."""
+    import time
+
+    from ironbark import library_index
+    from ironbark.indexer import Progress
+
+    window, root, player, errors = make_window()
+    assert window._building_line() == ""                          # (nothing under way)
+    now = time.time()
+    monkeypatch.setattr(library_index, "building",
+                        lambda: ("build", Progress("reading", 5, 80, "", now - 3, now - 1)))
+    assert window._building_line().startswith("Building the library: reading songs… 5 of 80 files (6%) · 0:0")
+    monkeypatch.setattr(library_index, "building", lambda: ("rebuild", Progress("looking", 12, 0, "", now)))
+    assert window._building_line().startswith("Rebuilding the library: looking through your folders… 12 folders")
+    window._set_notice("Something to say", 0)
+    window._refresh_view()
+    assert window._status_text == "Something to say"                     # (anything else comes first)
+    window._set_notice("", 0)
+    window._refresh_view()
+    assert window._status_text.startswith("Rebuilding the library: looking through your folders… 12 folders")

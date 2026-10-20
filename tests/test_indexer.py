@@ -140,6 +140,23 @@ def test_a_fresh_look_forgets_what_a_normal_one_keeps_and_reads_everything_again
     assert any(isinstance(e, AlbumsChanged) and not e.album_ids for e in drain(events))
 
 
+def test_a_first_look_and_a_rebuild_say_so_while_they_run_and_a_routine_look_doesnt(tmp_path, db):
+    """The player says how far a first look (or a rebuild) has got wherever it is
+    (library_index.building); a routine look for changes is quick and says nothing."""
+    root = tree(tmp_path / "Music", {"A": 2})
+    seen = []
+    look = Indexer(db, reader=Reader(then=lambda reader: seen.append(look.building)))
+    look.check([root])
+    assert seen and set(seen) == {"build"} and look.building == ""
+    seen.clear()
+    (root / "A" / "03.flac").write_bytes(b"xyz")
+    look.check([root])
+    assert seen and set(seen) == {""}
+    seen.clear()
+    look.check([root], fresh=True)
+    assert seen and set(seen) == {"rebuild"} and look.building == ""
+
+
 def test_a_folder_that_cant_be_listed_keeps_everything_and_a_vanished_one_comes_back_with_its_dates(
         tmp_path, db, monkeypatch):
     root = tree(tmp_path / "Music", {"A": 2, "B": 2})

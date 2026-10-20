@@ -144,6 +144,7 @@ class Progress:
     total: int = 0
     folder: str = ""         # the folder in hand
     started: float = 0.0     # when the look began (seconds since 1970)
+    since: float = 0.0       # when its reading began (for how long the rest will take)
 
 
 @dataclass(frozen=True)
@@ -290,6 +291,7 @@ class Indexer:
         self.last_diff: Diff | None = None
         self.looked = 0.0                 # when a look last finished (this session)
         self.used_pool = False            # the last look read in worker processes
+        self.building = ""                # the look under way is a first look ("build") or a rebuild ("rebuild")
         self._lock = threading.Lock()     # one look (or update) at a time
         self._cancel = threading.Event()
         self._priority: deque[str] = deque()
@@ -388,6 +390,9 @@ class Indexer:
             diff = Diff()
             self._read = (0, 0)
             try:
+                if not dry:   # (said wherever the player is: loadprogress.library_text, library_index.building)
+                    self.building = "rebuild" if fresh else (
+                        "build" if any(not self.db.built(root) for root in self._as_stored(roots)) else "")
                 if fresh and not dry:
                     self.db.clear()
                     json_index = None   # (the old JSON index would bring back what was just forgotten)
@@ -402,6 +407,7 @@ class Indexer:
                 diff.error = f"{diff.error}; {text}" if diff.error else text
             finally:
                 if not dry:
+                    self.building = ""
                     self._albums_changed(force=True)
                 self._set_progress(Progress("", *self._read))   # (idle: what the look read)
             diff.sort()
@@ -685,7 +691,8 @@ class Indexer:
             self._check_cancel()
             self._apply(folder_result(job.root, job.folder, job.listing, {}, cue_sig=job.cue_sig,
                                       listed_ok=job.listed_ok), job, diff)
-        self._set_progress(Progress("reading", 0, total, "", started), force=True)
+        since = time.time()
+        self._set_progress(Progress("reading", 0, total, "", started, since), force=True)
         log.info("library look: %d files to read in %d folders (%.1f s so far)", total, len(reads),
                  time.time() - started)
         pool = self.pool_factory(workers) if reads and total >= self.pool_min else None
@@ -729,7 +736,7 @@ class Indexer:
                 self._apply(result, job, diff)
                 done += job.files
                 self._read = (done, total)
-                self._set_progress(Progress("reading", done, total, job.folder, started))
+                self._set_progress(Progress("reading", done, total, job.folder, started, since))
         finally:
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)

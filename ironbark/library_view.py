@@ -124,7 +124,8 @@ NARROW_ALBUM_COLUMNS = ("album", "year")   # (the artist rides in the album's na
 # The sort each song view starts with ("": the order the list came in — newest favourite first).
 SONG_SORT = {"songs": ("title", False), "most_played": ("plays", True), "recently_played": ("added", True),
              "favourites": ("", False), "needs_look": ("found", False)}
-FILL_EVERY_S = 3.0       # during a first look (or a rebuild) the album list is read again this often, as it fills
+FILL_EVERY_S = 3.0       # during a first look (or a rebuild) the album list is read again this often, as it fills…
+FILL_SHARE = 0.25        # …or less often, so reading it takes at most this share of the time (a very big library)
 CHECK_REREAD_S = 3.0     # Needs a look reads the check's new results at most this often while it runs
 SONG_LIMIT = 1000        # songs the Songs view's search lists (the best ones; the status says how many match)
 PLAYED_LIMIT = 500       # songs Most played / Recently played list
@@ -522,6 +523,8 @@ class LibraryView:
         self._events: queue.SimpleQueue = self.index.listen()
         self._asked: int | None = None         # the album list asked for and not yet here
         self._again = False                    # albums changed while it was on its way: ask again after
+        self._asked_at = 0.0                   # when it was asked for
+        self._albums_took = 0.0                # how long the last album list took to read (_filling)
         self._loading = True                   # no album list yet
         self._problem = ""                     # the album list couldn't be read
         self._tick_job = None
@@ -710,6 +713,7 @@ class LibraryView:
     def _ask_albums(self) -> int:
         """Ask the query thread for the album list (the newest ask is the one shown)."""
         self._asked = self._queries.ask("albums", _library_albums, self.index)
+        self._asked_at = time.monotonic()
         self._again = False
         return self._asked
 
@@ -762,6 +766,7 @@ class LibraryView:
                 continue   # one replaced by a newer ask
             news = True
             self._asked = None
+            self._albums_took = time.monotonic() - self._asked_at   # (a first look reads it less often if it's slow)
             first, self._loading = self._loading, False
             if answer.error is None:
                 self._problem = ""
@@ -799,7 +804,8 @@ class LibraryView:
             return
         job["filling"] = True
         now = time.monotonic()
-        if now - job.get("filled", 0.0) >= FILL_EVERY_S and self._asked is None:
+        every = max(FILL_EVERY_S, self._albums_took / FILL_SHARE)
+        if now - job.get("filled", 0.0) >= every and self._asked is None:
             job["filled"] = now
             self._ask_albums()
 
