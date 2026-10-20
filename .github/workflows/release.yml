@@ -18,6 +18,17 @@ on:
         description: "Skip the tests (a build to try out)"
         type: boolean
         default: false
+      prerelease:
+        # A test build anyone can download without signing in: published as a GitHub pre-release
+        # (never "latest", so the README's download link still means the last real release), under
+        # this tag. Not "v…": that would start a tag build of its own.
+        description: "Publish as a public pre-release with this tag (e.g. test-2026-10-20); empty: none"
+        type: string
+        default: ""
+      prerelease_notes:
+        description: "What the pre-release is for (its notes)"
+        type: string
+        default: "A test build, not a release."
 
 permissions:
   contents: read
@@ -74,3 +85,27 @@ jobs:
             dist/windows/Ironbark-*-windows-portable.zip
             dist/windows/SHA256SUMS.txt
           if-no-files-found: error
+
+  publish:
+    name: Publish the test build (pre-release)
+    needs: windows
+    if: github.event_name == 'workflow_dispatch' && inputs.prerelease != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # (the release)
+      actions: read     # (the build's files, from this run)
+    steps:
+      - name: The build's files as a public pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ inputs.prerelease }}
+          NOTES: ${{ inputs.prerelease_notes }}
+        run: |
+          case "$TAG" in v*) echo "A tag starting with v would start a release build of its own"; exit 1;; esac
+          gh run download "$RUN" -R "$REPO" -n ironbark-windows -D dist
+          ls -l dist
+          gh release create "$TAG" dist/* -R "$REPO" --prerelease --target "$SHA" \
+            --title "Ironbark test build $TAG (not a release)" --notes "$NOTES"
