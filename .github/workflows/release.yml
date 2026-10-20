@@ -19,14 +19,16 @@ on:
         type: boolean
         default: false
       prerelease:
-        # A test build anyone can download without signing in: published as a GitHub pre-release
-        # (never "latest", so the README's download link still means the last real release), under
-        # this tag. Not "v…": that would start a tag build of its own.
-        description: "Publish as a public pre-release with this tag (e.g. test-2026-10-20); empty: none"
+        # Anyone can download a GitHub release without signing in (an Actions artifact needs a
+        # sign-in). "v" + this version (v0.51.2): a release of the Windows download, not marked
+        # "latest" (the README's link keeps the release that has every platform's downloads). Any
+        # other tag (test-2026-10-20): a pre-release, a test build. (A tag made here never starts a
+        # tag build of its own: GitHub doesn't start workflows for the workflow token's tags.)
+        description: "Publish the build under this tag: v + this version = a release, else a test pre-release"
         type: string
         default: ""
       prerelease_notes:
-        description: "What the pre-release is for (its notes)"
+        description: "The release's notes"
         type: string
         default: "A test build, not a release."
 
@@ -104,8 +106,16 @@ jobs:
           TAG: ${{ inputs.prerelease }}
           NOTES: ${{ inputs.prerelease_notes }}
         run: |
-          case "$TAG" in v*) echo "A tag starting with v would start a release build of its own"; exit 1;; esac
           gh run download "$RUN" -R "$REPO" -n ironbark-windows -D dist
           ls -l dist
-          gh release create "$TAG" dist/* -R "$REPO" --prerelease --target "$SHA" \
-            --title "Ironbark test build $TAG (not a release)" --notes "$NOTES"
+          version=$(gh api "repos/$REPO/contents/ironbark/__init__.py?ref=$SHA" -H "Accept: application/vnd.github.raw" |
+                    sed -n 's/^__version__ = "\(.*\)"/\1/p')
+          case "$TAG" in
+            v*)
+              if [ "$TAG" != "v$version" ]; then echo "The tag $TAG isn't this build's version ($version)"; exit 1; fi
+              gh release create "$TAG" dist/* -R "$REPO" --target "$SHA" --latest=false \
+                --title "Ironbark $version (experimental)" --notes "$NOTES";;
+            *)
+              gh release create "$TAG" dist/* -R "$REPO" --prerelease --target "$SHA" \
+                --title "Ironbark test build $TAG (not a release)" --notes "$NOTES";;
+          esac
