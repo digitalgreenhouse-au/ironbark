@@ -1666,10 +1666,12 @@ class PlayerWindow:
             self.playlist.set_picking(None)
         if index != self.current and self.playlist.searching and not self.playlist.whole_library:
             self.playlist.query.set("")  # a search belongs to the tab it was typed in (not the whole library's)
-        if 0 <= self.current < len(self.tabs) and not self.tabs[self.current].main and self.tabs[index].main:
-            self._before_main = self.tabs[self.current]   # (the Library's "Add to tab" adds to it)
+        before = self.tabs[self.current] if 0 <= self.current < len(self.tabs) else None
+        if before is not None and not before.main and self.tabs[index].main:
+            self._before_main = before   # (the Library's "Add to tab" adds to it)
         self.current = index
         tab = self.tabs[index]
+        self._loading_notice_follows(before, tab)
         if tab.tracks is None:
             self._load_tab(tab, then_play)
         elif then_play:
@@ -1833,9 +1835,24 @@ class PlayerWindow:
 
     def _say_loading(self, tab: Tab, progress: dict):
         """A tab's worker says how far its load has got (on Tk's thread, through the queue): the
-        status line shows it until the load ends (loadprogress.py has the words)."""
-        if tab.load_progress is progress and progress["tracks"] is None and progress["text"]:
+        status line shows it until the load ends (loadprogress.py has the words) — while that tab is
+        on show. A load can take minutes (a big library's first look): meanwhile another tab's line
+        (what's playing elsewhere, say) isn't hidden by it."""
+        if (tab.load_progress is progress and progress["tracks"] is None and progress["text"]
+                and 0 <= self.current < len(self.tabs) and self.tabs[self.current] is tab):
             self._set_notice(progress["text"], 0)
+
+    def _loading_notice_follows(self, before: Tab | None, now: Tab):
+        """The tab on show changed: the status line's load progress follows it — the one left
+        takes its line away, the one shown (if it's still loading) puts its own up."""
+        if before is now:
+            return
+        left = before.load_progress if before is not None else None
+        if left is not None and left.get("text") and self._notice == left["text"]:
+            self._set_notice("", 0)
+        shown = now.load_progress
+        if shown is not None and shown.get("tracks") is None and shown.get("text"):
+            self._set_notice(shown["text"], 0)
 
     def _extra_tracks(self, extra: str) -> list[Track]:
         """The songs an extra stands for: an album folder's, a file, or one track of a CUE image
