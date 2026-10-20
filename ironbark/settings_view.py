@@ -419,6 +419,11 @@ def build_controls(win, view: SettingsView):
         "Why a library folder won't load: whether its server and the folder answer, and which way of "
         "listing it works. Saves a report and opens it (nothing is changed or sent)")
     win.check_folders_button.pack(side="left")
+    row = ttk.Frame(b, style="Pop.TFrame")
+    row.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
+    pop_button(row, "Rebuild the library…", win._rebuild_library,
+               "Start the library again: forget what's stored about your music and read its folders "
+               "from scratch (your music files, plays and favourites stay)").pack(side="left")
     setting(b, win.root, "Local network access", LOCAL_NETWORK_TEXT, win.local_network, win._local_network_changed)
 
     caption(b, "Help")

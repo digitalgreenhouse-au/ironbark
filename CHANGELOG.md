@@ -4,6 +4,16 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## Unreleased
+
+- Fixed: taking a folder out of the Library (Settings → Library → **Remove**) left its songs in the
+  Library tab, marked "(file not found)", although the files were still there. The Library tab now
+  follows the library: within a few seconds of a change (a folder taken out or added, a rebuild,
+  music added or gone) it lists what the library holds, keeping your place. A song that's playing
+  from a folder you take out isn't cut off: the tab updates once it has moved on.
+- **Rebuild the library…** is in Settings → Library too, under *Add folder…* and *Check folders…*: a fresh start for the
+  library, as in the Library's ⋯ menu.
+
 ## 0.52.1 — 21/10/2026
 
 - Fixed: with music on a network drive, a server that stopped answering mid-download could freeze

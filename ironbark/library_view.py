@@ -186,6 +186,21 @@ def empty_text(place: str, why: str) -> str:
     return f"{why}: press F5 to look again"
 
 
+def ask_rebuild(parent, roots: list[Path]) -> bool:
+    """Rebuild the library… (the Library's ⋯ menu, or Settings → Library): asked first, with what's
+    forgotten and what's kept. True: go ahead."""
+    place = str(roots[0]) if len(roots) == 1 else f"your {len(roots)} library folders"
+    return popups.confirm(
+        parent, "Rebuild the library?",
+        f"Ironbark forgets everything it has stored about your music and reads {place} again "
+        "from scratch, so anything that's no longer there leaves the Library.",
+        detail=("Your music files aren't touched, and your plays, favourites and quality checks are "
+                "kept. Recently added dates start again from when each file was made. A big library "
+                "takes a while to read; you can keep listening meanwhile. While a library folder can't "
+                "be seen (its drive unplugged or asleep), nothing is forgotten."),
+        ok="Rebuild", cancel="Keep it", danger=True)
+
+
 def added_text(seconds: float) -> str:
     """When an album arrived, Australian style: 04/10/2026."""
     return time.strftime("%d/%m/%Y", time.localtime(seconds)) if seconds > 0 else ""
@@ -872,16 +887,7 @@ class LibraryView:
         music that has gone (a folder deleted, moved or renamed)."""
         if self._refresh is not None and self._refresh.get("fresh"):
             return
-        place = str(self.root_folder) if len(self.roots) == 1 else f"your {len(self.roots)} library folders"
-        if not popups.confirm(
-                self.top, "Rebuild the library?",
-                f"Ironbark forgets everything it has stored about your music and reads {place} again "
-                "from scratch, so anything that's no longer there leaves the Library.",
-                detail=("Your music files aren't touched, and your plays, favourites and quality checks are "
-                        "kept. Recently added dates start again from when each file was made. A big library "
-                        "takes a while to read; you can keep listening meanwhile. While a library folder can't "
-                        "be seen (its drive unplugged or asleep), nothing is forgotten."),
-                ok="Rebuild", cancel="Keep it", danger=True):
+        if not ask_rebuild(self.top, self.roots):
             return
         if self._refresh is not None:   # (a rescan under way is stopped: the rebuild waits for it)
             self.index.indexer.cancel()
