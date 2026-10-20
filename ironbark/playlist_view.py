@@ -1171,6 +1171,27 @@ class PlaylistView:
                 songs.extend(listed)
         return sorted(set(songs))
 
+    def top_track(self) -> int | None:
+        """The first song listed at the top of the view (under its album's row): None when none is."""
+        listing, top = self._listing, self.list.top
+        for row in range(top, min(top + 2, len(listing.entries))):
+            found = listing.entry(row)
+            if isinstance(found, int) and found >= 0:
+                return found
+        return None
+
+    def show_tracks_at(self, top: int | None, selected: int | None):
+        """After the list was given more songs (set_tracks: a Library tab filling in as a first look
+        reads), put song `top` back at the top of the view, under its album's row, and select
+        `selected` again, so the list doesn't move under the user (-1 or None: no such song)."""
+        row = self._row_of(top) if top is not None and top >= 0 else None
+        if row is not None:
+            above = self._listing.entry(row - 1) if row > 0 else None
+            self.list.scroll_to(row - 1 if isinstance(above, int) and above < 0 else row)
+        row = self._row_of(selected) if selected is not None and selected >= 0 else None
+        if row is not None:
+            self.list.select(row, see=False, notify=False)
+
     def selected_track(self) -> int | None:
         """The selected song's index (None: nothing, or an album header, is selected); with several
         selected, the one the keyboard is on."""

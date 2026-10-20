@@ -14,9 +14,11 @@ bottom of Settings. Dates are dd/mm/yyyy. Newest first.
   library rebuilt) — many minutes, or hours, for a very large drive — the status line says how far
   it has got, whichever tab is on show: folders looked through, then songs read with a
   percentage, the time so far and, once it's well under way, about how long is left. It never
-  hides anything else the line has to say. The Library's albums fill in every few seconds as
-  they're read, instead of all at the end (less often for a very large library, so it doesn't slow
-  the reading).
+  hides anything else the line has to say. The Library tab no longer waits for the whole library:
+  it lists the songs read so far straight away and takes in more every few seconds, so you can play
+  them while the rest is read (what's playing carries on, and the list stays where you are). The
+  Library's albums fill in the same way (less often for a very large library, so it doesn't slow the
+  reading).
 - Fixed: a library's first read could wait for ever, with nothing moving, if the helper
   processes that read the tags never started (seen on Windows 10). After 90 seconds without an
   answer they're given up and the reading carries on in the player itself. With Detailed logging

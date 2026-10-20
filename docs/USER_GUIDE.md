@@ -42,8 +42,8 @@ The Library reads your folders once, in the background and at low priority, so t
 responsive while it works. After that it only looks at what has changed. A big drive's first read
 can take a while (hours for a very large library): the status line says how far it has got,
 whichever tab you're on — folders looked through, then songs read with a percentage, the time so
-far and about how long is left — and the Library's albums fill in as it goes, so you can browse and
-play them before it finishes. If Ironbark is closed part-way, the next start carries on from there. With **Watch for new
+far and about how long is left. The Library tab and the Library's albums fill in as it goes, so you
+can browse and play songs before it finishes; what's playing carries on as more arrive. If Ironbark is closed part-way, the next start carries on from there. With **Watch for new
 music** on (Settings → Library), albums you copy in later turn up by themselves, marked as new until
 you open them.
 

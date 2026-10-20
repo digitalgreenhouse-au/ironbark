@@ -195,6 +195,8 @@ SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: i
 QUIT_WAIT_MS = 30000  # longest closing waits for a tag save to stop after the file in hand
 MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big the cover wants to be
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
+GROW_EVERY_S = 5.0     # during a first look the Library tab takes in the songs read so far this often…
+GROW_SHARE = 0.25      # …or less often, so reading them takes at most this share of the time (a very big library)
 FAVOURITES_WAIT_S = 6.0  # longest closing waits for a ♥ to be stored (the database can be busy for 5 s)
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
@@ -484,6 +486,8 @@ class Tab:
     load_progress: dict | None = field(default=None, repr=False, compare=False)  # the load under way
     summary: tuple | None = field(default=None, repr=False, compare=False)  # (tracks, key, text) of the album line
     numbers: tuple | None = field(default=None, repr=False, compare=False)  # (tracks, count, (songs, albums, seconds))
+    growing: bool = field(default=False, repr=False, compare=False)  # the Library tab, filling in as a first look reads
+    grown: int = field(default=-1, repr=False, compare=False)        # …the database's generation it last took in
 
     def view_track(self) -> Track | None:
         """The track that represents this tab: the one it last played, else its first."""
@@ -1788,6 +1792,13 @@ class PlayerWindow:
                 elif tab.kind == "playlist":
                     tracks = self._read_playlist(root, allowed=lambda song: places.allowed(song, self.prefs))
                     progress["missing"] = sum(1 for t in tracks if t.missing)
+                elif tab.kind == "library" and root is None and not index.built:
+                    # The main Library tab during a first look: what's read so far, at once — the rest
+                    # is taken in as it's read (_grow), so songs can be played while it goes on.
+                    albums = index.albums()
+                    progress["growing"], progress["total"] = True, len(albums)
+                    tracks = self._library_tracks(albums, reporter)
+                    progress["done"] = len(albums)
                 elif tab.kind == "library":
                     albums = self._library_albums(root, reporter)
                     if tab.query:  # the same search as the Library window's
@@ -1832,6 +1843,70 @@ class PlayerWindow:
             self.work.run(work, lambda _done: self._finish_load(tab, progress), name="tab-load")
 
         start()
+
+    def _grow_later(self, tab: Tab, took: float = 0.0):
+        """Take in the songs a first look has read since, in a while: every GROW_EVERY_S, or less
+        often when reading them took long (a very big library), so it never slows the reading."""
+        delay = max(GROW_EVERY_S, took / GROW_SHARE)
+        self.root.after(int(delay * 1000), lambda: self._grow(tab))
+
+    def _grow(self, tab: Tab):
+        """The Library tab during a first look: the songs read so far, as a new list in its place,
+        keeping what's playing (it carries on), the song the tab is on, the top of the view and the
+        selected song. Read on a worker; it stops once the look has finished (one last time)."""
+        if tab not in self.tabs or tab.tracks is None or tab.loading or not tab.growing:
+            tab.growing = False
+            return
+        peek = getattr(tab.tracks, "peek", None)
+
+        def key_of(i: int | None) -> str | None:   # (songs read already only: nothing read here)
+            track = peek(i) if peek is not None and i is not None and 0 <= i < len(tab.tracks) else None
+            return audiofile.key(track.path) if track is not None else None
+
+        index = self._tab_index(tab)
+        keys = {"view": key_of(tab.last_index)}
+        if index == self.current:
+            keys["top"], keys["selected"] = key_of(self.playlist.top_track()), key_of(self.playlist.selected_track())
+        playing = self.player.status().track if index == self.playing_tab else None
+        if playing is not None:
+            keys["playing"] = audiofile.key(playing.path)
+        library, seen, started, last_index = self._index(), tab.grown, time.monotonic(), tab.last_index
+
+        def work():
+            generation = library.db.generation
+            going = not library.built and (library.indexer.running or not library.indexer.looked)
+            if generation == seen:
+                return generation, None, going, {}
+            albums = library.albums()
+            tracks = self._library_tracks(albums)
+            found = {name: _index_of_key(tracks, key) for name, key in keys.items() if key is not None}
+            ready = getattr(tracks, "ready", None)
+            if ready is not None and found.get("playing", -1) >= 0:
+                ready(found["playing"])   # (its album read: the player finds the song in the new list)
+            return generation, tracks, going, found
+
+        def then(value):
+            if isinstance(value, offthread.Error) or tab not in self.tabs or tab.tracks is None or tab.loading:
+                tab.growing = False
+                return
+            generation, tracks, going, found = value
+            tab.grown = generation
+            if tracks is not None and len(tracks) >= len(tab.tracks):
+                tab.tracks = tracks
+                if tab.last_index == last_index and keys["view"] is not None:
+                    tab.last_index = found.get("view", -1)
+                now = self._tab_index(tab)
+                if now == self.playing_tab:
+                    self.player.set_tracks(tab.tracks, keep_playing=True)
+                if now == self.current:
+                    self._show_current_tab()
+                    self.playlist.show_tracks_at(found.get("top"), found.get("selected"))
+            if going:
+                self._grow_later(tab, time.monotonic() - started)
+            else:
+                tab.growing = False
+
+        self.work.run(work, then, name="library-grow")
 
     def _building_line(self) -> str:
         """While a library folder's first look (or a rebuild) is under way — many minutes for a big
@@ -1922,6 +1997,9 @@ class PlayerWindow:
         elif progress["missing"]:
             self._set_notice(f"{progress['missing']} song(s) in “{tab.title}” can't be found: moved, or on a drive "
                              "that isn't plugged in?", 8000)
+        elif progress.get("growing"):
+            if tab.tracks:
+                self._set_notice(f"{plural(len(tab.tracks), 'song')} so far: more arrive as the library is read")
         elif not tab.tracks and not tab.blank:
             self._set_notice(f"No music files in {tab.title}")
         elif tab.kind == "library":
@@ -1931,6 +2009,9 @@ class PlayerWindow:
             self._set_notice(f"Loaded {plural(songs, 'song')} from {plural(albums, 'album')}")
         if index == self.current:
             self._show_current_tab()
+        if progress.get("growing") and not tab.growing:
+            tab.growing = True
+            self._grow_later(tab)
         if play and tab.tracks:
             if tab.last_index >= 0:
                 self._play_tab(index, tab.last_index, start_at=tab.resume_at)

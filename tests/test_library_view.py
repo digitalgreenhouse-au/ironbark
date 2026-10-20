@@ -289,6 +289,32 @@ def test_track_list_artist_and_album_columns(root):
         "Song", "Singer", "Record")
 
 
+def test_a_list_that_grows_keeps_the_song_at_the_top_and_the_one_selected(root):
+    """The Library tab filling in as a first look reads: albums arrive above what's on show, and the
+    view stays on the same songs (show_tracks_at) rather than jumping."""
+    def album(name, count):
+        return [Track(Path(f"C:/M/{name}/{n:02d}.flac"), f"{name} {n}", album=name, track_no=n)
+                for n in range(1, count + 1)]
+
+    root.deiconify()
+    root.geometry("400x300")
+    view = PlaylistView(root, on_play=lambda i: None)
+    view.frame.pack(fill="both", expand=True)
+    view.set_tracks(album("M", 20) + album("T", 20))
+    root.update()
+    view.list.scroll_to(view._row_of(25))                 # T 6 at the top of the view
+    view.list.select(view._row_of(27), see=False)          # T 8 selected
+    top, chosen = view.top_track(), view.selected_track()
+    assert (top, chosen) == (25, 27)
+    grown = album("A", 30) + album("M", 20) + album("T", 20)   # (30 songs arrive above them)
+    view.set_tracks(grown)
+    view.show_tracks_at(top + 30, chosen + 30)
+    root.update()
+    assert grown[view.top_track()].title == "T 6" and grown[view.selected_track()].title == "T 8"
+    view.show_tracks_at(-1, None)                          # (a song not in the new list: no move)
+    assert grown[view.top_track()].title == "T 6"
+
+
 def test_up_next_line_and_list(root):
     """The Up next line appears with the first queued song, and the pop-over lists them."""
     player = Player()
