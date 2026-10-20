@@ -1,10 +1,11 @@
 name: Release build
 
-# Builds Ironbark for Windows the way packaging/windows/build.ps1 does on a PC: the tests,
-# PyInstaller, the built program's --self-check (a failure stops the build), the licence check,
-# the Inno Setup installer (when the runner has Inno Setup 6), the portable zip and SHA-256
-# checksums. The files are kept as this run's artifacts to download; nothing is signed or
-# published from here.
+# Builds Ironbark for Windows, the Mac (Apple silicon) and Linux the way each platform's build
+# script in packaging/ does on a computer: the tests, PyInstaller, the built program's --self-check
+# (a failure stops the build), the licence check, then the downloads and their SHA-256 checksums
+# (Windows: the installer and the portable zip; Mac: a zip and a disk image; Linux: a tarball).
+# The files are kept as this run's artifacts to download; nothing is signed. The Run workflow
+# button can also publish them as a release (below).
 
 on:
   push:
@@ -20,10 +21,11 @@ on:
         default: false
       prerelease:
         # Anyone can download a GitHub release without signing in (an Actions artifact needs a
-        # sign-in). "v" + this version (v0.51.2): a release of the Windows download, not marked
-        # "latest" (the README's link keeps the release that has every platform's downloads). Any
-        # other tag (test-2026-10-20): a pre-release, a test build. (A tag made here never starts a
-        # tag build of its own: GitHub doesn't start workflows for the workflow token's tags.)
+        # sign-in). "v" + this version (v0.51.2): the release, with every platform's downloads, made
+        # "latest" (the README's download link). Any other tag (test-2026-10-20): a pre-release, a
+        # test build. A release already under the tag takes the new files in place of its own, and
+        # the notes. (A tag made here never starts a tag build of its own: GitHub doesn't start
+        # workflows for the workflow token's tags.)
         description: "Publish the build under this tag: v + this version = a release, else a test pre-release"
         type: string
         default: ""
@@ -88,16 +90,82 @@ jobs:
             dist/windows/SHA256SUMS.txt
           if-no-files-found: error
 
+  mac:
+    name: Mac build (Apple silicon)
+    runs-on: macos-latest   # (arm64)
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
+      - name: Build (tests, package, self-check, zip)
+        env:
+          # uv's own Python, which carries its Tcl/Tk: the runner's other Pythons may have no tkinter.
+          UV_PYTHON_PREFERENCE: only-managed
+        run: |
+          if [ "${{ inputs.skip_tests }}" = "true" ]; then sh packaging/mac/build.sh --skip-tests
+          else sh packaging/mac/build.sh; fi
+      - name: Disk image and checksums
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' ironbark/__init__.py)
+          arch=$(uname -m)
+          stage=build/mac/dmg
+          rm -rf "$stage" && mkdir -p "$stage"
+          ditto dist/mac/Ironbark.app "$stage/Ironbark.app"
+          ln -s /Applications "$stage/Applications"   # (to drag Ironbark onto)
+          dmg="Ironbark-$version-mac-$arch.dmg"
+          # hdiutil on a runner sometimes finds the disk busy for a moment: up to three tries.
+          for try in 1 2 3; do
+            hdiutil create -volname "Ironbark $version" -srcfolder "$stage" -ov -format UDZO "dist/mac/$dmg" && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+          cd dist/mac
+          rm -f SHA256SUMS.txt
+          shasum -a 256 "Ironbark-$version-mac-$arch.zip" "$dmg" | tee SHA256SUMS-mac.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+        with:
+          name: ironbark-mac
+          path: |
+            dist/mac/Ironbark-*-mac-*.zip
+            dist/mac/Ironbark-*-mac-*.dmg
+            dist/mac/SHA256SUMS-mac.txt
+          if-no-files-found: error
+
+  linux:
+    name: Linux build (x86_64)
+    # The oldest distribution the download is for (Ubuntu 24.04): the program needs its C library or newer.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
+      # The distribution's Python 3.12 and Tk (build.sh checks; named, as python3 can be another
+      # Python installed beside it), Python's shared library for PyInstaller,
+      # PortAudio (bundled), and Xvfb for the tests and the self-check, which open windows.
+      - name: The distribution's Python and Tk, PortAudio and a virtual screen
+        run: sudo apt-get update && sudo apt-get install -y python3-tk libpython3.12t64 libportaudio2 xvfb
+      - name: Build (tests, package, self-check, tarball, checksums)
+        run: |
+          if [ "${{ inputs.skip_tests }}" = "true" ]; then xvfb-run -a bash packaging/linux/build.sh --skip-tests --python /usr/bin/python3.12
+          else xvfb-run -a bash packaging/linux/build.sh --python /usr/bin/python3.12; fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+        with:
+          name: ironbark-linux
+          path: |
+            dist/linux/Ironbark-*-linux-x86_64.tar.gz
+            dist/linux/SHA256SUMS-linux.txt
+          if-no-files-found: error
+
   publish:
-    name: Publish the test build (pre-release)
-    needs: windows
+    name: Publish the build (a release or a test pre-release)
+    needs: [windows, mac, linux]
     if: github.event_name == 'workflow_dispatch' && inputs.prerelease != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write   # (the release)
       actions: read     # (the build's files, from this run)
     steps:
-      - name: The build's files as a public pre-release
+      - name: Publish the downloads
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -106,16 +174,21 @@ jobs:
           TAG: ${{ inputs.prerelease }}
           NOTES: ${{ inputs.prerelease_notes }}
         run: |
-          gh run download "$RUN" -R "$REPO" -n ironbark-windows -D dist
-          ls -l dist
+          gh run download "$RUN" -R "$REPO" -p 'ironbark-*' -D dist   # (a folder for each platform)
+          ls -lR dist
           version=$(gh api "repos/$REPO/contents/ironbark/__init__.py?ref=$SHA" -H "Accept: application/vnd.github.raw" |
                     sed -n 's/^__version__ = "\(.*\)"/\1/p')
           case "$TAG" in
             v*)
               if [ "$TAG" != "v$version" ]; then echo "The tag $TAG isn't this build's version ($version)"; exit 1; fi
-              gh release create "$TAG" dist/* -R "$REPO" --target "$SHA" --latest=false \
-                --title "Ironbark $version (experimental)" --notes "$NOTES";;
+              title="Ironbark $version (experimental)"; kind=(--latest);;
             *)
-              gh release create "$TAG" dist/* -R "$REPO" --prerelease --target "$SHA" \
-                --title "Ironbark test build $TAG (not a release)" --notes "$NOTES";;
+              title="Ironbark test build $TAG (not a release)"; kind=(--prerelease --latest=false);;
           esac
+          if gh release view "$TAG" -R "$REPO" > /dev/null 2>&1; then
+            # (already published, from an earlier run: the new files replace its own)
+            gh release upload "$TAG" dist/*/* -R "$REPO" --clobber
+            gh release edit "$TAG" -R "$REPO" --title "$title" --notes "$NOTES" "${kind[@]}"
+          else
+            gh release create "$TAG" dist/*/* -R "$REPO" --target "$SHA" --title "$title" --notes "$NOTES" "${kind[@]}"
+          fi

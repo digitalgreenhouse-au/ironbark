@@ -200,3 +200,4 @@ def test_github_actions_are_pinned_to_a_commit():
 def test_the_release_workflow_runs_the_build_script():
     text = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     assert "packaging\\windows\\build.ps1" in text and "if-no-files-found: error" in text
+    assert "packaging/mac/build.sh" in text and "packaging/linux/build.sh" in text   # (every platform's download)

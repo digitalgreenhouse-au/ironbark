@@ -6,7 +6,7 @@ bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
 ## 0.51.2 — 20/10/2026
 
-Windows download only (Mac and Linux stay on 0.51.1 for now).
+Downloads for Windows, macOS (Apple silicon) and Linux, all built by the release workflow from this version.
 
 - **Rebuild the library.** The Library's ⋯ menu has **Rebuild the library…**: Ironbark forgets
   everything it has stored about your music and reads your library folders again from scratch, so
