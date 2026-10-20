@@ -8,7 +8,7 @@ name: Debug a Windows test hang (temporary)
 on:
   push:
     branches: [claude/intelligent-ritchie-styfer]
-    paths: [.github/workflows/debug-hang.yml]
+    paths: [.github/workflows/debug-hang.yml, .github/debug/variant.py]
 
 permissions:
   contents: read
@@ -20,13 +20,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        revert: ["", "ironbark/library_view.py", "ironbark/indexer.py", "ironbark/theme.py"]
+        variant: [old-status, no-filling, no-first]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
       - run: uv sync --locked
-      - name: Put one file back as it was on dev (which doesn't hang)
-        if: matrix.revert != ''
-        run: git fetch --depth=1 origin c093ef6e917abbba65f86c54f55515b88f8290fb; git checkout c093ef6e917abbba65f86c54f55515b88f8290fb -- ${{ matrix.revert }}
+      - name: Take one Library view change back out
+        run: uv run python .github/debug/variant.py ${{ matrix.variant }}
       - name: Run the test (still running after 2 minutes prints every thread's stack)
         run: uv run pytest -v -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true "tests/test_release_windows.py::test_enter_or_down_straight_after_typing_a_song_search_acts_once_the_songs_are_here" tests/test_library_songs.py
