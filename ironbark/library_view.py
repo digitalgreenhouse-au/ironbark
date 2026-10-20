@@ -632,7 +632,8 @@ class LibraryView:
         self.check_other = controls.FlatButton(bottom, "Pause", self._pause_check)
         self.status = ttk.Label(bottom, text="", style="Muted.TLabel", anchor="w", justify="left")
         self.status.pack(side="left", fill="x", expand=True)
-        self.status.bind("<Configure>", lambda e: theme.wrap_inside(self.status, e.width), add="+")
+        self._status_wrapped: set[int] = set()   # widths the line's text has been wrapped at (_wrap_status)
+        self.status.bind("<Configure>", lambda e: self._wrap_status(e.width), add="+")
 
         frame.bind("<Destroy>", self._destroyed, add="+")
         self._load()
@@ -1590,7 +1591,19 @@ class LibraryView:
 
     def _say(self, text: str):
         self._status_text = text
+        self._status_wrapped.clear()
         self.status.configure(text=text)
+
+    def _wrap_status(self, width: int):
+        """The status line was given `width`: its text wraps to it — once per width for each text. In
+        a window that sizes itself to what's in it, a wrap can change the width the window gives back,
+        and some texts set the two chasing each other through a few widths for ever (seen on Windows
+        with a first look's "3 albums so far · Building the library…": Tk's idle loop never ended and
+        the window froze). A width already wrapped at is left as it is, so the chase stops."""
+        if width in self._status_wrapped:
+            return
+        self._status_wrapped.add(width)
+        theme.wrap_inside(self.status, width)
 
     # -- groups ---------------------------------------------------------------------------------------
     def _toggle(self, index: int):

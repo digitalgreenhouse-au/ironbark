@@ -218,6 +218,27 @@ def test_a_first_look_fills_the_album_list_as_it_goes(root, music, monkeypatch):
     w.close()
 
 
+def test_the_status_line_wraps_once_per_width_for_each_text(root, music, monkeypatch):
+    """(Seen on Windows: a first look's "3 albums so far · Building the library…" set the status line's
+    wrap and the window's width chasing each other, and Tk's idle loop never ended.) A width the
+    text has been wrapped at already isn't wrapped at again, so a cycle of widths stops; new text is
+    wrapped afresh."""
+    from ironbark import library_view
+
+    w = LibraryView(root, [music], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    wrapped = []
+    monkeypatch.setattr(library_view.theme, "wrap_inside", lambda label, width: wrapped.append(width))
+    w._say("3 albums so far · Building the library: reading songs… 5 of 8 files (62%) · 0:01")
+    for width in (300, 320, 300, 320, 300):       # (the chase: each width once)
+        w._wrap_status(width)
+    assert wrapped == [300, 320]
+    w._say("3 albums so far · Building the library: reading songs… 6 of 8 files (75%) · 0:02")
+    w._wrap_status(300)
+    assert wrapped == [300, 320, 300]
+    w.close()
+
+
 def test_adding_a_folder_inside_or_around_the_library_folders():
     """(0.31) No album is ever listed twice: a folder inside a library folder is already in the
     library; one that holds library folders takes their place."""
