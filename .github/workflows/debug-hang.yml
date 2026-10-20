@@ -28,5 +28,5 @@ jobs:
       - name: Put one file back as it was on dev (which doesn't hang)
         if: matrix.revert != ''
         run: git fetch --depth=1 origin c093ef6e917abbba65f86c54f55515b88f8290fb; git checkout c093ef6e917abbba65f86c54f55515b88f8290fb -- ${{ matrix.revert }}
-      - name: Run the test (still running after 2 minutes: every thread's stack)
+      - name: Run the test (still running after 2 minutes prints every thread's stack)
         run: uv run pytest -v -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true "tests/test_release_windows.py::test_enter_or_down_straight_after_typing_a_song_search_acts_once_the_songs_are_here" tests/test_library_songs.py
