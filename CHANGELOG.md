@@ -4,6 +4,13 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.51.5 — 20/10/2026
+
+- Fixed (Windows): a library folder on some network drives (a NAS or file server) couldn't be
+  read — "Invalid Signature, error -2146893818" — though File Explorer opened it. The server
+  answers Python's way of listing a folder with a reply Windows refuses; Ironbark now lists such a
+  folder the way File Explorer asks (winlisting.py), everywhere it lists folders.
+
 ## 0.51.4 — 20/10/2026
 
 - A library folder that can't be listed (a network share waking up or reconnecting) is tried again,
