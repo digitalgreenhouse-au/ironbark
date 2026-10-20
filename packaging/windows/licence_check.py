@@ -16,7 +16,10 @@ COVERED_BY: list[tuple[str, list[str]]] = [
     (r"vcruntime140(_1)?\.dll|numpy\.libs/msvcp140-[0-9a-f]+\.dll", ["THIRD_PARTY_LICENSES.md"]),
     # CPython, and the standard modules that carry another project's code
     (r"python3\d*\.dll", ["Python-LICENSE.txt", "zlib-LICENSE.txt"]),
-    (r"libcrypto-3-x64\.dll|libssl-3-x64\.dll", ["OpenSSL-LICENSE.txt"]),
+    # (Python's own OpenSSL and zlib, by the names its builds give them: "-x64" or not, and zlib as its
+    # own zlib1.dll in some builds — the python.org 3.12 on GitHub's Windows runners — not in python3*.dll)
+    (r"libcrypto-3(-x64)?\.dll|libssl-3(-x64)?\.dll", ["OpenSSL-LICENSE.txt"]),
+    (r"zlib1\.dll", ["zlib-LICENSE.txt"]),
     (r"_ssl\.pyd|_hashlib\.pyd", ["Python-LICENSE.txt", "OpenSSL-LICENSE.txt"]),
     (r"libffi-8\.dll", ["libffi-LICENSE.txt"]),
     (r"_ctypes\.pyd", ["Python-LICENSE.txt", "libffi-LICENSE.txt"]),
