@@ -150,6 +150,15 @@ MADE_BY_THE_SPEC = {"Python-LICENSE.txt", "tk8.6-license.terms.txt", "libsndfile
                     "THIRD_PARTY_LICENSES.md"}
 
 
+def test_pythons_own_openssl_and_zlib_are_covered_by_either_name(licence_check):
+    """A python.org build may name its OpenSSL "-x64" or not, and keep zlib as zlib1.dll (GitHub's
+    Windows runner): either way the same licences cover them."""
+    for name in ("libcrypto-3-x64.dll", "libssl-3-x64.dll", "libcrypto-3.dll", "libssl-3.dll"):
+        assert licence_check.needed(name) == ["OpenSSL-LICENSE.txt"]
+    assert licence_check.needed("zlib1.dll") == ["zlib-LICENSE.txt"]
+    assert licence_check.needed("ucrtbase.dll") is None   # (the C runtime is Windows' own: never bundled)
+
+
 def test_every_licence_a_rule_names_is_kept_here_or_made_by_the_build(licence_check):
     kept = {path.name for path in KEPT.glob("*.txt")}
     for _, names in licence_check.COVERED_BY:
@@ -191,3 +200,4 @@ def test_github_actions_are_pinned_to_a_commit():
 def test_the_release_workflow_runs_the_build_script():
     text = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     assert "packaging\\windows\\build.ps1" in text and "if-no-files-found: error" in text
+    assert "packaging/mac/build.sh" in text and "packaging/linux/build.sh" in text   # (every platform's download)

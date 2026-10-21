@@ -22,6 +22,42 @@ def test_the_words_say_what_is_being_done():
     assert loadprogress.album_text("Blue", 2, 12) == "Reading album 3 of 12: “Blue”…"
 
 
+def test_a_library_look_says_how_far_it_has_got_and_for_how_long():
+    """A big library's first look takes minutes: each stage is named, with counts and the time so
+    far (it ticks every second, so it's plain nothing has frozen)."""
+    from ironbark.indexer import Progress
+
+    text = loadprogress.library_text
+    assert text(Progress("looking", 0, 0, "", 100.0), 100.4) == "Building the library: looking through your folders… · 0:00"
+    assert (text(Progress("looking", 1234, 0, "D:/Music/A", 100.0), 142.0)
+            == "Building the library: looking through your folders… 1,234 folders · 0:42")
+    assert (text(Progress("reading", 5000, 80000, "", 100.0), 290.0)
+            == "Building the library: reading songs… 5,000 of 80,000 files (6%) · 3:10")
+    assert (text(Progress("reading", 1, 2, "", 0.0), 3725.0, "Rebuilding the library")
+            == "Rebuilding the library: reading songs… 1 of 2 files (50%)")   # (no start time: no clock)
+    assert text(Progress("upgrading", 3, 4, "", 10.0), 11.0).startswith("Building the library: bringing the old")
+    assert text(Progress("tidying", 0, 0, "", 10.0), 3735.0) == "Building the library: tidying up… · 1:02:05"
+    assert text(Progress(), 5.0) == "Building the library…"   # (not started yet)
+
+
+def test_a_long_read_says_about_how_long_is_left():
+    """A very large library's first read can take hours: once it's well under way (20 s of reading
+    and 1% done) the line says roughly how long the rest will take."""
+    from ironbark.indexer import Progress
+
+    assert loadprogress.left_text(20) == "less than a minute left"
+    assert loadprogress.left_text(12 * 60 + 10) == "about 12 min left"
+    assert loadprogress.left_text(80 * 60) == "about 1 h 20 min left"
+    assert loadprogress.left_text(120 * 60) == "about 2 h left"
+    text = loadprogress.library_text
+    early = Progress("reading", 500, 100_000, "", 0.0, 100.0)
+    assert "left" not in text(early, 110.0)                        # (10 s of reading: too soon to say)
+    assert "left" not in text(Progress("reading", 500, 100_000, "", 0.0, 100.0), 200.0)   # (0.5%: too soon)
+    going = Progress("reading", 5_000, 100_000, "", 50.0, 100.0)  # 5,000 read in 100 s: 95,000 more ≈ 32 min
+    assert text(going, 200.0) == ("Building the library: reading songs… 5,000 of 100,000 files (5%) · 2:30 · "
+                                  "about 32 min left")
+
+
 def test_the_reporter_throttles_but_never_drops_the_end_of_a_stage():
     now = [0.0]
     said = []

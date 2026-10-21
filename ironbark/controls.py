@@ -634,15 +634,29 @@ class PillButton(Focusable, _Pressable):
                 return theme.mix(base, "ACCENT_INK", PRESS_DARKEN * (1.6 if self.pressed else 1.0))
         return theme.tone(base) if base else None
 
+    def _words(self) -> str:
+        """What the pill says (ElsewhereButton leads it with room for its mark)."""
+        return self.text_value
+
+    def _mark(self, pen: ImageDraw.ImageDraw, k: int, width: int, height: int, colour: str):
+        """Draw a mark on the pill (`width` × `height` px, supersampled `k` times; `colour` is the
+        words'): none on a plain pill."""
+
+    def _mark_key(self) -> tuple:
+        """What the mark depends on, for the picture cache."""
+        return ()
+
     def _paint(self):
         measure = self._measure
-        w = max(measure.measure(self.text_value or " "), measure.measure(self._fit)) + 2 * theme.px(self._pad)
+        words = self._words()
+        w = max(measure.measure(words or " "), measure.measure(self._fit)) + 2 * theme.px(self._pad)
         h = theme.px(self._height)
         line = max(1, theme.px(1))
         outline = theme.colour(self._outline) if self._outline else None
         if self.focused:
             outline, line = theme.ACCENT, keyfocus.ring_width()
         colours = (theme.colour(self._bg), self.fill_colour(), outline)
+        fg = theme.colour(self._fg) if self.enabled else theme.mix("MUTED", self._fill or self._bg, DISABLED_FADE)
         # A filled pill with the keyboard: the ring stands off the fill by a hair of the background,
         # so it shows on a green pill too (on an unfilled one it simply is the rim).
         gap = max(1, theme.px(1)) if self.focused and colours[1] else 0
@@ -660,11 +674,74 @@ class PillButton(Focusable, _Pressable):
             else:
                 pen.rounded_rectangle((0, 0, w * k - 1, h * k - 1), radius=h * k // 2, fill=colours[1] or colours[0],
                                       outline=colours[2], width=line * k if colours[2] else 0)
+            self._mark(pen, k, w, h, fg)
             return _down(image, (w, h))
 
-        self._photo = _photo(self, ("pill", w, h, line, gap) + colours, draw)
-        fg = theme.colour(self._fg) if self.enabled else theme.mix("MUTED", self._fill or self._bg, DISABLED_FADE)
-        self.configure(image=self._photo, fg=fg, bg=colours[0])
+        self._photo = _photo(self, ("pill", w, h, line, gap) + colours + self._mark_key(), draw)
+        self.configure(image=self._photo, fg=fg, bg=colours[0], text=words)
+
+
+class ElsewhereButton(PillButton):
+    """The pause / play button at the end of the status line while music plays in another tab (the
+    line says "♪ Playing in another tab: …"): a green pill with a pause or play mark and the word,
+    so it's easy to see. The music can be paused, and started again, without leaving the tab on show
+    — the transport's play belongs to that tab, and starts it. `show` places it over the end of
+    `line` (the status label) or takes it away, saying the opposite of the music's state."""
+
+    MARK_W = 8     # px at 100%: the pause / play mark's width…
+    MARK_H = 9     # …and height
+    MARK_GAP = 5   # px at 100%: from the mark to the word
+
+    def __init__(self, parent, line: tk.Misc, command: Callable[[], None]):
+        self.playing: bool | None = None
+        self.hint = ""
+        super().__init__(parent, "Pause", command, kind="primary", small=True,
+                         font=theme.font(theme.SIZE_BODY, "semibold"), label=lambda: self.hint)
+        self._line = line
+        self._fit = self._lead() + "Pause"   # (one width for Pause and Play: the line never shifts)
+        self._paint()
+
+    def show(self, on: bool, playing: bool = True):
+        if not on:
+            if self.winfo_manager():
+                self.place_forget()
+            return
+        if playing != self.playing:
+            self.playing = playing
+            self.hint = ("Pause the music playing in the other tab"
+                         if playing else "Carry on playing the music in the other tab")
+            self.set_text("Pause" if playing else "Play")
+        if not self.winfo_manager():
+            self.place(in_=self._line, relx=1.0, rely=0.5, anchor="e")
+            self.tk.call("raise", str(self))   # (over the status line's upper line, should it have one)
+
+    def repaint(self):
+        """After a palette change: the new palette's colours."""
+        self._paint()
+
+    def _lead(self) -> str:
+        """Spaces at least as wide as the mark and its gap. Tk centres the words on the pill, so
+        with these in front the mark, drawn in their place, never overlaps the word."""
+        room = theme.px(self.MARK_W + self.MARK_GAP)
+        return " " * -(-room // max(1, self._measure.measure(" ")))
+
+    def _words(self) -> str:
+        return self._lead() + self.text_value
+
+    def _mark_key(self) -> tuple:
+        return (self.playing is not False,)
+
+    def _mark(self, pen: ImageDraw.ImageDraw, k: int, width: int, height: int, colour: str):
+        left = (width - self._measure.measure(self._words())) / 2   # (where Tk puts the words)
+        right = (left + self._measure.measure(self._lead()) - theme.px(self.MARK_GAP)) * k
+        w, h = theme.px(self.MARK_W) * k, theme.px(self.MARK_H) * k
+        top = (height * k - h) / 2
+        if self.playing is not False:   # pause: two rounded bars
+            bar = w * 0.36
+            for x in (right - w, right - bar):
+                pen.rounded_rectangle((x, top, x + bar, top + h), radius=bar * 0.3, fill=colour)
+        else:                           # play: a triangle
+            pen.polygon([(right - w, top), (right, top + h / 2), (right - w, top + h)], fill=colour)
 
 
 # -- scrollbar -----------------------------------------------------------------------------------

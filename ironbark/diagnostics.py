@@ -9,7 +9,10 @@ Settings → Help → "Save diagnostics…" asks where to save it; nothing is se
 - settings.json — the settings, with every folder or file path replaced by "<folder 1>",
   "<folder 2>"… (the same path always gets the same name), so no user name or music shows;
 - crash.log (and crash.old.log) and app.log (and its older copies), with the same paths replaced,
-  and the user's home folder shown as "<home>".
+  and the user's home folder shown as "<home>";
+- library-folders-check.txt — each library folder checked (netcheck.py): whether it and its
+  server answer, and which way of listing it works; the same paths replaced, and a mapped drive's
+  share by a stand-in of its own.
 
 Names can say who someone is too ("Sam's AirPods", a playlist named after a person), so in every
 file the sound outputs' names show as "<device 1>", "<device 2>"…, the open tabs' titles as "<tab 1>"…,
@@ -65,6 +68,9 @@ audio-outputs.txt  how many sound outputs were connected when this was made, the
 settings.json      your settings, with folder and file paths replaced by <folder 1>, <folder 2>...
 crash.log          errors {APP_NAME} has met (if any)
 app.log            what {APP_NAME} noted while running (more with Settings > Help > Detailed logging)
+library-folders-check.txt
+                   each library folder checked: whether it (and its server) answers, and which
+                   way of listing it works
 
 In the logs, the same paths are replaced, and your home folder shows as <home>. In every file the
 names of your sound outputs show as <device 1>, <device 2>..., your open tabs' titles as <tab 1>...,
@@ -319,10 +325,12 @@ def network_target(letter: str) -> str | None:
 
 def contents(prefs: dict, folder: Path, outputs: Callable[[], tuple[str | None, list[str]]] = audio_outputs,
              home: str | None = None, names: dict[str, list[str]] | None = None,
-             network: Callable[[str], str | None] = network_target) -> dict[str, str]:
+             network: Callable[[str], str | None] = network_target,
+             folders_check: Callable[[], str] | None = None) -> dict[str, str]:
     """Every file for the zip, by name. `names`: other names to leave out, by kind (the window's tab
     titles and playlist names: {"tab": [...], "playlist": [...]}). `network`: the server path a drive
-    letter stands for (asked of Windows: call this off the window's thread)."""
+    letter stands for (asked of Windows: call this off the window's thread). `folders_check()`: the
+    library folders check's text (netcheck.report), for library-folders-check.txt."""
     redactor = Redactor(home)
     files = {"README.txt": README, "about.txt": about(prefs)}
     try:
@@ -334,21 +342,37 @@ def contents(prefs: dict, folder: Path, outputs: Callable[[], tuple[str | None, 
     files["settings.json"] = json.dumps(redactor.value(prefs), indent=2, ensure_ascii=False) + "\n"
     files["audio-outputs.txt"] = listed
     redactor.learn_network_drives(network)   # (before the logs: they may name a mapped drive's server)
+    if folders_check is not None:
+        # (the check names a mapped drive's share, "Y: is \\server\share": a stand-in of its own)
+        for listed in prefs.get("library_folders") or []:
+            if isinstance(listed, str) and re.match(r"[A-Za-z]:", listed):
+                try:
+                    share = network(listed[:2].upper())
+                except Exception:  # noqa: BLE001 — only a name fewer left out
+                    share = None
+                if share:
+                    redactor.name(share)
     for path in [folder / name for name in CRASH_LOGS] + logs.log_files(folder):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         files[path.name] = redactor.text(text)
+    if folders_check is not None:
+        try:
+            text = folders_check()
+        except Exception as error:  # noqa: BLE001 — a check that fails is itself worth knowing
+            text = f"The library folders couldn't be checked: {error}\n"
+        files["library-folders-check.txt"] = redactor.text(text)
     return files
 
 
 def write_zip(destination: Path, prefs: dict, folder: Path,
               outputs: Callable[[], tuple[str | None, list[str]]] = audio_outputs, home: str | None = None,
-              names: dict[str, list[str]] | None = None) -> Path:
+              names: dict[str, list[str]] | None = None, folders_check: Callable[[], str] | None = None) -> Path:
     """Write the zip (whole, or not at all). Touches the disk and asks Windows for the outputs:
     call it off the window's thread. Raises OSError when it can't be written."""
-    files = contents(prefs, folder, outputs, home, names)
+    files = contents(prefs, folder, outputs, home, names, folders_check=folders_check)
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, text in files.items():

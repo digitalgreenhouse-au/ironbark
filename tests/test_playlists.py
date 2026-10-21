@@ -20,6 +20,15 @@ def test_round_trip_keeps_order_and_unicode(tmp_path):
     assert playlists.saved() == [path]
 
 
+def test_a_line_break_in_a_tag_adds_no_song(tmp_path):
+    tracks = [Track(tmp_path / "01 Suite.flac", "Part one\r\nPart two", artist="Band\u2028Name"),
+              Track(tmp_path / "02 Coda.flac", "Coda\tend")]
+    path = playlists.path_for("Breaks")
+    playlists.write(path, tracks)
+    assert playlists.read(path) == [t.path for t in tracks]
+    assert "#EXTINF:0,Band Name - Part one Part two" in path.read_text(encoding="utf-8").splitlines()
+
+
 def test_relative_paths_and_old_encodings(tmp_path):
     old = tmp_path / "old.m3u"
     old.write_bytes("#EXTM3U\r\nsub\\Caf\xe9.flac\r\n".encode("cp1252"))

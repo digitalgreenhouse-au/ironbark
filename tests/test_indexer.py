@@ -112,6 +112,105 @@ def test_an_unplugged_library_folder_changes_nothing_and_nothing_comes_back_new(
     assert db.new_albums(since - 1, {}) == []     # nothing comes back "new"
 
 
+def test_a_fresh_look_forgets_what_a_normal_one_keeps_and_reads_everything_again(tmp_path, db):
+    """Library → ⋯ → Rebuild the library: a library folder that's gone (or emptied) keeps its music
+    on a normal look, never on a fresh one; what's there is read again, as on a first look, with
+    plays and favourites kept and nothing coming back "new"."""
+    music = tree(tmp_path / "Music", {"A": 2})
+    old = tree(tmp_path / "Old", {"B": 2})
+    reader = Reader()
+    look = Indexer(db, reader=reader)
+    events = look.listen()
+    look.check([music, old])
+    key = str(music / "A" / "01.flac")
+    db.record_play(key, 300, 300)
+    db.set_favourite(key)
+    since = time.time()
+    shutil.rmtree(old)
+    old.mkdir()                                   # (emptied: on a normal look, an unplugged drive's mount point)
+    assert look.check([music, old]).error and len(rows(db)) == 4
+    reader.read.clear()
+    drain(events)
+    diff = look.check([music, old], fresh=True)
+    assert sorted(rows(db)) == [key, str(music / "A" / "02.flac")]
+    assert sorted(reader.read) == [music / "A" / "01.flac", music / "A" / "02.flac"]   # (read again)
+    assert sorted(diff.added) == [music / "A" / "01.flac", music / "A" / "02.flac"]
+    assert db.built(music) and db.play_counts([key]) == {key: 1} and db.favourites() == [key]
+    assert db.new_albums(since - 1, {}) == []
+    assert any(isinstance(e, AlbumsChanged) and not e.album_ids for e in drain(events))
+
+
+def test_a_rebuild_forgets_nothing_while_a_library_folder_cant_be_seen(tmp_path, db):
+    """Rebuild the library with a drive unplugged, or a network drive asleep: forgetting then would
+    leave the Library empty, with nothing there to read back. Nothing is forgotten, and the diff
+    says which folder can't be seen."""
+    music = tree(tmp_path / "Music", {"A": 2})
+    other = tree(tmp_path / "Other", {"B": 2})
+    look = Indexer(db, reader=Reader())
+    events = look.listen()
+    look.check([music, other])
+    before = rows(db)
+    away = tmp_path / "Away"
+    other.rename(away)
+    drain(events)
+    diff = look.check([music, other], fresh=True)
+    assert diff.error == f"Can't see the library folder {other}" and rows(db) == before
+    assert db.built(music) and db.built(other) and look.building == ""
+    assert any(isinstance(e, Unreachable) and e.root == str(other) for e in drain(events))
+    away.rename(other)                            # back: the rebuild goes ahead
+    diff = look.check([music, other], fresh=True)
+    assert not diff.error and sorted(rows(db)) == sorted(before)
+
+
+def test_a_library_folder_that_cant_be_listed_is_tried_again_and_the_systems_words_are_said(
+        tmp_path, db, monkeypatch):
+    """A network share's library folder can fail to list once (waking up, reconnecting): it's tried
+    again before the look gives up; when it still can't be, the diff says what the system said."""
+    from ironbark import indexer
+
+    root = tree(tmp_path / "Music", {"A": 2})
+    monkeypatch.setattr(indexer, "ROOT_RETRY_S", 0.01)
+    real = indexer._list
+    fails = {"left": 2}
+
+    def flaky(folder):
+        if folder == str(root) and fails["left"]:
+            fails["left"] -= 1
+            error = OSError(64, "The specified network name is no longer available")
+            error.winerror = 64
+            raise error
+        return real(folder)
+
+    monkeypatch.setattr(indexer, "_list", flaky)
+    look = Indexer(db, reader=Reader())
+    diff = look.check([root])
+    assert not diff.error and len(rows(db)) == 2 and fails["left"] == 0
+    fails["left"] = indexer.ROOT_TRIES
+    diff = look.check([root])
+    assert diff.error == (f"Can't read the library folder {root} "
+                          "(The specified network name is no longer available, error 64): the connection to "
+                          "the server dropped while reading (the server went to sleep, or the network blinked)")
+    assert len(rows(db)) == 2                       # (nothing stored for it changes)
+    assert indexer.error_text(PermissionError(13, "Access is denied")) == "Access is denied, error 13"
+
+
+def test_a_first_look_and_a_rebuild_say_so_while_they_run_and_a_routine_look_doesnt(tmp_path, db):
+    """The player says how far a first look (or a rebuild) has got wherever it is
+    (library_index.building); a routine look for changes is quick and says nothing."""
+    root = tree(tmp_path / "Music", {"A": 2})
+    seen = []
+    look = Indexer(db, reader=Reader(then=lambda reader: seen.append(look.building)))
+    look.check([root])
+    assert seen and set(seen) == {"build"} and look.building == ""
+    seen.clear()
+    (root / "A" / "03.flac").write_bytes(b"xyz")
+    look.check([root])
+    assert seen and set(seen) == {""}
+    seen.clear()
+    look.check([root], fresh=True)
+    assert seen and set(seen) == {"rebuild"} and look.building == ""
+
+
 def test_a_folder_that_cant_be_listed_keeps_everything_and_a_vanished_one_comes_back_with_its_dates(
         tmp_path, db, monkeypatch):
     root = tree(tmp_path / "Music", {"A": 2, "B": 2})
@@ -440,6 +539,28 @@ def test_a_pool_that_breaks_carries_on_here(tmp_path, db):
     look = Indexer(db, reader=Reader(), pool_min=0, pool_factory=lambda workers: Broken())
     assert len(look.check([root]).added) == 4 and len(db.albums()) == 2
 
+
+def test_worker_processes_that_never_answer_are_given_up_and_the_reading_carries_on_here(tmp_path, db):
+    """(Seen on Windows 10: a big library's first look that never got anywhere.) Workers that
+    hand nothing back — they never started, or hung — are let go after `stall` seconds without an
+    answer, and every folder is read in this process instead."""
+    root = tree(tmp_path / "Music", {"A": 2, "B": 2, "C": 1})
+
+    class Silent:
+        shut = False
+
+        def submit(self, *args):
+            from concurrent.futures import Future
+            return Future()   # (never finishes)
+
+        def shutdown(self, **kwargs):
+            Silent.shut = True
+
+    look = Indexer(db, reader=Reader(), pool_min=0, pool_factory=lambda workers: Silent(), stall=0.5)
+    began = time.monotonic()
+    diff = look.check([root])
+    assert len(diff.added) == 5 and len(db.albums()) == 3 and Silent.shut
+    assert time.monotonic() - began < 10
 
 # -- prioritise, events, failures ---------------------------------------------------------------------
 def test_an_album_asked_for_is_read_next(tmp_path, db):
@@ -770,3 +891,46 @@ def test_no_tk_call_off_tks_thread_while_the_library_is_built_and_rescanned(tk_t
         gc.collect()   # on this thread (Tk objects freed on another thread abort Python)
     library_index.close_shared()
     assert tk_thread_rule == []
+
+
+def test_workers_busy_with_a_big_folder_arent_given_up_while_they_read_files(tmp_path, db):
+    """A single folder of thousands of songs on a slow network share can take longer than `stall`
+    to read: while the workers keep reading files, they're busy, not stuck."""
+    root = tree(tmp_path / "Music", {"Singles": 6})
+    read_in_pool, count = Reader(), [0]
+
+    class Slow:
+        def submit(self, fn, *args):
+            from concurrent.futures import Future
+            future = Future()
+
+            def work():
+                for _ in range(15):          # 1.5 s on one folder, a file read every 0.1 s
+                    time.sleep(0.1)
+                    count[0] += 1
+                future.set_result(fn(*args[:-1], read_in_pool))
+            threading.Thread(target=work, daemon=True).start()
+            return future
+
+        def shutdown(self, **kwargs):
+            pass
+
+    here = Reader()
+    look = Indexer(db, reader=here, pool_min=0, pool_factory=lambda workers: Slow(), stall=0.5,
+                   files_read=lambda: count[0])
+    diff = look.check([root])
+    assert len(diff.added) == 6 and here.read == [] and len(read_in_pool.read) == 6   # (never re-read here)
+
+
+def test_the_worker_processes_count_the_files_they_read(tmp_path):
+    root = tmp_path / "Music"
+    for n in range(1, 4):
+        flac(root / "A" / f"{n:02d} Song.flac", title=f"Song {n}", album="A")
+    pool = indexer.make_pool(1)
+    try:
+        before = indexer.files_read_so_far()
+        listing = {p.name: (p.stat().st_size, p.stat().st_mtime_ns, 1.0e9) for p in (root / "A").iterdir()}
+        result = pool.submit(indexer._read_job, str(root), str(root / "A"), listing, None, "", None).result(timeout=120)
+    finally:
+        pool.shutdown()
+    assert indexer.files_read_so_far() - before == 3 and result is not None

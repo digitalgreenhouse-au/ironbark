@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import sys
 import threading
 import tkinter as tk
 from collections.abc import Callable
@@ -65,21 +66,27 @@ class Background:
         self._queue.put((fn, args))
 
     def _drain(self):
+        """Run what's waiting, each on its own: one that raises is reported as Tk reports an error in
+        any callback, and the rest still run — and the drain always comes round again, so one slip
+        never leaves every later answer undelivered for the rest of the session."""
         self._job = None
         if self._closed:
             return
-        while True:
-            try:
-                fn, args = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                fn(*args)
-            except tk.TclError:
-                if self._closed:
-                    return   # (the window went while this was waiting)
-                raise
-        self._job = self.root.after(DRAIN_MS, self._drain)
+        try:
+            while True:
+                try:
+                    fn, args = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn(*args)
+                except Exception:
+                    if self._closed:
+                        return   # (the window went while this was waiting)
+                    self.root.report_callback_exception(*sys.exc_info())
+        finally:
+            if not self._closed:
+                self._job = self.root.after(DRAIN_MS, self._drain)
 
     def drain_now(self) -> None:
         """Take what's waiting now (tests, and the last moments before closing)."""

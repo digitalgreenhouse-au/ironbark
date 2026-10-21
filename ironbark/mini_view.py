@@ -149,7 +149,9 @@ class MiniView(tk.Frame):
 
         # No title bar in mini mode either: the strip's empty parts drag the window.
         for widget in (self, text, self.title_label, self.sub_label):
-            widget.bind("<ButtonPress-1>", lambda e: chrome.start_move(self.app_root))
+            widget.bind("<ButtonPress-1>", lambda e: chrome.start_move(self.app_root, e))
+            widget.bind("<B1-Motion>", lambda e: chrome.follow_move(self.app_root, e))
+            widget.bind("<ButtonRelease-1>", lambda e: chrome.end_move(self.app_root))
         theme.on_change(self._palette_changed)
 
     def _palette_changed(self, _palette):

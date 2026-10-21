@@ -65,8 +65,10 @@ from . import audiofile, library_sql, searchfold, settings
 from .audiofile import CuePath, CueRange
 from .browse import make_album
 from .library import (
+    FLAC_DECODER_BITS,
     Album,
     Track,
+    flac_depth_problem,
     is_music_name,
     natural_key,
     play_order,
@@ -156,6 +158,19 @@ _SEP = "\x1f"   # between the values of an album's codecs / genres / composers
 
 def db_path() -> Path:
     return settings.cache_folder() / FILE_NAME
+
+
+def _mark_undecodable_flac(con: sqlite3.Connection) -> None:
+    """Songs stored before the player knew its decoder refuses FLAC at other bit depths (12, 20,
+    32-bit) are marked as it now marks them when read, so they aren't checked as "damaged" or
+    offered for playing. Nothing to do (one quick look) once they are."""
+    plays = ", ".join(str(bits) for bits in FLAC_DECODER_BITS)
+    rows = con.execute("SELECT id, bits FROM tracks WHERE codec = 'FLAC' AND unsupported = '' "
+                       f"AND bits BETWEEN 4 AND 32 AND bits NOT IN ({plays})").fetchall()   # (0: not read)
+    for track_id, bits in rows:
+        unsupported, details = flac_depth_problem(int(bits))
+        con.execute("UPDATE tracks SET unsupported = ?, details = ? WHERE id = ?",
+                    (unsupported, json.dumps([list(pair) for pair in details]), track_id))
 
 
 class Interrupted(Exception):
@@ -731,6 +746,7 @@ class LibraryDB:
             if version != library_sql.SCHEMA_VERSION and (version or tables):   # (read live: the schema's own)
                 _upgrade(con, version, tables)
             _create(con, fts_ok)
+            _mark_undecodable_flac(con)
             con.execute("COMMIT")
         except BaseException:
             if con.in_transaction:
@@ -879,6 +895,16 @@ class LibraryDB:
             con.execute("DELETE FROM meta WHERE key = ?", (_volume_key(found[0]),))   # (noted afresh by the next look)
             _rekey(con, os.path.join(was, ""), os.path.join(str(Path(new)), ""), whole=True)
         return True
+
+    def clear(self) -> None:
+        """Forget every music folder, file and song stored, so the next look reads the library
+        folders afresh, as on their first look (Library → ⋯ → Rebuild the library). The library
+        folders stay, and so do plays, favourites and quality checks (they're keyed by the file,
+        not by row). Song ids are never given again (_TrackIds): a tab holding one shows it gone."""
+        with self._writing() as con:
+            con.execute("DELETE FROM folders")   # (their files, songs, albums and search entries go with them)
+            con.execute("UPDATE roots SET built = 0")
+            con.execute("DELETE FROM meta WHERE key LIKE 'volume:%'")   # (noted afresh by the next look)
 
     def volume(self, root: str | Path) -> tuple[int, float | None] | None:
         """The drive a library folder's music was found on (the indexer's volume_of), and since when

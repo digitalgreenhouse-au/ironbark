@@ -4,16 +4,19 @@ On Windows we take away the standard caption but keep the resizable frame, so
 the window still resizes from its edges, snaps to screen edges and minimises
 like any other. It can't be maximised: the player is a tall side strip whose
 width is capped (ui.FULL_MAX_WIDTH), so the maximise box goes too and Windows+Up
-does nothing. Pressing on our tab bar hands the drag to Windows itself (as if
-the caption were clicked), so Aero Snap behaves natively within that cap.
-Elsewhere the system title bar stays and our bar sits under it.
+does nothing. Pressing on our tab bar (or the mini strip) drags the window:
+`start_move` / `follow_move` / `end_move`, the window kept where the pointer
+holds it. (The press used to be handed to Windows' own move loop, as if the
+caption were clicked; on Windows 10 that loop could miss the button being let
+go, and the window ran on after the pointer.) Windows+← / → still snap it to a
+side. Elsewhere the system title bar stays and our bar sits under it.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
 
-from . import platforms
+from . import placement, platforms
 
 GWL_STYLE = -16
 WS_CAPTION = 0x00C00000
@@ -22,8 +25,6 @@ WS_MINIMIZEBOX = 0x00020000
 WS_MAXIMIZEBOX = 0x00010000
 WS_SYSMENU = 0x00080000
 SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020  # NOSIZE | NOMOVE | NOZORDER | FRAMECHANGED
-WM_NCLBUTTONDOWN = 0x00A1
-HTCAPTION = 2
 
 CUSTOM = platforms.CUSTOM_TITLE_BAR  # draw our own title bar?
 
@@ -49,25 +50,42 @@ def remove_caption(window: tk.Misc) -> None:
     user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS)
 
 
-def start_move(window: tk.Misc) -> None:
-    """Let Windows drag the window from here, exactly as if its title bar were grabbed.
+_moving: dict[str, tuple[int, int]] = {}   # window → where the pointer holds it (from its top left), while dragged
 
-    The request is POSTED, never sent: SendMessage would sit inside this Python callback
-    for the whole drag (with Python's lock released), while Windows keeps delivering the
-    window's events, and the first one that runs Python code kills the program
-    ("Fatal Python error: ... the GIL is released"). Posted, the drag starts from Tk's own
-    message loop once this callback has returned, just like grabbing a normal title bar."""
+
+def start_move(window: tk.Misc, event: tk.Event) -> None:
+    """A press on an empty part of our title bar: the window follows the pointer (follow_move)
+    until the button is let go (end_move), held where it was grabbed. Its place is always the
+    pointer's less that grip, never a speed carried on: let go, and it stays put."""
     if not CUSTOM:
         return
-    import ctypes
-    import ctypes.wintypes as wt
+    at = _place(window)
+    if at is not None:
+        _moving[str(window)] = (event.x_root - at[0], event.y_root - at[1])
 
-    user32 = ctypes.windll.user32
-    cursor = wt.POINT()
-    user32.GetCursorPos(ctypes.byref(cursor))
-    where = ((cursor.y & 0xFFFF) << 16) | (cursor.x & 0xFFFF)  # screen point, as signed 16-bit halves
-    user32.ReleaseCapture()
-    user32.PostMessageW(_hwnd(window), WM_NCLBUTTONDOWN, HTCAPTION, where)
+
+def follow_move(window: tk.Misc, event: tk.Event) -> bool:
+    """The pointer moved with the button held: the window follows, if a drag of it is under way
+    (True). Tk keeps sending the pointer to the pressed widget, even off the window."""
+    grip = _moving.get(str(window))
+    if grip is None:
+        return False
+    x, y = event.x_root - grip[0], event.y_root - grip[1]
+    if (x, y) != _place(window):
+        window.geometry(f"+{x}+{y}")
+    return True
+
+
+def _place(window: tk.Misc) -> tuple[int, int] | None:
+    """Where the window is, as `wm geometry` gives and takes it (the frame's top left): read the
+    way it's set, so a drag never starts with a jump of the frame's width."""
+    parsed = placement.parse(window.geometry())
+    return None if parsed is None else (parsed[2], parsed[3])
+
+
+def end_move(window: tk.Misc) -> bool:
+    """The button was let go: the drag is over (True if there was one)."""
+    return _moving.pop(str(window), None) is not None
 
 
 def work_area(window: tk.Misc) -> tuple[int, int, int, int]:

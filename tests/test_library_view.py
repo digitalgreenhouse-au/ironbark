@@ -14,7 +14,7 @@ import soundfile as sf
 from ironbark import library_index, settings, theme
 from ironbark.engine import Player
 from ironbark.library import Track
-from ironbark.library_view import LibraryView, added_text
+from ironbark.library_view import LibraryView, added_text, empty_text
 from ironbark.playlist_view import PlaylistView
 from ironbark.tabbar import MenuRow, Popover
 from ironbark.tagio.flac import FLACFile
@@ -159,6 +159,126 @@ def test_several_library_folders_and_add_folder(root, music, tmp_path, monkeypat
     w.close()
 
 
+def test_rebuild_the_library_forgets_a_folder_that_has_gone(root, music, monkeypatch):
+    """⋯ → Rebuild the library…: asked first ("Keep it" changes nothing); then everything stored
+    is forgotten and the library folders read again, so an album whose folder has gone (one a
+    normal look keeps, here the library folder emptied) leaves the list, and plays stay."""
+    import shutil
+
+    from ironbark import popups
+
+    monkeypatch.setattr(LibraryView, "_sorts", {})
+    w = LibraryView(root, [music], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    assert column(w, "album") == ["21", "Hits", "Tommy"]
+    shown = []
+    monkeypatch.setattr(popups.PopupMenu, "popup", lambda self, x, y: shown.append(self))   # (not shown)
+    w._more_menu()
+    assert "Rebuild the library…" in shown[-1].labels()
+    key = str(music / "Hits" / "01.flac")
+    w.index.db.record_play(key, 300, 300)
+    for name in ("21", "Hits", "Tommy"):
+        shutil.rmtree(music / name)
+    flac(music / "Blue" / "01.flac", title="River", artist="Joni Mitchell", album="Blue", date="1971")
+    asked = []
+    monkeypatch.setattr(popups, "confirm", lambda *a, **k: asked.append((a[1], k.get("danger"))) or False)
+    w.rebuild()
+    assert asked == [("Rebuild the library?", True)] and w._refresh is None
+    assert column(w, "album") == ["21", "Hits", "Tommy"]
+    monkeypatch.setattr(popups, "confirm", lambda *a, **k: True)
+    w.rebuild()
+    assert w._refresh is not None and w._refresh["fresh"] and column(w, "album") == []
+    wait_for_index(w, root)
+    assert column(w, "album") == ["Blue"]
+    assert w.index.db.play_counts([key]) == {key: 1}
+    w.close()
+
+
+def test_an_empty_library_says_why_its_folder_couldnt_be_looked_at(root, tmp_path, monkeypatch):
+    """A library folder that can't be seen (a drive unplugged, a network drive not connected) isn't
+    "No music found": the status line says so, and what to do."""
+    monkeypatch.setattr(settings, "settings_path", lambda: tmp_path / "app" / "settings.json")
+    gone = tmp_path / "Y" / "MUSIC"
+    w = LibraryView(root, [gone], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    wait_for_albums(w, root)
+    w._paint_status()
+    text = w._status_text
+    assert text.startswith(f"Can't see the library folder {gone}") and "No music found" not in text
+    assert "is its drive connected?" in text and text.endswith("press F5 to look again")
+    w.close()
+    assert empty_text("D:\\Music", "") == "No music found in D:\\Music"
+    assert empty_text("D:\\Music", "A different drive is at D:\\Music") == \
+        "A different drive is at D:\\Music: press F5 to look again"
+
+
+def test_a_first_look_fills_the_album_list_as_it_goes(root, music, monkeypatch):
+    """A rescan's albums come once at its end; a first look's (or a rebuild's) are asked for again
+    every FILL_EVERY_S as albums are stored, so a big library can be browsed while it's read."""
+    from ironbark import library_view
+
+    w = LibraryView(root, [music], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    wait_for_albums(w, root)
+    asked = []
+    monkeypatch.setattr(w, "_ask_albums", lambda: asked.append(1))
+    w._filling({"first": False})                  # a rescan: nothing asked
+    assert asked == []
+    job = {"first": True}
+    w._filling(job)
+    w._filling(job)                               # (again at once: not yet)
+    assert asked == [1] and job["filling"]
+    job["filled"] -= library_view.FILL_EVERY_S
+    w._filling(job)
+    assert asked == [1, 1]
+    w._filling({"fresh": True})
+    assert asked == [1, 1, 1]
+    w.close()
+
+
+def test_the_status_line_wraps_once_per_width_for_each_text(root, music, monkeypatch):
+    """(Seen on Windows: a first look's "3 albums so far · Building the library…" set the status line's
+    wrap and the window's width chasing each other, and Tk's idle loop never ended.) A width the
+    text has been wrapped at already isn't wrapped at again, so a cycle of widths stops; new text is
+    wrapped afresh."""
+    from ironbark import library_view
+
+    w = LibraryView(root, [music], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    wrapped = []
+    monkeypatch.setattr(library_view.theme, "wrap_inside", lambda label, width: wrapped.append(width))
+    w._say("3 albums so far · Building the library: reading songs… 5 of 8 files (62%) · 0:01")
+    for width in (300, 320, 300, 320, 300):       # (the chase: each width once)
+        w._wrap_status(width)
+    assert wrapped == [300, 320]
+    w._say("3 albums so far · Building the library: reading songs… 6 of 8 files (75%) · 0:02")
+    w._wrap_status(300)
+    assert wrapped == [300, 320, 300]
+    w.close()
+
+
+def test_a_slow_album_list_is_read_again_less_often(root, music, monkeypatch):
+    """A very big library's album list takes a while to read: during a first look it's read again
+    no more than every FILL_EVERY_S, and less often still when it's slow (at most FILL_SHARE of the time)."""
+    from ironbark import library_view
+
+    w = LibraryView(root, [music], None, lambda p: None, lambda r: None, lambda r, q: None)
+    wait_for_index(w, root)
+    wait_for_albums(w, root)
+    asked = []
+    monkeypatch.setattr(w, "_ask_albums", lambda: asked.append(1))
+    w._albums_took = 2.0                           # (2 s to read: every 8 s at most)
+    job = {"first": True}
+    w._filling(job)
+    job["filled"] -= library_view.FILL_EVERY_S + 0.1
+    w._filling(job)
+    assert asked == [1]
+    job["filled"] -= 2.0 / library_view.FILL_SHARE
+    w._filling(job)
+    assert asked == [1, 1]
+    w.close()
+
+
 def test_adding_a_folder_inside_or_around_the_library_folders():
     """(0.31) No album is ever listed twice: a folder inside a library folder is already in the
     library; one that holds library folders takes their place."""
@@ -185,6 +305,32 @@ def test_track_list_artist_and_album_columns(root):
     assert view.tree.cget("displaycolumns") == ("no", "title", "artist", "album", "time")
     assert (view.tree.set("0", "title"), view.tree.set("0", "artist"), view.tree.set("0", "album")) == (
         "Song", "Singer", "Record")
+
+
+def test_a_list_that_grows_keeps_the_song_at_the_top_and_the_one_selected(root):
+    """The Library tab filling in as a first look reads: albums arrive above what's on show, and the
+    view stays on the same songs (show_tracks_at) rather than jumping."""
+    def album(name, count):
+        return [Track(Path(f"C:/M/{name}/{n:02d}.flac"), f"{name} {n}", album=name, track_no=n)
+                for n in range(1, count + 1)]
+
+    root.deiconify()
+    root.geometry("400x300")
+    view = PlaylistView(root, on_play=lambda i: None)
+    view.frame.pack(fill="both", expand=True)
+    view.set_tracks(album("M", 20) + album("T", 20))
+    root.update()
+    view.list.scroll_to(view._row_of(25))                 # T 6 at the top of the view
+    view.list.select(view._row_of(27), see=False)          # T 8 selected
+    top, chosen = view.top_track(), view.selected_track()
+    assert (top, chosen) == (25, 27)
+    grown = album("A", 30) + album("M", 20) + album("T", 20)   # (30 songs arrive above them)
+    view.set_tracks(grown)
+    view.show_tracks_at(top + 30, chosen + 30)
+    root.update()
+    assert grown[view.top_track()].title == "T 6" and grown[view.selected_track()].title == "T 8"
+    view.show_tracks_at(-1, None)                          # (a song not in the new list: no move)
+    assert grown[view.top_track()].title == "T 6"
 
 
 def test_up_next_line_and_list(root):
