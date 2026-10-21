@@ -12,6 +12,7 @@ changed meanwhile is caught by its identity at the end.
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 
 from .growing import open_shared
@@ -93,11 +94,20 @@ def _classify(error: OSError, path=None) -> Exception:
 
 class ShareFetcher:
     """One song on a share (or OneDrive). The file is kept open between chunks (unbuffered), so a
-    resumed or continued read is just a seek."""
+    resumed or continued read is just a seek.
+
+    `close()` never waits. Windows' C runtime holds a file's lock for the whole of a read, and a
+    close (or seek) from another thread waits for it — for a read stuck on a server that has
+    stopped answering, a minute or more, and the cache calls `close()` with its own lock held (a tag
+    save on the window's thread, quitting). So a close that comes while a read is under way only
+    marks the file, and the thread reading closes it as soon as its read returns."""
 
     def __init__(self, path):
         self.path = os.fspath(path)
         self._file = None
+        self._guard = threading.Lock()   # (held only for a moment: never across a read)
+        self._reading = 0                # reads under way
+        self._close_due = False          # close() came while a read was under way
 
     def identity(self) -> Identity:
         try:
@@ -108,26 +118,49 @@ class ShareFetcher:
 
     def read(self, offset: int, n: int) -> bytes:
         """Up to `n` bytes from `offset` (fewer only at the end of the file)."""
+        with self._guard:
+            self._reading += 1
+            f = self._file   # (None: opened here — after a close, a read opens the file afresh)
         try:
-            if self._file is None:
-                self._file = open_shared(self.path)
-            self._file.seek(offset)
+            if f is None:
+                f = open_shared(self.path)
+                with self._guard:
+                    self._file = f
+            f.seek(offset)
             parts, got = [], 0
             while got < n:
-                piece = self._file.read(n - got)
+                piece = f.read(n - got)
                 if not piece:
                     break
                 parts.append(piece)
                 got += len(piece)
             return b"".join(parts)
         except OSError as error:
-            self.close()
+            with self._guard:
+                self._close_due = True
             raise _classify(error, self.path) from error
+        finally:
+            with self._guard:
+                self._reading -= 1
+                due = self._close_due and not self._reading
+                if due:
+                    f, self._file, self._close_due = self._file, None, False
+            if due:
+                _quietly_close(f)
 
     def close(self) -> None:
-        f, self._file = self._file, None
-        if f is not None:
-            try:
-                f.close()
-            except OSError:
-                pass
+        """Let go of the file on the server: at once, or — a read under way — as that read returns."""
+        with self._guard:
+            if self._reading:
+                self._close_due = True
+                return
+            f, self._file = self._file, None
+        _quietly_close(f)
+
+
+def _quietly_close(f) -> None:
+    if f is not None:
+        try:
+            f.close()
+        except OSError:
+            pass

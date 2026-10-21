@@ -4,6 +4,22 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.52.1 — 21/10/2026
+
+- Fixed: with music on a network drive, a server that stopped answering mid-download could freeze
+  the window when that song's tags were saved, and hold up closing the player until the server
+  gave up (a minute or more). Letting go of a song's file on the server no longer waits for a
+  read that's stuck.
+- Fixed: a download given up on (its server stuck for two minutes) left its song marked as
+  downloading for good — never fetched again, and not even cleared by Empty the cache — and the
+  next try waited on the same stuck file. It now starts again on a fresh one.
+- Fixed: a part-downloaded copy cut short or deleted by another program could have the gap filled
+  with silence and counted as downloaded, or retry the same failing step every few seconds. It is
+  now taken as a copy gone missing and fetched again.
+- Fixed: one error in the window's background work could stop every later load from finishing
+  for the rest of the session (tabs left on "Loading…"). Each piece now runs on its own; an error
+  is reported and the rest carry on. The Library view's list keeps going after an error too.
+
 ## 0.52.0 — 21/10/2026
 
 - Fixed (Windows): a library folder on some network drives still couldn't be read after 0.51.5 —

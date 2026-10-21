@@ -195,6 +195,8 @@ class _Worker:
         self.thread: threading.Thread | None = None
         self.abandoned = False
         self.call_since: float | None = None
+        self.item: Item | None = None   # the song it's working on
+        self.fetcher = None             # the fetcher of its latest call (its file on the server)
 
 
 class Host:
@@ -1324,6 +1326,7 @@ class Manager:
                         w.abandoned = True
                         host.stuck.append(w)
                         host.worker = None
+                        self._let_go_of(w)
                         self._host_down(host, now)
                     elif stuck_for > HOST_DOWN_S:
                         if host.state != DOWN:
@@ -1340,6 +1343,23 @@ class Manager:
                     host.told = True
                     self.notices.append(f"{host.name} hasn't answered for over a minute: its songs will carry on "
                                         f"downloading when it's back")
+
+    def _let_go_of(self, w: _Worker) -> None:
+        """An I/O thread given up on (its call stuck): the song it was on no longer counts as
+        downloading (so it's fetched again, or evicted), and its file on the server is taken off the
+        song — a replacement thread opens one of its own rather than wait on the stuck one. That
+        file is let go as the stuck call returns (fetch.ShareFetcher.close never waits). Lock held."""
+        item, fetcher = w.item, w.fetcher
+        if item is not None and item.state == DOWNLOADING:
+            item.state, item.dirty = PARTIAL, True
+            item.notify()   # (lock order: the manager's, then the song's)
+        if item is not None and fetcher is not None and self._fetchers.get(item.key) is fetcher:
+            del self._fetchers[item.key]
+        if fetcher is not None:
+            try:
+                fetcher.close()
+            except Exception:   # noqa: BLE001
+                pass
 
     def _run_host_probes(self) -> None:
         while not self._stop.is_set():
@@ -1418,9 +1438,14 @@ class Manager:
         """One call that may wait on the network, watched by the scheduler."""
         with self._lock:
             w.call_since = self._clock()
+            w.fetcher = getattr(fn, "__self__", None)   # (whose file a stuck call is in: see _let_go_of)
             host.calls += 1
         try:
             result = fn(*args)
+        except Exception as error:
+            if w.abandoned:   # (a stuck call that failed in the end: given up on all the same)
+                raise _Abandoned() from error
+            raise
         finally:
             with self._lock:
                 w.call_since = None
@@ -1445,11 +1470,13 @@ class Manager:
                     host.cond.wait(0.5)
                     continue
             if look_at is not None:
+                w.item = None
                 try:
                     self._look_for_host(host, w, look_at)
                 except _Abandoned:
                     return
                 continue
+            w.item = item
             try:
                 self._transfer(host, w, item)
             except _Abandoned:
@@ -1483,16 +1510,18 @@ class Manager:
                         item.state, item.dirty = PARTIAL, True
                     item.retry_at = self._wall() + TRANSIENT_RETRY_S
             finally:
-                with host.cond:
-                    if host.assigned is item and (item.state in (READY, DOWNLOADED, VERIFYING, FAILED)
-                                                  or item.complete or item.room_check or item.plan_check):
-                        host.assigned = None
-                    carries_on = host.assigned is item
-                if not carries_on:
-                    # (Its file on the server isn't held open while nothing is fetching it: skipped
-                    # part-way, or something more important first. A resume opens it again.)
-                    self._close_fetcher(item)
-                self._wake.set()
+                # (Given up on: the song and its file now belong to the thread that replaced this one.)
+                if not w.abandoned:
+                    with host.cond:
+                        if host.assigned is item and (item.state in (READY, DOWNLOADED, VERIFYING, FAILED)
+                                                      or item.complete or item.room_check or item.plan_check):
+                            host.assigned = None
+                        carries_on = host.assigned is item
+                    if not carries_on:
+                        # (Its file on the server isn't held open while nothing is fetching it: skipped
+                        # part-way, or something more important first. A resume opens it again.)
+                        self._close_fetcher(item)
+                    self._wake.set()
 
     def _fetcher(self, item: Item):
         fetcher = self._fetchers.get(item.key)
@@ -2201,14 +2230,23 @@ class _Writer:
             self._close(island.start)
             source = self._path(island)
             if end > reached:
-                out.seek(reached - (0 if target is None else target.start))
-                with open_shared(source) as f:
+                at = reached - (0 if target is None else target.start)
+                if out.seek(0, os.SEEK_END) < at:
+                    # Cut short behind the cache's back since it was opened (as write() checks):
+                    # appending here would leave a hole of zeros that plays as silence.
+                    raise self._cut_behind(self._path(target))
+                out.seek(at)
+                try:
+                    f = open_shared(source)
+                except FileNotFoundError:   # (deleted behind the cache's back: its bytes won't come back)
+                    raise self._cut_behind(source) from None
+                with f:
                     f.seek(reached - island.start)
                     left = end - reached
                     while left > 0:
                         chunk = f.read(min(left, 1 << 20))
                         if not chunk:
-                            raise OSError(f"{source.name} is shorter than recorded")
+                            raise self._cut_behind(source)
                         out.write(chunk)
                         if target is None and item.scanner is not None:
                             item.scanner.feed(chunk)

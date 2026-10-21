@@ -61,6 +61,7 @@ the view, F5 rescans, Ctrl+F goes to the search box."""
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
@@ -97,6 +98,8 @@ from .playlist_view import TreeDrag, fit_columns
 from .quick_search import Actions, add_song_items, album_text, count_text, shared_catalogue, song_name, song_values
 from .searchfold import fold
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
+
+log = logging.getLogger(__name__)
 
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)
 SEARCH_DELAY_MS = 150   # the list follows the search box after a pause in typing, as the track list does
@@ -541,6 +544,7 @@ class LibraryView:
         self._problem = ""                     # the album list couldn't be read
         self._look_error = ""                  # why this window's last look at the folders failed
         self._tick_job = None
+        self._tick_errors: set[str] = set()     # kinds of error the tick has logged (each once)
         self._status_text = ""
         # The song views: what's wanted, what's here (see _want_songs).
         self._songs_wanted: tuple | None = None
@@ -739,10 +743,22 @@ class LibraryView:
 
     def _tick(self):
         """Every TICK_MS: take in the album list, the song lists and what the indexer says. Tk is
-        only touched when something came in."""
+        only touched when something came in. An error in it is logged (the first of its kind) and
+        the tick carries on: one slip mustn't leave the Library frozen while it's on show."""
         self._tick_job = None
         if not self.frame.winfo_exists():
             return
+        try:
+            self._take_news()
+        except Exception as error:
+            kind = type(error).__name__
+            if kind not in self._tick_errors:
+                self._tick_errors.add(kind)
+                log.exception("the Library view's tick failed: %s (carrying on; more of these aren't logged)", kind)
+        if self.frame.winfo_exists():
+            self._tick_job = self.frame.after(TICK_MS, self._tick) if self.shown else None
+
+    def _take_news(self):
         news = False
         while True:
             try:
@@ -807,7 +823,6 @@ class LibraryView:
         news = self._follow_check() or news
         if news or job is not None:
             self._paint_status()
-        self._tick_job = self.frame.after(TICK_MS, self._tick) if self.shown else None
 
     def _filling(self, job: dict):
         """Albums were stored during this window's own refresh. A rescan's list comes once, at its
