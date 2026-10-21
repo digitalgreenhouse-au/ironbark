@@ -308,6 +308,7 @@ class Indexer:
         self._read = (0, 0)               # (files read, files to read) by the look under way
         self._clock = 0.0                 # the last time handed out by _now
         self._root_error: OSError | None = None   # why the library folder being walked couldn't be listed
+        self._emptied = 0                 # how many times the library has been cleared (empty)
 
     # -- listeners and control --
     def listen(self) -> queue.SimpleQueue:
@@ -387,7 +388,10 @@ class Indexer:
         only = None if folders is None else {os.fspath(f) for f in folders}
         if not roots:
             return Diff(error="No library folder")
+        emptied = self._emptied
         with self._lock:
+            if self._emptied != emptied:   # (asked for before the library was cleared: its folders are gone)
+                return Diff(cancelled=True)
             self._cancel.clear()
             started = self._now()
             if not dry:
@@ -432,6 +436,19 @@ class Indexer:
     def changes(self, roots: Iterable[str | Path]) -> Diff:
         """What's added / changed / gone since the database last looked; nothing is read or stored."""
         return self.check(roots, dry=True)
+
+    def empty(self) -> None:
+        """Clear the library: no library folders any more, and nothing stored for any (plays,
+        favourites and quality checks stay: they're keyed by the file, for if its music is added
+        back). A look under way is stopped first, and one asked for meanwhile, for the old folders,
+        does nothing. Listeners hear that every album changed."""
+        self.cancel()
+        with self._lock:
+            self._emptied += 1
+            self.db.set_roots([])   # (everything stored for each folder goes with it)
+            self.db.clear()
+            self._albums = set()
+            self._albums_changed(everything=True)
 
     def _check(self, roots: list[str], hold, only: set[str] | None, json_index: Path | None, dry: bool,
                started: float, diff: Diff) -> None:

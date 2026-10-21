@@ -170,7 +170,7 @@ from .statustext import (
     network_now_line,
     output_line,
 )
-from .tabbar import ElsewhereButton, MenuRow, Popover, TabBar, Tooltip, glyph
+from .tabbar import MenuRow, Popover, TabBar, Tooltip, glyph
 from .tag_window import TagHistoryWindow, TagWindow
 from .tools.details import NowPlayingWindow
 from .tools.meters import album_files
@@ -321,11 +321,12 @@ def default_music_folder() -> Path:
 
 def library_folders(prefs: dict) -> list[Path]:
     """The library folders in the settings (`library_folders`; before there could be several,
-    `library_folder`), else the system's Music folder. Each once, and none inside another
-    (library_db.outermost: its albums would be listed twice)."""
+    `library_folder`), else the system's Music folder — or none at all after Settings → Library →
+    Clear the library… (`library_empty`), until a folder is added. Each once, and none inside
+    another (library_db.outermost: its albums would be listed twice)."""
     folders = prefs.get("library_folders") or ([prefs["library_folder"]] if prefs.get("library_folder") else [])
     found = library_db.outermost(folder for folder in folders if isinstance(folder, str) and folder)
-    return found or [default_music_folder()]
+    return found or ([] if prefs.get("library_empty") else [default_music_folder()])
 
 
 def _look_once(look: watcher.Watcher, index: library_index.LibraryIndex) -> None:
@@ -931,8 +932,8 @@ class PlayerWindow:
         # over the line, so nothing else moves).
         self.undo_link = ttk.Label(body, text=f"Undo ({keys.hint('undo')})", style="UpNext.TLabel", cursor="hand2")
         self.undo_link.bind("<Button-1>", lambda e: self._link_clicked())
-        # Music in another tab: pause / play at the end of the status line (tabbar.ElsewhereButton).
-        self.elsewhere_button = ElsewhereButton(body, self.root, self.status_label, lambda: self.player.toggle_pause())
+        # Music in another tab: pause / play at the end of the status line (controls.ElsewhereButton).
+        self.elsewhere_button = controls.ElsewhereButton(body, self.status_label, lambda: self.player.toggle_pause())
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu,
@@ -3001,8 +3002,10 @@ class PlayerWindow:
             self.open_tab("folder", folder, play=True)
 
     def _library_root(self) -> Path:
-        """The (first) library folder."""
-        return library_folders(self.prefs)[0]
+        """The (first) library folder — the system's Music folder when there's none (the library
+        cleared): where a folder dialog starts."""
+        folders = library_folders(self.prefs)
+        return folders[0] if folders else default_music_folder()
 
     def _library_roots(self) -> list[Path]:
         """The library folders the player reads now: all of them, or with Local network access off,
@@ -3115,7 +3118,8 @@ class PlayerWindow:
                               song_columns=tuple(self.prefs.get("library_song_columns") or ()),
                               on_song_columns=lambda columns: self.prefs.update(library_song_columns=columns),
                               on_close=lambda: self._show_library_view(False),
-                              on_songs=lambda: self._show_library_view(False))
+                              on_songs=lambda: self._show_library_view(False),
+                              left_out=lambda: unsearched_note(library_folders(self.prefs), self.prefs, "Not read"))
         library.frame.pack_forget()
         library.hidden()
         self.keys.mark(library.tree, "library")
@@ -3737,7 +3741,8 @@ class PlayerWindow:
         (library_index.LibraryIndex.set_roots), then the library is looked through again on a worker."""
         folders = library_db.outermost(folders)
         self.prefs["library_folders"] = [str(f) for f in folders]
-        self.prefs["library_folder"] = str(folders[0])   # (what a version before several folders reads)
+        self.prefs["library_folder"] = str(folders[0]) if folders else ""   # (what a version before several folders reads)
+        self.prefs["library_empty"] = not folders   # (none: the library was cleared — not the Music folder)
         index = self._index()   # (takes the new folders on: a look still under way for the old ones stops)
         self.root.after_idle(self._paint_library_folders)   # (not now: the Remove clicked is one of the rows)
         if self._library is not None:
@@ -3825,6 +3830,10 @@ class PlayerWindow:
         for child in self.library_rows.winfo_children():
             child.destroy()
         folders = library_folders(self.prefs)
+        settings_view.paint_library_buttons(self)
+        if not folders:   # (the library was cleared; short enough for a 300 px window, Add folder… just below)
+            ttk.Label(self.library_rows, text="No folders: the Library is empty",
+                      style="PopMuted.TLabel").pack(anchor="w")
         for folder in folders:
             row = ttk.Frame(self.library_rows, style="Pop.TFrame")
             row.pack(fill="x", pady=theme.pad(0, theme.GAP_HAIR))
@@ -4966,6 +4975,8 @@ class PlayerWindow:
                     reach = max(reach, distance)
             self.status_more.place(in_=self.status_row, x=0, y=-reach, relwidth=1.0, height=reach)
             self.root.tk.call("raise", str(self.status_more))   # (over the list's foot, whatever came after)
+            if self.elsewhere_button.winfo_manager():   # (…but under the pause button, a little taller than its line)
+                self.root.tk.call("raise", str(self.elsewhere_button))
         elif self.status_more.winfo_manager():
             self.status_more.place_forget()
 
@@ -5274,6 +5285,8 @@ class PlayerWindow:
                                "to carry on")
             elif shown.blank:
                 self._set_head(shown.title, "Open your library, a folder or a playlist", "")
+            elif shown.main and self.prefs.get("library_empty") and not shown.tracks:   # (the library was cleared)
+                self._set_head(shown.title, "Empty: add a folder in Settings → Library", "")   # (fits 300 px)
             elif shown.kind == "library" and shown.last_index < 0:   # (its first album's artist would mislead)
                 self._set_head(shown.title, "Press play to start", self._album_summary(shown))
             else:

@@ -20,7 +20,19 @@ from collections.abc import Callable
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from . import controls, devices, experiments, keyfocus, keys, levelling, netcheck_view, platforms, settings, theme
+from . import (
+    controls,
+    devices,
+    experiments,
+    keyfocus,
+    keys,
+    levelling,
+    library_clear,
+    netcheck_view,
+    platforms,
+    settings,
+    theme,
+)
 from .analysis import GUARD_HEADROOM_CHOICES, headroom_index, headroom_label
 from .tabbar import IconButton, Popover, SettingRow, Tooltip
 
@@ -184,6 +196,16 @@ def pop_button(parent, text: str, command, label: str = "") -> controls.PillButt
     """(0.21.0) A button in a pop-over (Settings): a small plain pill, like the rest of the app's
     buttons instead of a stock ttk button."""
     return controls.PillButton(parent, text, command, kind="plain", small=True, bg="SURFACE", label=label)
+
+
+def paint_library_buttons(win):
+    """Settings → Library: Rebuild the library… greyed while no library folder can be read, and
+    Clear the library… once the Library is empty (nothing to clear)."""
+    rebuild, clear = getattr(win, "library_rebuild_button", None), getattr(win, "library_clear_button", None)
+    if rebuild is None or clear is None or not rebuild.winfo_exists():
+        return
+    rebuild.set_enabled(bool(win._library_roots()))
+    clear.set_enabled(not win.prefs.get("library_empty"))
 
 
 def choice_box(parent, label: str, values, *, state: str = "readonly", full: bool = False,
@@ -419,11 +441,20 @@ def build_controls(win, view: SettingsView):
         "Why a library folder won't load: whether its server and the folder answer, and which way of "
         "listing it works. Saves a report and opens it (nothing is changed or sent)")
     win.check_folders_button.pack(side="left")
+    # The whole library's own buttons, on a row of their own (both fit a 300 px window).
     row = ttk.Frame(b, style="Pop.TFrame")
-    row.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0))
-    pop_button(row, "Rebuild the library…", win._rebuild_library,
-               "Start the library again: forget what's stored about your music and read its folders "
-               "from scratch (your music files, plays and favourites stay)").pack(side="left")
+    row.pack(fill="x", pady=theme.pad(theme.GAP, 0))
+    win.library_rebuild_button = pop_button(
+        row, "Rebuild the library…", win._rebuild_library,
+        "Start the library again: forget what's stored about your music and read its folders "
+        "from scratch (your music files, plays and favourites stay)")
+    win.library_rebuild_button.pack(side="left")
+    win.library_clear_button = pop_button(
+        row, "Clear the library…", lambda: library_clear.clear(win),
+        "Start again with an empty Library: every folder taken out and what's stored about your "
+        "music forgotten (your music files, plays and favourites stay)")
+    win.library_clear_button.pack(side="left", padx=theme.pad(theme.GAP, 0))
+    paint_library_buttons(win)
     setting(b, win.root, "Local network access", LOCAL_NETWORK_TEXT, win.local_network, win._local_network_changed)
 
     caption(b, "Help")

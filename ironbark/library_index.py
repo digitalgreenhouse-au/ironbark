@@ -224,6 +224,14 @@ class LibraryIndex:
         self.last_diff = diff
         return diff
 
+    def empty(self) -> None:
+        """Clear the library… (Settings → Library): no library folders, and nothing stored about the
+        music; plays, favourites and quality checks stay. Safe from any thread except Tk's."""
+        self.set_roots([])
+        self.indexer.empty()
+        self.refreshed = time.time()
+        self.last_diff = None
+
     def update(self, paths: Iterable[str | Path]) -> Diff:
         """These files have just changed (a tag edit was saved): read them again now."""
         diff = self.indexer.update(self.roots, paths)
