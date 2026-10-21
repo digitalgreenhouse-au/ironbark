@@ -168,6 +168,11 @@ touched, and your plays, favourites and quality checks are kept. Only *Recently 
 again, from when each file was made. A big library takes a while to read, and you can keep
 listening meanwhile.
 
+To start again with an **empty** Library, use **Clear the library…** in Settings → Library. Every
+folder is taken out and everything Ironbark has stored about your music is forgotten; the Library
+stays empty until you add a folder (**Add folder…**). Your music files aren't touched, and your
+plays, favourites and quality checks are kept for if you add the music back.
+
 ### Searching for a song
 
 **Ctrl+K** (from any Ironbark window) opens the song search. Type two or more letters: songs, albums
