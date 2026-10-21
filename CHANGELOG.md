@@ -4,6 +4,32 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.52.3 — 21/10/2026
+
+- Fixed: songs or an album added to a blank **New tab** (from the Library, by dragging, or dropped
+  from Explorer) were said to be added but stayed hidden behind its empty page. The tab now becomes
+  a real tab showing them (an album added whole opens there, as if opened from it).
+- Fixed: while the Library tab fills in (a first look at a big library, or a Rebuild), music playing
+  from it lost its place. After a song from **Up next**, the Library now carries on after the song it
+  interrupted instead of from its first song; and with **shuffle** on, what's lined up next and what
+  Previous goes back to no longer change every few seconds.
+- FLAC files at 12, 20 or 32 bits are valid, but the player's decoder plays only 8, 16 and 24-bit
+  FLAC. They're now listed as "can't be played" — not offered for playing, and no longer called
+  damaged by the library's quality check (songs already in your library included).
+- Fixed: with music on a network drive, one unexpected error could stop the player starting network
+  songs before they had finished downloading, or stop it asking again whether a server was back,
+  for the rest of the session.
+- Fixed: a song or artist name with a line break in it added a phantom missing song to a saved
+  playlist.
+- Linux: a malformed request from another program no longer switches off the media keys and the
+  sound menu's controls.
+- A big library's first look no longer gives up on its helper processes (and slows down) while they
+  read one very large folder, such as thousands of singles in one folder on a slow network share.
+- Two tabs that hold the same thing are no longer mistaken for each other (closing, deleting a
+  playlist).
+- With music on a network drive, a song downloaded again after being cleared from the cache can no
+  longer have its new copy deleted by the tidy-up of its old one.
+
 ## 0.52.2 — 21/10/2026
 
 - **Clear the library…** in Settings → Library: start again with an empty Library. Every folder is

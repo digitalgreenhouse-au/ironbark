@@ -387,6 +387,11 @@ class Manager:
             real = os.fspath(audiofile.real_path(path))
             source = (self.classifier.unc(path) or real) if kind is Kind.SHARE else real
             item = Item(self.store, key=key, kind=kind.value, source=source, host=host, ext=_ext_of(real))
+            # Back after an eviction while an old version still waits to be deleted (open elsewhere):
+            # files are named by song and version, so the new copy takes a version of its own.
+            waiting = [gen for old, gen, _final in self._stale if old.id == item.id]
+            if waiting:
+                item.gen = max(waiting) + 1
             self._wire(item)
             self.items[key] = item
         self._paths.setdefault(key, path)
@@ -1367,9 +1372,13 @@ class Manager:
                 host = self._probe_hosts.get(timeout=0.5)
             except queue.Empty:
                 continue
-            ok = host.kind != "share" or (self._tcp_can_tell(host) and bool(self._probe_host(host.name)))
-            if not ok and self._look_at_files(host, self._clock()):
-                continue   # (its I/O thread says whether it's back)
+            try:
+                ok = host.kind != "share" or (self._tcp_can_tell(host) and bool(self._probe_host(host.name)))
+                if not ok and self._look_at_files(host, self._clock()):
+                    continue   # (its I/O thread says whether it's back)
+            except Exception:   # noqa: BLE001 — never end this thread: a server it stopped asking stays "down"
+                log.warning("music cache: couldn't ask %s whether it's back", host.name, exc_info=True)
+                ok = False
             self._answered(host, ok, self._clock())
 
     @staticmethod
@@ -1791,7 +1800,13 @@ class Manager:
                 self._probe_wake.wait(0.25)
                 self._probe_wake.clear()
                 continue
-            self._probe(item)
+            try:
+                self._probe(item)
+            except Exception as error:   # noqa: BLE001 — never end this thread: no song would start early again
+                log.warning("music cache: couldn't look inside %s", item.source, exc_info=True)
+                with self._lock:
+                    item.info["open_error"] = str(error) or type(error).__name__   # (so it isn't picked again)
+                    item.dirty = True
 
     def _probe(self, item: Item) -> None:
         gen = item.gen
@@ -1816,6 +1831,10 @@ class Manager:
                 if item.gen == gen:
                     item.info["open_error"] = str(error)
                     item.dirty = True
+            return
+        if getattr(f, "gate", None) is None:   # the checked copy was put in place meanwhile: nothing to learn
+            f.close()
+            time.sleep(0.05)
             return
         try:
             found = dict(format=f.format, subtype=f.subtype, rate=f.samplerate, channels=f.channels, frames=f.frames)

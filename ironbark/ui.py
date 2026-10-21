@@ -139,7 +139,7 @@ from . import (
     winstate,
 )
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim
-from .engine import Player, State
+from .engine import CARRY_AFTER, CARRY_BEFORE, Player, State
 from .favourites import Favourites
 from .help_window import AboutWindow, HelpWindow
 from .library import (
@@ -464,7 +464,7 @@ def _queued_alone(playing_tab: int | None, status) -> bool:
     return playing_tab is None and status.track is not None and status.state is not State.STOPPED
 
 
-@dataclass
+@dataclass(eq=False)   # a tab is itself, not its contents: two blank tabs are two tabs ("tab in self.tabs")
 class Tab:
     kind: str                         # "album" (from the Library), "folder" (everything under it), "library",
                                       # "playlist" (an .m3u8 file; path is the file), "files" (music files
@@ -560,6 +560,17 @@ def place_new_tab(tabs: list[Tab], current: int, tab: Tab) -> int:
         return current
     tabs.append(tab)
     return len(tabs) - 1
+
+
+def use_up_blank(tab: Tab, kind: str, path) -> None:
+    """Something added to a blank tab makes it a real tab first, as opening something from it does
+    (else the songs would sit unseen behind its empty page): "album" for an album added whole, or
+    "files" for songs (its path the first one's folder; its songs are its extras)."""
+    if tab.blank:
+        tab.kind, tab.path = kind, str(path)
+        tab.info_requested = False
+        if tab.tracks is None:
+            tab.tracks = []
 
 
 def tab_numbers(tab: Tab) -> tuple[int, int, float]:
@@ -1883,6 +1894,13 @@ class PlayerWindow:
         playing = self.player.status().track if index == self.playing_tab else None
         if playing is not None:
             keys["playing"] = audiofile.key(playing.path)
+            # The list's own songs round it in play order — the one playing, or the one a queued song
+            # interrupted, and those either side — read in the new list too, so the player finds its
+            # place (and, shuffling, its order) there instead of starting the Library again.
+            place = getattr(self.player, "index", -1)
+            around = getattr(self.player, "order_around", None)
+            order = around(place, CARRY_BEFORE, CARRY_AFTER) if around and place >= 0 else []
+            keys.update((f"order {n}", key_of(i)) for n, i in enumerate(order))
         library, seen, started, last_index = self._index(), tab.grown, time.monotonic(), tab.last_index
 
         def work():
@@ -1894,8 +1912,12 @@ class PlayerWindow:
             tracks = self._library_tracks(albums)
             found = {name: _index_of_key(tracks, key) for name, key in keys.items() if key is not None}
             ready = getattr(tracks, "ready", None)
-            if ready is not None and found.get("playing", -1) >= 0:
-                ready(found["playing"])   # (its album read: the player finds the song in the new list)
+            wanted = [found[name] for name in found if (name == "playing" or name.startswith("order "))
+                      and found[name] >= 0]
+            if ready is not None and wanted:
+                for place in wanted:
+                    ready(place)   # (its album read: the player finds the song in the new list)
+                ready(wanted[0], around=wanted[1:])   # (and all of them held)
             return generation, tracks, going, found
 
         def then(value):
@@ -3049,6 +3071,14 @@ class PlayerWindow:
         elif tab.kind == "playlist":
             self.add_to_playlist(Path(tab.path), tracks)
             message = f"Added “{name}” ({len(tracks)} songs) to “{tab.title}”"
+        elif tab.blank:   # (the album opens there, as if opened from it)
+            use_up_blank(tab, "album", album)
+            tab.tracks = tracks
+            if self._tab_index(tab) == self.current:
+                self._show_current_tab()
+            else:
+                self._refresh_tabs()
+            message = f"Opened “{name}” ({len(tracks)} songs) in the new tab"
         else:
             tab.extras.append(str(album))
             if tab.tracks is not None:  # (not loaded yet: loading it will include the album)
@@ -4696,6 +4726,8 @@ class PlayerWindow:
             self.add_to_playlist(Path(tab.path), tracks)
             count = len(tracks)
             return f"Added {count} song{'' if count == 1 else 's'} to “{tab.title}”"
+        was_blank = tab.blank
+        use_up_blank(tab, "files", Path(audiofile.real_path(tracks[0].path)).parent)
         # Songs are told apart by audiofile.key: a CUE track's path is its whole image file.
         have = _keys_held(tab.tracks, [audiofile.key(t.path) for t in tracks]) if tab.tracks else set()
         new = [t for t in tracks if audiofile.key(t.path) not in have]
@@ -4705,7 +4737,7 @@ class PlayerWindow:
         # tab comes back the same after a restart.
         brought = {audiofile.key(t.path) for t in new} | {str(album_folder(t.path)) for t in new}
         for extra in extras:
-            if extra in brought and extra not in tab.extras and Path(extra) != Path(tab.path):
+            if extra in brought and extra not in tab.extras and (tab.kind == "files" or Path(extra) != Path(tab.path)):
                 tab.extras.append(extra)
         if tab.tracks is not None:  # (not loaded yet: loading it will include them)
             tab.tracks = tab.tracks + new
@@ -4714,6 +4746,8 @@ class PlayerWindow:
                 self.player.set_tracks(tab.tracks, keep_playing=True)
             if index == self.current:
                 self._show_current_tab()
+            elif was_blank:
+                self._refresh_tabs()   # (its name on the strip)
         count = len(new)
         return f"Added {count} song{'' if count == 1 else 's'} to “{tab.title}”"
 

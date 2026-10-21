@@ -891,3 +891,46 @@ def test_no_tk_call_off_tks_thread_while_the_library_is_built_and_rescanned(tk_t
         gc.collect()   # on this thread (Tk objects freed on another thread abort Python)
     library_index.close_shared()
     assert tk_thread_rule == []
+
+
+def test_workers_busy_with_a_big_folder_arent_given_up_while_they_read_files(tmp_path, db):
+    """A single folder of thousands of songs on a slow network share can take longer than `stall`
+    to read: while the workers keep reading files, they're busy, not stuck."""
+    root = tree(tmp_path / "Music", {"Singles": 6})
+    read_in_pool, count = Reader(), [0]
+
+    class Slow:
+        def submit(self, fn, *args):
+            from concurrent.futures import Future
+            future = Future()
+
+            def work():
+                for _ in range(15):          # 1.5 s on one folder, a file read every 0.1 s
+                    time.sleep(0.1)
+                    count[0] += 1
+                future.set_result(fn(*args[:-1], read_in_pool))
+            threading.Thread(target=work, daemon=True).start()
+            return future
+
+        def shutdown(self, **kwargs):
+            pass
+
+    here = Reader()
+    look = Indexer(db, reader=here, pool_min=0, pool_factory=lambda workers: Slow(), stall=0.5,
+                   files_read=lambda: count[0])
+    diff = look.check([root])
+    assert len(diff.added) == 6 and here.read == [] and len(read_in_pool.read) == 6   # (never re-read here)
+
+
+def test_the_worker_processes_count_the_files_they_read(tmp_path):
+    root = tmp_path / "Music"
+    for n in range(1, 4):
+        flac(root / "A" / f"{n:02d} Song.flac", title=f"Song {n}", album="A")
+    pool = indexer.make_pool(1)
+    try:
+        before = indexer.files_read_so_far()
+        listing = {p.name: (p.stat().st_size, p.stat().st_mtime_ns, 1.0e9) for p in (root / "A").iterdir()}
+        result = pool.submit(indexer._read_job, str(root), str(root / "A"), listing, None, "", None).result(timeout=120)
+    finally:
+        pool.shutdown()
+    assert indexer.files_read_so_far() - before == 3 and result is not None
