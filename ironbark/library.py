@@ -321,10 +321,27 @@ def _read_flac(path: Path) -> Track:
     return _flac_track(path, audio)
 
 
+# The bit depths the decoder (libsndfile 1.2.x) opens FLAC at. Others (12, 20, 32-bit) are valid FLAC
+# that it refuses as "data in an unimplemented format": listed as such, not as damaged files.
+FLAC_DECODER_BITS = (8, 16, 24)
+
+
+def flac_depth_problem(depth: int) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """(Track.unsupported, Track.details) for a FLAC of this bit depth: ("", ()) when it plays."""
+    if depth in FLAC_DECODER_BITS:
+        return "", ()
+    return (f"{depth}-bit FLAC can't be played: the player's decoder takes only 8, 16 and 24-bit FLAC",
+            (("Warning", f"can't be played — the player's decoder doesn't take {depth}-bit FLAC (the file "
+                         "itself is fine: other players may play it)"),))
+
+
 def _flac_track(path: Path, audio: FLACFile) -> Track:
     tags = audio.tags
     info = audio.info
+    unsupported, details = flac_depth_problem(info.bits_per_sample)
     return Track(
+        unsupported=unsupported,
+        details=details,
         **_vorbis_extras(tags),
         embedded_cue=audio.cuesheet,
         path=path,

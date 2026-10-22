@@ -275,7 +275,15 @@ class MprisMedia:
         member = header.get(fields.member)
         interface = header.get(fields.interface)
         path = header.get(fields.path)
-        reply = None
+        try:
+            reply = self._reply_to(message, member, interface, path, new_error, new_method_return)
+        except Exception:   # noqa: BLE001 — a malformed call (missing arguments…): refuse it, keep listening
+            log.info("media controls: couldn't answer %s.%s", interface, member, exc_info=True)
+            reply = new_error(message, "org.freedesktop.DBus.Error.InvalidArgs", "s",
+                              (f"Couldn't answer {interface}.{member}",))
+        self._conn.send(reply)
+
+    def _reply_to(self, message, member, interface, path, new_error, new_method_return):
         if path != PATH:
             reply = new_error(message, "org.freedesktop.DBus.Error.UnknownObject", "s", (f"No object {path}",))
         elif interface == INTROSPECTABLE and member == "Introspect":
@@ -293,9 +301,13 @@ class MprisMedia:
         else:
             reply = new_error(message, "org.freedesktop.DBus.Error.UnknownMethod", "s",
                               (f"No method {interface}.{member}",))
-        self._conn.send(reply)
+        return reply
 
     def _properties(self, message, member, new_method_return, new_error):
+        wanted = 1 if member == "GetAll" else 2
+        if len(message.body) < wanted or not all(isinstance(arg, str) for arg in message.body[:wanted]):
+            return new_error(message, "org.freedesktop.DBus.Error.InvalidArgs", "s",
+                             (f"{member} takes {'an interface name' if wanted == 1 else 'an interface and a property name'}",))
         interface = message.body[0]
         table = ROOT_PROPERTIES if interface == ROOT else (
             player_properties(self._now, self._art) if interface == PLAYER else None)

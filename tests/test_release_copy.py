@@ -103,6 +103,11 @@ def test_the_library_views_status_line_wraps_in_the_narrow_window(make_window):
     _pump(root, 0.4)
     window.open_library()
     _pump(root, 0.4)
+    for _ in range(200):   # (its look at the library first: when it ends, it says so on this line)
+        if window._library._refresh is None:
+            break
+        _pump(root, 0.05)
+    assert window._library._refresh is None
     status = window._library.status
     long = "The library database is damaged: it will be repaired when the player next starts"
     window._library._say(long)

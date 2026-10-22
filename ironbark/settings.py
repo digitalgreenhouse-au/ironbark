@@ -45,7 +45,8 @@ DEFAULTS = {
     "exclusive": False,
     "output_device": "",  # "" = system default
     "amp_volume_outputs": [],    # (0.47.0) outputs whose volume is set on an amplifier or receiver (by name)
-    "library_folders": [],       # the folders the Library looks in ([] = Windows' own Music folder)
+    "library_folders": [],       # the folders the Library looks in ([] = Windows' own Music folder…
+    "library_empty": False,      # …or none at all: the library was cleared, Settings → Library → Clear the library…)
     "library_folder": "",        # (before library_folders) the one library folder: read into library_folders
     "now_playing_geometry": "",  # where the Now Playing window was last left
     "tabs": None,                # open tabs: [{"kind": "album"|"folder"|"library", "path", "query", "title"}]

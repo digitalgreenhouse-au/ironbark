@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import audiofile, library_db, settings
-from .indexer import Diff, Indexer
+from .indexer import Diff, Indexer, Progress
 from .library import Album, Track, read_track
 from .library_db import LibraryDB, track_from_dict  # noqa: F401
 
@@ -214,6 +214,24 @@ class LibraryIndex:
         self.last_diff = diff
         return diff
 
+    def rebuild(self) -> Diff:
+        """Forget everything stored for the library and read its folders again from scratch
+        (Library → ⋯ → Rebuild the library): for when the Library still shows music that has gone.
+        Plays, favourites and quality checks stay. Safe from any thread except Tk's."""
+        diff = self.indexer.check(self.roots, fresh=True)
+        if not diff.cancelled and not diff.error:
+            self.refreshed = time.time()
+        self.last_diff = diff
+        return diff
+
+    def empty(self) -> None:
+        """Clear the library… (Settings → Library): no library folders, and nothing stored about the
+        music; plays, favourites and quality checks stay. Safe from any thread except Tk's."""
+        self.set_roots([])
+        self.indexer.empty()
+        self.refreshed = time.time()
+        self.last_diff = None
+
     def update(self, paths: Iterable[str | Path]) -> Diff:
         """These files have just changed (a tag edit was saved): read them again now."""
         diff = self.indexer.update(self.roots, paths)
@@ -273,6 +291,18 @@ class LibraryIndex:
 
 _shared: LibraryIndex | None = None
 _shared_lock = threading.Lock()
+
+
+def building() -> tuple[str, Progress] | None:
+    """A first look ("build") or a rebuild ("rebuild") under way, and how far it has got — or None.
+    Read from memory, nothing from the database: safe on Tk's thread, every poll. (A routine look
+    for changes isn't one: it's quick, and nothing needs saying.)"""
+    opened = _open
+    if opened is None:
+        return None
+    indexer = opened[2]
+    kind = indexer.building
+    return (kind, indexer.progress) if kind else None
 
 
 def shared(root: str | Path | Iterable[str | Path]) -> LibraryIndex:

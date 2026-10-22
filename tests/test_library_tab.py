@@ -170,3 +170,57 @@ def test_the_library_tabs_name_shows_on_its_plate_when_another_tab_is_selected(m
     assert bar.canvas.itemcget(bar._slots[0]["name"], "text") == "Library"
     holder.destroy()
     assert not errors
+
+
+def test_the_library_tab_says_how_far_a_first_look_has_got_while_it_waits():
+    """(Seen on Windows 10: a big drive's first look showed nothing, as if frozen.) While the main
+    Library tab waits for the first look, it's told every moment how far the look has got."""
+    from types import SimpleNamespace
+
+    from ironbark import loadprogress, ui
+    from ironbark.indexer import Progress
+
+    class Looking:
+        indexer = SimpleNamespace(progress=Progress("looking", 3, 0, "", time.time()))
+
+        def refresh(self):
+            time.sleep(0.35)
+            Looking.indexer.progress = Progress("reading", 50, 200, "", time.time())
+            time.sleep(0.35)
+
+    said: list[str] = []
+    ui._refresh_saying(Looking(), loadprogress.Reporter("Library", said.append), every=0.1)
+    assert said[0].startswith("Building the library: looking through your folders… 3 folders · 0:0")
+    assert any(text.startswith("Building the library: reading songs… 50 of 200 files (25%)") for text in said)
+
+
+def test_the_library_tab_fills_in_while_a_first_look_reads_and_stops_when_it_ends(make_window, tmp_path, monkeypatch):
+    """A very large library's first look can take hours: the main Library tab doesn't wait for it.
+    It lists what's read so far at once (so songs can be played), takes in more as they're read,
+    and stops once the look has finished."""
+    from ironbark import ui
+
+    monkeypatch.setattr(ui, "GROW_EVERY_S", 0.3)
+    window, root, player, errors = make_window()
+    music = tmp_path / "Music"
+    blue = _flac(music / "Blue" / "01 River.flac", title="River", artist="Joni Mitchell", album="Blue")
+    _flac(music / "Red" / "01 Red.flac", title="Red", artist="Taylor", album="Red")
+    index = window._index()
+    index.indexer.check(index.roots, folders=[blue.parent])   # (part of a first look: only Blue read yet)
+    assert not index.built
+    main = window._main_tab(make=True)
+    window.select_tab(main)
+    tab = window.tabs[main]
+    assert _wait(root, lambda: tab.tracks is not None, 10)
+    assert [t.title for t in tab.tracks] == ["River"] and tab.growing
+    assert "1 song so far" in window._notice
+    player.set_tracks(tab.tracks)                          # River plays from the Library tab
+    player.index, player.track = 0, tab.tracks[0]
+    window.playing_tab = main
+    import threading
+    threading.Thread(target=index.refresh, daemon=True).start()   # (the rest of the first look)
+    assert _wait(root, lambda: tab.tracks is not None and len(tab.tracks) == 3 and not tab.growing, 20)
+    assert sorted(t.title for t in tab.tracks) == ["Red", "River", "Song"] and index.built
+    assert player.tracks is tab.tracks and player.tracks[player.index].title == "River"   # (it carries on)
+    assert "stop" not in player.calls and window.playing_tab == main
+    assert not errors

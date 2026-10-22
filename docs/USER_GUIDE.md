@@ -39,7 +39,11 @@ a network drive), open **Settings** (the ⚙ button at the top, or Ctrl+,) and u
 You can add several folders.
 
 The Library reads your folders once, in the background and at low priority, so the player stays
-responsive while it works. After that it only looks at what has changed. With **Watch for new
+responsive while it works. After that it only looks at what has changed. A big drive's first read
+can take a while (hours for a very large library): the status line says how far it has got,
+whichever tab you're on — folders looked through, then songs read with a percentage, the time so
+far and about how long is left. The Library tab and the Library's albums fill in as it goes, so you
+can browse and play songs before it finishes; what's playing carries on as more arrive. If Ironbark is closed part-way, the next start carries on from there. With **Watch for new
 music** on (Settings → Library), albums you copy in later turn up by themselves, marked as new until
 you open them.
 
@@ -65,6 +69,9 @@ Ironbark is designed to live in a tall, narrow window at the side of your screen
 do other things. You can make it a little narrower or wider, and as tall as you like; it never
 becomes a wide or full-screen player. **Z** shrinks it to a **mini player**, a small strip that
 stays on top, and Z brings it back.
+
+Drag the window by the empty part of the strip at the top (or the mini player's empty parts). To
+snap it to a side of the screen, use Windows+← or Windows+→.
 
 To keep the window in a favourite spot, put it there and choose **Use current** in Settings →
 Window. **Snap to home** (or Ctrl+Shift+H, or a double-click on the empty strip at the top) brings
@@ -153,6 +160,18 @@ looks for music added or changed since the last look.
 An unplugged drive or a sleeping network drive never empties the Library: its albums wait until
 the drive is back. If you plug in a different drive under the same letter, the Library notices and
 waits for its own drive.
+
+If the Library still shows music that's gone (a folder you deleted, moved or emptied, or a drive
+you've retired), use **⋯ → Rebuild the library…** (or **Rebuild the library…** in Settings → Library). Ironbark forgets everything it has stored
+about your music and reads your library folders again from scratch. Your music files aren't
+touched, and your plays, favourites and quality checks are kept. Only *Recently added* starts
+again, from when each file was made. A big library takes a while to read, and you can keep
+listening meanwhile.
+
+To start again with an **empty** Library, use **Clear the library…** in Settings → Library. Every
+folder is taken out and everything Ironbark has stored about your music is forgotten; the Library
+stays empty until you add a folder (**Add folder…**). Your music files aren't touched, and your
+plays, favourites and quality checks are kept for if you add the music back.
 
 ### Searching for a song
 
@@ -433,7 +452,15 @@ clipping guard on one song).
 **Music is missing from the Library.** Check its folder is listed in Settings → Library (add it
 with **Add folder…**), then press **F5** in the Library. If a whole drive's music has gone quiet,
 the drive is probably unplugged or asleep: its albums come back when it does. A folder Windows can't
-open is named in the Library's status line.
+open is named in the Library's status line. If the Library is empty and says it **can't see the library
+folder**, its drive isn't there just now: plug it in, or for a network drive open it once in File
+Explorer so Windows connects it again, then press **F5**.
+
+**The Library still shows a folder you deleted.** Press **F5** in the Library first. If it's still
+there (say the folder was a whole library folder, or its drive is gone for good), use
+**⋯ → Rebuild the library…** in the Library (or in Settings → Library): it reads your folders again from scratch, keeping your
+plays and favourites (while a library folder can't be seen, it forgets nothing and says so). To stop Ironbark reading a folder at all, take it out in Settings → Library
+(**Remove**, or **Change…** when it's the only one).
 
 **A playlist says "file not found".** The song was moved, renamed or is on a drive that isn't
 connected. Plug the drive in, or put the file back, and it plays again.

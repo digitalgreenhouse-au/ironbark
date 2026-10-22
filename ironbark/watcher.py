@@ -114,6 +114,8 @@ class Watcher:
             if index.roots != self._roots:          # other library folders: start afresh
                 self._roots = list(index.roots)
                 self.settling = Settling(self.settling.settle_s, self.settling.clock)
+            if not index.roots:   # (no library folders: the library was cleared, or each one is on the network with Local network access off)
+                return Report()
             if not any(root.is_dir() for root in index.roots):
                 return Report(error=f"Can't see the library folder {index.root}")
             unbuilt = _unbuilt(index)
