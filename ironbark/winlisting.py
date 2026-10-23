@@ -1,26 +1,33 @@
 """Folder listings on Windows from network file servers that answer only some ways of asking.
 
-Python lists a folder (os.scandir, os.listdir, and so os.walk and Path.iterdir) with
-FindFirstFileW, which asks the server for each name's short 8.3 name too. Some NAS boxes and
-file servers answer that request with a reply that isn't signed properly, and Windows refuses it:
-"Invalid Signature" (NTE_BAD_SIGNATURE, error -2146893818), while File Explorer, which asks
-without short names and in bigger batches, lists the same folder. Seen on a mapped network drive
-(Y:\\Music) that Explorer opened but the Library said it couldn't read.
+Some NAS boxes and file servers send their "no more files" reply, the one that ends every folder
+listing, without signing it properly, and Windows reports "Invalid Signature" (NTE_BAD_SIGNATURE,
+error -2146893818) instead of the end of the folder. File Explorer and cmd's `dir` show what came
+before it and take it as the end; Python (os.scandir, os.listdir, and so os.walk and Path.iterdir)
+and PowerShell's Get-ChildItem throw the whole listing away. (Seen on a NAS share mapped as Y:,
+whose folders `dir` listed and Get-ChildItem refused.) Microsoft's note on such servers: they
+"don't return a correctly signed error response".
 
 `install()` (run on Windows when the package is imported, in the player and in its worker
-processes) wraps os.scandir and os.listdir: they work as before, and only when one fails with
-such an error is the folder listed again the way Explorer asks (FindFirstFileExW, the basic
-information, large batches); if that fails too, the first error stands. The entries it gives
-carry what os.scandir's do on Windows (name, path, is_dir / is_file / is_symlink / is_junction,
-and stat()'s size and times, from the listing itself), so the code that lists folders needn't know.
+processes) wraps os.scandir and os.listdir. A listing is read in full before it's handed on (an
+error can come at its end, after the names); when one fails with such an error the folder is
+listed again here (FindFirstFileExW: the basic information, in large batches), taking that
+unsigned last reply as the end of the folder. From then on folders on the same drive or share are
+listed here straight away. If this way fails too, the first error stands. The entries carry what
+os.scandir's do on Windows (name, path, is_dir / is_file / is_symlink / is_junction, and stat()'s
+size and times, from the listing itself), so the code that lists folders needn't know.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import stat as stat_module
 import sys
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
+
+log = logging.getLogger(__name__)
 
 BAD_SIGNATURE = -2146893818        # 0x80090006, NTE_BAD_SIGNATURE: the server's reply wasn't signed right
 # The errors that send a listing to the other way of asking: the bad signature (as Windows reports
@@ -43,6 +50,8 @@ _WAYS = ((1, 2), (1, 0))           # (info level, flags): FindExInfoBasic, FIND_
 
 _scandir = os.scandir
 _listdir = os.listdir
+_other_way: set[str] = set()       # drives and shares (their splitdrive) whose folders are listed here
+_other_way_lock = threading.Lock()
 
 
 def needs_other_way(error: OSError) -> bool:
@@ -130,15 +139,15 @@ class Entry:
 
 
 class Listing:
-    """os.scandir's iterator, for a folder listed the other way (a context manager, as its is)."""
+    """os.scandir's iterator over a listing read in full (a context manager, as its is)."""
 
-    def __init__(self, entries: list[Entry]):
+    def __init__(self, entries: list):
         self._entries = iter(entries)
 
-    def __iter__(self) -> Iterator[Entry]:
+    def __iter__(self) -> Iterator:
         return self
 
-    def __next__(self) -> Entry:
+    def __next__(self):
         return next(self._entries)
 
     def __enter__(self) -> Listing:
@@ -181,31 +190,44 @@ def _find(folder: str, level: int, flags: int) -> list[Entry]:
     find_close.restype = wintypes.BOOL
 
     data = wintypes.WIN32_FIND_DATAW()
-    pattern = os.path.join(folder, "*")
-    handle = find_first(pattern, level, ctypes.byref(data), 0, None, flags)
+    handle = find_first(os.path.join(folder, "*"), level, ctypes.byref(data), 0, None, flags)
     if handle is None or handle == wintypes.HANDLE(-1).value:
-        code = ctypes.get_last_error()
-        raise _error(code, folder)
-    entries: list[Entry] = []
+        raise _error(ctypes.get_last_error(), folder)
     try:
-        while True:
-            name = data.cFileName
-            if name not in (".", ".."):
-                entries.append(Entry(folder, name, _stat_of(data)))
-            if not find_next(handle, ctypes.byref(data)):
-                code = ctypes.get_last_error()
-                if code == 18:   # ERROR_NO_MORE_FILES
-                    return entries
-                raise _error(code, folder)
+        return _collect(folder, data, lambda: bool(find_next(handle, ctypes.byref(data))), ctypes.get_last_error)
     finally:
         find_close(handle)
+
+
+def _collect(folder: str, data, next_one: Callable[[], bool], last_error: Callable[[], int]) -> list[Entry]:
+    """The entries of a listing whose first name is in `data` (each next_one() puts the next there,
+    False at the end, last_error() then saying why). ERROR_NO_MORE_FILES ends it, and so does a bad
+    signature: the server's unsigned "no more files" reply."""
+    entries: list[Entry] = []
+    while True:
+        name = data.cFileName
+        if name not in (".", ".."):
+            entries.append(Entry(folder, name, _stat_of(data)))
+        if next_one():
+            continue
+        code = last_error()
+        if code == 18:   # ERROR_NO_MORE_FILES
+            return entries
+        if _signed(code) == BAD_SIGNATURE:
+            log.debug("listing %s: its end came back unsigned (Invalid Signature): taken as the end", folder)
+            return entries
+        raise _error(code, folder)
+
+
+def _signed(code: int) -> int:
+    """A Windows error code as Python reports it (an HRESULT-style one comes out negative)."""
+    return code - (1 << 32) if code >= 1 << 31 else code
 
 
 def _error(code: int, folder: str) -> OSError:
     import ctypes
 
-    signed = code - (1 << 32) if code >= 1 << 31 else code   # (as Python reports Windows' HRESULT-style codes)
-    error = ctypes.WinError(signed)
+    error = ctypes.WinError(_signed(code))
     error.filename = folder
     return error
 
@@ -223,34 +245,58 @@ def _stat_of(data) -> Stat:
                 _filetime_ns(data.ftCreationTime), tag)
 
 
-def scandir(path=None):
-    """os.scandir, and a folder it can't list for a reason in RETRY_ERRORS listed the other way."""
-    if path is None:
-        path = "."
+def _anchor(folder: str) -> str:
+    """The drive or share a folder is on, as _other_way keeps it."""
+    return os.path.splitdrive(os.path.abspath(folder))[0].lower()
+
+
+def _listed(folder: str, first_try: Callable[[], list]) -> list:
+    """`first_try()` (Python's own listing, read in full), or for a drive or share whose server
+    needs it, or when that fails in a way RETRY_ERRORS names, the listing asked for here."""
+    anchor = _anchor(folder)
+    if anchor in _other_way:
+        return list_basic(folder)
     try:
-        return _scandir(path)
+        return first_try()
     except OSError as error:
-        if isinstance(path, (bytes, int)) or not needs_other_way(error):
+        if not needs_other_way(error):
             raise
         try:
-            return Listing(list_basic(os.fspath(path)))
-        except OSError:
+            found = list_basic(folder)
+        except OSError as other:
+            log.warning("couldn't list %s: %r, and asked the other way: %r", folder, error, other)
             raise error from None
+        with _other_way_lock:
+            if anchor not in _other_way:
+                _other_way.add(anchor)
+                log.warning("listing %s failed (%r): folders on %s are listed the other way from now on",
+                            folder, error, anchor)
+        return found
+
+
+def scandir(path=None):
+    """os.scandir, its listing read in full (an error can come at its end), and a folder it can't
+    list for a reason in RETRY_ERRORS listed the other way."""
+    if path is None:
+        path = "."
+    if isinstance(path, (bytes, int)):
+        return _scandir(path)
+
+    def first_try() -> list:
+        with _scandir(path) as entries:
+            return list(entries)
+
+    return Listing(_listed(os.fspath(path), first_try))
 
 
 def listdir(path=None):
     """os.listdir, and a folder it can't list for a reason in RETRY_ERRORS listed the other way."""
     if path is None:
         path = "."
-    try:
+    if isinstance(path, (bytes, int)):
         return _listdir(path)
-    except OSError as error:
-        if isinstance(path, (bytes, int)) or not needs_other_way(error):
-            raise
-        try:
-            return [entry.name for entry in list_basic(os.fspath(path))]
-        except OSError:
-            raise error from None
+    found = _listed(os.fspath(path), lambda: _listdir(path))
+    return [entry if isinstance(entry, str) else entry.name for entry in found]
 
 
 def install() -> None:

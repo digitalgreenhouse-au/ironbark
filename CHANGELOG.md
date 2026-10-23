@@ -4,6 +4,15 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.51.6 — 23/10/2026
+
+- Fixed (Windows): a NAS whose folders `dir` and File Explorer list, but Ironbark couldn't
+  ("Invalid Signature, error -2146893818"). The NAS sends the reply that ends every folder
+  listing unsigned; Python (and PowerShell) threw the whole listing away at it, after the names
+  had come. Ironbark now takes that reply as the end of the folder, as File Explorer does, and
+  lists every folder on such a drive that way. 0.51.5's fix didn't help here: it only looked at
+  the start of a listing.
+
 ## 0.51.5 — 20/10/2026
 
 - Fixed (Windows): a library folder on some network drives (a NAS or file server) couldn't be
