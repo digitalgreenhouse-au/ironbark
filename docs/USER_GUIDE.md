@@ -162,11 +162,16 @@ the drive is back. If you plug in a different drive under the same letter, the L
 waits for its own drive.
 
 If the Library still shows music that's gone (a folder you deleted, moved or emptied, or a drive
-you've retired), use **⋯ → Rebuild the library…**. Ironbark forgets everything it has stored
+you've retired), use **⋯ → Rebuild the library…** (or **Rebuild the library…** in Settings → Library). Ironbark forgets everything it has stored
 about your music and reads your library folders again from scratch. Your music files aren't
 touched, and your plays, favourites and quality checks are kept. Only *Recently added* starts
 again, from when each file was made. A big library takes a while to read, and you can keep
 listening meanwhile.
+
+To start again with an **empty** Library, use **Clear the library…** in Settings → Library. Every
+folder is taken out and everything Ironbark has stored about your music is forgotten; the Library
+stays empty until you add a folder (**Add folder…**). Your music files aren't touched, and your
+plays, favourites and quality checks are kept for if you add the music back.
 
 ### Searching for a song
 
@@ -453,7 +458,7 @@ Explorer so Windows connects it again, then press **F5**.
 
 **The Library still shows a folder you deleted.** Press **F5** in the Library first. If it's still
 there (say the folder was a whole library folder, or its drive is gone for good), use
-**⋯ → Rebuild the library…** in the Library: it reads your folders again from scratch, keeping your
+**⋯ → Rebuild the library…** in the Library (or in Settings → Library): it reads your folders again from scratch, keeping your
 plays and favourites (while a library folder can't be seen, it forgets nothing and says so). To stop Ironbark reading a folder at all, take it out in Settings → Library
 (**Remove**, or **Change…** when it's the only one).
 

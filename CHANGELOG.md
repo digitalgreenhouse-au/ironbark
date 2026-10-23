@@ -4,14 +4,87 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
-## 0.51.6 — 23/10/2026
+## 0.52.4 — 23/10/2026
 
-- Fixed (Windows): a NAS whose folders `dir` and File Explorer list, but Ironbark couldn't
-  ("Invalid Signature, error -2146893818"). The NAS sends the reply that ends every folder
-  listing unsigned; Python (and PowerShell) threw the whole listing away at it, after the names
-  had come. Ironbark now takes that reply as the end of the folder, as File Explorer does, and
-  lists every folder on such a drive that way. 0.51.5's fix didn't help here: it only looked at
-  the start of a listing.
+- Fixed (Windows): a NAS share whose folders came back "Invalid Signature" at their end: the NAS
+  sends the reply that ends every folder listing unsigned. Listed the other way (0.52.0), that
+  reply now counts as the end of the folder, as it does for cmd's `dir` and File Explorer, instead
+  of failing the whole listing. (Tried on the NAS as 0.51.6.)
+- Tests: changing the library folder (Settings → Library → Change…) leaves only the new folder's
+  songs in the Library tab, also when the same music has moved there (copied to a NAS, the old copy
+  deleted): none of them "(file not found)".
+
+## 0.52.3 — 21/10/2026
+
+- Fixed: songs or an album added to a blank **New tab** (from the Library, by dragging, or dropped
+  from Explorer) were said to be added but stayed hidden behind its empty page. The tab now becomes
+  a real tab showing them (an album added whole opens there, as if opened from it).
+- Fixed: while the Library tab fills in (a first look at a big library, or a Rebuild), music playing
+  from it lost its place. After a song from **Up next**, the Library now carries on after the song it
+  interrupted instead of from its first song; and with **shuffle** on, what's lined up next and what
+  Previous goes back to no longer change every few seconds.
+- FLAC files at 12, 20 or 32 bits are valid, but the player's decoder plays only 8, 16 and 24-bit
+  FLAC. They're now listed as "can't be played" — not offered for playing, and no longer called
+  damaged by the library's quality check (songs already in your library included).
+- Fixed: with music on a network drive, one unexpected error could stop the player starting network
+  songs before they had finished downloading, or stop it asking again whether a server was back,
+  for the rest of the session.
+- Fixed: a song or artist name with a line break in it added a phantom missing song to a saved
+  playlist.
+- Linux: a malformed request from another program no longer switches off the media keys and the
+  sound menu's controls.
+- A big library's first look no longer gives up on its helper processes (and slows down) while they
+  read one very large folder, such as thousands of singles in one folder on a slow network share.
+- Two tabs that hold the same thing are no longer mistaken for each other (closing, deleting a
+  playlist).
+- With music on a network drive, a song downloaded again after being cleared from the cache can no
+  longer have its new copy deleted by the tidy-up of its old one.
+
+## 0.52.2 — 21/10/2026
+
+- **Clear the library…** in Settings → Library: start again with an empty Library. Every folder is
+  taken out and everything Ironbark has stored about your music is forgotten, so the Library stays
+  empty until you add a folder. Your music files aren't touched, and your plays, favourites and
+  quality checks are kept for if you add the music back. It asks first.
+- Fixed: taking a folder out of the Library (Settings → Library → **Remove**) left its songs in the
+  Library tab, marked "(file not found)", although the files were still there. The Library tab now
+  follows the library: within a few seconds of a change (a folder taken out or added, a rebuild,
+  music added or gone) it lists what the library holds, keeping your place. A song that's playing
+  from a folder you take out isn't cut off: the tab updates once it has moved on.
+- **Rebuild the library…** is in Settings → Library too, beside *Clear the library…*: the same
+  folders, read again from scratch, as in the Library's ⋯ menu.
+
+## 0.52.1 — 21/10/2026
+
+- Fixed: with music on a network drive, a server that stopped answering mid-download could freeze
+  the window when that song's tags were saved, and hold up closing the player until the server
+  gave up (a minute or more). Letting go of a song's file on the server no longer waits for a
+  read that's stuck.
+- Fixed: a download given up on (its server stuck for two minutes) left its song marked as
+  downloading for good — never fetched again, and not even cleared by Empty the cache — and the
+  next try waited on the same stuck file. It now starts again on a fresh one.
+- Fixed: a part-downloaded copy cut short or deleted by another program could have the gap filled
+  with silence and counted as downloaded, or retry the same failing step every few seconds. It is
+  now taken as a copy gone missing and fetched again.
+- Fixed: one error in the window's background work could stop every later load from finishing
+  for the rest of the session (tabs left on "Loading…"). Each piece now runs on its own; an error
+  is reported and the rest carry on. The Library view's list keeps going after an error too.
+
+## 0.52.0 — 21/10/2026
+
+- Fixed (Windows): a library folder on some network drives still couldn't be read after 0.51.5 —
+  "Invalid Signature, error -2146893818". The server gives the first name of a big folder, then
+  refuses the rest when asked the usual way; 0.51.5 only switched to File Explorer's way when the
+  listing failed at once, not partway through. It does now, so such a folder loads in full.
+- **Check folders…** in Settings → Library: for each library folder, whether its server and the
+  folder answer (and how fast), which way of listing it works, and what the Library gets, with
+  what any error means in plain words. It saves a report and opens it; nothing is changed or sent.
+  A folder on your network is only looked at while Local network access is on, and a server that
+  doesn't answer is reported as such after 20 seconds.
+- When the Library can't read a library folder, it now says what the error means, not only
+  Windows' words and number, and points to Check folders…. The log names the first few folders
+  inside a library folder that couldn't be listed, and why.
+- Save diagnostics… includes the same check (paths and names left out, as in the rest of the file).
 
 ## 0.51.5 — 20/10/2026
 

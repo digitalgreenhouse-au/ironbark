@@ -101,6 +101,10 @@ RESTART_THRESHOLD = 3.0  # "previous" within this many seconds goes back a track
 
 REPEAT_MODES = ("off", "all", "one")
 
+# With shuffle on, a list replaced by a bigger one keeps this much of the play order round the song
+# (before it, for Previous; after it, what's lined up next): Player._carried_order.
+CARRY_BEFORE, CARRY_AFTER = 16, 32
+
 
 TRIMS_KEPT = 8        # clipping-guard settings remembered (the track playing and the ones lined up)
 
@@ -300,15 +304,14 @@ class Player:
             if keep_playing and 0 <= self.index < len(self.tracks):
                 path = self.tracks[self.index].path
                 current = self._find(tracks, path)
+            carry = self._carried_order(tracks) if keep_playing else None
             if keep_playing and self.queued_now is not None:
                 # A queued song is playing (or paused at a spot): it carries on; the list carries on
                 # after it from the same song as before (if it's still there).
-                path = self.tracks[self.index].path if 0 <= self.index < len(self.tracks) else None
                 self.tracks = tracks
                 self._let_go_of_paths()
-                found = self._find(tracks, path) if path is not None else None
-                self.index = found if found is not None else -1
-                self._rebuild_order(first=self.index if self.index >= 0 else None)
+                self.index = current if current is not None else -1
+                self._rebuild_order(first=current, carry=carry)
                 self._relineup()
                 return
             if current is None:
@@ -322,9 +325,30 @@ class Player:
             self.tracks = tracks
             self._let_go_of_paths()
             self.index = current if current is not None else (0 if len(tracks) else -1)
-            self._rebuild_order(first=current)
+            self._rebuild_order(first=current, carry=carry)
             self._message = ""
             self._relineup()
+
+    def _carried_order(self, tracks) -> list[int] | None:
+        """With shuffle on, the stretch of the play order round the list's song (the one playing, or
+        the one a queued song interrupted) as places in `tracks` — so a list replaced by one holding
+        the same songs (the Library tab filling in, songs added) keeps what comes next and what
+        Previous goes back to, instead of a new shuffle every time. Found by path among the songs
+        `tracks` has read; None when there's nothing to carry. Lock held."""
+        if not self.shuffle or not 0 <= self.index < len(self.tracks):
+            return None
+        try:
+            at = self._order.index(self.index)
+        except ValueError:
+            return None
+        peek = getattr(self.tracks, "peek", None)
+        carried: list[int] = []
+        for place in self._order[max(0, at - CARRY_BEFORE): at + CARRY_AFTER + 1]:
+            track = peek(place) if peek is not None else self.tracks[place]
+            found = self._find(tracks, track.path) if track is not None else None
+            if found is not None and found not in carried:
+                carried.append(found)
+        return carried or None
 
     def _let_go_of_paths(self):
         """The paths of a list no longer playing aren't kept (with that list: it may be a big one)."""
@@ -619,12 +643,19 @@ class Player:
                 self.repeat = mode
                 self._relineup()
 
-    def _rebuild_order(self, first: int | None = None):
+    def _rebuild_order(self, first: int | None = None, carry: list[int] | None = None):
         """The play order: the list's own (a range: nothing held per song) or a shuffled one (a
-        compact array, `first` at its head)."""
+        compact array, `first` at its head — or `carry`, a stretch kept from the order before that
+        holds `first`, ahead of the rest shuffled)."""
         count = len(self.tracks)
         if not self.shuffle:
             self._order = range(count)
+            return
+        if carry and first in carry and all(0 <= place < count for place in carry):
+            taken = set(carry)
+            rest = array("l", (place for place in range(count) if place not in taken))
+            random.shuffle(rest)
+            self._order = array("l", carry) + rest
             return
         rest = array("l", range(count))
         if first is not None and 0 <= first < count:

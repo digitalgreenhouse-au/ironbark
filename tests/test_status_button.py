@@ -18,6 +18,12 @@ class _Event:
         self.x, self.y = x, y
 
 
+def _press(button):
+    """A click on a pill: pressed, then let go over it."""
+    button._state(pressed=True)
+    button._release(_Event())
+
+
 def _second_tab(window) -> Tab:
     folder = Path(window.tabs[0].path).parent / "Other"
     folder.mkdir(exist_ok=True)
@@ -39,17 +45,20 @@ def test_the_status_line_pauses_and_resumes_the_music_in_another_tab(make_window
     assert window.current == 1 and window.playing_tab == 0
     assert window.status_label.cget("text").startswith("♪ Playing in another tab: Song One")
     assert button.winfo_manager() == "place" and button.winfo_ismapped()
-    assert button.cget("text") == glyph(root, "pause") and button.playing is True
+    assert button.text_value == "Pause" and button.playing is True
+    assert str(button.cget("text")).strip() == "Pause"            # (led by room for the pause mark)
     assert "Pause" in button.hint
-    button._click(_Event())                                      # pause: the music, not this tab
+    pause_picture = str(button.cget("image"))
+    _press(button)                                               # pause: the music, not this tab
     assert player.calls == ["toggle_pause"] and window.playing_tab == 0 and window.current == 1
 
     # Paused there: the line and the button say so (play), and a click carries on.
     player.status = lambda: Status(State.PAUSED, 0, player.track, 42.0, player.track.duration)
     _pump(root, 0.5)
     assert window.status_label.cget("text").startswith("♪ Paused in another tab: Song One")
-    assert button.cget("text") == glyph(root, "play") and button.playing is False and "Carry on" in button.hint
-    button._click(_Event())
+    assert button.text_value == "Play" and button.playing is False and "Carry on" in button.hint
+    assert str(button.cget("image")) != pause_picture             # (the mark is a triangle now)
+    _press(button)
     assert player.calls == ["toggle_pause", "toggle_pause"]
 
     # The transport's play still belongs to the tab on show: it starts this one.
@@ -92,6 +101,36 @@ def test_a_notice_takes_the_line_and_the_button_goes_with_it(make_window):
     theme.use(theme.LIGHT, root)
     _pump(root, 0.3)
     assert window.elsewhere_button.cget("bg") == theme.LIGHT.BG
+    assert window.elsewhere_button.fill_colour() == theme.LIGHT.SELECT
+    assert errors == []
+
+
+def test_the_pause_button_is_a_green_pill_that_says_what_it_does(make_window):
+    """Easy to see: a filled DG-green pill with a pause or play mark and the
+    word, one width for both so the line never shifts, the same height as the app's compact pills."""
+    window, root, player, errors = make_window()
+    _second_tab(window)
+    window.select_tab(1)
+    _pump(root, 0.5)
+    button = window.elsewhere_button
+    assert button.kind == "primary" and button.fill_colour() == theme.SELECT
+    assert button.winfo_reqheight() == theme.px(theme.CONTROL_H_SMALL)
+    width = button.winfo_reqwidth()
+    player.status = lambda: Status(State.PAUSED, 0, player.track, 42.0, player.track.duration)
+    _pump(root, 0.5)
+    assert button.text_value == "Play" and button.winfo_reqwidth() == width
+    # The mark sits left of the word, in the word's colour: pixels of ON_ACCENT in the pill's left part.
+    from PIL import ImageTk
+
+    picture = ImageTk.getimage(button._photo).convert("RGB")
+    words = button._measure.measure(button._words())
+    lead = button._measure.measure(button._lead())
+    left = (picture.width - words) // 2
+    mark = picture.crop((left, 0, left + lead, picture.height))
+    on = tuple(int(theme.ON_ACCENT[i:i + 2], 16) for i in (1, 3, 5))
+    assert any(sum(abs(a - b) for a, b in zip(pixel, on)) < 60 for pixel in mark.get_flattened_data())
+    # Its line leaves room for it: the words never run under it.
+    assert window._status_fitted[2] >= width
     assert errors == []
 
 

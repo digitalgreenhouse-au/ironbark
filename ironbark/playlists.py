@@ -30,6 +30,9 @@ from .library import Track, cue_track_path
 EXTENSIONS = {".m3u8", ".m3u"}
 CUE_MARK = "#IRONBARK-CUE:"
 _BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Every character `str.splitlines` breaks a line at (and the other control characters): a tag holding
+# one would split the #EXTINF line in two, and its second half would be read back as a song.
+_LINE_BREAKERS = re.compile("[\x00-\x1f\x7f\x85\u2028\u2029]+")
 
 
 def folder() -> Path:
@@ -114,6 +117,7 @@ def write(path: Path, tracks: list[Track]) -> None:
     lines = ["#EXTM3U"]
     for track in tracks:
         label = f"{track.artist} - {track.title}" if track.artist else track.title
+        label = _LINE_BREAKERS.sub(" ", label)
         lines.append(f"#EXTINF:{int(round(track.duration))},{label}")
         cue = audiofile.cue_of(track.path)
         if cue is not None:

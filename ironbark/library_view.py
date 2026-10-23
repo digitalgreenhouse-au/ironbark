@@ -61,6 +61,7 @@ the view, F5 rescans, Ctrl+F goes to the search box."""
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
@@ -97,6 +98,8 @@ from .playlist_view import TreeDrag, fit_columns
 from .quick_search import Actions, add_song_items, album_text, count_text, shared_catalogue, song_name, song_values
 from .searchfold import fold
 from .virtual_list import CLOSED_MARK, OPEN_MARK, ListSource, VirtualTree
+
+log = logging.getLogger(__name__)
 
 NEW_DOT = "●  "   # in front of a new album's name (until it's opened)
 SEARCH_DELAY_MS = 150   # the list follows the search box after a pause in typing, as the track list does
@@ -160,15 +163,18 @@ def adding_folder(roots: list[Path], folder: Path) -> tuple[list[Path], str]:
                      else "those folders aren't listed on their own any more"))
 
 
-def unsearched_note(folders: list[Path], prefs: dict | None) -> str:
-    """What a whole-library search can't look through: the library folders on the network while
-    Local network access is off (listed in Settings → Library, greyed, and never indexed). "" when
-    every folder is read."""
+def unsearched_note(folders: list[Path], prefs: dict | None, what: str = "Not searched") -> str:
+    """What a whole-library search can't look through (`what`: "Not read", for the Library): the
+    library folders on the network while Local network access is off (listed in Settings → Library,
+    greyed, and never indexed). "" when every folder is read."""
     left_out = places.refused(folders, prefs)
     if not left_out:
         return ""
     names = ", ".join(f"“{folder}”" for folder in left_out)
-    return f"Not searched: {names} — on your network, and Local network access is off (Settings → Library)"
+    return f"{what}: {names} — on your network, and Local network access is off (Settings → Library)"
+
+
+NO_FOLDERS_TEXT = "The Library is empty: add a folder of music with ⋯ → Add folder…, or in Settings → Library"
 
 
 def empty_text(place: str, why: str) -> str:
@@ -178,7 +184,24 @@ def empty_text(place: str, why: str) -> str:
         return f"No music found in {place}"
     if why.startswith("Can't see"):
         why += " (is its drive connected? A network drive may need opening once in File Explorer)"
+    if why.startswith("Can't read"):   # (Settings → Library → Check folders… says what does and doesn't work)
+        return f"{why}. Press F5 to look again; Settings → Library → Check folders… tells more"
     return f"{why}: press F5 to look again"
+
+
+def ask_rebuild(parent, roots: list[Path]) -> bool:
+    """Rebuild the library… (the Library's ⋯ menu, or Settings → Library): asked first, with what's
+    forgotten and what's kept. True: go ahead."""
+    place = str(roots[0]) if len(roots) == 1 else f"your {len(roots)} library folders"
+    return popups.confirm(
+        parent, "Rebuild the library?",
+        f"Ironbark forgets everything it has stored about your music and reads {place} again "
+        "from scratch, so anything that's no longer there leaves the Library.",
+        detail=("Your music files aren't touched, and your plays, favourites and quality checks are "
+                "kept. Recently added dates start again from when each file was made. A big library "
+                "takes a while to read; you can keep listening meanwhile. While a library folder can't "
+                "be seen (its drive unplugged or asleep), nothing is forgotten."),
+        ok="Rebuild", cancel="Keep it", danger=True)
 
 
 def added_text(seconds: float) -> str:
@@ -479,14 +502,18 @@ class LibraryView:
                  checker: library_check.Checker | None = None,
                  song_columns: tuple[str, ...] = (),
                  on_song_columns: Callable[[list[str]], None] = lambda columns: None,
-                 on_close: Callable[[], None] | None = None, on_songs: Callable[[], None] | None = None):
+                 on_close: Callable[[], None] | None = None, on_songs: Callable[[], None] | None = None,
+                 left_out: Callable[[], str] = lambda: ""):
         # `parent`: the frame the view is packed into (the player's body; a test's root). `on_close`:
         # what closing means — the player puts its track list back (None: the frame is destroyed).
         # `on_songs`: the drop-down's "Songs", the tab's own list (None: the Songs view is offered instead).
-        # The library folders (one, or several); on_root_changed(folders) when "Add folder…" adds one.
+        # The library folders (one, or several, or none: the library cleared, or every one on the
+        # network with Local network access off — `left_out()` then says which, else "");
+        # on_root_changed(folders) when "Add folder…" adds one.
         self.roots: list[Path] = library_db.outermost([root_folder] if isinstance(root_folder, (str, Path))
                                                       else root_folder)
-        self.root_folder = self.roots[0]
+        self.root_folder: Path | None = self.roots[0] if self.roots else None
+        self.left_out = left_out
         self.current = current
         self.on_choose = on_choose
         self.on_root_changed = on_root_changed
@@ -539,6 +566,7 @@ class LibraryView:
         self._problem = ""                     # the album list couldn't be read
         self._look_error = ""                  # why this window's last look at the folders failed
         self._tick_job = None
+        self._tick_errors: set[str] = set()     # kinds of error the tick has logged (each once)
         self._status_text = ""
         # The song views: what's wanted, what's here (see _want_songs).
         self._songs_wanted: tuple | None = None
@@ -716,9 +744,11 @@ class LibraryView:
             self._start_refresh()
 
     def _place(self) -> str:
-        """The library folder's name ("Music"), or how many there are."""
+        """The library folder's name ("Music"), or how many there are ("" for none)."""
         if len(self.roots) > 1:
             return f"{len(self.roots)} folders"
+        if self.root_folder is None:
+            return ""
         return self.root_folder.name or str(self.root_folder)
 
     def _ask_albums(self) -> int:
@@ -737,10 +767,22 @@ class LibraryView:
 
     def _tick(self):
         """Every TICK_MS: take in the album list, the song lists and what the indexer says. Tk is
-        only touched when something came in."""
+        only touched when something came in. An error in it is logged (the first of its kind) and
+        the tick carries on: one slip mustn't leave the Library frozen while it's on show."""
         self._tick_job = None
         if not self.frame.winfo_exists():
             return
+        try:
+            self._take_news()
+        except Exception as error:
+            kind = type(error).__name__
+            if kind not in self._tick_errors:
+                self._tick_errors.add(kind)
+                log.exception("the Library view's tick failed: %s (carrying on; more of these aren't logged)", kind)
+        if self.frame.winfo_exists():
+            self._tick_job = self.frame.after(TICK_MS, self._tick) if self.shown else None
+
+    def _take_news(self):
         news = False
         while True:
             try:
@@ -805,7 +847,6 @@ class LibraryView:
         news = self._follow_check() or news
         if news or job is not None:
             self._paint_status()
-        self._tick_job = self.frame.after(TICK_MS, self._tick) if self.shown else None
 
     def _filling(self, job: dict):
         """Albums were stored during this window's own refresh. A rescan's list comes once, at its
@@ -853,18 +894,9 @@ class LibraryView:
         """⋯ → Rebuild the library…: asked first, then everything stored for the library is
         forgotten and its folders read again from scratch — for when the Library still shows
         music that has gone (a folder deleted, moved or renamed)."""
-        if self._refresh is not None and self._refresh.get("fresh"):
+        if (self._refresh is not None and self._refresh.get("fresh")) or not self.roots:
             return
-        place = str(self.root_folder) if len(self.roots) == 1 else f"your {len(self.roots)} library folders"
-        if not popups.confirm(
-                self.top, "Rebuild the library?",
-                f"Ironbark forgets everything it has stored about your music and reads {place} again "
-                "from scratch, so anything that's no longer there leaves the Library.",
-                detail=("Your music files aren't touched, and your plays, favourites and quality checks are "
-                        "kept. Recently added dates start again from when each file was made. A big library "
-                        "takes a while to read; you can keep listening meanwhile. While a library folder can't "
-                        "be seen (its drive unplugged or asleep), nothing is forgotten."),
-                ok="Rebuild", cancel="Keep it", danger=True):
+        if not ask_rebuild(self.top, self.roots):
             return
         if self._refresh is not None:   # (a rescan under way is stopped: the rebuild waits for it)
             self.index.indexer.cancel()
@@ -946,10 +978,12 @@ class LibraryView:
         view_menu(self.top, self.view, self.set_view, self.on_songs, (x, y + theme.px(2)), new=bool(self._new))
 
     def _more_menu(self):
-        """The ⋯ button: Rescan, Rebuild the library…, Open all (or these) albums in a tab, Add folder…"""
+        """The ⋯ button: Rescan, Rebuild the library…, Open all (or these) albums in a tab, Add folder…
+        (with no library folders, only Add folder… does anything)."""
         menu = popups.PopupMenu(self.top)
-        menu.add("Rescan: look for added or changed music", self.rescan, keys.hint("library_rescan"))
-        menu.add("Rebuild the library…", self.rebuild)
+        menu.add("Rescan: look for added or changed music", self.rescan, keys.hint("library_rescan"),
+                 enabled=bool(self.roots))
+        menu.add("Rebuild the library…", self.rebuild, enabled=bool(self.roots))
         menu.add(self._load_all_text, self._load_all, enabled=self._load_all_ok and self.view not in SONG_VIEWS)
         menu.add_separator()
         menu.add("Add folder…", self._add_folder)
@@ -1572,7 +1606,8 @@ class LibraryView:
             return
         total = len(self.albums)
         job = self._refresh
-        place = str(self.root_folder) if len(self.roots) == 1 else f"{len(self.roots)} library folders"
+        place = (str(self.root_folder) if len(self.roots) == 1
+                 else f"{len(self.roots)} library folders" if self.roots else "")
         if job is not None and (not total or job.get("filling")):
             what = "Rebuilding the library" if job.get("fresh") else "Building the library"
             text = loadprogress.library_text(self.index.indexer.progress, time.time(), what)
@@ -1582,6 +1617,8 @@ class LibraryView:
             text = self._problem
         elif self._loading and not total:
             text = "Opening the library…"
+        elif not total and not self.roots:
+            text = self.left_out() or NO_FOLDERS_TEXT
         elif not total:
             last = self.index.last_diff
             text = empty_text(place, self._look_error or (last.error if last is not None else ""))
@@ -1967,7 +2004,7 @@ class LibraryView:
 
     def _add_folder(self):
         folder = filedialog.askdirectory(parent=self.top, title="Add a folder of music to the Library",
-                                         initialdir=str(self.root_folder), mustexist=True)
+                                         initialdir=str(self.root_folder or Path.home()), mustexist=True)
         if not folder:
             return
         roots, note = adding_folder(self.roots, Path(folder))
@@ -1980,11 +2017,12 @@ class LibraryView:
     def set_roots(self, roots: list[Path]):
         """The library folders changed (here, or in Settings): the refresh under way for the old
         ones is let go (the indexer stops its look before the new folders are stored), and the
-        list follows the new ones (none inside another: library_db.outermost)."""
+        list follows the new ones (none inside another: library_db.outermost) — or, with none (the
+        library cleared), empties."""
         roots = library_db.outermost(roots)
-        if roots == self.roots or not roots:
+        if roots == self.roots:
             return
-        self.roots, self.root_folder = roots, roots[0]
+        self.roots, self.root_folder = roots, (roots[0] if roots else None)
         self.search_var.set("")
         self._refresh = None
         self._songs_have = None

@@ -1,7 +1,6 @@
-"""Folders on network file servers that send the end of a listing unsigned ("Invalid Signature",
-error -2146893818, from os.scandir and PowerShell on a mapped NAS share that `dir` and File
-Explorer list): winlisting.py lists them the other way and takes that reply as the end. The
-Windows tests list a real folder that way; the others fake the failing listing."""
+"""Folders some network file servers list only the way File Explorer asks ("Invalid Signature",
+error -2146893818, from os.scandir on a mapped drive Explorer opens): winlisting.py lists them the
+other way. The Windows tests list a real folder that way; the others fake the failing os.scandir."""
 
 from __future__ import annotations
 
@@ -15,12 +14,6 @@ import pytest
 from ironbark import winlisting
 
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="FindFirstFileExW is Windows'")
-
-
-@pytest.fixture(autouse=True)
-def fresh(monkeypatch):
-    """No drive or share is known to need the other way yet."""
-    monkeypatch.setattr(winlisting, "_other_way", set())
 
 
 def _signature_error(path) -> OSError:
@@ -68,71 +61,56 @@ def test_a_listing_that_fails_with_a_bad_signature_is_listed_the_other_way(tmp_p
     assert sorted(winlisting.listdir(tmp_path)) == ["Disc 1", "a.flac"]
 
 
-def test_a_listing_that_fails_at_its_end_is_listed_the_other_way_and_then_so_is_its_share(tmp_path, monkeypatch):
-    """The NAS's case: os.scandir starts, gives the names, then its last reply is refused. The
-    folder is listed the other way, and the next folder on the same drive straight away."""
-    (tmp_path / "a.flac").write_bytes(b"")
-    real = winlisting._scandir   # (Python's own: on Windows os.scandir is the wrapper itself)
-    tries = []
+class _PartListing:
+    """os.scandir's listing of a big folder on such a server: the first name comes, then the next
+    batch is refused — after os.scandir has returned, while the listing is read."""
 
-    class FailsAtTheEnd:
-        def __init__(self, path):
-            tries.append(os.fspath(path))
-            self._entries = iter(list(real(path)))
+    def __init__(self, path, first):
+        self.path, self.first, self.given = path, first, 0
+        self.closed = False
 
-        def __enter__(self):
-            return self
+    def __iter__(self):
+        return self
 
-        def __exit__(self, *exc):
-            return None
+    def __next__(self):
+        self.given += 1
+        if self.given == 1:
+            return self.first
+        raise _signature_error(self.path)
 
-        def __iter__(self):
-            return self
+    def __enter__(self):
+        return self
 
-        def __next__(self):
-            try:
-                return next(self._entries)
-            except StopIteration:
-                raise _signature_error(tmp_path) from None
-
-    basic = []
-    monkeypatch.setattr(winlisting, "_scandir", FailsAtTheEnd)
-    monkeypatch.setattr(winlisting, "list_basic", lambda folder: basic.append(folder) or [
-        winlisting.Entry(folder, "a.flac", winlisting.Stat(0x20, 0, 0, 0, 0, 0))])
-    assert [e.name for e in winlisting.scandir(tmp_path)] == ["a.flac"]
-    assert tries == [str(tmp_path)] and basic == [str(tmp_path)]
-    other = tmp_path / "Other"
-    other.mkdir()
-    assert [e.name for e in winlisting.scandir(other)] == ["a.flac"]   # (the fake's answer)
-    assert tries == [str(tmp_path)] and basic == [str(tmp_path), str(other)]   # (no first try now)
+    def __exit__(self, *exc):
+        self.closed = True
 
 
-def test_an_unsigned_end_of_listing_is_taken_as_the_end(monkeypatch):
-    """Listing the other way: ERROR_NO_MORE_FILES ends it, and so does the bad signature the NAS
-    gives its last reply; any other error is an error."""
-    def data(name):
-        time = SimpleNamespace(dwHighDateTime=0, dwLowDateTime=0)
-        return SimpleNamespace(cFileName=name, dwFileAttributes=0x20, nFileSizeHigh=0, nFileSizeLow=3,
-                               ftCreationTime=time, ftLastAccessTime=time, ftLastWriteTime=time, dwReserved0=0)
+@windows_only   # (the other way is the real FindFirstFileExW)
+def test_a_listing_refused_partway_through_is_listed_the_other_way(tmp_path, monkeypatch):
+    (tmp_path / "Album 1").mkdir()
+    (tmp_path / "Album 2").mkdir()
+    real = os.scandir
+    first = next(iter(real(tmp_path)))
+    made = []
 
-    def listing(last_error):
-        names = iter(["..", "b.flac", "c.flac"])
-        found = data(".")
+    def part(path="."):
+        made.append(_PartListing(path, first))
+        return made[-1]
 
-        def next_one():
-            name = next(names, None)
-            if name is None:
-                return False
-            found.cFileName = name
-            return True
+    monkeypatch.setattr(winlisting, "_scandir", part)
+    found = [entry.name for entry in winlisting.scandir(str(tmp_path))]
+    assert sorted(found) == ["Album 1", "Album 2"]          # all of it, not the first name, then the error
+    assert made[0].closed                                     # (the refused listing was let go)
+    # os.walk, which the library's look relies on, sees the whole folder too.
+    monkeypatch.setattr(os, "scandir", winlisting.scandir)
+    assert sorted(next(os.walk(tmp_path))[1]) == ["Album 1", "Album 2"]
 
-        return winlisting._collect("Y:\\MUSIC", found, next_one, lambda: last_error)
 
-    assert [e.name for e in listing(18)] == ["b.flac", "c.flac"]
-    assert [e.name for e in listing(0x80090006)] == ["b.flac", "c.flac"]
-    monkeypatch.setattr(winlisting, "_error", lambda code, folder: OSError(code, "failed"))
-    with pytest.raises(OSError):
-        listing(59)
+def test_a_listing_read_whole_still_works_as_os_scandirs_does(tmp_path):
+    (tmp_path / "a.flac").write_bytes(b"123")
+    with winlisting.scandir(tmp_path) as entries:
+        listed = {entry.name: entry.stat().st_size for entry in entries}
+    assert listed == {"a.flac": 3}
 
 
 def test_when_the_other_way_fails_too_the_first_error_stands(tmp_path, monkeypatch):
@@ -191,12 +169,30 @@ def test_on_windows_the_package_puts_it_in_place():
     assert pathlib.Path(".").exists() and list(pathlib.Path(".").iterdir()) is not None
 
 
-@windows_only
-def test_on_windows_os_walk_and_os_scandir_still_list_a_real_folder(tmp_path):
-    (tmp_path / "Album" / "CD1").mkdir(parents=True)
-    (tmp_path / "Album" / "CD1" / "01.flac").write_bytes(b"x")
-    walked = [(os.path.relpath(here, tmp_path), sorted(dirs), sorted(names)) for here, dirs, names in os.walk(tmp_path)]
-    assert walked == [(".", ["Album"], []), ("Album", ["CD1"], []), (os.path.join("Album", "CD1"), [], ["01.flac"])]
-    with os.scandir(tmp_path / "Album" / "CD1") as entries:
-        (song,) = list(entries)
-    assert song.name == "01.flac" and song.is_file() and song.stat().st_size == 1
+def test_an_unsigned_end_of_listing_is_taken_as_the_end(monkeypatch):
+    """Listing the other way: ERROR_NO_MORE_FILES ends it, and so does the bad signature a NAS can
+    give the reply that ends a listing (`dir` lists such a folder; PowerShell and Python didn't);
+    any other error is an error."""
+    def data(name):
+        time = SimpleNamespace(dwHighDateTime=0, dwLowDateTime=0)
+        return SimpleNamespace(cFileName=name, dwFileAttributes=0x20, nFileSizeHigh=0, nFileSizeLow=3,
+                               ftCreationTime=time, ftLastAccessTime=time, ftLastWriteTime=time, dwReserved0=0)
+
+    def listing(last_error):
+        names = iter(["..", "b.flac", "c.flac"])
+        found = data(".")
+
+        def next_one():
+            name = next(names, None)
+            if name is None:
+                return False
+            found.cFileName = name
+            return True
+
+        return winlisting._collect("Y:\\MUSIC", found, next_one, lambda: last_error)
+
+    assert [e.name for e in listing(18)] == ["b.flac", "c.flac"]
+    assert [e.name for e in listing(0x80090006)] == ["b.flac", "c.flac"]
+    monkeypatch.setattr(winlisting, "_error", lambda code, folder: OSError(code, "failed"))
+    with pytest.raises(OSError):
+        listing(59)

@@ -117,6 +117,8 @@ from . import (
     loudness,
     mediakeys,
     mpris,
+    netcheck,
+    netcheck_view,
     offthread,
     passthrough,
     placement,
@@ -137,7 +139,7 @@ from . import (
     winstate,
 )
 from .analysis import GUARD_HEADROOM_CHOICES, guard_trim
-from .engine import Player, State
+from .engine import CARRY_AFTER, CARRY_BEFORE, Player, State
 from .favourites import Favourites
 from .help_window import AboutWindow, HelpWindow
 from .library import (
@@ -150,7 +152,7 @@ from .library import (
     scan_folder,
     title_from_filename,
 )
-from .library_view import LibraryView, adding_folder, unsearched_note, view_menu
+from .library_view import LibraryView, adding_folder, ask_rebuild, unsearched_note, view_menu
 from .lyrics_window import LyricsWindow
 from .mini_view import DEFAULT_SIZE as MINI_DEFAULT_SIZE
 from .mini_view import MIN_SIZE as MINI_MIN_SIZE
@@ -168,7 +170,7 @@ from .statustext import (
     network_now_line,
     output_line,
 )
-from .tabbar import ElsewhereButton, MenuRow, Popover, TabBar, Tooltip, glyph
+from .tabbar import MenuRow, Popover, TabBar, Tooltip, glyph
 from .tag_window import TagHistoryWindow, TagWindow
 from .tools.details import NowPlayingWindow
 from .tools.meters import album_files
@@ -189,6 +191,7 @@ VOLUME_CONTROL = ("Mac's volume keys" if platforms.IS_MAC else "Windows volume s
 SEEK_STEP = 5.0
 LONG_SEEK_STEP = 30.0  # Shift+← / →
 UNDO_NOTE_MS = 10000  # how long "Removed … · Undo" stays in the status line (Ctrl+Z works until the next change)
+DIAGNOSTICS_CHECK_S = 8.0   # Save diagnostics…: each step of its library folders check waits at most this long
 WHEEL_NOTCH = 120 if platforms.IS_WINDOWS else 1   # Tk's wheel delta for one notch (Windows: 120)
 ALBUM_AGAIN_S = 30.0   # a network album not all downloaded yet: its loudness is measured again after this long
 SLOW_LOOK_S = 2.0      # a playlist's song looked for this long and not found: its drive or server isn't answering
@@ -197,6 +200,8 @@ MIN_LIST_HEIGHT = 190  # px (at 100% scaling) the track list keeps, however big 
 INDEX_AFTER_MS = 3000  # the library index is brought up to date this long after start-up
 GROW_EVERY_S = 5.0     # during a first look the Library tab takes in the songs read so far this often…
 GROW_SHARE = 0.25      # …or less often, so reading them takes at most this share of the time (a very big library)
+FOLLOW_EVERY = 12      # polls between checks that the Library tab still lists what the library holds (3 s)
+FOLLOW_WAIT_S = 30.0   # a check that found the playing song gone tries again this much later (it isn't cut off)
 FAVOURITES_WAIT_S = 6.0  # longest closing waits for a ♥ to be stored (the database can be busy for 5 s)
 NEW_MUSIC_NOTE_MS = 12000  # how long "New music: …" stays in the status line
 UP_NEXT_SHOWN = 12     # songs listed in the Up next pop-over (the rest are counted)
@@ -316,11 +321,12 @@ def default_music_folder() -> Path:
 
 def library_folders(prefs: dict) -> list[Path]:
     """The library folders in the settings (`library_folders`; before there could be several,
-    `library_folder`), else the system's Music folder. Each once, and none inside another
-    (library_db.outermost: its albums would be listed twice)."""
+    `library_folder`), else the system's Music folder — or none at all after Settings → Library →
+    Clear the library… (`library_empty`), until a folder is added. Each once, and none inside
+    another (library_db.outermost: its albums would be listed twice)."""
     folders = prefs.get("library_folders") or ([prefs["library_folder"]] if prefs.get("library_folder") else [])
     found = library_db.outermost(folder for folder in folders if isinstance(folder, str) and folder)
-    return found or [default_music_folder()]
+    return found or ([] if prefs.get("library_empty") else [default_music_folder()])
 
 
 def _look_once(look: watcher.Watcher, index: library_index.LibraryIndex) -> None:
@@ -458,7 +464,7 @@ def _queued_alone(playing_tab: int | None, status) -> bool:
     return playing_tab is None and status.track is not None and status.state is not State.STOPPED
 
 
-@dataclass
+@dataclass(eq=False)   # a tab is itself, not its contents: two blank tabs are two tabs ("tab in self.tabs")
 class Tab:
     kind: str                         # "album" (from the Library), "folder" (everything under it), "library",
                                       # "playlist" (an .m3u8 file; path is the file), "files" (music files
@@ -488,6 +494,8 @@ class Tab:
     numbers: tuple | None = field(default=None, repr=False, compare=False)  # (tracks, count, (songs, albums, seconds))
     growing: bool = field(default=False, repr=False, compare=False)  # the Library tab, filling in as a first look reads
     grown: int = field(default=-1, repr=False, compare=False)        # …the database's generation it last took in
+    following: bool = field(default=False, repr=False, compare=False)  # …a check that the library hasn't changed since, under way
+    follow_after: float = field(default=0.0, repr=False, compare=False)  # …not before then (monotonic): its playing song has gone
 
     def view_track(self) -> Track | None:
         """The track that represents this tab: the one it last played, else its first."""
@@ -552,6 +560,17 @@ def place_new_tab(tabs: list[Tab], current: int, tab: Tab) -> int:
         return current
     tabs.append(tab)
     return len(tabs) - 1
+
+
+def use_up_blank(tab: Tab, kind: str, path) -> None:
+    """Something added to a blank tab makes it a real tab first, as opening something from it does
+    (else the songs would sit unseen behind its empty page): "album" for an album added whole, or
+    "files" for songs (its path the first one's folder; its songs are its extras)."""
+    if tab.blank:
+        tab.kind, tab.path = kind, str(path)
+        tab.info_requested = False
+        if tab.tracks is None:
+            tab.tracks = []
 
 
 def tab_numbers(tab: Tab) -> tuple[int, int, float]:
@@ -924,8 +943,8 @@ class PlayerWindow:
         # over the line, so nothing else moves).
         self.undo_link = ttk.Label(body, text=f"Undo ({keys.hint('undo')})", style="UpNext.TLabel", cursor="hand2")
         self.undo_link.bind("<Button-1>", lambda e: self._link_clicked())
-        # Music in another tab: pause / play at the end of the status line (tabbar.ElsewhereButton).
-        self.elsewhere_button = ElsewhereButton(body, self.root, self.status_label, lambda: self.player.toggle_pause())
+        # Music in another tab: pause / play at the end of the status line (controls.ElsewhereButton).
+        self.elsewhere_button = controls.ElsewhereButton(body, self.status_label, lambda: self.player.toggle_pause())
         self.playlist = PlaylistView(body, on_play=lambda i: self._play_tab(self.current, i),
                                      on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu,
@@ -1779,6 +1798,8 @@ class PlayerWindow:
         def work():
             try:
                 root = Path(tab.path) if not (tab.main or tab.blank) else None   # (the main Library tab: every folder)
+                if tab.main:   # (read first: a change made while the list is read is taken in later: _follow_library)
+                    progress["generation"] = index.db.generation
                 if root is not None:
                     reporter.say(loadprogress.opening_text(tab.title))   # (a network drive may take a while to answer)
                 if tab.blank:
@@ -1850,12 +1871,15 @@ class PlayerWindow:
         delay = max(GROW_EVERY_S, took / GROW_SHARE)
         self.root.after(int(delay * 1000), lambda: self._grow(tab))
 
-    def _grow(self, tab: Tab):
+    def _grow(self, tab: Tab, once: bool = False):
         """The Library tab during a first look: the songs read so far, as a new list in its place,
         keeping what's playing (it carries on), the song the tab is on, the top of the view and the
-        selected song. Read on a worker; it stops once the look has finished (one last time)."""
-        if tab not in self.tabs or tab.tracks is None or tab.loading or not tab.growing:
-            tab.growing = False
+        selected song. Read on a worker; it stops once the look has finished (one last time).
+        `once` (_follow_library): the library changed since the tab was filled — a folder taken
+        out or added, a rebuild, music added or gone — so the tab takes the new list once, shorter
+        too: a song no longer in the library leaves it rather than showing as not found."""
+        if tab not in self.tabs or tab.tracks is None or tab.loading or not (tab.growing or once):
+            tab.growing = tab.following = False
             return
         peek = getattr(tab.tracks, "peek", None)
 
@@ -1870,6 +1894,13 @@ class PlayerWindow:
         playing = self.player.status().track if index == self.playing_tab else None
         if playing is not None:
             keys["playing"] = audiofile.key(playing.path)
+            # The list's own songs round it in play order — the one playing, or the one a queued song
+            # interrupted, and those either side — read in the new list too, so the player finds its
+            # place (and, shuffling, its order) there instead of starting the Library again.
+            place = getattr(self.player, "index", -1)
+            around = getattr(self.player, "order_around", None)
+            order = around(place, CARRY_BEFORE, CARRY_AFTER) if around and place >= 0 else []
+            keys.update((f"order {n}", key_of(i)) for n, i in enumerate(order))
         library, seen, started, last_index = self._index(), tab.grown, time.monotonic(), tab.last_index
 
         def work():
@@ -1881,17 +1912,28 @@ class PlayerWindow:
             tracks = self._library_tracks(albums)
             found = {name: _index_of_key(tracks, key) for name, key in keys.items() if key is not None}
             ready = getattr(tracks, "ready", None)
-            if ready is not None and found.get("playing", -1) >= 0:
-                ready(found["playing"])   # (its album read: the player finds the song in the new list)
+            wanted = [found[name] for name in found if (name == "playing" or name.startswith("order "))
+                      and found[name] >= 0]
+            if ready is not None and wanted:
+                for place in wanted:
+                    ready(place)   # (its album read: the player finds the song in the new list)
+                ready(wanted[0], around=wanted[1:])   # (and all of them held)
             return generation, tracks, going, found
 
         def then(value):
+            tab.following = False
             if isinstance(value, offthread.Error) or tab not in self.tabs or tab.tracks is None or tab.loading:
                 tab.growing = False
                 return
             generation, tracks, going, found = value
+            gone = once and tracks is not None and "playing" in keys and found.get("playing", -1) < 0
+            if gone and self._tab_index(tab) == self.playing_tab:
+                # The song playing from this tab has left the library: it isn't cut off. The tab
+                # takes the new list once it has moved on (the next check, a while later).
+                tab.follow_after = time.monotonic() + FOLLOW_WAIT_S
+                return
             tab.grown = generation
-            if tracks is not None and len(tracks) >= len(tab.tracks):
+            if tracks is not None and (once or len(tracks) >= len(tab.tracks)):
                 tab.tracks = tracks
                 if tab.last_index == last_index and keys["view"] is not None:
                     tab.last_index = found.get("view", -1)
@@ -1901,12 +1943,36 @@ class PlayerWindow:
                 if now == self.current:
                     self._show_current_tab()
                     self.playlist.show_tracks_at(found.get("top"), found.get("selected"))
+            if once and not tab.growing:
+                return
             if going:
                 self._grow_later(tab, time.monotonic() - started)
             else:
                 tab.growing = False
 
-        self.work.run(work, then, name="library-grow")
+        self.work.run(work, then, name="library-follow" if once else "library-grow")
+
+    def _follow_library(self):
+        """(every FOLLOW_EVERY polls) The main Library tab lists what the library holds: when the
+        library has changed since the tab was filled, it takes the new list (_grow, once). Only the
+        library's generation is read, on a worker — nothing at all while it hasn't changed."""
+        main = next((t for t in self.tabs if t.main), None)
+        if (main is None or main.tracks is None or main.loading or main.growing or main.following
+                or main.query or time.monotonic() < main.follow_after):
+            return
+        main.following = True
+        library, seen = self._index(), main.grown
+
+        def changed() -> bool:
+            return library.db.generation != seen
+
+        def then(value):
+            if value is True and main in self.tabs:
+                self._grow(main, once=True)   # (it clears `following` when it's done)
+            else:
+                main.following = False
+
+        self.work.run(changed, then, name="library-follow-check")
 
     def _building_line(self) -> str:
         """While a library folder's first look (or a rebuild) is under way — many minutes for a big
@@ -2012,6 +2078,8 @@ class PlayerWindow:
         if progress.get("growing") and not tab.growing:
             tab.growing = True
             self._grow_later(tab)
+        if "generation" in progress:
+            tab.grown = progress["generation"]   # (what it lists: _follow_library takes in later changes)
         if play and tab.tracks:
             if tab.last_index >= 0:
                 self._play_tab(index, tab.last_index, start_at=tab.resume_at)
@@ -2956,8 +3024,10 @@ class PlayerWindow:
             self.open_tab("folder", folder, play=True)
 
     def _library_root(self) -> Path:
-        """The (first) library folder."""
-        return library_folders(self.prefs)[0]
+        """The (first) library folder — the system's Music folder when there's none (the library
+        cleared): where a folder dialog starts."""
+        folders = library_folders(self.prefs)
+        return folders[0] if folders else default_music_folder()
 
     def _library_roots(self) -> list[Path]:
         """The library folders the player reads now: all of them, or with Local network access off,
@@ -3001,6 +3071,14 @@ class PlayerWindow:
         elif tab.kind == "playlist":
             self.add_to_playlist(Path(tab.path), tracks)
             message = f"Added “{name}” ({len(tracks)} songs) to “{tab.title}”"
+        elif tab.blank:   # (the album opens there, as if opened from it)
+            use_up_blank(tab, "album", album)
+            tab.tracks = tracks
+            if self._tab_index(tab) == self.current:
+                self._show_current_tab()
+            else:
+                self._refresh_tabs()
+            message = f"Opened “{name}” ({len(tracks)} songs) in the new tab"
         else:
             tab.extras.append(str(album))
             if tab.tracks is not None:  # (not loaded yet: loading it will include the album)
@@ -3070,7 +3148,8 @@ class PlayerWindow:
                               song_columns=tuple(self.prefs.get("library_song_columns") or ()),
                               on_song_columns=lambda columns: self.prefs.update(library_song_columns=columns),
                               on_close=lambda: self._show_library_view(False),
-                              on_songs=lambda: self._show_library_view(False))
+                              on_songs=lambda: self._show_library_view(False),
+                              left_out=lambda: unsearched_note(library_folders(self.prefs), self.prefs, "Not read"))
         library.frame.pack_forget()
         library.hidden()
         self.keys.mark(library.tree, "library")
@@ -3653,12 +3732,47 @@ class PlayerWindow:
         self._set_library_folders(folders)
         self._set_notice(f"Took “{folder}” out of the Library (its music files are untouched)", 6000)
 
+    def _rebuild_library(self):
+        """Settings → Library → Rebuild the library…: the same as the Library's ⋯ menu — asked first,
+        then everything stored about the music is forgotten and the library folders are read again
+        from scratch (plays, favourites and quality checks stay). The status line says how far it
+        has got (_building_line); the Library tab takes in what's read (_follow_library)."""
+        if self._library is not None:
+            self._library.rebuild()   # (the Library's own: its list empties and fills again as it reads)
+            return
+        if library_index.building() is not None:
+            self._set_notice("The library is being read already: rebuild it once that's done", 5000)
+            return
+        self._for_prompt()
+        folders = self._library_roots()
+        if not folders or not ask_rebuild(self.root, folders):
+            return
+        index = self._index()
+
+        def work():
+            try:
+                return index.rebuild()
+            finally:
+                index.db.release()
+
+        def then(diff):
+            if isinstance(diff, offthread.Error):
+                self._set_notice(f"Couldn't rebuild the library: {diff.error}", 8000)
+            elif diff.error:
+                self._set_notice(f"Nothing was forgotten: {diff.error}", 10000)
+            elif not diff.cancelled:
+                self._set_notice("Rebuilt the library: it lists what's in its folders now", 6000)
+
+        self._set_notice("Rebuilding the library…", 4000)
+        self.work.run(work, then, name="library-rebuild")
+
     def _set_library_folders(self, folders: list[Path]):
         """The library folders are now these. The look under way for the old ones is stopped first
         (library_index.LibraryIndex.set_roots), then the library is looked through again on a worker."""
         folders = library_db.outermost(folders)
         self.prefs["library_folders"] = [str(f) for f in folders]
-        self.prefs["library_folder"] = str(folders[0])   # (what a version before several folders reads)
+        self.prefs["library_folder"] = str(folders[0]) if folders else ""   # (what a version before several folders reads)
+        self.prefs["library_empty"] = not folders   # (none: the library was cleared — not the Music folder)
         index = self._index()   # (takes the new folders on: a look still under way for the old ones stops)
         self.root.after_idle(self._paint_library_folders)   # (not now: the Remove clicked is one of the rows)
         if self._library is not None:
@@ -3746,6 +3860,10 @@ class PlayerWindow:
         for child in self.library_rows.winfo_children():
             child.destroy()
         folders = library_folders(self.prefs)
+        settings_view.paint_library_buttons(self)
+        if not folders:   # (the library was cleared; short enough for a 300 px window, Add folder… just below)
+            ttk.Label(self.library_rows, text="No folders: the Library is empty",
+                      style="PopMuted.TLabel").pack(anchor="w")
         for folder in folders:
             row = ttk.Frame(self.library_rows, style="Pop.TFrame")
             row.pack(fill="x", pady=theme.pad(0, theme.GAP_HAIR))
@@ -4547,11 +4665,15 @@ class PlayerWindow:
         prefs = json.loads(json.dumps(self.prefs))   # (a copy of its own for the thread)
         names = self._private_names()
         result: dict = {}
+        folders = [str(f) for f in netcheck_view.listed_folders(prefs) or [self._library_root()]]
+
+        def check() -> str:   # (a shorter time limit than the button's: a sleeping server mustn't hold the zip up)
+            return netcheck.report(folders, prefs, limit=DIAGNOSTICS_CHECK_S)[0]
 
         def work():
             try:
                 result["path"] = diagnostics.write_zip(Path(destination), prefs, settings.settings_path().parent,
-                                                       names=names)
+                                                       names=names, folders_check=check)
             except Exception as error:   # reported in the window
                 log.warning("couldn't save diagnostics", exc_info=True)
                 result["error"] = error
@@ -4604,6 +4726,8 @@ class PlayerWindow:
             self.add_to_playlist(Path(tab.path), tracks)
             count = len(tracks)
             return f"Added {count} song{'' if count == 1 else 's'} to “{tab.title}”"
+        was_blank = tab.blank
+        use_up_blank(tab, "files", Path(audiofile.real_path(tracks[0].path)).parent)
         # Songs are told apart by audiofile.key: a CUE track's path is its whole image file.
         have = _keys_held(tab.tracks, [audiofile.key(t.path) for t in tracks]) if tab.tracks else set()
         new = [t for t in tracks if audiofile.key(t.path) not in have]
@@ -4613,7 +4737,7 @@ class PlayerWindow:
         # tab comes back the same after a restart.
         brought = {audiofile.key(t.path) for t in new} | {str(album_folder(t.path)) for t in new}
         for extra in extras:
-            if extra in brought and extra not in tab.extras and Path(extra) != Path(tab.path):
+            if extra in brought and extra not in tab.extras and (tab.kind == "files" or Path(extra) != Path(tab.path)):
                 tab.extras.append(extra)
         if tab.tracks is not None:  # (not loaded yet: loading it will include them)
             tab.tracks = tab.tracks + new
@@ -4622,6 +4746,8 @@ class PlayerWindow:
                 self.player.set_tracks(tab.tracks, keep_playing=True)
             if index == self.current:
                 self._show_current_tab()
+            elif was_blank:
+                self._refresh_tabs()   # (its name on the strip)
         count = len(new)
         return f"Added {count} song{'' if count == 1 else 's'} to “{tab.title}”"
 
@@ -4883,6 +5009,8 @@ class PlayerWindow:
                     reach = max(reach, distance)
             self.status_more.place(in_=self.status_row, x=0, y=-reach, relwidth=1.0, height=reach)
             self.root.tk.call("raise", str(self.status_more))   # (over the list's foot, whatever came after)
+            if self.elsewhere_button.winfo_manager():   # (…but under the pause button, a little taller than its line)
+                self.root.tk.call("raise", str(self.elsewhere_button))
         elif self.status_more.winfo_manager():
             self.status_more.place_forget()
 
@@ -5044,6 +5172,8 @@ class PlayerWindow:
             self._polls += 1
             if self._polls % MARKS_EVERY == 0:
                 self._guarded(self._paint_track_marks)
+            if self._polls % FOLLOW_EVERY == 0:
+                self._guarded(self._follow_library)
             if self._polls % AUTOSAVE_EVERY == 0:
                 self._guarded(self._save_if_changed)
                 if self._tag_waiting:
@@ -5189,6 +5319,8 @@ class PlayerWindow:
                                "to carry on")
             elif shown.blank:
                 self._set_head(shown.title, "Open your library, a folder or a playlist", "")
+            elif shown.main and self.prefs.get("library_empty") and not shown.tracks:   # (the library was cleared)
+                self._set_head(shown.title, "Empty: add a folder in Settings → Library", "")   # (fits 300 px)
             elif shown.kind == "library" and shown.last_index < 0:   # (its first album's artist would mislead)
                 self._set_head(shown.title, "Press play to start", self._album_summary(shown))
             else:

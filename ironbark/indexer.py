@@ -65,8 +65,8 @@ from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wai
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import audiofile, library_db, platforms
-from .library import Track, is_music_name, skip_folder
+from . import audiofile, library_db, netcheck, platforms
+from .library import Track, is_music_name, read_track, skip_folder
 from .library_db import (
     FileState,
     FolderResult,
@@ -85,8 +85,9 @@ GENTLE_WORKERS = 2       # worker processes for a look at a library that's alrea
 PROGRESS_EVERY_S = 0.25  # Progress events at most this often
 ALBUMS_EVERY_S = 0.5     # AlbumsChanged events at most this often while a look stores folders
 _IN_FLIGHT = 2           # folders handed to each worker at a time (more would only wait, and delay a cancel)
-POOL_STALL_S = 90.0      # worker processes that answer nothing for this long are given up: read here instead
+POOL_STALL_S = 90.0      # worker processes that read no file for this long are given up: read here instead
 ROOT_TRIES = 3           # a library folder that can't be listed is tried this often (a network share can fail once)
+WALK_ERRORS_LOGGED = 3   # of the folders inside a library folder that couldn't be listed, the log names this many
 ROOT_RETRY_S = 1.0       # seconds between those tries
 
 
@@ -214,10 +215,39 @@ class _Root:
 
 
 # -- worker processes ------------------------------------------------------------------------------------
-def _worker_start() -> None:
+# The files the worker processes have read, all told: a number in shared memory that each adds to as
+# it reads a file, so a look can tell workers busy with one big folder (thousands of songs on a slow
+# network share) from workers that are stuck. In this process it's made with the first pool; in a
+# worker it's handed over as the worker starts. (Adds from two workers at once may lose one: only a
+# change is looked for.)
+_files_read = None
+
+
+def files_read_so_far() -> int:
+    """(This process.) The worker processes' running count of files read; 0 before any pool."""
+    return _files_read.value if _files_read is not None else 0
+
+
+def _worker_start(files_read=None) -> None:
     """Each worker process, as it starts: lower its priority, so reading tags never takes the CPU
-    from the player's own process."""
+    from the player's own process; and take the shared count of files read."""
+    global _files_read
+    _files_read = files_read
     lower_priority()
+
+
+def _counted(reader: Callable[[Path], Track]) -> Callable[[Path], Track]:
+    """The reader, adding one to the shared count as each file is read (in a worker process)."""
+    count = _files_read
+    if count is None:
+        return reader
+
+    def read(path):
+        try:
+            return reader(path)
+        finally:
+            count.value += 1
+    return read
 
 
 def lower_priority() -> None:
@@ -240,9 +270,7 @@ def lower_priority() -> None:
 def _read_job(root: str, folder: str, listing: dict, names: list[str] | None, cue_sig: str,
               reader: Callable[[Path], Track] | None) -> FolderResult:
     """A folder read in a worker process (or in this one)."""
-    if reader is None:
-        return read_folder(root, folder, listing, names, cue_sig)
-    return read_folder(root, folder, listing, names, cue_sig, reader=reader)
+    return read_folder(root, folder, listing, names, cue_sig, reader=_counted(reader or read_track))
 
 
 def worker_check() -> dict:
@@ -266,9 +294,13 @@ def _stop_pool(pool) -> None:
 
 def make_pool(workers: int) -> ProcessPoolExecutor | None:
     """Worker processes for reading tags (started as each is needed), or None if they can't be."""
+    global _files_read
     try:
-        return ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
-                                   initializer=_worker_start)
+        context = multiprocessing.get_context("spawn")
+        if _files_read is None:
+            _files_read = context.RawValue("q", 0)
+        return ProcessPoolExecutor(max_workers=workers, mp_context=context, initializer=_worker_start,
+                                   initargs=(_files_read,))
     except (OSError, ValueError, ImportError, NotImplementedError, RuntimeError):
         return None
 
@@ -281,14 +313,15 @@ class Indexer:
     def __init__(self, db: LibraryDB, reader: Callable[[Path], Track] | None = None, pool_min: int = POOL_MIN,
                  fast: int | None = None, gentle: int = GENTLE_WORKERS,
                  pool_factory: Callable[[int], ProcessPoolExecutor | None] = make_pool,
-                 stall: float = POOL_STALL_S):
+                 stall: float = POOL_STALL_S, files_read: Callable[[], int] = files_read_so_far):
         self.db = db
         self.reader = reader              # None: library.read_track
         self.pool_min = pool_min
         self.fast = fast if fast is not None else fast_workers()
         self.gentle = gentle
         self.pool_factory = pool_factory
-        self.stall = stall                # seconds without an answer before the worker processes are given up
+        self.stall = stall                # seconds with no file read before the worker processes are given up
+        self.files_read = files_read      # the worker processes' count of files read (any change: busy)
         self.progress = Progress()        # replaced whole as a look goes on: read from any thread
         self.last_diff: Diff | None = None
         self.looked = 0.0                 # when a look last finished (this session)
@@ -307,6 +340,7 @@ class Indexer:
         self._read = (0, 0)               # (files read, files to read) by the look under way
         self._clock = 0.0                 # the last time handed out by _now
         self._root_error: OSError | None = None   # why the library folder being walked couldn't be listed
+        self._emptied = 0                 # how many times the library has been cleared (empty)
 
     # -- listeners and control --
     def listen(self) -> queue.SimpleQueue:
@@ -386,7 +420,10 @@ class Indexer:
         only = None if folders is None else {os.fspath(f) for f in folders}
         if not roots:
             return Diff(error="No library folder")
+        emptied = self._emptied
         with self._lock:
+            if self._emptied != emptied:   # (asked for before the library was cleared: its folders are gone)
+                return Diff(cancelled=True)
             self._cancel.clear()
             started = self._now()
             if not dry:
@@ -431,6 +468,19 @@ class Indexer:
     def changes(self, roots: Iterable[str | Path]) -> Diff:
         """What's added / changed / gone since the database last looked; nothing is read or stored."""
         return self.check(roots, dry=True)
+
+    def empty(self) -> None:
+        """Clear the library: no library folders any more, and nothing stored for any (plays,
+        favourites and quality checks stay: they're keyed by the file, for if its music is added
+        back). A look under way is stopped first, and one asked for meanwhile, for the old folders,
+        does nothing. Listeners hear that every album changed."""
+        self.cancel()
+        with self._lock:
+            self._emptied += 1
+            self.db.set_roots([])   # (everything stored for each folder goes with it)
+            self.db.clear()
+            self._albums = set()
+            self._albums_changed(everything=True)
 
     def _check(self, roots: list[str], hold, only: set[str] | None, json_index: Path | None, dry: bool,
                started: float, diff: Diff) -> None:
@@ -542,8 +592,17 @@ class Indexer:
             if root in unlisted:
                 why = f"Can't read the library folder {root}"
                 error = self._root_error
-                log.warning("library look: %s: %r", why, error)
-                return f"{why} ({error_text(error)})" if error is not None else why
+                log.warning("library look: %s: %r%s", why, error, f" — {netcheck.meaning(error)}" if error else "")
+                if error is None:
+                    return why
+                said = netcheck.meaning(error)
+                return f"{why} ({error_text(error)})" + (f": {said}" if said else "")
+            if self._walk_errors:   # (folders inside it that couldn't be listed: said once, the first few)
+                log.warning("library look: %d folder(s) in %s couldn't be listed; the first: %s",
+                            len(unlisted), root, "; ".join(
+                                f"{folder}: {error_text(error)}" + (f" — {netcheck.meaning(error)}"
+                                                                    if netcheck.meaning(error) else "")
+                                for folder, error in self._walk_errors))
         else:
             listed, unlisted = _list_some(root, only), []
         if only is not None:   # (a quick look: only its own folders' stored files)
@@ -601,6 +660,7 @@ class Indexer:
         closed: set[str] = set()
         stack = [root]
         self._root_error = None
+        self._walk_errors: list[tuple[str, OSError]] = []
         while stack:
             if self._cancel.is_set():
                 raise _Cancelled
@@ -610,6 +670,8 @@ class Indexer:
             except OSError as error:
                 if folder == root:
                     self._root_error = error
+                elif len(self._walk_errors) < WALK_ERRORS_LOGGED:
+                    self._walk_errors.append((folder, error))
                 unlisted.append(folder)
                 if isinstance(error, PermissionError):
                     denied.add(folder)
@@ -712,8 +774,9 @@ class Indexer:
         """Read and store the jobs: the quick ones (nothing to read) first, then the reading, in
         worker processes when there's enough of it. Workers that stop answering (they never start —
         a slow disk, a virus scanner holding each new process — or hang) are given up after
-        `stall` seconds without an answer, and the reading carries on here: a look never waits for
-        ever with nothing moving."""
+        `stall` seconds without reading a file, and the reading carries on here: a look never waits
+        for ever with nothing moving. (Counted by files, not folders: one big folder on a slow share
+        can rightly take longer than that.)"""
         quick = [job for job in jobs if job.names == []]
         reads = deque(job for job in jobs if job.names != [])
         total = sum(job.files for job in reads)
@@ -730,7 +793,8 @@ class Indexer:
         pool = self.pool_factory(workers) if reads and total >= self.pool_min else None
         self.used_pool = pool is not None
         in_flight: dict[Future, _Job] = {}
-        answered = time.monotonic()   # (the last time a worker handed back a folder, or they started)
+        answered = time.monotonic()   # (the last time a worker read a file or handed back a folder, or they started)
+        files_read = self.files_read()
         try:
             while reads or in_flight:
                 self._check_cancel()
@@ -745,8 +809,11 @@ class Indexer:
                                               self.reader)] = job
                     finished, _rest = wait(in_flight, timeout=0.25, return_when=FIRST_COMPLETED)
                     if not finished:
-                        if time.monotonic() - answered >= self.stall:
-                            log.warning("the worker processes answered nothing for %.0f s: reading tags in this "
+                        now_read = self.files_read()
+                        if now_read != files_read:   # (a file read: busy with a big folder, not stuck)
+                            files_read, answered = now_read, time.monotonic()
+                        elif time.monotonic() - answered >= self.stall:
+                            log.warning("the worker processes read no file for %.0f s: reading tags in this "
                                         "process instead", self.stall)
                             reads.extendleft(reversed(list(in_flight.values())))
                             in_flight.clear()

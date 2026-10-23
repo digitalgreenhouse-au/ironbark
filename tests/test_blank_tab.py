@@ -28,10 +28,20 @@ def test_the_player_opens_as_the_full_window_even_if_left_as_the_mini_strip(make
 def test_place_new_tab_uses_up_a_blank_tab_or_goes_at_the_end():
     tabs = [Tab("library", ""), Tab("new", "")]
     album = Tab("album", r"C:\Music\Blue")
-    assert place_new_tab(tabs, 1, album) == 1 and tabs == [Tab("library", ""), album]
+    library = tabs[0]
+    assert place_new_tab(tabs, 1, album) == 1 and tabs == [library, album]
     other = Tab("album", r"C:\Music\Red")
     assert place_new_tab(tabs, 0, other) == 2 and tabs[2] is other   # (the Library tab isn't blank)
     assert place_new_tab([], -1, album) == 0
+
+
+def test_tabs_are_told_apart_as_tabs_not_by_their_contents():
+    first, second = Tab("new", ""), Tab("new", "")
+    assert first != second and [first].count(second) == 0
+    tabs = [first, second]
+    assert tabs.index(second) == 1
+    tabs.remove(second)
+    assert tabs == [first] and second not in tabs
 
 
 def test_the_plus_button_opens_a_blank_tab_and_the_first_thing_opened_takes_its_place(make_window, tmp_path):
@@ -103,4 +113,67 @@ def test_space_on_a_blank_tab_does_nothing_to_the_music(make_window):
     _pump(root, 0.3)
     window.toggle_play()
     assert player.calls == [] and window.playing_tab == 0
+    assert errors == []
+
+
+def _blank_on_show(window, root):
+    window.new_blank_tab()
+    _pump(root, 0.3)
+    blank = window.tabs[-1]
+    assert blank.blank and window.current == len(window.tabs) - 1
+    return blank
+
+
+def _shows_its_songs(window, tab, count):
+    assert not tab.blank and tab.title != "New tab"
+    assert len(tab.tracks) == count
+    assert not window.empty_view.winfo_manager() and window.playlist.frame.winfo_ismapped()
+    assert window.bar._titles[window._tab_index(tab)] == tab.title
+
+
+def test_songs_added_to_a_blank_tab_are_shown_and_it_becomes_a_real_tab(make_window, tmp_path):
+    # Library → Add to tab, songs dragged from a track list, files dropped from Explorer: each adds
+    # songs to the tab through the same call.
+    window, root, player, errors = make_window()
+    blank = _blank_on_show(window, root)
+    song = Path(window.tabs[0].path) / "01 Song.flac"
+    track = Track(path=song, title="Song One", artist="Artist", album="Album", duration=200.0)
+    message = window._add_tracks_to_tab(blank, [track], [str(song)])
+    _pump(root, 0.4)
+    assert message == f"Added 1 song to “{blank.title}”"
+    assert blank.kind == "files" and Path(blank.path) == song.parent and blank.extras == [str(song)]
+    _shows_its_songs(window, blank, 1)
+    assert blank.title == "Album"
+    assert blank.source()["kind"] == "files"                    # (saved as what it now is)
+    before = list(window._closed_tabs)
+    window.close_tab(window._tab_index(blank))                   # and it can be reopened, as any tab
+    _pump(root, 0.3)
+    assert len(window._closed_tabs) == len(before) + 1
+    assert errors == []
+
+
+def test_an_album_added_to_a_blank_tab_opens_there(make_window, tmp_path):
+    # Library → Add to tab with an album selected, or an album dragged onto a blank tab.
+    window, root, player, errors = make_window()
+    blank = _blank_on_show(window, root)
+    album = Path(window.tabs[0].path)
+    told = []
+    window.add_album_to_current(album, on_done=told.append, tab=blank)
+    _pump(root, 0.8)
+    assert told and told[0].startswith("Opened “")
+    assert blank.kind == "album" and Path(blank.path) == album and blank.extras == []
+    _shows_its_songs(window, blank, 1)
+    assert errors == []
+
+
+def test_songs_dropped_on_a_blank_tab_that_isnt_on_show(make_window, tmp_path):
+    window, root, player, errors = make_window()
+    blank = _blank_on_show(window, root)
+    window.select_tab(0)
+    _pump(root, 0.3)
+    song = Path(window.tabs[0].path) / "01 Song.flac"
+    window._add_tracks_to_tab(blank, [Track(path=song, title="Song One", album="Album")], [str(song)])
+    _pump(root, 0.3)
+    assert blank.kind == "files" and len(blank.tracks) == 1
+    assert window.bar._titles[window._tab_index(blank)] != "New tab"
     assert errors == []

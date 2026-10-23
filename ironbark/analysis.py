@@ -146,15 +146,17 @@ class AlbumResult:
 
 
 def pcm_bytes(block: np.ndarray, bits: int) -> bytes:
-    """Left-justified int32 samples -> the little-endian PCM bytes FLAC's MD5 covers."""
+    """Left-justified int32 samples -> the little-endian PCM bytes FLAC's MD5 covers: each sample's
+    value, sign-extended to the next whole number of bytes (RFC 9639 §8.2) — so a 20-bit sample is
+    its value in 3 bytes, not the value shifted up to fill them."""
+    values = block >> (32 - bits) if bits < 32 else block
     if bits <= 8:
-        return (block >> 24).astype("<i1").tobytes()
+        return values.astype("<i1").tobytes()
     if bits <= 16:
-        return (block >> 16).astype("<i2").tobytes()
+        return values.astype("<i2").tobytes()
     if bits <= 24:
-        raw = (block >> 8).astype("<i4").view(np.uint8).reshape(-1, 4)
-        return raw[:, :3].tobytes()
-    return block.astype("<i4").tobytes()
+        return values.astype("<i4").view(np.uint8).reshape(-1, 4)[:, :3].tobytes()
+    return values.astype("<i4").tobytes()
 
 
 def dr_from_blocks(block_rms: np.ndarray, block_peak: np.ndarray) -> float | None:
