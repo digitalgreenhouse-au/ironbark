@@ -8,8 +8,11 @@ does nothing. Pressing on our tab bar (or the mini strip) drags the window:
 `start_move` / `follow_move` / `end_move`, the window kept where the pointer
 holds it. (The press used to be handed to Windows' own move loop, as if the
 caption were clicked; on Windows 10 that loop could miss the button being let
-go, and the window ran on after the pointer.) Windows+← / → still snap it to a
-side. Elsewhere the system title bar stays and our bar sits under it.
+go, and the window ran on after the pointer.) On Windows each step is a move
+alone (SetWindowPos: no size, no repaint), as Windows' own drag does: moved
+through Tk (`wm geometry`), the whole window was redrawn at every step, and on
+Windows 10 it flickered in stripes while it moved. Windows+← / → still snap it
+to a side. Elsewhere the system title bar stays and our bar sits under it.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ WS_MINIMIZEBOX = 0x00020000
 WS_MAXIMIZEBOX = 0x00010000
 WS_SYSMENU = 0x00080000
 SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020  # NOSIZE | NOMOVE | NOZORDER | FRAMECHANGED
+SWP_MOVE_ONLY = 0x0001 | 0x0004 | 0x0010        # NOSIZE | NOZORDER | NOACTIVATE: the picture moves as it is
 
 CUSTOM = platforms.CUSTOM_TITLE_BAR  # draw our own title bar?
 
@@ -50,7 +54,20 @@ def remove_caption(window: tk.Misc) -> None:
     user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS)
 
 
-_moving: dict[str, tuple[int, int]] = {}   # window → where the pointer holds it (from its top left), while dragged
+class _Drag:
+    """A drag under way: where the pointer holds the window (from its top left), and on Windows
+    the window's own handle and its frame's place when it was grabbed (moved by those, not
+    through Tk)."""
+
+    __slots__ = ("grip", "hwnd", "frame", "pointer", "last")
+
+    def __init__(self, grip: tuple[int, int], hwnd: int = 0, frame: tuple[int, int] = (0, 0),
+                 pointer: tuple[int, int] = (0, 0)):
+        self.grip, self.hwnd, self.frame, self.pointer = grip, hwnd, frame, pointer
+        self.last: tuple[int, int] | None = None
+
+
+_moving: dict[str, _Drag] = {}   # window → its drag, while it's dragged
 
 
 def start_move(window: tk.Misc, event: tk.Event) -> None:
@@ -60,20 +77,56 @@ def start_move(window: tk.Misc, event: tk.Event) -> None:
     if not CUSTOM:
         return
     at = _place(window)
-    if at is not None:
-        _moving[str(window)] = (event.x_root - at[0], event.y_root - at[1])
+    if at is None:
+        return
+    drag = _Drag((event.x_root - at[0], event.y_root - at[1]))
+    if platforms.IS_WINDOWS:
+        frame = _frame_place(window)
+        if frame is not None:
+            drag.hwnd, drag.frame = frame
+            drag.pointer = (event.x_root, event.y_root)
+    _moving[str(window)] = drag
 
 
 def follow_move(window: tk.Misc, event: tk.Event) -> bool:
     """The pointer moved with the button held: the window follows, if a drag of it is under way
     (True). Tk keeps sending the pointer to the pressed widget, even off the window."""
-    grip = _moving.get(str(window))
-    if grip is None:
+    drag = _moving.get(str(window))
+    if drag is None:
         return False
-    x, y = event.x_root - grip[0], event.y_root - grip[1]
+    if drag.hwnd:   # (Windows: the frame moved by the pointer's travel, as it is — nothing redrawn)
+        x = drag.frame[0] + event.x_root - drag.pointer[0]
+        y = drag.frame[1] + event.y_root - drag.pointer[1]
+        if (x, y) != drag.last:
+            drag.last = (x, y)
+            _set_window_pos(drag.hwnd, x, y)
+        return True
+    x, y = event.x_root - drag.grip[0], event.y_root - drag.grip[1]
     if (x, y) != _place(window):
         window.geometry(f"+{x}+{y}")
     return True
+
+
+def _frame_place(window: tk.Misc) -> tuple[int, tuple[int, int]] | None:
+    """(Windows) The window's frame handle and the top left of its rectangle on the screen, or
+    None if Windows can't say."""
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        hwnd = _hwnd(window)
+        rect = wintypes.RECT()
+        if not hwnd or not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+    except (AttributeError, OSError):
+        return None
+    return hwnd, (rect.left, rect.top)
+
+
+def _set_window_pos(hwnd: int, x: int, y: int) -> None:
+    import ctypes
+
+    ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0, SWP_MOVE_ONLY)
 
 
 def _place(window: tk.Misc) -> tuple[int, int] | None:

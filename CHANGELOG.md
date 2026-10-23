@@ -4,6 +4,12 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.52.5 — 23/10/2026
+
+- Fixed (Windows 10): dragging the window by the tab strip (or the mini player) flickered in
+  stripes while it moved. Each step redrew the whole window; it's now moved as it is, as Windows'
+  own drag does, and draws nothing new until it's let go.
+
 ## 0.52.4 — 23/10/2026
 
 - Fixed (Windows): a NAS share whose folders came back "Invalid Signature" at their end: the NAS

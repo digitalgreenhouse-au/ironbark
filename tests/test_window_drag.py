@@ -77,3 +77,24 @@ def test_the_tab_strip_drags_the_window_from_its_empty_part(root):
     bar._drag_motion(pointer(start[0] + 900, start[1] + 48, x=empty + 700, y=y + 40))
     assert at(root) == (start[0] + 60, start[1] + 40)   # (let go: it stays)
     bar.destroy()
+
+
+def test_on_windows_each_step_is_a_move_alone_by_the_pointers_travel(root, monkeypatch):
+    """On Windows the frame is moved by itself (SetWindowPos: no size, no repaint), as Windows'
+    own drag does: moved through Tk, the whole window was redrawn at every step, and on Windows 10
+    it flickered in stripes while it moved. A step that doesn't move it sends nothing."""
+    from ironbark import platforms
+
+    moves = []
+    monkeypatch.setattr(platforms, "IS_WINDOWS", True)
+    monkeypatch.setattr(chrome, "_frame_place", lambda window: (77, (93, 112)))   # (the frame's own rect)
+    monkeypatch.setattr(chrome, "_set_window_pos", lambda hwnd, x, y: moves.append((hwnd, x, y)))
+    geometry = []
+    monkeypatch.setattr(root, "geometry", lambda *a: geometry.append(a) or "400x300+100+120")
+    chrome.start_move(root, pointer(150, 130))
+    assert chrome.follow_move(root, pointer(160, 135))
+    assert chrome.follow_move(root, pointer(160, 135))       # (the same place: nothing sent)
+    assert chrome.follow_move(root, pointer(400, 90))
+    assert moves == [(77, 103, 117), (77, 343, 72)]
+    assert all(not a for a in geometry)                      # (Tk only asked where it was, never told)
+    assert chrome.end_move(root) and not chrome.follow_move(root, pointer(500, 500)) and len(moves) == 2
