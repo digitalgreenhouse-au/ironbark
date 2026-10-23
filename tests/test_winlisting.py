@@ -72,7 +72,7 @@ def test_a_listing_that_fails_at_its_end_is_listed_the_other_way_and_then_so_is_
     """The NAS's case: os.scandir starts, gives the names, then its last reply is refused. The
     folder is listed the other way, and the next folder on the same drive straight away."""
     (tmp_path / "a.flac").write_bytes(b"")
-    real = os.scandir
+    real = winlisting._scandir   # (Python's own: on Windows os.scandir is the wrapper itself)
     tries = []
 
     class FailsAtTheEnd:
