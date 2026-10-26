@@ -4,6 +4,26 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.52.6 — 26/10/2026
+
+- Fixed: a playlist holding the same song twice lost its place when it was changed during the
+  second copy — a song added, another taken out or one moved sent the player back to the first
+  copy, so the songs after it played again. The copy playing now carries on, shuffle order and all.
+- Fixed (privacy): Save diagnostics… named one of the library's albums in its folders check
+  (library-folders-check.txt). It no longer does; Check folders…, whose report stays on this
+  computer, still names the album it looked inside.
+- Fixed (Mac, Linux): the explanation shown when a network folder can't be read used Windows' error
+  numbers, so a share that dropped mid-read (EIO) was explained as "this login may not read the
+  folder". Mac and Linux errors are now explained by their own meaning.
+- Fixed (tag editing, Experimental): saving tags to a WAV or AIFF whose sound runs past the end of
+  the file (cut short, still being recorded) or that has an old ID3v1 block after it now says why it
+  can't be done, instead of failing to read the tag back. The file was never changed: the editor
+  checks a copy first.
+- Fixed: .m4a files whose main box has a 64-bit size, or runs to the end of the file, have their
+  tags read and saved properly (they showed none, or a save lost them on the copy it checks).
+- Fixed: the sample rate and channels shown for .m4a files with a QuickTime version-2 sound entry
+  (shown as 1 Hz, 3 channels) and for AAC above 65 kHz (shown as 0 Hz).
+
 ## 0.52.5 — 23/10/2026
 
 - Fixed (Windows 10): dragging the window by the tab strip (or the mini player) flickered in
