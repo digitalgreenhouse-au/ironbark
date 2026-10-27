@@ -111,6 +111,7 @@ from . import (
     library_check,
     library_db,
     library_index,
+    library_rescan,
     library_tracks,
     loadprogress,
     logs,
@@ -949,6 +950,7 @@ class PlayerWindow:
                                      on_menu=self._track_menu, on_drag=self._song_drag,
                                      on_heading_menu=self._heading_menu,
                                      on_search_library=self.find_in_library, on_views=self._views_menu,
+                                     on_rescan=lambda: library_rescan.rescan(self),
                                      is_favourite=lambda track: track in self.favourites,
                                      plays_db=lambda: self._index().db,
                                      on_library_search=self._search_library_for_list,
@@ -1256,6 +1258,7 @@ class PlayerWindow:
             "help": call("show_help"),
             "quit": call("quit"),
             "library": call("toggle_library"),
+            "library_rescan": lambda: library_rescan.rescan(self),   # (the views on show: their own Rescan)
             "find": call("find_in_library"),
             "remove": call("_remove_selected"),
             "move_song": lambda key: self._move_selected(1 if key.endswith("Down") else -1),

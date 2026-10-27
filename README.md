@@ -334,7 +334,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+Enter | Library views: add the album to Up next |
 | Ctrl+Shift+Enter | Library views: play the album next |
 | Ctrl+Tab / Ctrl+Shift+Tab | Library views: next / previous view (Albums, Artists, …) |
-| F5 | Library views: look for added or changed music |
+| F5 | Library: look for added or changed music (the ↻ by its search box) |
 | ↓ · Enter | Search box: go to the list · play (open) the first result |
 | Enter · Shift+Enter · Ctrl+Enter · Alt+Enter | Library search (Ctrl+K): play · play next · add to Up next · open the album |
 | A – Z · 0 – 9 | Library list: jump to the first name starting with what you type |

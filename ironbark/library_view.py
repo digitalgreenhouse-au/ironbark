@@ -599,8 +599,8 @@ class LibraryView:
         top = ttk.Frame(frame)
         top.pack(fill="x")
         # The views, in one drop-down at the left; then the search box (controls.SearchBox: Esc empties
-        # it — empty already, Esc goes on to the window, which puts the track list back); then the ⋯
-        # menu (Rescan, Rebuild the library…, Open all albums in a tab, Add folder…).
+        # it — empty already, Esc goes on to the window, which puts the track list back); then ↻
+        # (Rescan) and the ⋯ menu (Rescan, Rebuild the library…, Open all albums in a tab, Add folder…).
         self.view_button = controls.FlatButton(top, "", self._view_menu, fit="Recently played ● ▾",
                                                label="Which view: albums, artists, genres, years, composers, recently "
                                                      "added; most played, recently played, favourites, needs a look "
@@ -612,6 +612,9 @@ class LibraryView:
         self.more_button = controls.FlatButton(top, "⋯", self._more_menu,
                                                label="Rescan · Rebuild the library · Open all albums in a tab · Add folder…")
         self.more_button.pack(side="right", padx=theme.pad(theme.GAP, 0))
+        self.rescan_button = controls.FlatButton(top, "↻", self.rescan,
+                                                 label="Look for added or changed music in the library and take it in (F5)")
+        self.rescan_button.pack(side="right", padx=theme.pad(theme.GAP, 0))
         self.search.pack(side="left", fill="x", expand=True)
         search = self.search.entry
         search.bind("<Down>", lambda e: self._focus_list())
@@ -1922,8 +1925,8 @@ class LibraryView:
                 "library_select_all": lambda: self.select_all(),
                 "library_queue": lambda: self.queue_selected(front=False),
                 "library_play_next": lambda: self.queue_selected(front=True),
-                "library_view": lambda key: self.cycle_view(-1 if "Shift" in key else 1),
-                "library_rescan": lambda: self.rescan()}
+                "library_view": lambda key: self.cycle_view(-1 if "Shift" in key else 1)}
+        # (F5, Rescan, is the player window's: library_rescan hands it to these views when they're on show)
 
     def focus_search(self):
         self.search.entry.focus_set()

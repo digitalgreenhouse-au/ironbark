@@ -154,8 +154,13 @@ narrow the list.
 
 Double-click an album (or press Enter) to open it in a tab. Ctrl+Enter adds it to Up next and
 Ctrl+Shift+Enter plays it next. **Open all albums in a tab** puts every album on show into one tab.
-That works even for a very large library: a tab of 200,000 songs opens in a few seconds. **F5**
-looks for music added or changed since the last look.
+That works even for a very large library: a tab of 200,000 songs opens in a few seconds.
+
+Ironbark looks for new, changed and removed music each time it starts. To look again without
+restarting (you've just copied an album in, say), press **↻** beside the Library's search box, or
+**F5** anywhere in the player. Only what changed is read, so it's quick; the Library tab takes in
+what it finds, and the status line says what came in ("New music: …", or that the library is
+already up to date). Files still being copied are left for the next look.
 
 An unplugged drive or a sleeping network drive never empties the Library: its albums wait until
 the drive is back. If you plug in a different drive under the same letter, the Library notices and
@@ -416,7 +421,7 @@ Ironbark window; while you're typing in a box, only the Ctrl and function-key sh
 | Ctrl+Enter | Library: add the album to Up next |
 | Ctrl+Shift+Enter | Library: play the album next |
 | Ctrl+Tab / Ctrl+Shift+Tab | Library: next / previous view (Albums, Artists, …) |
-| F5 | Library: look for added or changed music |
+| F5 · ↻ | Library: look for added or changed music |
 | ↓ · Enter | Search box: go to the list · play (open) the first result |
 | Enter · Shift+Enter · Ctrl+Enter · Alt+Enter | Library search (Ctrl+K): play · play next · add to Up next · open the album |
 | A – Z · 0 – 9 | Library list: jump to the first name starting with what you type |
@@ -450,7 +455,7 @@ volume below 100% in bit-perfect mode on a device without its own volume, volume
 clipping guard on one song).
 
 **Music is missing from the Library.** Check its folder is listed in Settings → Library (add it
-with **Add folder…**), then press **F5** in the Library. If a whole drive's music has gone quiet,
+with **Add folder…**), then press **↻** (or **F5**) in the Library. If a whole drive's music has gone quiet,
 the drive is probably unplugged or asleep: its albums come back when it does. A folder Windows can't
 open is named in the Library's status line. If the Library is empty and says it **can't see the library
 folder**, its drive isn't there just now: plug it in, or for a network drive open it once in File
