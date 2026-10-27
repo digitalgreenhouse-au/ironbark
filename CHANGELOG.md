@@ -11,6 +11,21 @@ bottom of Settings. Dates are dd/mm/yyyy. Newest first.
   cache takes up to the Maximum cache size you choose, and only the drive's last 2 GB is kept free.
   The message says so when it does come up.
 
+## 0.54.1 — 27/10/2026
+
+Fixes in Ironbark for the web (the browser player); the desktop player is unchanged.
+
+- **Check this file no longer fails good 16-bit FLAC files in Chrome and Edge.** Their decoder
+  hands over the positive half of the samples slightly differently, which on loud music rounded to
+  the wrong value, so an intact file could be reported as not matching its fingerprint. The check
+  now works out how the browser decoded the file first. When a check does fail, it no longer blames
+  the decoder for a file whose audio decoded perfectly.
+- A damaged file in a format the browser plays now says "looks damaged" instead of "This browser
+  can't play FLAC files".
+- At the narrowest window (300 px) the repeat button no longer sits under the volume pill, and on a
+  short window the cover gets smaller so the song list keeps room for about five songs.
+- Songs without a track number tag show the number their file name starts with ("03 Song.wav").
+
 ## 0.54.0 — 27/10/2026
 
 - New: an old search clears itself. What you type stays in the search box (the track list's or the

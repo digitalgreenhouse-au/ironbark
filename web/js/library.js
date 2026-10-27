@@ -141,13 +141,18 @@
     return m ? parseInt(m[1], 10) : 1;
   }
 
+  // A number at the start of a file name ("03 Song.wav" -> 3), or null.
+  function leadNumber(name) {
+    const m = /^(\d{1,3})(?!\d)/.exec(name || "");
+    return m ? parseInt(m[1], 10) : null;
+  }
+
   function sortSongs(a, b) {
     const ta = a.tags || {}, tb = b.tags || {};
     const da = discOf(a), db = discOf(b);
     if (da !== db) return da - db;
     // no track tag: a number at the start of the file name ("03 Song.wav") stands in
-    const lead = (s) => { const m = /^(\d{1,3})(?!\d)/.exec(s.name); return m ? parseInt(m[1], 10) : null; };
-    const na = ta.track ?? lead(a), nb = tb.track ?? lead(b);
+    const na = ta.track ?? leadNumber(a.name), nb = tb.track ?? leadNumber(b.name);
     if (na != null && nb != null && na !== nb) return na - nb;
     if (na != null && nb == null) return -1;
     if (na == null && nb != null) return 1;
@@ -196,7 +201,7 @@
     return Number.isInteger(k) ? String(k) : String(Math.round(k * 10) / 10);
   }
 
-  const api = { collectFileList, collectDirectoryHandle, collectDrop, splitEntries, buildAlbums, albumKey, sortSongs, discOf, formatRate, dirOf, nameOf, coverRank };
+  const api = { collectFileList, collectDirectoryHandle, collectDrop, splitEntries, buildAlbums, albumKey, sortSongs, discOf, leadNumber, formatRate, dirOf, nameOf, coverRank };
   root.IronbarkLibrary = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

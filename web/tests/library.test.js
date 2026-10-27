@@ -64,3 +64,11 @@ test("discs in CD1 / CD2 folders play disc by disc when the files have no disc t
   assert.equal(albums.length, 1);
   assert.deepEqual(albums[0].songs.map((s) => s.path), ["M/A/CD1/01.wav", "M/A/CD1/02.wav", "M/A/CD2/01.wav", "M/A/CD2/02.flac"]);
 });
+
+test("a number at the start of a file name stands in for a missing track tag", () => {
+  assert.equal(Lib.leadNumber("03 Song.wav"), 3);
+  assert.equal(Lib.leadNumber("12-Intro.flac"), 12);
+  assert.equal(Lib.leadNumber("1999 Live.flac"), null);     // four digits: a year, not a track
+  assert.equal(Lib.leadNumber("Song 03.wav"), null);
+  assert.equal(Lib.leadNumber(""), null);
+});
