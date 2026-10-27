@@ -4,6 +4,13 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.54.2 — 27/10/2026
+
+- Fixed: the network playback cache could refuse a song with "Not enough free space" on a big drive
+  that had plenty free — it kept 5% of the whole drive empty (about 48 GB on a 1 TB drive). Now the
+  cache takes up to the Maximum cache size you choose, and only the drive's last 2 GB is kept free.
+  The message says so when it does come up.
+
 ## 0.54.0 — 27/10/2026
 
 - New: an old search clears itself. What you type stays in the search box (the track list's or the

@@ -350,7 +350,7 @@ def test_the_limit_evicts_least_recently_used_and_skips_files_in_use(tmp_path, m
 
 
 def test_the_free_space_floor_shrinks_the_cache(tmp_path):
-    usage = Usage(total=100 * 1024 ** 3, used=0, free=5 * 1024 ** 3 - 300)   # 300 bytes under the floor (5%)
+    usage = Usage(total=100 * 1024 ** 3, used=0, free=2 * 1024 ** 3 - 300)   # 300 bytes under the floor (2 GB)
     m = make_manager(tmp_path / "NetCache", FakeShare(), start=False, disk_usage=lambda p: usage)
     m.store.open()
     items = [_ready(m, f"{n}.bin", 400, t) for n, t in (("a", 1.0), ("b", 2.0), ("c", 3.0))]
@@ -373,7 +373,7 @@ def test_empty_the_cache_keeps_only_what_is_in_use(tmp_path, managers):
 def test_no_room_for_the_current_song_is_unavailable_not_a_direct_read(tmp_path, managers):
     share = FakeShare()
     share.add("big.bin", os.urandom(50_000))
-    usage = Usage(total=100 * 1024 ** 3, used=0, free=5 * 1024 ** 3)   # exactly at the floor
+    usage = Usage(total=100 * 1024 ** 3, used=0, free=2 * 1024 ** 3)   # exactly at the floor
     player = FakePlayer([unc("big.bin")])
     m = make_manager(tmp_path / "NetCache", share, player, disk_usage=lambda p: usage)
     managers.append(m)
@@ -383,7 +383,23 @@ def test_no_room_for_the_current_song_is_unavailable_not_a_direct_read(tmp_path,
     assert not share.reads("big.bin")                     # nothing was fetched, and never read directly
     result = m.prepare(unc("big.bin"))
     assert isinstance(result, Unavailable) and not result.permanent and "free space" in result.reason
+    assert "plus 2 GB kept free" in result.reason        # says what it keeps back, not just the song's size
     assert any("free space" in n for n in m.notices)
+
+
+def test_a_big_drive_with_plenty_free_is_room_whatever_its_size(tmp_path, managers):
+    # A 952 GB drive with 27 GB free: the cache's size is the user's setting, never a share of the drive.
+    share = FakeShare()
+    share.add("song.bin", os.urandom(50_000))
+    usage = Usage(total=1022 * 1000 ** 3, used=993 * 1000 ** 3, free=29 * 1000 ** 3)
+    player = FakePlayer([unc("song.bin")])
+    m = make_manager(tmp_path / "NetCache", share, player, disk_usage=lambda p: usage)
+    managers.append(m)
+    m.prepare(unc("song.bin"))
+    item = m.items[key_of(m, "song.bin")]
+    assert wait_until(lambda: share.reads("song.bin"), 5)
+    assert item.error != "disk"
+    assert not any("free space" in n for n in m.notices)
 
 
 # -- the preparer contract, end to end ---------------------------------------------------------------------------

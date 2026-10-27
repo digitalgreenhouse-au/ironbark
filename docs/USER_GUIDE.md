@@ -331,7 +331,7 @@ Settings → **Network playback** (shown while the cache is on) has:
 - **Pre-download:** how far ahead songs download (the next song, the next two, or up to 200 songs
   ahead).
 - **Keep cached tracks** and **Maximum cache size:** how long copies stay and how much room they
-  may take. At least 2 GB (or 5% of the drive) is always left free.
+  may take. The cache never takes the drive's last 2 GB.
 - **Check finished downloads:** each copy is checked against the original before it's trusted (a
   FLAC file's own fingerprint too).
 - **Empty the cache** deletes the copies (never your music) and **Open folder** shows where they
