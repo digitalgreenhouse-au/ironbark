@@ -1,9 +1,13 @@
 # Ironbark
 
-**A music player that proves what it plays.** Ironbark plays your lossless music collection —
-FLAC, WAV, AIFF, Apple Lossless — and shows, sample for sample, that what reaches your sound
-device is exactly what's in the file. It can also tell you whether a file is what it claims to be,
-measure it to published standards, and help you check your own ears.
+**An easy music player with no ads, no account and no subscription, made to last.** Ironbark
+plays the music on your computer (FLAC, WAV, AIFF, Apple Lossless, MP3, Ogg and Opus) from a small
+window that stays out of your way. It never uses the internet, so there's nothing to sign up for
+and no server that can be switched off: the copy you have keeps working.
+
+If you want the technical detail, it's there too: Ironbark can prove that what reaches your sound
+device is exactly what's in the file, check whether a file is what it claims to be, and measure it
+to published standards. You never need to look at any of that just to play music.
 
 Made by [Digital Greenhouse](https://www.digitalgreenhouse.com.au) in Australia. Free and open
 source under the [MIT licence](LICENSE).
@@ -25,6 +29,19 @@ Get the latest version from [Releases](https://github.com/digitalgreenhouse-au/i
 
 ## Why Ironbark
 
+- **No ads, no account, no subscription.** Free and open source, with nothing to buy and nothing
+  to sign in to. Ironbark doesn't use the internet at all (see [Privacy](#privacy)), so it doesn't
+  depend on anyone's servers, and the source is here for anyone to build.
+- **Simple to live with.** A small window for the corner of your screen: tabs for albums, a
+  library that copes with big collections, playlists, gapless playback, a shortcut for everything,
+  media keys, a mini player, light and dark themes.
+- **Your music, your files.** It plays what's on your computer, your home network or OneDrive.
+  There's no store, no streaming and nothing uploaded.
+
+### For the technically minded
+
+All optional, and out of the way until you go looking:
+
 - **Bit-perfect, and proven.** Plenty of players *say* they're bit-perfect. Ironbark fingerprints
   every block it sends to the sound driver and checks it against a second, independent decode of
   the file while the song plays — so "bit-perfect ✓" is a measurement, not a setting.
@@ -33,9 +50,6 @@ Get the latest version from [Releases](https://github.com/digitalgreenhouse-au/i
 - **Measurement to the standards.** VU, PPM, loudness (EBU R128), true peak, spectrogram, stereo
   scope — each built to its published standard and tested against the official test signals
   where they exist.
-- **Simple to live with.** A small window for the corner of your screen: tabs for albums, a
-  library that copes with big collections, playlists, gapless playback, a shortcut for everything,
-  media keys, a mini player, light and dark themes.
 
 ## Install and run
 
