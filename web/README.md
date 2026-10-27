@@ -30,9 +30,15 @@ for music files.
 
 The browser does the decoding, so what plays depends on the browser. FLAC plays in every current
 major browser. In the Chromium browser Ironbark was tested in, FLAC, MP3, Ogg Vorbis, Opus, WAV and
-AAC play and Apple Lossless (ALAC) and AIFF don't; other browsers differ. The page lists what *your*
-browser plays on its opening screen, and marks any song it can't play. The desktop Ironbark plays
-all of these.
+AAC play and AIFF doesn't; other browsers differ. The page lists what *your* browser plays on its
+opening screen, and marks any song it can't play. The desktop Ironbark plays all of these.
+
+**Apple Lossless (ALAC `.m4a`)** plays everywhere: Safari plays it itself, and in a browser that
+can't (Chrome, Edge, Firefox), Ironbark decodes it on your computer first, sample for sample, into
+an uncompressed copy held in memory. That takes a moment before a song starts (a second or two for
+a four-minute song); the next song is decoded while this one plays, so the change of song stays
+short. Mono and stereo, 16 to 32 bits; a song that would need more than about 1.2 GB of memory
+decoded (about 15 minutes at 24-bit / 192 kHz) is refused. AAC `.m4a` files are left to the browser.
 
 ### What a browser can't do
 
@@ -74,6 +80,9 @@ browsers and not others. If it doesn't start, the page says so: use a web addres
 - `js/tags.js` reads tags and stream facts (FLAC, ID3v1/v2, MP3 Xing/Info/VBRI, Ogg Vorbis/Opus/FLAC,
   WAV, AIFF, MP4/M4A), reading only the parts of a file it needs.
 - `js/verify.js` holds an MD5 (RFC 1321) and the FLAC check.
+- `js/alac.js` decodes Apple Lossless `.m4a` files to WAV, in a Web Worker, for browsers that can't
+  play them; written from Apple's published ALAC format. `tests/test_web_alac.py` checks it decodes
+  files made by Apple's encoder (and FFmpeg's) exactly.
 - `js/library.js` turns picked files into albums; `js/player.js` is the playback engine;
   `js/meters.js` draws the meters; `js/app.js` is the page.
 - Tests: `node --test "web/tests/*.test.js"` (Node.js 18 or later). The repository's

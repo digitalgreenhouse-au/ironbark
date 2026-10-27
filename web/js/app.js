@@ -1,11 +1,11 @@
 /* Ironbark for the web — the page: the song list, what plays next, the keys, settings,
    Details and the file check. The pieces it uses: IronbarkTags (tags.js), IronbarkLibrary
    (library.js), IronbarkPlayer (player.js), IronbarkMeters (meters.js), IronbarkVerify
-   (verify.js). */
+   (verify.js), IronbarkAlac (alac.js). */
 (function () {
   "use strict";
 
-  const Tags = window.IronbarkTags, Lib = window.IronbarkLibrary, Verify = window.IronbarkVerify;
+  const Tags = window.IronbarkTags, Lib = window.IronbarkLibrary, Verify = window.IronbarkVerify, Alac = window.IronbarkAlac;
   const $ = (id) => document.getElementById(id);
   const ROW_H = 30;
   const PREFS_KEY = "ironbark.web.prefs";
@@ -41,6 +41,10 @@
   let failedInARow = 0;
   let seeking = false;
   const liveUrls = new Map();   // song id -> blob: URL (only the playing and the next song)
+  const decoding = new Map();   // song id -> { promise, stop, progress }: Apple Lossless being decoded (alac.js)
+  let kept = new Set();         // the song ids keepOnly last kept
+  const NATIVE_ALAC = !!document.createElement("audio").canPlayType('audio/mp4; codecs="alac"');
+  const STOPPED = new Error("stopped");
 
   // -- small helpers -------------------------------------------------------------------------
   function esc(s) {
@@ -83,13 +87,82 @@
     return !!(kind && probe.canPlayType(kind[1]));
   }
 
-  function urlFor(song) {
-    if (!liveUrls.has(song.id)) liveUrls.set(song.id, URL.createObjectURL(song.file));
+  // The address the player plays a song from: the file itself or — Apple Lossless, in a browser
+  // that can't play it — the WAV alac.js decodes it to. Kept only while the song is playing or
+  // next (keepOnly), which also stops a decode no longer wanted (it rejects with STOPPED).
+  async function sourceFor(song) {
+    if (liveUrls.has(song.id)) return liveUrls.get(song.id);
+    let t = song.tags;
+    if (!t && MP4_NAME.test(Tags.extension(song.name))) {   // (its tags not read yet: is it ALAC?)
+      try { t = await Tags.readTags(song.file, { pictures: false }); } catch (e) { /* played as it is */ }
+    }
+    const decode = !NATIVE_ALAC && Alac && t && t.codec === "ALAC";
+    const url = URL.createObjectURL(decode ? await decodeAlac(song) : song.file);
+    if (liveUrls.has(song.id) || !kept.has(song.id)) {   // (made twice at once, or not wanted any more)
+      URL.revokeObjectURL(url);
+      if (!liveUrls.has(song.id)) throw STOPPED;
+    } else {
+      liveUrls.set(song.id, url);
+      if (decode) song.decodedHere = true;
+    }
     return liveUrls.get(song.id);
   }
   function keepOnly(...keep) {
-    const ids = new Set(keep.filter(Boolean).map((s) => s.id));
-    for (const [id, url] of liveUrls) if (!ids.has(id)) { URL.revokeObjectURL(url); liveUrls.delete(id); }
+    kept = new Set(keep.filter(Boolean).map((s) => s.id));
+    for (const [id, url] of liveUrls) if (!kept.has(id)) { URL.revokeObjectURL(url); liveUrls.delete(id); }
+    for (const [id, job] of decoding) if (!kept.has(id)) job.stop();
+  }
+
+  // Might the song have to be decoded before it plays? (Yes, or not known yet.)
+  const MP4_NAME = /^(m4a|m4b|mp4|alac)$/;
+  function mayDecode(song) {
+    if (NATIVE_ALAC || !Alac || liveUrls.has(song.id)) return false;
+    return song.tags ? song.tags.codec === "ALAC" : MP4_NAME.test(Tags.extension(song.name));
+  }
+
+  // One decode per song, however many ask for it; its progress shows while it's the song chosen.
+  function decodeAlac(song) {
+    if (decoding.has(song.id)) return decoding.get(song.id).promise;
+    const job = { progress: 0 };
+    const run = decodeAway(song.file, (p) => { job.progress = p; if (song === current && !liveUrls.has(song.id)) showDecoding(song); });
+    job.stop = run.stop;
+    job.promise = run.promise.finally(() => { if (decoding.get(song.id) === job) decoding.delete(song.id); });
+    decoding.set(song.id, job);
+    return job.promise;
+  }
+
+  // Decodes an Apple Lossless file to a WAV Blob in a worker, so the page stays responsive while
+  // it does — or here on the page where a worker can't start (a page opened straight from a file).
+  function decodeAway(file, onProgress) {
+    let worker = null, stopped = false, fail = null;
+    const here = () => Alac.decodeToWav(file, { onProgress: (p) => { if (stopped) throw STOPPED; onProgress(p); } });
+    const promise = new Promise((resolve, reject) => {
+      fail = reject;
+      try {
+        worker = new Worker("js/alac.js");
+      } catch (e) {
+        return here().then(resolve, reject);
+      }
+      worker.onmessage = (ev) => {
+        const m = ev.data;
+        if (m.progress != null) return onProgress(m.progress);
+        worker.terminate();
+        if (m.blob) resolve(m.blob); else reject(new Error(m.error));
+      };
+      worker.onerror = (ev) => {   // (its script couldn't load: decode here instead)
+        ev.preventDefault();
+        worker.terminate();
+        worker = null;
+        if (!stopped) here().then(resolve, reject);
+      };
+      worker.postMessage({ file });
+    });
+    return { promise, stop() { stopped = true; if (worker) worker.terminate(); fail(STOPPED); } };
+  }
+
+  function showDecoding(song) {
+    const job = decoding.get(song.id);
+    setOutline("Decoding Apple Lossless… " + Math.round((job ? job.progress : 0) * 100) + "% (this browser can't play it itself)", "");
   }
 
   // -- theme ---------------------------------------------------------------------------------
@@ -407,23 +480,38 @@
     current = song;
     keepOnly(song, player.spareUrl ? findByUrl(player.spareUrl) : null);
     player.ensureContext();
+    let url;
+    try {
+      if (mayDecode(song)) {   // the song before stops while this one is decoded (it mustn't play on, or end, meanwhile)
+        player.pause();
+        showDecoding(song);
+      }
+      url = await sourceFor(song);
+    } catch (e) {
+      if (gen === playGen && e !== STOPPED) songFailed(song, "Couldn't play this Apple Lossless file: " + (e && e.message || e));
+      return;
+    }
+    if (gen !== playGen) return;              // another song was started meanwhile: it carries on
     meters.resetPeaks();
     meters.mono = !!(song.tags && song.tags.channels === 1);
-    await player.load(urlFor(song), { autoplay });
-    if (gen !== playGen) return;              // another song was started meanwhile: it carries on
+    await player.load(url, { autoplay });
+    if (gen !== playGen) return;
     showNowPlaying(song);
     renderList();
     scrollToCurrent();
     preloadNext();
   }
 
-  // Loads the song after this one into the spare player; frees every other song's address.
+  // Loads the song after this one into the spare player (decoding it first if it needs it);
+  // frees every other song's address.
   function preloadNext() {
     if (!current) return;
-    const next = queue[nextIndex(true)] || null;
-    if (next && next !== current) player.preload(urlFor(next));
-    else player.forgetSpare();
+    const playing = current, next = queue[nextIndex(true)] || null;
     keepOnly(current, next);
+    if (!next || next === current) return player.forgetSpare();
+    sourceFor(next).then((url) => {
+      if (current === playing && queue[nextIndex(true)] === next) player.preload(url);
+    }, () => { /* it's tried again, and any error shown, when it's played */ });
   }
 
   function findByUrl(url) {
@@ -471,15 +559,21 @@
   player.addEventListener("loaded", () => { updateTime(); updateOutputLine(); });
   player.addEventListener("error", (ev) => {
     const failed = current;
-    if (!failed || failed.failedAt === playGen) return;   // one report per try, however the browser says it
-    failed.failedAt = playGen;
+    if (!failed) return;
     const t = failed.tags || {};
     const what = t.codec && t.format !== t.codec ? t.format + " (" + t.codec + ")" : t.format || Tags.extension(failed.name).toUpperCase();
     // a format this browser plays, or a decode error partway in (code 3): the file itself is at fault
     const code = ev.detail && ev.detail.code;
-    failed.bad = code === -1 ? "Couldn't start: " + ev.detail.message
+    songFailed(failed, code === -1 ? "Couldn't start: " + ev.detail.message
       : t.format && (code === 3 || browserPlays(t)) ? "This " + what + " file looks damaged: the browser couldn't decode it"
-      : t.format ? "This browser can't play " + what + " files" : "This browser can't play this file (damaged, or not music)";
+      : t.format ? "This browser can't play " + what + " files" : "This browser can't play this file (damaged, or not music)");
+  });
+
+  // A song that won't play: said so, marked in the list, and skipped (not forever: 5 in a row stop it).
+  function songFailed(failed, why) {
+    if (failed.failedAt === playGen) return;   // one report per try, however the browser says it
+    failed.failedAt = playGen;
+    failed.bad = why;
     setOutline(failed.bad + ".", "bad");
     renderList();
     failedInARow++;
@@ -487,7 +581,7 @@
     if (failedInARow < 5 && nextIndex(false) >= 0 && nextIndex(false) !== qi) {
       skipTimer = setTimeout(() => { if (current === failed) next(false); }, 700);
     }
-  });
+  }
   player.addEventListener("state", () => { if (player.playing) failedInARow = 0; });
 
   // -- now playing ---------------------------------------------------------------------------
@@ -541,7 +635,8 @@
     if (!out) return setOutline("");
     if (rate && rate !== out) setOutline("Browser plays it at " + khz(out) + " (resampled from " + khz(rate) + ")", "warn");
     else setOutline("Browser plays it at " + khz(out) + " · not bit-perfect", "");
-    $("outline").title = "A browser mixes the sound of every page and plays it at the rate the computer's output is set to. The desktop Ironbark plays bit-perfect.";
+    $("outline").title = "A browser mixes the sound of every page and plays it at the rate the computer's output is set to. The desktop Ironbark plays bit-perfect."
+      + (current.decodedHere ? " This browser can't play Apple Lossless, so Ironbark decoded it here first (sample for sample)." : "");
   }
 
   function updatePlayButton() {
@@ -1009,6 +1104,7 @@
   function formatsLine() {
     const yes = [], no = [];
     for (const [name, type] of KINDS) (probe.canPlayType(type) ? yes : no).push(name);
+    if (!NATIVE_ALAC && Alac) { no.splice(no.indexOf("ALAC"), 1); yes.push("ALAC (Ironbark decodes it here first)"); }
     return "This browser plays " + yes.join(", ") + "." + (no.length ? " Not " + no.join(" or ") + ": the desktop Ironbark plays those." : "");
   }
 
