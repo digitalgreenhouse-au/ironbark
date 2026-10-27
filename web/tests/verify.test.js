@@ -64,6 +64,29 @@ test("a changed sample changes the MD5, and off-grid samples are counted", () =>
   assert.notEqual(pcmMd5(floats, 16).md5, good);
 });
 
+// (16-bit only: that's where Chromium does it; it decodes 24-bit FLAC exactly, and a float32 couldn't
+// carry a 24-bit sample through that division anyway)
+for (const bits of [8, 16]) {
+  test(`${bits}-bit: a decoder that divides the positive half by 2^(bits-1) - 1, as Chromium's does, still gives the encoder's MD5`, () => {
+    const { ints } = samples(bits, 40000, 2);
+    const scale = 2 ** (bits - 1);
+    // loud: full scale at both ends, so plain rounding at 2^(bits-1) would land a whole step off
+    const floats = ints.map((ch) => Float32Array.from(ch, (v) => (v > 0 ? v / (scale - 1) : v / scale)));
+    const got = pcmMd5(floats, bits);
+    assert.equal(got.md5, nodeMd5(packed(ints, bits)));
+    assert.equal(got.offGrid, 0);              // nothing was changed, so nothing is blamed on the decoder
+  });
+}
+
+test("a decoder that really changed the audio is still caught, whichever scale is tried", () => {
+  const { ints, floats } = samples(16, 5000, 1);
+  const good = nodeMd5(packed(ints, 16));
+  const changed = floats.map((ch) => Float32Array.from(ch, (v, i) => v + (i % 3 ? 0.37 : -0.41) / 32768));
+  const got = pcmMd5(changed, 16);
+  assert.ok(got.offGrid > 4000);
+  assert.equal(got.md5, good);              // rounded back, but every changed sample is counted
+});
+
 test("a file too long to decode in memory is refused politely, before any decoding", async () => {
   const { verifyFlac } = require("../js/verify.js");
   const tags = { md5: "00".repeat(16), duration: 3600, sampleRate: 192000, channels: 2, bitsPerSample: 24 };

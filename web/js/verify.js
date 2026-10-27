@@ -93,14 +93,35 @@
   }
 
   // -- decoded audio -> the bytes FLAC's MD5 covers ------------------------------------------
-  // channels: Float32Array per channel, as the browser decodes (whole numbers / 2^(bits-1)).
+  // channels: Float32Array per channel, as the browser decodes: whole numbers / 2^(bits-1). Some
+  // decoders (Chromium's, for 16-bit FLAC) divide the positive half by 2^(bits-1) - 1 instead, which
+  // near full scale rounds to the wrong whole number; the scale that puts the positive samples on
+  // whole numbers is found first, so an intact loud file isn't failed for it.
   // Returns the MD5 hex and how many samples were not whole numbers at that bit depth
   // (any at all means the decoder changed the audio: resampled, dithered or lossy).
+  const ON_GRID = 0.01;   // float32 holds a whole number ÷ the scale to well within this
+  const offGridBy = (x) => Math.abs(x - Math.round(x)) > ON_GRID;
+
+  function positiveScale(channels, scale) {
+    let off = 0, offLess = 0;
+    for (const ch of channels) {
+      for (let i = 0; i < ch.length; i++) {
+        const s = ch[i];
+        if (s <= 0) continue;
+        if (offGridBy(s * scale)) off++;
+        if (offGridBy(s * (scale - 1))) offLess++;
+      }
+    }
+    // only on a clear win: audio that really was changed is off the grid either way
+    return offLess * 10 < off ? scale - 1 : scale;
+  }
+
   function pcmMd5(channels, bits, progress) {
     const md5 = new MD5();
     const nch = channels.length, frames = channels[0].length;
     const bytesPer = Math.ceil(bits / 8), scale = Math.pow(2, bits - 1);
     const max = scale - 1, min = -scale;
+    const pos = positiveScale(channels, scale);
     const chunkFrames = 16384;
     const out = new Uint8Array(chunkFrames * nch * bytesPer);
     let offGrid = 0;
@@ -109,9 +130,10 @@
       let o = 0;
       for (let f = f0; f < f1; f++) {
         for (let c = 0; c < nch; c++) {
-          const x = channels[c][f] * scale;
+          const s = channels[c][f];
+          const x = s > 0 ? s * pos : s * scale;
           let v = Math.round(x);
-          if (v !== x) offGrid++;
+          if (offGridBy(x)) offGrid++;
           if (v > max) v = max; else if (v < min) v = min;
           out[o++] = v & 0xff;
           if (bytesPer > 1) out[o++] = (v >> 8) & 0xff;

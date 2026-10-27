@@ -72,6 +72,17 @@
     return parts.join(" · ");
   }
 
+  // the formats as the browser's canPlayType knows them: the opening screen's list, and telling a
+  // damaged file from a format the browser doesn't play
+  const KINDS = [["FLAC", "audio/flac"], ["MP3", "audio/mpeg"], ["Ogg Vorbis", 'audio/ogg; codecs="vorbis"'], ["Opus", 'audio/ogg; codecs="opus"'],
+    ["WAV", 'audio/wav; codecs="1"'], ["AAC", 'audio/mp4; codecs="mp4a.40.2"'], ["ALAC", 'audio/mp4; codecs="alac"'], ["AIFF", "audio/aiff"]];
+  const probe = document.createElement("audio");
+  function browserPlays(t) {
+    const name = t.format === "FLAC (Ogg)" ? "FLAC" : t.format;
+    const kind = KINDS.find((k) => k[0] === name);
+    return !!(kind && probe.canPlayType(kind[1]));
+  }
+
   function urlFor(song) {
     if (!liveUrls.has(song.id)) liveUrls.set(song.id, URL.createObjectURL(song.file));
     return liveUrls.get(song.id);
@@ -290,7 +301,8 @@
       const multiDisc = new Set(a.songs.map(Lib.discOf)).size > 1;
       for (const s of shown) {
         const t = s.tags || {};
-        rows.push({ song: s, album: a, num: t.track != null ? (multiDisc ? Lib.discOf(s) + "." + t.track : t.track) : "" });
+        const track = t.track ?? Lib.leadNumber(s.name);   // no track tag: "03 Song.wav" stands in, as in the sort
+        rows.push({ song: s, album: a, num: track != null ? (multiDisc ? Lib.discOf(s) + "." + track : track) : "" });
       }
     }
     selected = selSong ? rows.findIndex((r) => r.song === selSong) : Math.min(selected, rows.length - 1);
@@ -463,7 +475,10 @@
     failed.failedAt = playGen;
     const t = failed.tags || {};
     const what = t.codec && t.format !== t.codec ? t.format + " (" + t.codec + ")" : t.format || Tags.extension(failed.name).toUpperCase();
-    failed.bad = ev.detail && ev.detail.code === -1 ? "Couldn't start: " + ev.detail.message
+    // a format this browser plays, or a decode error partway in (code 3): the file itself is at fault
+    const code = ev.detail && ev.detail.code;
+    failed.bad = code === -1 ? "Couldn't start: " + ev.detail.message
+      : t.format && (code === 3 || browserPlays(t)) ? "This " + what + " file looks damaged: the browser couldn't decode it"
       : t.format ? "This browser can't play " + what + " files" : "This browser can't play this file (damaged, or not music)";
     setOutline(failed.bad + ".", "bad");
     renderList();
@@ -992,11 +1007,8 @@
 
   // -- start ---------------------------------------------------------------------------------
   function formatsLine() {
-    const a = document.createElement("audio");
-    const kinds = [["FLAC", "audio/flac"], ["MP3", "audio/mpeg"], ["Ogg Vorbis", 'audio/ogg; codecs="vorbis"'], ["Opus", 'audio/ogg; codecs="opus"'],
-      ["WAV", 'audio/wav; codecs="1"'], ["AAC", 'audio/mp4; codecs="mp4a.40.2"'], ["ALAC", 'audio/mp4; codecs="alac"'], ["AIFF", "audio/aiff"]];
     const yes = [], no = [];
-    for (const [name, type] of kinds) (a.canPlayType(type) ? yes : no).push(name);
+    for (const [name, type] of KINDS) (probe.canPlayType(type) ? yes : no).push(name);
     return "This browser plays " + yes.join(", ") + "." + (no.length ? " Not " + no.join(" or ") + ": the desktop Ironbark plays those." : "");
   }
 
