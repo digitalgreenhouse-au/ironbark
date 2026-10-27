@@ -302,9 +302,8 @@ class Player:
         with self._lock:
             current = None
             if keep_playing and 0 <= self.index < len(self.tracks):
-                path = self.tracks[self.index].path
-                current = self._find(tracks, path)
-            carry = self._carried_order(tracks) if keep_playing else None
+                current = self._place_in(tracks, self.tracks[self.index])
+            carry = self._carried_order(tracks, current) if keep_playing else None
             if keep_playing and self.queued_now is not None:
                 # A queued song is playing (or paused at a spot): it carries on; the list carries on
                 # after it from the same song as before (if it's still there).
@@ -329,12 +328,24 @@ class Player:
             self._message = ""
             self._relineup()
 
-    def _carried_order(self, tracks) -> list[int] | None:
+    def _place_in(self, tracks, track: Track) -> int | None:
+        """Where the list's song is in `tracks`: the very same Track, the one nearest its old place (a
+        playlist may hold a song twice, and the copy playing is the one that carries on), else the
+        first song with its path. A list read from the library database holds no song twice: by
+        path. Lock held."""
+        if getattr(tracks, "index_of_path", None) is None:
+            same = [i for i, t in enumerate(tracks) if t is track]
+            if same:
+                return min(same, key=lambda i: abs(i - self.index))
+        return self._find(tracks, track.path)
+
+    def _carried_order(self, tracks, current: int | None = None) -> list[int] | None:
         """With shuffle on, the stretch of the play order round the list's song (the one playing, or
         the one a queued song interrupted) as places in `tracks` — so a list replaced by one holding
         the same songs (the Library tab filling in, songs added) keeps what comes next and what
         Previous goes back to, instead of a new shuffle every time. Found by path among the songs
-        `tracks` has read; None when there's nothing to carry. Lock held."""
+        `tracks` has read — the list's song itself at `current` (_place_in); None when there's
+        nothing to carry. Lock held."""
         if not self.shuffle or not 0 <= self.index < len(self.tracks):
             return None
         try:
@@ -344,8 +355,11 @@ class Player:
         peek = getattr(self.tracks, "peek", None)
         carried: list[int] = []
         for place in self._order[max(0, at - CARRY_BEFORE): at + CARRY_AFTER + 1]:
-            track = peek(place) if peek is not None else self.tracks[place]
-            found = self._find(tracks, track.path) if track is not None else None
+            if place == self.index and current is not None:
+                found = current
+            else:
+                track = peek(place) if peek is not None else self.tracks[place]
+                found = self._find(tracks, track.path) if track is not None else None
             if found is not None and found not in carried:
                 carried.append(found)
         return carried or None

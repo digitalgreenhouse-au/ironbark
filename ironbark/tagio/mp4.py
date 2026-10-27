@@ -249,6 +249,35 @@ class MP4Info:
 
 
 _AAC_TYPES = {1: "AAC Main", 2: "AAC LC", 3: "AAC SSR", 4: "AAC LTP", 5: "HE-AAC", 29: "HE-AACv2"}
+# AudioSpecificConfig's sampling frequency index (ISO/IEC 14496-3 §1.6.3.4; 15: the rate follows in 24 bits)
+_AAC_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
+
+
+def _aac_rate(config: bytes) -> int:
+    """The output sample rate an AudioSpecificConfig gives (HE-AAC: its extension's, the rate it
+    plays at), 0 when it can't be told."""
+    bits = int.from_bytes(config[:8].ljust(8, b"\0"), "big")
+    at = 64
+
+    def take(n: int) -> int:
+        nonlocal at
+        at -= n
+        return (bits >> at) & ((1 << n) - 1)
+
+    def rate() -> int:
+        index = take(4)
+        if index == 15:
+            return take(24)
+        return _AAC_RATES[index] if index < len(_AAC_RATES) else 0
+
+    object_type = take(5)
+    if object_type == 31:
+        return 0   # (an escaped object type: not AAC as listed)
+    found = rate()
+    take(4)        # channel configuration
+    if object_type in (5, 29):
+        found = rate() or found
+    return found
 
 
 def _descriptor(data: bytes, at: int) -> tuple[int, int, int]:
@@ -286,6 +315,8 @@ def _esds(info: MP4Info, data: bytes, start: int, end: int) -> None:
             if tag == 5:
                 object_type = data[sbody] >> 3
                 info.codec_description = _AAC_TYPES.get(object_type, "AAC")
+                if not info.sample_rate:   # (the entry's 16.16 field holds no more than 65,535 Hz: 0 above)
+                    info.sample_rate = _aac_rate(data[sbody:min(sbody + 8, len(data))])
     except (IndexError, struct.error):
         pass
 
@@ -319,6 +350,8 @@ class MP4File:
                 raise TagError("no moov box in this MP4 file")
             self.moov_start, self.moov_end = moov[1], moov[2]
             self.moov = read_at(f, moov[1], moov[2] - moov[1])
+            # Where moov's children start: after a 16-byte header when its size is written in 64 bits
+            self.moov_body = 16 if struct.unpack_from(">I", self.moov, 0)[0] == 1 else 8
         self.info = self._read_info()
         self.tags = self._read_tags()
 
@@ -326,7 +359,7 @@ class MP4File:
     def _meta(self):
         """(meta header start, its children's start, end) — meta is a full box (4 bytes of
         version/flags) in iTunes files; QuickTime-style files omit them, so look first."""
-        udta = _find(self.moov, 8, len(self.moov), b"udta")
+        udta = _find(self.moov, self.moov_body, len(self.moov), b"udta")
         if udta is None:
             return None
         meta = _find(self.moov, udta[1], udta[2], b"meta")
@@ -350,7 +383,7 @@ class MP4File:
     def _read_info(self) -> MP4Info:
         info = MP4Info()
         moov = self.moov
-        for kind, _h, start, end in boxes(moov, 8):
+        for kind, _h, start, end in boxes(moov, self.moov_body):
             if kind != b"trak":
                 continue
             mdia = _find(moov, start, end, b"mdia")
@@ -379,10 +412,16 @@ class MP4File:
             codec, _eh, ebody, eend = entry
             info.codec = codec.decode("latin-1").strip()
             # AudioSampleEntry: 6 reserved + 2 index, version (2) + 6 reserved, channels, sample
-            # size, 2 + 2, rate as 16.16; QuickTime version 1 / 2 entries add 16 / 36 bytes.
+            # size, 2 + 2, rate as 16.16; QuickTime version 1 / 2 entries add 16 / 36 bytes — and
+            # version 2 leaves the fields above as placeholders: its rate is a float64 at +32, its
+            # channels 32 bits at +40, its bits per sample at +48 (0 for a compressed codec).
             version = struct.unpack_from(">H", moov, ebody + 8)[0]
             info.channels, info.bits_per_sample = struct.unpack_from(">HH", moov, ebody + 16)
             info.sample_rate = struct.unpack_from(">I", moov, ebody + 24)[0] >> 16
+            if version == 2 and ebody + 52 <= eend:
+                rate, channels, _always, bits = struct.unpack_from(">dIII", moov, ebody + 32)
+                info.sample_rate = int(rate) if 0 < rate < 1 << 32 else 0
+                info.channels, info.bits_per_sample = channels, bits
             children = ebody + 28 + {1: 16, 2: 36}.get(version, 0)
             if codec == b"alac":
                 cookie = _find(moov, children, eend, b"alac")
@@ -424,7 +463,7 @@ class MP4File:
             hdlr = box(b"hdlr", bytes(8) + b"mdir" + b"appl" + bytes(9))
             meta_box = box(b"meta", bytes(4) + hdlr + box(b"ilst", new_ilst_body)
                            + box(b"free", bytes(FREE_PADDING - 8)))
-            udta = _find(bytes(moov), 8, len(moov), b"udta")
+            udta = _find(bytes(moov), self.moov_body, len(moov), b"udta")
             if udta is None:
                 moov += box(b"udta", meta_box)
                 path_sizes = [0]
@@ -436,7 +475,7 @@ class MP4File:
         else:
             head, children, end = meta
             ilst = _find(bytes(moov), children, end, b"ilst")
-            udta = _find(bytes(moov), 8, len(moov), b"udta")
+            udta = _find(bytes(moov), self.moov_body, len(moov), b"udta")
             if ilst is None:
                 insert = box(b"ilst", new_ilst_body)
                 moov[end:end] = insert
@@ -461,6 +500,8 @@ class MP4File:
             path_sizes = [0, udta[0], head]
         for at in path_sizes:   # moov, udta, meta grow by delta
             size = struct.unpack_from(">I", moov, at)[0]
+            if size == 0:
+                continue   # (runs to the end of the file, as it still does)
             if size == 1:
                 big = struct.unpack_from(">Q", moov, at + 8)[0]
                 struct.pack_into(">Q", moov, at + 8, big + delta)
@@ -493,4 +534,4 @@ class MP4File:
                                 raise TagError("the MP4 is too big to move its audio — not written")
                             struct.pack_into(fmt, moov, at, offset)
 
-        walk(8, len(data))
+        walk(self.moov_body, len(data))

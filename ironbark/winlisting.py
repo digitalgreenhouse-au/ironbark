@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import stat as stat_module
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 BAD_SIGNATURE = -2146893818        # 0x80090006, NTE_BAD_SIGNATURE: the server's reply wasn't signed right
 # The errors that send a listing to the other way of asking: the bad signature (as Windows reports
@@ -190,19 +190,28 @@ def _find(folder: str, level: int, flags: int) -> list[Entry]:
     if handle is None or handle == wintypes.HANDLE(-1).value:
         code = ctypes.get_last_error()
         raise _error(code, folder)
-    entries: list[Entry] = []
     try:
-        while True:
-            name = data.cFileName
-            if name not in (".", ".."):
-                entries.append(Entry(folder, name, _stat_of(data)))
-            if not find_next(handle, ctypes.byref(data)):
-                code = ctypes.get_last_error()
-                if code == 18:   # ERROR_NO_MORE_FILES
-                    return entries
-                raise _error(code, folder)
+        return _collect(folder, data, lambda: bool(find_next(handle, ctypes.byref(data))), ctypes.get_last_error)
     finally:
         find_close(handle)
+
+
+def _collect(folder: str, data, next_one: Callable[[], bool], last_error: Callable[[], int]) -> list[Entry]:
+    """The entries of a listing whose first name is in `data` (each next_one() puts the next there,
+    False at the end, last_error() then saying why). ERROR_NO_MORE_FILES ends it, and so does a bad
+    signature: a server that sends its "no more files" reply, the one that ends every listing,
+    unsigned (cmd's `dir` and File Explorer take it as the end too; seen on a NAS share)."""
+    entries: list[Entry] = []
+    while True:
+        name = data.cFileName
+        if name not in (".", ".."):
+            entries.append(Entry(folder, name, _stat_of(data)))
+        if next_one():
+            continue
+        code = last_error()
+        if code == 18 or code in (BAD_SIGNATURE, BAD_SIGNATURE & 0xFFFFFFFF):   # (ERROR_NO_MORE_FILES)
+            return entries
+        raise _error(code, folder)
 
 
 def _error(code: int, folder: str) -> OSError:

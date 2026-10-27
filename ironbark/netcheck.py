@@ -20,6 +20,7 @@ its own thread.
 from __future__ import annotations
 
 import datetime
+import errno
 import os
 import subprocess
 import threading
@@ -60,6 +61,24 @@ _MEANINGS = {
     3: "the folder isn't there: renamed or moved on the server, or the drive letter now leads somewhere else",
 }
 
+# What a Mac's or Linux's errors from a network mount come to — by errno name, as the numbers differ
+# from one system to another (and Windows' error numbers above mean other things: 5 there is "access
+# denied", here it's EIO, a mount that dropped).
+_POSIX_MEANINGS = {
+    "EIO": "the network share stopped answering while it was read (it dropped, or the server went to sleep)",
+    "EACCES": "the server says this login may not read the folder",
+    "EPERM": "the server says this login may not read the folder",
+    "ENOENT": "the folder isn't there: renamed or moved on the server, or the share isn't mounted just now",
+    "ENOTCONN": "the network share isn't connected just now: mount it again",
+    "ESTALE": "the share changed on the server (or was mounted again): open the folder again, or mount the share again",
+    "ETIMEDOUT": "the server took too long to answer: it may be waking up, so try again in a minute",
+    "EHOSTDOWN": "the server wasn't found on the network: it may be off or asleep",
+    "EHOSTUNREACH": "this computer can't reach the server's network (Wi-Fi, the cable, or a VPN)",
+    "ENETUNREACH": "this computer can't reach the server's network (Wi-Fi, the cable, or a VPN)",
+    "ENETDOWN": "the network isn't up on this computer",
+}
+_BY_ERRNO = {getattr(errno, name): text for name, text in _POSIX_MEANINGS.items() if hasattr(errno, name)}
+
 
 def code_of(error: BaseException) -> int | None:
     """Windows' error number for an OSError (signed, as Python gives it), else its errno."""
@@ -72,10 +91,14 @@ def code_of(error: BaseException) -> int | None:
 
 
 def meaning(error: BaseException) -> str:
-    """What this error from a folder comes to, in plain words ("" when there's nothing to add)."""
-    code = code_of(error)
-    if code in _MEANINGS:
-        return _MEANINGS[code]
+    """What this error from a folder comes to, in plain words ("" when there's nothing to add): by
+    Windows' error number when it carries one, else by its errno (a Mac or Linux mount)."""
+    if isinstance(getattr(error, "winerror", None), int):
+        code = code_of(error)
+        if code in _MEANINGS:
+            return _MEANINGS[code]
+    elif isinstance(error, OSError) and error.errno in _BY_ERRNO:
+        return _BY_ERRNO[error.errno]
     if isinstance(error, TimeoutError):
         return "the server took too long to answer: it may be asleep or busy"
     return ""
@@ -196,9 +219,10 @@ def _share_root(folder: str) -> str:
 
 
 def check(folder: str | Path, prefs: dict | None, limit: float = STEP_LIMIT_S,
-          target: Callable[[str], str | None] = places.network_target) -> Check:
+          target: Callable[[str], str | None] = places.network_target, name_album: bool = True) -> Check:
     """One library folder, step by step (see the module notes). Waits on the network: never on the
-    window's thread. `target("Y:")`: the server path a drive letter stands for."""
+    window's thread. `target("Y:")`: the server path a drive letter stands for. `name_album`: the
+    album looked inside is named (not in Save diagnostics' copy: no music's names leave the PC)."""
     folder = str(folder)
     result = Check(folder)
     remote = places.is_remote(folder)
@@ -235,7 +259,8 @@ def check(folder: str | Path, prefs: dict | None, limit: float = STEP_LIMIT_S,
     if gets.ok:
         album = next((entry for entry in found if _is_dir(entry)), None)
         if album is not None:
-            _step(steps, f"An album inside (“{album.name}”)", lambda: len(os.listdir(album.path)), _names, limit)
+            name = f"An album inside (“{album.name}”)" if name_album else "An album inside"
+            _step(steps, name, lambda: len(os.listdir(album.path)), _names, limit)
     result.verdict = _verdict(result)
     return result
 
@@ -298,9 +323,11 @@ def signing_required() -> bool | None:
 
 def report(folders: list, prefs: dict | None, limit: float = STEP_LIMIT_S,
            target: Callable[[str], str | None] = places.network_target,
-           signing: Callable[[], bool | None] = signing_required) -> tuple[str, list[Check]]:
-    """Every library folder checked, as the report's text, and the checks themselves."""
-    checks = [check(folder, prefs, limit, target) for folder in folders]
+           signing: Callable[[], bool | None] = signing_required,
+           name_album: bool = True) -> tuple[str, list[Check]]:
+    """Every library folder checked, as the report's text, and the checks themselves (`name_album`:
+    see `check`)."""
+    checks = [check(folder, prefs, limit, target, name_album) for folder in folders]
     lines = [f"{APP_NAME} {__version__} — library folders check, {datetime.datetime.now():%d/%m/%Y %H:%M:%S}",
              "Nothing was changed and nothing was sent: this only looks at the folders.", ""]
     if not checks:

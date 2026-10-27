@@ -4668,7 +4668,7 @@ class PlayerWindow:
         folders = [str(f) for f in netcheck_view.listed_folders(prefs) or [self._library_root()]]
 
         def check() -> str:   # (a shorter time limit than the button's: a sleeping server mustn't hold the zip up)
-            return netcheck.report(folders, prefs, limit=DIAGNOSTICS_CHECK_S)[0]
+            return netcheck.report(folders, prefs, limit=DIAGNOSTICS_CHECK_S, name_album=False)[0]   # (no album names in the zip)
 
         def work():
             try:

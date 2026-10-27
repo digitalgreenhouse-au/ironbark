@@ -178,3 +178,35 @@ def test_save_diagnostics_has_the_folders_check_with_the_names_left_out(tmp_path
     text = files["library-folders-check.txt"]
     assert "Private Music" not in text and "<folder 1>" in text and "→ Readable" in text
     assert "library-folders-check.txt" in files["README.txt"]
+
+
+def test_a_mac_or_linux_error_is_explained_by_its_own_errno_not_by_windows_numbers():
+    import errno
+
+    dropped = OSError(errno.EIO, "Input/output error")
+    assert "login" not in netcheck.meaning(dropped) and "stopped answering" in netcheck.meaning(dropped)
+    assert "login may not read" in netcheck.meaning(OSError(errno.EACCES, "Permission denied"))
+    assert "isn't there" in netcheck.meaning(OSError(errno.ENOENT, "No such file or directory"))
+    assert netcheck.meaning(OSError(errno.ESRCH, "No such process")) == ""   # (Windows' 3 is "path not found")
+    assert "login may not read" in netcheck.meaning(_error(5, "Access is denied"))   # (Windows' 5 still is)
+
+
+def test_save_diagnostics_leaves_the_albums_name_out_of_the_folders_check(make_window, tmp_path):
+    import zipfile
+
+    window, root, _player, errors = make_window()
+    music = tmp_path / "My library"   # (not "Music": the test window has one of its own)
+    (music / "Sam Smith - In The Lonely Hour").mkdir(parents=True)
+    (music / "Sam Smith - In The Lonely Hour" / "01.flac").write_bytes(b"")
+    window.prefs["library_folders"] = [str(music)]
+    window.prefs["library_folder"] = str(music)
+    destination = tmp_path / "diagnostics.zip"
+    window.save_diagnostics(str(destination))
+    assert _wait(root, lambda: window._notice.startswith("Diagnostics saved"), 30), window._notice
+    with zipfile.ZipFile(destination) as archive:
+        text = archive.read("library-folders-check.txt").decode("utf-8")
+    assert "An album inside" in text and "Lonely Hour" not in text
+    assert not errors
+    # (Check folders… — a report kept on this PC — still names it: what was looked inside)
+    named = netcheck.report([str(music)], window.prefs)[0]
+    assert "An album inside (“Sam Smith - In The Lonely Hour”)" in named
