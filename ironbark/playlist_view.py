@@ -367,6 +367,7 @@ class PlaylistView:
                  on_heading_menu: Callable[[tk.Event], None] = lambda event: None,
                  on_search_library: Callable[[str], None] | None = None,
                  on_views: Callable[[], None] | None = None,
+                 on_rescan: Callable[[], None] | None = None,
                  is_favourite: Callable[[Track], bool] = lambda track: False,
                  plays_db: Callable[[], object | None] = lambda: None,
                  on_library_search: Callable[[list[str]], None] | None = None,
@@ -386,6 +387,7 @@ class PlaylistView:
         self.on_search_library = on_search_library
         self.on_views = on_views                # the Library tab's "Songs ▾" button: the views drop-down
         self.views_button = None
+        self.rescan_button = None
         self.picking: str | None = None         # picking songs for this playlist (its title): the bar at the foot
         self._pick_bar = None
         self._pick_add = self._pick_cancel = None
@@ -430,8 +432,9 @@ class PlaylistView:
         self.search_row = ttk.Frame(frame)
         self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP))
         self.search = controls.SearchBox(self.search_row, "Search songs, artists, albums", on_clear=self.clear_search,
-                                         keys="Ctrl+F")
+                                         keys="Ctrl+F", forget_after=controls.FORGET_SEARCH_MS)
         self.search.pack(side="left", fill="x", expand=True)
+        self.search.entry.configure(width=1)   # (it fills the row: the part that gives way in a narrow window)
         if on_views is not None:   # (made now, packed only on the Library tab: set_views_button)
             self.views_button = controls.FlatButton(self.search_row, "Songs ▾", on_views, fit="Songs ▾",
                                                     label="The Library's views: albums, artists, genres, years, "
@@ -441,6 +444,10 @@ class PlaylistView:
         self.scope_switch = Toggle(self.search_row, frame._root(), self.scope_var, command=self._scope_toggled, bg="BG")
         self.scope_switch.pack(side="left", padx=theme.pad(theme.GAP_MEDIUM, 0))
         Tooltip(self.scope_switch, "Whole library: search every song, not just this tab")
+        if on_rescan is not None:   # (made now, packed only on the Library tab with the views button)
+            self.rescan_button = controls.FlatButton(
+                self.search_row, "↻", on_rescan,
+                label="Look for added or changed music in the library and take it in (F5)")
         self.query, self.entry = self.search.query, self.search.entry
         self.magnifier, self.clear_button, self.hint = self.search.magnifier, self.search.clear_button, self.search.hint
         self.query.trace_add("write", lambda *_: self._query_changed())
@@ -457,6 +464,7 @@ class PlaylistView:
         table.pack(fill="both", expand=True)
         self.table = table
         self.tree = self.list.tree
+        self.search.keep_alive(self.tree)   # (going through the results is using the search)
         self.scrollbar = self.list.scrollbar
         self.tree.configure(displaycolumns=("no", "title", "time"))
         self.tree.heading("no", text="#", anchor="e")
@@ -911,14 +919,20 @@ class PlaylistView:
         self.on_scope(self.whole_library)
 
     def set_views_button(self, on: bool):
-        """The Library tab: the "Songs ▾" button before the search box, the way to the Library's views."""
+        """The Library tab: the "Songs ▾" button before the search box, the way to the Library's views,
+        and the ↻ after the Whole library toggle (library_rescan)."""
         button = self.views_button
-        if button is None:
-            return
-        if on and not button.winfo_manager():
-            button.pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM), before=self.search)
-        elif not on and button.winfo_manager():
-            button.pack_forget()
+        if button is not None:
+            if on and not button.winfo_manager():
+                button.pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM), before=self.search)
+            elif not on and button.winfo_manager():
+                button.pack_forget()
+        rescan = self.rescan_button
+        if rescan is not None:
+            if on and not rescan.winfo_manager():   # (at the right end, its room kept before the box takes the rest)
+                rescan.pack(side="right", padx=theme.pad(theme.GAP, 0), before=self.search)
+            elif not on and rescan.winfo_manager():
+                rescan.pack_forget()
 
     # -- picking songs for a playlist ("Add songs from the Library…") ----------------------------------
     def set_picking(self, target: str | None, on_add: Callable[[], None] | None = None,

@@ -14,7 +14,10 @@ Written from the published layouts (clean-room — no other tag library's code w
 
 Writing replaces the ID3 chunk's data (or adds a new chunk at the end of the file) and updates
 the chunk's and the file's size fields; the audio chunk isn't moved unless the tag sits before
-it and grows.
+it and grows. A new chunk is added only when the chunks lead to the file's end: one that claims
+more than the file holds (a file cut short, a WAV still being recorded with its size left at
+0xFFFFFFFF, an old ID3v1 "TAG" block after the chunks) would leave the new chunk inside it, read
+as sound.
 """
 
 from __future__ import annotations
@@ -63,6 +66,7 @@ class ChunkFile:
                         self.damaged_tag = True
                 at += 8 + length + (length & 1)
             self.size = size
+            self.walk_end = at                # where the chunks lead: the file's end (or its missing pad byte) when sound
 
     def _id3_chunk(self):
         return next((c for c in self.chunks if c[0] in _ID3_IDS), None)
@@ -89,6 +93,9 @@ class ChunkFile:
             new = chunk_id + self._pack(len(data)) + data + (b"\x00" if len(data) & 1 else b"")
             replace_region(self.path, at, min(old_end, self.size), new)
         else:
+            if not self.size <= self.walk_end <= self.size + 1:
+                raise TagError("its chunks don't lead to the end of the file (cut short, still being recorded, or "
+                               "something added after the sound), so a tag added at the end would be read as sound")
             data = tag.render(major, 0)
             new = self.new_id + self._pack(len(data)) + data + (b"\x00" if len(data) & 1 else b"")
             end = self.size + (self.size & 1)   # chunks start on an even byte

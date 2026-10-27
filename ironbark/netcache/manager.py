@@ -113,8 +113,7 @@ DEMAND_HOLD_S = 5.0
 FAILED_FORGET_S = 60.0
 HANDED_OUT_S = 10.0          # a copy handed to a reader this recently isn't cleared away (it's about to be opened)
 TRANSIENT_RETRY_S = 5.0
-FREE_FLOOR_MIN = 2 * 1024 ** 3
-FREE_FLOOR_FRACTION = 0.05
+FREE_FLOOR = 2 * 1024 ** 3   # the cache never takes a drive's last 2 GB (its size is the user's setting, not a share of the drive)
 GB = 1000 ** 3               # the cache's size setting, in the gigabytes Settings shows
 COMPLETE_ONLY_EXTS = {"m4a", "mp4", "m4b"}
 TAIL_READING_EXTS = {"mp3", "ogg", "oga", "opus", "m4a", "mp4", "m4b"}   # their open reads the end
@@ -941,8 +940,8 @@ class Manager:
     def _disk_message(self, item: Item) -> str:
         drive = os.path.splitdrive(str(self.folder))[0] or str(self.folder)
         need = max(0, (item.size or 0) - item.visible)
-        return (f"Not enough free space on {drive} for the network playback cache (needs {need / 1e6:.0f} MB): "
-                f"free some space or make the cache smaller")
+        return (f"Not enough free space on {drive} for the network playback cache (needs {need / 1e6:.0f} MB, "
+                f"plus {FREE_FLOOR / 1024 ** 3:.0f} GB kept free): free some space or make the cache smaller")
 
     # -- the scheduler ------------------------------------------------------------------------
     def _run_scheduler(self) -> None:
@@ -1217,8 +1216,7 @@ class Manager:
             usage = self._disk_usage(self.folder)
         except OSError:
             return 0
-        floor = max(FREE_FLOOR_MIN, FREE_FLOOR_FRACTION * usage.total)
-        return int(max(0, wanted + floor - usage.free))
+        return int(max(0, wanted + FREE_FLOOR - usage.free))
 
     def _room_for(self, item: Item) -> bool:
         """Is there room on the disk for the rest of this download (after evicting what may go)?
@@ -2052,8 +2050,7 @@ class Manager:
             target = self._limit()
             try:
                 usage = self._disk_usage(self.folder)
-                floor = max(FREE_FLOOR_MIN, FREE_FLOOR_FRACTION * usage.total)
-                target = min(target, used + usage.free - floor - need)
+                target = min(target, used + usage.free - FREE_FLOOR - need)
             except OSError:
                 pass
             if everything:

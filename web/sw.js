@@ -3,11 +3,11 @@
    the page's own files; songs are never fetched (they're read from the listener's disk). */
 "use strict";
 
-const VERSION = "0.52.3";
+const VERSION = "0.55.0";
 const CACHE = "ironbark-web-" + VERSION;
 const FILES = [
   "./", "index.html", "ironbark.css", "manifest.webmanifest",
-  "js/version.js", "js/tags.js", "js/verify.js", "js/library.js", "js/player.js", "js/meters.js", "js/app.js",
+  "js/version.js", "js/tags.js", "js/verify.js", "js/alac.js", "js/library.js", "js/player.js", "js/meters.js", "js/app.js",
   "icons/icon_32.png", "icons/icon_128.png", "icons/icon_256.png", "icons/icon_512.png",
 ];
 

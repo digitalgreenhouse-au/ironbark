@@ -123,3 +123,62 @@ def test_settings_rebuild_the_library_starts_it_again_and_the_library_tab_follow
     assert _wait(root, lambda: not tab.loading and "Deleted Song" not in _titles(tab.tracks)), _titles(tab.tracks)
     assert "Kept Song" in _titles(tab.tracks)
     assert not any(tab.tracks[i].missing for i in range(len(tab.tracks))) and not errors
+
+
+def test_changing_the_library_folder_leaves_only_the_new_folders_songs(make_window, tmp_path, monkeypatch):
+    """Settings → Library → Change…: the Library tab lists the new folder's songs, and none of the
+    old one's (they used to stay as "(file not found)" rows)."""
+    from ironbark import ui
+
+    window, root, _player, errors = make_window()
+    old, new = tmp_path / "Old", tmp_path / "New"
+    _flac(old / "Before" / "01 Before.flac", TITLE="Old Song", ARTIST="Someone", ALBUM="Before")
+    _flac(new / "After" / "01 After.flac", TITLE="New Song", ARTIST="Someone", ALBUM="After")
+    window._set_library_folders([old])
+    window._index().refresh()
+    main = window._main_tab(make=True)
+    window.select_tab(main)
+    tab = window.tabs[main]
+    assert _wait(root, lambda: tab.tracks is not None and not tab.loading and "Old Song" in _titles(tab.tracks))
+
+    monkeypatch.setattr(ui.filedialog, "askdirectory", lambda **kw: str(new))
+    window._change_library_folder()
+    window._index().refresh()
+    _pump(root, 0.5)
+    assert _wait(root, lambda: tab.tracks is not None and not tab.loading and _titles(tab.tracks) == ["New Song"]), \
+        _titles(tab.tracks)
+    assert not any(tab.tracks[i].missing for i in range(len(tab.tracks))) and not errors
+
+
+def test_moving_the_music_to_a_new_folder_lists_it_from_there(make_window, tmp_path, monkeypatch):
+    """The music moved (copied to a NAS, the old copy deleted) and Change… points the Library at its
+    new place: the same songs, now from the new folder, none of them "(file not found)"."""
+    import shutil
+
+    from ironbark import ui
+
+    window, root, _player, errors = make_window()
+    old, new = tmp_path / "Old", tmp_path / "NAS" / "MUSIC"
+    _flac(old / "Album" / "01 One.flac", TITLE="One", ARTIST="Someone", ALBUM="Album")
+    _flac(old / "Album" / "02 Two.flac", TITLE="Two", ARTIST="Someone", ALBUM="Album")
+    window._set_library_folders([old])
+    window._index().refresh()
+    main = window._main_tab(make=True)
+    window.select_tab(main)
+    tab = window.tabs[main]
+    assert _wait(root, lambda: tab.tracks is not None and not tab.loading and len(tab.tracks) == 2)
+
+    new.parent.mkdir(parents=True)
+    shutil.copytree(old, new, copy_function=shutil.copy2)       # (copy2: the same sizes and times)
+    shutil.rmtree(old)
+    monkeypatch.setattr(ui.filedialog, "askdirectory", lambda **kw: str(new))
+    window._change_library_folder()
+    window._index().refresh()
+    _pump(root, 0.5)
+
+    def settled():
+        return (tab.tracks is not None and not tab.loading and len(tab.tracks) == 2
+                and all(str(tab.tracks[i].path).startswith(str(new)) for i in range(2)))
+
+    assert _wait(root, settled), [str(tab.tracks[i].path) for i in range(len(tab.tracks))]
+    assert not any(tab.tracks[i].missing for i in range(2)) and not errors

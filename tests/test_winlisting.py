@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,6 +85,7 @@ class _PartListing:
         self.closed = True
 
 
+@windows_only   # (the other way is the real FindFirstFileExW)
 def test_a_listing_refused_partway_through_is_listed_the_other_way(tmp_path, monkeypatch):
     (tmp_path / "Album 1").mkdir()
     (tmp_path / "Album 2").mkdir()
@@ -165,3 +167,32 @@ def test_on_windows_the_package_puts_it_in_place():
 
     assert os.scandir is winlisting.scandir and os.listdir is winlisting.listdir
     assert pathlib.Path(".").exists() and list(pathlib.Path(".").iterdir()) is not None
+
+
+def test_an_unsigned_end_of_listing_is_taken_as_the_end(monkeypatch):
+    """Listing the other way: ERROR_NO_MORE_FILES ends it, and so does the bad signature a NAS can
+    give the reply that ends a listing (`dir` lists such a folder; PowerShell and Python didn't);
+    any other error is an error."""
+    def data(name):
+        time = SimpleNamespace(dwHighDateTime=0, dwLowDateTime=0)
+        return SimpleNamespace(cFileName=name, dwFileAttributes=0x20, nFileSizeHigh=0, nFileSizeLow=3,
+                               ftCreationTime=time, ftLastAccessTime=time, ftLastWriteTime=time, dwReserved0=0)
+
+    def listing(last_error):
+        names = iter(["..", "b.flac", "c.flac"])
+        found = data(".")
+
+        def next_one():
+            name = next(names, None)
+            if name is None:
+                return False
+            found.cFileName = name
+            return True
+
+        return winlisting._collect("Y:\\MUSIC", found, next_one, lambda: last_error)
+
+    assert [e.name for e in listing(18)] == ["b.flac", "c.flac"]
+    assert [e.name for e in listing(0x80090006)] == ["b.flac", "c.flac"]
+    monkeypatch.setattr(winlisting, "_error", lambda code, folder: OSError(code, "failed"))
+    with pytest.raises(OSError):
+        listing(59)

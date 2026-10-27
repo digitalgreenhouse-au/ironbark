@@ -1205,6 +1205,7 @@ class Switch(tk.Frame):
 
 SEARCH_ICON = 14     # px at 100%: the drawn magnifier, where there's no icon font
 CLEAR_DISC = 16      # px at 100%: the search box's × and the disc under it
+FORGET_SEARCH_MS = 2 * 60 * 1000   # a search left alone this long is emptied (the track list's, the Library's)
 
 
 class SearchBox(ttk.Frame):
@@ -1215,11 +1216,18 @@ class SearchBox(ttk.Frame):
     on the right while there's something to clear.
 
     `query` is its StringVar. The × (and Esc in the box) run `on_clear()` — by default, just
-    emptying the box."""
+    emptying the box.
 
-    def __init__(self, parent, hint: str, on_clear: Callable[[], None] | None = None, keys: str = ""):
+    `forget_after` (ms, 0.54.0): words left in the box that long without being used — typed in, or
+    the results list (`keep_alive`) clicked, scrolled or keyed in — are emptied, so an old search
+    doesn't stay over the list. None: kept until cleared."""
+
+    def __init__(self, parent, hint: str, on_clear: Callable[[], None] | None = None, keys: str = "",
+                 forget_after: int | None = None):
         super().__init__(parent)
         self.on_clear = on_clear or (lambda: self.query.set(""))
+        self.forget_after = forget_after
+        self._forget_job: str | None = None
         self.query = tk.StringVar()
         self.entry = ttk.Entry(self, textvariable=self.query, style=theme.SEARCH_ENTRY)
         self.entry.pack(fill="x")
@@ -1246,10 +1254,11 @@ class SearchBox(ttk.Frame):
                                       font=theme.font(theme.SIZE_SMALL), anchor="e", cursor="xterm")
             self.keys_hint.bind("<Button-1>", lambda e: self.entry.focus_set())
         self.paint_icons()
-        self._trace = self.query.trace_add("write", lambda *_: self.update_hint())
+        self._trace = self.query.trace_add("write", lambda *_: self._changed())
         self.entry.bind("<FocusIn>", lambda e: self.update_hint(), add="+")
         self.entry.bind("<FocusOut>", lambda e: self.update_hint(), add="+")
         self.entry.bind("<Escape>", lambda e: self.on_clear(), add="+")
+        self.keep_alive(self.entry)
         self.bind("<Destroy>", self._forget_command, add="+")
         theme.on_change(self._palette_changed)
         self.update_hint()
@@ -1260,8 +1269,52 @@ class SearchBox(ttk.Frame):
                 self.query.trace_remove("write", self._trace)
             except tk.TclError:
                 pass
+            self._stop_forgetting()
+            for sequence in self.bind_class(self._alive_tag):   # (the tag's bindings hold this box)
+                self.unbind_class(self._alive_tag, sequence)
             self.on_clear, self.query = (lambda: None), None
             self._magnifier_photo = None   # (pictures: let go on Tk's thread)
+
+    def _changed(self):
+        self.update_hint()
+        self.still_used()
+
+    # -- forgetting an old search (0.54.0) -------------------------------------------------------
+    def keep_alive(self, widget: tk.Misc):
+        """Clicks, keys and the wheel in `widget` (the results list) count as using the search. On a
+        bind tag of its own, first: the widget's own bindings for particular keys (Enter, ↓) and
+        clicks would otherwise hide a plain <KeyPress> / <ButtonPress> on the widget itself."""
+        tag = self._alive_tag
+        if not self.bind_class(tag):
+            for event in ("<ButtonPress>", "<KeyPress>", "<MouseWheel>"):
+                self.bind_class(tag, event, lambda e: self.still_used())
+        if tag not in widget.bindtags():
+            widget.bindtags((tag, *widget.bindtags()))
+
+    @property
+    def _alive_tag(self) -> str:
+        return f"SearchUsed{id(self)}"
+
+    def still_used(self):
+        """The search was used: its time starts again (with nothing typed, there's nothing to forget)."""
+        self._stop_forgetting()
+        if self.forget_after is not None and self.query is not None and self.query.get():
+            self._forget_job = self.after(self.forget_after, self._forget)
+
+    def _stop_forgetting(self):
+        if self._forget_job is not None:
+            try:
+                self.after_cancel(self._forget_job)
+            except tk.TclError:
+                pass
+            self._forget_job = None
+
+    def _forget(self):
+        """Left alone for `forget_after`: empty the box. Only the words — the focus stays where it
+        is, unlike the × (the player may be in use elsewhere)."""
+        self._forget_job = None
+        if self.query is not None and self.query.get():
+            self.query.set("")
 
     def _palette_changed(self, _palette):
         if self.winfo_exists():

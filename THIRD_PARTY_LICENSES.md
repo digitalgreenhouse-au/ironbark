@@ -112,3 +112,8 @@ Neither project's code is included in Ironbark; both licences are permissive (ch
 |---|---|---|
 | FFmpeg `libavfilter/af_hdcd.c` (Chris Moeller, Gumboot, Burt P.; from Christopher Key's HDCD decoder) | The HDCD control-packet format, for the HDCD flag in Now Playing → Check | BSD-3-Clause (the file's own header) |
 | [MQA_identifier](https://github.com/purpl3F0x/MQA_identifier) (purpl3F0x) | The MQA sync word and rate code, for the MQA flag in Now Playing → Check | Apache-2.0 |
+
+The web player's Apple Lossless decoder (`web/js/alac.js`) follows the decoding steps of Apple's
+open-source [Apple Lossless Audio Codec](https://github.com/macosforge/alac) reference decoder
+(Apache-2.0): its bitstream elements, adaptive Golomb coding, adaptive predictor and stereo
+unmixing, written again in JavaScript. No file of Apple's is included.

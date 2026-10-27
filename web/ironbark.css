@@ -162,7 +162,9 @@ svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
 .now { padding: 14px 20px 8px; flex: none; }
 .cover {
   position: relative;
-  width: min(100%, 360px, 34vh);
+  /* a third of the height, but small enough on a short window that the list keeps about five
+     rows (the rest of the page is about 550 px tall); never below a thumbnail */
+  width: min(100%, max(96px, min(360px, 34vh, 100vh - 550px)));
   aspect-ratio: 1;
   margin: 0 auto 14px;
   border-radius: 10px;
@@ -264,6 +266,13 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--border); }
 @media (max-width: 380px) {
   .transport { gap: 6px; justify-content: flex-start; padding-left: 0; }
   .play { width: 52px; height: 52px; }
+  /* in the row, not over it: it can't land on the repeat button */
+  .vol { position: static; margin-left: auto; }
+}
+@media (max-width: 340px) {
+  .transport { gap: 2px; }
+  .transport .iconbtn { width: 36px; height: 36px; }
+  .pill { min-width: 44px; padding: 0 6px; }
 }
 
 /* -- meters -------------------------------------------------------------------------------- */

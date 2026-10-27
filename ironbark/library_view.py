@@ -599,19 +599,23 @@ class LibraryView:
         top = ttk.Frame(frame)
         top.pack(fill="x")
         # The views, in one drop-down at the left; then the search box (controls.SearchBox: Esc empties
-        # it — empty already, Esc goes on to the window, which puts the track list back); then the ⋯
-        # menu (Rescan, Rebuild the library…, Open all albums in a tab, Add folder…).
+        # it — empty already, Esc goes on to the window, which puts the track list back); then ↻
+        # (Rescan) and the ⋯ menu (Rescan, Rebuild the library…, Open all albums in a tab, Add folder…).
         self.view_button = controls.FlatButton(top, "", self._view_menu, fit="Recently played ● ▾",
                                                label="Which view: albums, artists, genres, years, composers, recently "
                                                      "added; most played, recently played, favourites, needs a look "
                                                      "(Ctrl+Tab steps through them)")
         self.view_button.pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM))
-        self.search = controls.SearchBox(top, "Search albums, artists, years, genres", on_clear=self._clear_search)
+        self.search = controls.SearchBox(top, "Search albums, artists, years, genres", on_clear=self._clear_search,
+                                         forget_after=controls.FORGET_SEARCH_MS)
         self.search_var = self.search.query
         self._search_trace = self.search_var.trace_add("write", lambda *_: self._search_changed())
         self.more_button = controls.FlatButton(top, "⋯", self._more_menu,
                                                label="Rescan · Rebuild the library · Open all albums in a tab · Add folder…")
         self.more_button.pack(side="right", padx=theme.pad(theme.GAP, 0))
+        self.rescan_button = controls.FlatButton(top, "↻", self.rescan,
+                                                 label="Look for added or changed music in the library and take it in (F5)")
+        self.rescan_button.pack(side="right", padx=theme.pad(theme.GAP, 0))
         self.search.pack(side="left", fill="x", expand=True)
         search = self.search.entry
         search.bind("<Down>", lambda e: self._focus_list())
@@ -630,6 +634,7 @@ class LibraryView:
                                 margin=True, scroll_parent=parent)
         self.list.frame.pack(fill="both", expand=True, pady=theme.pad(theme.GAP, 0))
         self.tree = self.list.tree
+        self.search.keep_alive(self.tree)   # (going through the results is using the search)
         self.scrollbar = self.list.scrollbar
         widths = {"album": 220, "artist": 140, "year": 48, "quality": 64, "tracks": 60, "added": 96, "title": 220,
                   "time": 52, "plays": 52, "found": 260, "last": 96}
@@ -1922,8 +1927,8 @@ class LibraryView:
                 "library_select_all": lambda: self.select_all(),
                 "library_queue": lambda: self.queue_selected(front=False),
                 "library_play_next": lambda: self.queue_selected(front=True),
-                "library_view": lambda key: self.cycle_view(-1 if "Shift" in key else 1),
-                "library_rescan": lambda: self.rescan()}
+                "library_view": lambda key: self.cycle_view(-1 if "Shift" in key else 1)}
+        # (F5, Rescan, is the player window's: library_rescan hands it to these views when they're on show)
 
     def focus_search(self):
         self.search.entry.focus_set()

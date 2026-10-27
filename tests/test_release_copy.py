@@ -85,8 +85,8 @@ def test_the_new_status_messages_fit_the_narrow_window(make_window):
         "No home yet: choose Use current (Settings → Window) to make this spot home",
         "The network playback cache is full: songs further ahead aren't being downloaded",
         "The network playback cache's list was damaged, so the cache was emptied (songs will download again).",
-        "Not enough free space on C: for the network playback cache (needs 123 MB): free some space or make "
-        "the cache smaller",
+        "Not enough free space on C: for the network playback cache (needs 123 MB, plus 2 GB kept free): free "
+        "some space or make the cache smaller",
         "Loaded 200,000 songs from 17,944 albums",
     ]
     for message in messages:
