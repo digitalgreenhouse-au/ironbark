@@ -187,6 +187,10 @@ genre, year and file name, and it ignores accents ("lodz" finds Łódź, "strass
 In the results, **Enter** plays the song in its album, **Shift+Enter** plays it next,
 **Ctrl+Enter** adds it to Up next, and **Alt+Enter** opens its album.
 
+What you type stays in the search box (the track list's or the Library's) while you use it. Leave a
+search alone for **2 minutes** (no typing, and no clicking, scrolling or keys in its list) and the
+box empties itself, so the whole list is back next time you look.
+
 ### Favourites and plays
 
 Right-click any song and choose *Add to favourites* to give it a ♥. A song counts as played once

@@ -4,6 +4,13 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.54.0 — 27/10/2026
+
+- New: an old search clears itself. What you type stays in the search box (the track list's or the
+  Library's) while you're using it; left alone for 2 minutes — no typing, and no clicking,
+  scrolling or keys in its list — the box empties and the whole list is back. The cursor stays
+  where it is.
+
 ## 0.53.0 — 27/10/2026
 
 - New: a **↻** button beside the Library tab's search box looks for music added, changed or

@@ -432,7 +432,7 @@ class PlaylistView:
         self.search_row = ttk.Frame(frame)
         self.search_row.pack(fill="x", pady=theme.pad(0, theme.GAP))
         self.search = controls.SearchBox(self.search_row, "Search songs, artists, albums", on_clear=self.clear_search,
-                                         keys="Ctrl+F")
+                                         keys="Ctrl+F", forget_after=controls.FORGET_SEARCH_MS)
         self.search.pack(side="left", fill="x", expand=True)
         self.search.entry.configure(width=1)   # (it fills the row: the part that gives way in a narrow window)
         if on_views is not None:   # (made now, packed only on the Library tab: set_views_button)
@@ -464,6 +464,7 @@ class PlaylistView:
         table.pack(fill="both", expand=True)
         self.table = table
         self.tree = self.list.tree
+        self.search.keep_alive(self.tree)   # (going through the results is using the search)
         self.scrollbar = self.list.scrollbar
         self.tree.configure(displaycolumns=("no", "title", "time"))
         self.tree.heading("no", text="#", anchor="e")

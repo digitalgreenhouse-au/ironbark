@@ -606,7 +606,8 @@ class LibraryView:
                                                      "added; most played, recently played, favourites, needs a look "
                                                      "(Ctrl+Tab steps through them)")
         self.view_button.pack(side="left", padx=theme.pad(0, theme.GAP_MEDIUM))
-        self.search = controls.SearchBox(top, "Search albums, artists, years, genres", on_clear=self._clear_search)
+        self.search = controls.SearchBox(top, "Search albums, artists, years, genres", on_clear=self._clear_search,
+                                         forget_after=controls.FORGET_SEARCH_MS)
         self.search_var = self.search.query
         self._search_trace = self.search_var.trace_add("write", lambda *_: self._search_changed())
         self.more_button = controls.FlatButton(top, "⋯", self._more_menu,
@@ -633,6 +634,7 @@ class LibraryView:
                                 margin=True, scroll_parent=parent)
         self.list.frame.pack(fill="both", expand=True, pady=theme.pad(theme.GAP, 0))
         self.tree = self.list.tree
+        self.search.keep_alive(self.tree)   # (going through the results is using the search)
         self.scrollbar = self.list.scrollbar
         widths = {"album": 220, "artist": 140, "year": 48, "quality": 64, "tracks": 60, "added": 96, "title": 220,
                   "time": 52, "plays": 52, "found": 260, "last": 96}
