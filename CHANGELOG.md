@@ -4,6 +4,20 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.55.1 — 28/10/2026
+
+- Fixed: on a screen whose inch Tk measures a little under a whole number of pixels (a 1024 px wide
+  screen at 100%, say), every gap, border and button size in the player came out a pixel smaller
+  than designed, and a 1 px line could vanish. The display scaling is now taken to a whole dot per
+  inch.
+- Fixed: a prompt's title, message, detail or the note under its text box could have the end of its
+  longest line cut off at the box's edge (seen with the Mac's fonts). Each now wraps inside its room.
+- Fixed (Linux): the check for a minimised window left its own X error handler in place for the
+  rest of the run, so the X errors of the window toolkit itself went through it; on a screen with no
+  window manager the test run crashed after it. It is now in place only while its own checks run.
+- The tests now allow for build machines' smaller screens and their missing window manager, so a
+  release can be built with the full test run on Windows, Mac and Linux.
+
 ## 0.55.0 — 27/10/2026
 
 This release brings together everything since 0.52.5 (0.52.6 to 0.54.2, below) and adds:

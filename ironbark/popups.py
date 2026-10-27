@@ -108,17 +108,23 @@ class Prompt(tk.Frame):
             # last word runs past the box's edge and is cut off.
             self.title_wrap = max(theme.px(theme.GAP_WIDE),
                                   wrap - self.sign.winfo_reqwidth() - theme.px(theme.GAP_MEDIUM))
+        # Each text wraps so the whole label fits its room: wrapped at the full room, a label asks for
+        # its border and padding more (and a line's last space can run past the wrap), so a line that
+        # comes out nearly as long as the wrap (the Mac's fonts) has its end cut off.
         self.title_label = tk.Label(head, text=title, bg=theme.SURFACE, fg=theme.TEXT, anchor="w", justify="left",
-                                    font=theme.font(theme.SIZE_HEADING, "semibold"), wraplength=self.title_wrap)
+                                    font=theme.font(theme.SIZE_HEADING, "semibold"))
+        theme.wrap_inside(self.title_label, self.title_wrap)
         self.title_label.pack(side="left", fill="x", expand=True)
         self.message_label = self.detail_label = None
         if message:
             self.message_label = tk.Label(body, text=message, bg=theme.SURFACE, fg=theme.TEXT, anchor="w",
-                                          justify="left", font=theme.font(theme.SIZE_BODY), wraplength=wrap)
+                                          justify="left", font=theme.font(theme.SIZE_BODY))
+            theme.wrap_inside(self.message_label, wrap)
             self.message_label.pack(fill="x", pady=theme.pad(theme.GAP_MEDIUM, 0))
         if detail:
             self.detail_label = tk.Label(body, text=detail, bg=theme.SURFACE, fg=theme.MUTED, anchor="w",
-                                         justify="left", font=theme.font(theme.SIZE_SMALL), wraplength=wrap)
+                                         justify="left", font=theme.font(theme.SIZE_SMALL))
+            theme.wrap_inside(self.detail_label, wrap)
             self.detail_label.pack(fill="x", pady=theme.pad(theme.GAP, 0))
         self.entry = self.problem_label = None
         self.text = tk.StringVar(self, value=entry or "")
@@ -130,6 +136,7 @@ class Prompt(tk.Frame):
             self.entry.icursor("end")
             self.problem_label = tk.Label(body, text="", bg=theme.SURFACE, fg=theme.DANGER, anchor="w",
                                           justify="left", font=theme.font(theme.SIZE_SMALL), wraplength=wrap)
+            self._problem_room = wrap   # (wrapped inside it as each note comes: show_problem)
             self._text_trace = self.text.trace_add("write", lambda *_: self.show_problem(""))   # typing clears it
 
         row = tk.Frame(body, bg=theme.SURFACE)
@@ -319,6 +326,8 @@ class Prompt(tk.Frame):
         if self.problem_label is None or self.done:
             return
         self.problem_label.configure(text=text)
+        if text:
+            theme.wrap_inside(self.problem_label, self._problem_room)
         if text and not self.problem_label.winfo_manager():
             self.problem_label.pack(fill="x", pady=theme.pad(theme.GAP_SMALL, 0), after=self.entry)
             self._retag(self.problem_label)

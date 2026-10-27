@@ -350,8 +350,13 @@ def _where(root) -> tuple[int, int, int, int]:
     return placement.parse(root.geometry())
 
 
+# A full window whose place is checked: one that fits a 1024 x 768 screen's usable area at its place
+# (macOS moves a window that would run off it: 420x640 at +120+120 opened at +120+40 there).
+FITS_A_SMALL_SCREEN = "420x520+120+120"
+
+
 def test_mini_and_full_keep_their_own_places_and_the_music_plays_on(make_window):
-    window, root, player, errors = make_window(mini_geometry="640x140+300+60")
+    window, root, player, errors = make_window(geometry=FITS_A_SMALL_SCREEN, mini_geometry="640x140+300+60")
     full_before = _where(root)
     assert full_before[2:] == (120, 120)
     found = window.keys.resolve(root, "z", 0)        # key Z is bound (through the keyboard table, keys.py)
@@ -381,7 +386,8 @@ def test_mini_and_full_keep_their_own_places_and_the_music_plays_on(make_window)
 
 
 def test_keep_on_top_survives_the_switch_and_the_mini_strip_keeps_its_place(make_window):
-    window, root, player, errors = make_window(always_on_top=True, mini_mode=True, mini_geometry="600x130+200+90")
+    window, root, player, errors = make_window(geometry=FITS_A_SMALL_SCREEN, always_on_top=True, mini_mode=True,
+                                               mini_geometry="600x130+200+90")
     assert not window.mini_mode and window.bar.winfo_ismapped()      # always the full window at the start
     assert _where(root)[2:] == (120, 120)
     assert bool(root.attributes("-topmost"))
@@ -395,7 +401,7 @@ def test_keep_on_top_survives_the_switch_and_the_mini_strip_keeps_its_place(make
 
 
 def test_first_mini_strip_opens_at_the_full_windows_corner(make_window):
-    window, root, _player, errors = make_window()
+    window, root, _player, errors = make_window(geometry=FITS_A_SMALL_SCREEN)
     window.toggle_mini()
     w, h, x, y = _where(root)
     assert (x, y) == (120, 120) and abs(w - theme.px(380)) <= 4

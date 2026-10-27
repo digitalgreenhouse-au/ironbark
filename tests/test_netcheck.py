@@ -49,6 +49,12 @@ def on_the_network(monkeypatch):
     monkeypatch.setattr(places, "is_remote", lambda path: True)
 
 
+def _share_step(folder: Path) -> list[str]:
+    """The share is tried first where a folder has a drive or \\\\server\\share of its own (Windows); a
+    Mac or Linux mount has no root of its own to try, so the folder is the first step there."""
+    return ["The share answers"] if os.path.splitdrive(str(folder))[0] else []
+
+
 def test_a_folder_python_cant_list_but_explorer_can_is_readable_and_says_why(tmp_path, monkeypatch, on_the_network):
     (tmp_path / "Album").mkdir()
     (tmp_path / "Album" / "01.flac").write_bytes(b"")
@@ -60,7 +66,7 @@ def test_a_folder_python_cant_list_but_explorer_can_is_readable_and_says_why(tmp
     monkeypatch.setattr(winlisting, "list_basic", lambda folder: [object()] * 1846)
     result = netcheck.check(str(tmp_path), {"local_network": True}, target=lambda letter: r"\\nas\music")
     names = [step.name for step in result.steps]
-    expected = ["The share answers", "The folder answers", "Python's way of listing"]
+    expected = _share_step(tmp_path) + ["The folder answers", "Python's way of listing"]
     expected += ["File Explorer's way of listing"] if os.name == "nt" else []
     assert names == expected + [netcheck.LIBRARY_GETS, "An album inside (“Album”)"]
     python = next(step for step in result.steps if step.name == "Python's way of listing")
@@ -95,7 +101,8 @@ def test_a_server_that_doesnt_answer_is_said_so_within_the_time_limit(tmp_path, 
     finally:
         held.set()
     assert [step.ok for step in result.steps] == [None]                 # nothing tried after it
-    assert result.steps[0].line().startswith("NO ANSWER The share answers")
+    first = (_share_step(tmp_path) or ["The folder answers"])[0]
+    assert result.steps[0].line().startswith(f"NO ANSWER {first}")
     assert not result.readable and "no answer within 0 s" in result.verdict
 
 
