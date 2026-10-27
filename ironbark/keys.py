@@ -143,7 +143,7 @@ ACTIONS: tuple[Action, ...] = (
            "Library & search"),
     Action("library_view", _keys("Ctrl+Tab", "Ctrl+Shift+Tab"), "library",
            "Library views: next / previous view (Albums, Artists, …)", "Library & search", arg=True),
-    Action("library_rescan", _keys("F5",), "library", "Library views: look for added or changed music",
+    Action("library_rescan", _keys("F5",), "main", "Library: look for added or changed music (the ↻ by its search box)",
            "Library & search"),
     # -- Editing --------------------------------------------------------------------------------
     Action("remove", _keys("Delete",), "list", "Remove the song from the playlist", "Editing"),

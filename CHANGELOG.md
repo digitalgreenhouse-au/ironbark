@@ -4,6 +4,14 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.53.0 — 27/10/2026
+
+- New: a **↻** button beside the Library tab's search box looks for music added, changed or
+  removed since the last look, and takes it in — no restart needed. **F5** does the same from
+  anywhere in the player. Only what changed is read, so it's quick; the button greys while it
+  looks, and the status line says what came in or that the library is already up to date. The
+  Library's views (Albums, Artists…) have a ↻ beside their ⋯ menu too.
+
 ## 0.52.6 — 26/10/2026
 
 - Fixed: a playlist holding the same song twice lost its place when it was changed during the
