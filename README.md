@@ -107,8 +107,8 @@ oldest distribution the package should run on (it needs that one's C library or 
 the listener's own computer. Open a folder or some songs, or drop them on the page. Nothing is
 uploaded, and a Content Security Policy keeps the page off the internet. It has albums, search,
 shuffle and repeat, a level meter and a spectrum, the desktop player's keys, media keys, both themes
-and *Check this file* (a FLAC file's MD5, proved by decoding it). Apple Lossless plays in every
-browser (where the browser can't play it, the page decodes it itself). A browser can't play bit-perfect
+and *Check this file* (a FLAC file's MD5, proved by decoding it). Apple Lossless plays in
+Chrome, Edge and Firefox too (they can't play it, so the page decodes it itself). A browser can't play bit-perfect
 or promise gapless playback, and the page says so. Plain HTML, CSS and JavaScript with no build
 step: see [web/README.md](web/README.md). Use it at
 <https://www.digitalgreenhouse.com.au/labs/ironbark/>, or run your own copy:

@@ -29,6 +29,7 @@
   const MAX_WAV = 1.2 * 1073741824;      // bytes of decoded audio a song may take in memory
   const MAX_MOOV = 64 * 1048576;         // an index bigger than this is damaged
   const MAX_FRAME_LENGTH = 1 << 16;      // samples per packet: Apple's encoder uses 4096
+  const MAX_PACKETS = 1 << 24;           // packets in a song (4096-sample packets: over 400 hours at 44.1 kHz)
   const WINDOW = 8 * 1048576;            // packets are read from the file this many bytes at a time
 
   class NotAlac extends Error {
@@ -124,6 +125,7 @@
     const stco = find(b, stbl, "stco") || find(b, stbl, "co64");
     if (!stsz || !stsc || !stco || !stts) throw new NotAlac("incomplete sample table in this MP4 file");
     const fixed = be32(b, stsz.start + 4), count = be32(b, stsz.start + 8);
+    if (count > MAX_PACKETS) throw damaged("its packet count");   // (a fixed size of 1 byte would otherwise allow one per byte)
     if (fixed) { if (count * fixed > length) throw damaged("more audio than the file holds"); }
     else checkCount(count, stsz, 12, 4, "packet size");
     a.sizes = new Uint32Array(count);
@@ -135,11 +137,13 @@
     const runs = be32(b, stsc.start + 4);
     checkCount(runs, stsc, 8, 12, "packets-per-chunk");
     a.offsets = new Float64Array(count);
-    let packet = 0;
-    for (let r = 0; r < runs; r++) {
+    let packet = 0, prevFirst = 0;
+    for (let r = 0; r < runs && packet < count; r++) {
       const first = be32(b, stsc.start + 8 + 12 * r), perChunk = be32(b, stsc.start + 12 + 12 * r);
       const last = r + 1 < runs ? be32(b, stsc.start + 8 + 12 * (r + 1)) - 1 : chunks;
-      if (first < 1 || last > chunks) throw damaged("its chunk table");
+      // runs must move forward through the chunks: one going back could make the walk endless
+      if (first <= prevFirst || last > chunks) throw damaged("its chunk table");
+      prevFirst = first;
       for (let chunk = first; chunk <= last; chunk++) {
         let at = starts[chunk - 1];
         for (let i = 0; i < perChunk && packet < count; i++) {

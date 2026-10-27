@@ -565,7 +565,7 @@
     // a format this browser plays, or a decode error partway in (code 3): the file itself is at fault
     const code = ev.detail && ev.detail.code;
     songFailed(failed, code === -1 ? "Couldn't start: " + ev.detail.message
-      : t.format && (code === 3 || browserPlays(t)) ? "This " + what + " file looks damaged: the browser couldn't decode it"
+      : t.format && (code === 3 || browserPlays(t) || failed.decodedHere) ?"This " + what + " file looks damaged: the browser couldn't decode it"
       : t.format ? "This browser can't play " + what + " files" : "This browser can't play this file (damaged, or not music)");
   });
 

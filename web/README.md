@@ -33,12 +33,12 @@ major browser. In the Chromium browser Ironbark was tested in, FLAC, MP3, Ogg Vo
 AAC play and AIFF doesn't; other browsers differ. The page lists what *your* browser plays on its
 opening screen, and marks any song it can't play. The desktop Ironbark plays all of these.
 
-**Apple Lossless (ALAC `.m4a`)** plays everywhere: Safari plays it itself, and in a browser that
+**Apple Lossless (ALAC `.m4a`)** plays in the usual browsers: Safari plays it itself, and in a browser that
 can't (Chrome, Edge, Firefox), Ironbark decodes it on your computer first, sample for sample, into
 an uncompressed copy held in memory. That takes a moment before a song starts (a second or two for
 a four-minute song); the next song is decoded while this one plays, so the change of song stays
 short. Mono and stereo, 16 to 32 bits; a song that would need more than about 1.2 GB of memory
-decoded (about 15 minutes at 24-bit / 192 kHz) is refused. AAC `.m4a` files are left to the browser.
+decoded (about 18 minutes at 24-bit / 192 kHz) is refused. AAC `.m4a` files are left to the browser.
 
 ### What a browser can't do
 

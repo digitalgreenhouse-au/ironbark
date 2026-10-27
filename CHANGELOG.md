@@ -4,6 +4,18 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.55.0 — 27/10/2026
+
+This release brings together everything since 0.52.5 (0.52.6 to 0.54.2, below) and adds:
+
+- New in Ironbark for the web: **Apple Lossless (.m4a) now plays in Chrome, Edge and Firefox too.**
+  Those browsers play AAC .m4a files but not Apple Lossless, so those songs were marked unplayable.
+  Now the page decodes them itself, on your computer, and plays them like any other song (seeking,
+  meters and volume as usual); the next song is decoded while this one plays. Safari still plays
+  them directly. Mono and stereo; nothing is uploaded.
+- The README now starts with what most people want — no ads, no account, no subscription, your own
+  files — and moves the measurements and proofs under "For the technically minded".
+
 ## 0.54.2 — 27/10/2026
 
 - Fixed: the network playback cache could refuse a song with "Not enough free space" on a big drive
