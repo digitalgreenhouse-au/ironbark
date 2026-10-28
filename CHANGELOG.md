@@ -4,6 +4,14 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.55.2 — 28/10/2026
+
+- Tests only: on Linux build machines (a virtual screen with no window manager) the test run crashed
+  in the window toolkit when a test gave a window the keyboard: an earlier test's window, destroyed
+  while one of its boxes had the keyboard, was still on record as holding it. Each test window now
+  takes the keyboard back to itself before it closes. A Mac test also expected more room than the
+  Mac allows any window on a small screen.
+
 ## 0.55.1 — 28/10/2026
 
 - Fixed: on a screen whose inch Tk measures a little under a whole number of pixels (a 1024 px wide

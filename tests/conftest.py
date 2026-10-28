@@ -26,6 +26,8 @@
   And it runs at below-normal priority, so the computer's other programs come first.
 - Nothing a test deletes goes to the computer's real Recycle Bin (recycle.py): it's deleted, and
   noted in `binned`.
+- A window that holds the keyboard hands it to itself before it's destroyed (`_focus_safe_destroy`),
+  so no later test's focus -force meets a dead window in Tk's record of the screen's focus.
 """
 from __future__ import annotations
 
@@ -85,6 +87,38 @@ if sys.platform == "win32" and os.environ.get("IRONBARK_TESTS_VISIBLE") != "1":
     _hidden_desktop = _use_hidden_desktop()
 if sys.platform == "win32":
     _below_normal_priority()
+
+
+def _focus_safe_destroy():
+    """Destroying a window first hands the keyboard to the window itself, when one of its widgets
+    has it.
+
+    Tk marks a window dead before it destroys the widgets inside, so when the one with the keyboard
+    goes, Tk won't pass the focus up to the dying window, and its record of which window has the
+    screen's focus (one per screen, shared by every Tk in the process) is left on a freed widget. On a
+    desktop the window manager hands the focus on at once and Tk puts the record right; on a virtual
+    screen with no window manager (xvfb-run's, the Linux build machine's) nothing does, and the next
+    focus -force — another test's Tk, in the same process — reads the freed memory and crashes
+    (Tk 8.6.14, tkFocus.c, TkSetFocusWin). With the focus on the window itself, Tk clears the
+    record as the window dies. The player has one Tk for its whole life, under a window manager."""
+    import tkinter
+
+    def focus_first(destroy):
+        def destroy_focus_first(self):
+            try:
+                inside = str(self.tk.call("focus"))
+                if inside == self._w or inside.startswith("." if self._w == "." else self._w + "."):
+                    self.tk.call("focus", self._w)
+            except (tkinter.TclError, RuntimeError):
+                pass   # (already gone, or its interpreter is)
+            destroy(self)
+        return destroy_focus_first
+
+    tkinter.Tk.destroy = focus_first(tkinter.Tk.destroy)
+    tkinter.Toplevel.destroy = focus_first(tkinter.Toplevel.destroy)
+
+
+_focus_safe_destroy()
 
 LIVE_WINDOWS = os.environ.get("DG_LIVE_WINDOWS") == "1"
 

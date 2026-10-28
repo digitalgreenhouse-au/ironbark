@@ -246,7 +246,11 @@ def test_about_opens_no_taller_than_the_screen_and_every_part_can_be_read(root, 
         about.win.geometry(f"{theme.px(600)}x{tall}")
         settle(root, 0.4)
         if about.win.winfo_height() < tall and platforms.IS_MAC:   # (macOS keeps a window inside the usable area)
-            assert about.win.maxsize()[1] >= tall                  # (not a cap of the window's own)
+            plain = tk.Toplevel(root)   # (Tk's own limit there is that area, so a plain window has it too)
+            try:
+                assert about.win.maxsize()[1] >= plain.maxsize()[1]   # (not a cap of the window's own)
+            finally:
+                plain.destroy()
             pytest.skip(f"the screen's usable area is too short for the whole About page here "
                         f"({tall} px asked, {about.win.winfo_height()} given)")
     sizes = (f"window {about.win.winfo_height()}, panel {about.area.canvas.winfo_height()}, page "
