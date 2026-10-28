@@ -4,13 +4,21 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.55.3 — 28/10/2026
+
+- Build only: the Linux build machine's test run now has a window manager (Openbox) on its virtual
+  screen, as every Linux desktop does. With none, the keyboard focus follows the mouse pointer, and
+  the window toolkit could keep a closed window on record as holding the keyboard; the next test that
+  gave a window the keyboard then crashed the run. The test change made in 0.55.2 for this is taken
+  back out.
+- Tests only: on the Mac, the About window test now compares its height limit with a window that is
+  on show (the Mac takes the title bar off the limit only then), and a test that counts the rows a
+  long list makes allows for a slow machine re-making the few rows on show.
+
 ## 0.55.2 — 28/10/2026
 
-- Tests only: on Linux build machines (a virtual screen with no window manager) the test run crashed
-  in the window toolkit when a test gave a window the keyboard: an earlier test's window, destroyed
-  while one of its boxes had the keyboard, was still on record as holding it. Each test window now
-  takes the keyboard back to itself before it closes. A Mac test also expected more room than the
-  Mac allows any window on a small screen.
+- Tests only: a first try at the Linux build machine's crash (the cause was found in 0.55.3). A Mac
+  test also expected more room than the Mac allows any window on a small screen.
 
 ## 0.55.1 — 28/10/2026
 
