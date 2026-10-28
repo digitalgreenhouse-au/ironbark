@@ -12,10 +12,14 @@ manager to activate the window (_NET_ACTIVE_WINDOW), which brings a minimised on
 Through libX11 with ctypes, on a connection of our own, used from Tk's thread only. Only windows
 Tk has seen mapped are asked about, so each one exists on the server by then. Even so, an X error on
 this connection (a window gone a moment before it was asked about) must never end the program, and
-Xlib's default error handler would do just that: so an error handler goes in front of the one in
-place (Tk's) that takes the errors of our own connection, and hands every other one on unchanged.
-A call that met an error answers as if there were nothing to tell. Without libX11 or a display,
-nothing is ever minimised here, as before.
+Xlib's default error handler would do just that: so ours takes the errors of our own connection. It
+is in place only while our own calls run — put in front of the one in place (Tk's), every reply and
+error of our calls read (XSync), then Tk's put back. Xlib's error handler is one for the whole
+process, and Tk's connection meets X errors of its own all the time; left in place, ours would run
+Python inside Tk's Xlib calls (Python's garbage collector included, which can free a Tk window or
+picture there): under a virtual screen with no window manager that crashed the process. A call that
+met an error answers as if there were nothing to tell. Without libX11 or a display, nothing is ever
+minimised here, as before.
 """
 
 from __future__ import annotations
@@ -45,27 +49,21 @@ class _Event(ctypes.Union):
 _ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 _ours: set[int] = set()        # our own connections: their errors are ours to take
 _errors: dict[int, int] = {}   # connection -> X errors met on it so far
-_handler: list = []            # [our handler, the one it hands on to] (kept alive)
+_handing_on: list = [None]     # the handler ours stands in front of, while it's in place
+_depth = [0]                   # our calls under way, on any connection (only the outermost puts it back)
 
 
-def _install_error_handler(x) -> None:
-    """In front of the error handler in place (Tk's, by now): errors on our own connections are
-    counted, every other one goes on to it as before."""
-    if _handler:
-        return
-    x.XSetErrorHandler.restype = _ERROR_HANDLER
-    x.XSetErrorHandler.argtypes = [_ERROR_HANDLER]
+def _take(display, event) -> int:
+    """Our error handler: an error on our own connection is counted; any other (none should come
+    while ours is in place: only our connection is read then) goes on to the handler it stands for."""
+    if display in _ours:
+        _errors[display] = _errors.get(display, 0) + 1
+        return 0
+    previous = _handing_on[0]
+    return previous(display, event) if previous else 0
 
-    def handle(display, event):
-        if display in _ours:
-            _errors[display] = _errors.get(display, 0) + 1
-            return 0
-        previous = _handler[1]
-        return previous(display, event) if previous else 0
 
-    ours = _ERROR_HANDLER(handle)
-    _handler[:] = [ours, None]
-    _handler[1] = x.XSetErrorHandler(ours)
+_TAKE = _ERROR_HANDLER(_take)   # (kept alive for as long as Xlib may call it)
 
 
 class _Display:
@@ -89,16 +87,42 @@ class _Display:
         x.XFree.argtypes = [ctypes.c_void_p]
         x.XSendEvent.argtypes = [ctypes.c_void_p, _ulong, ctypes.c_int, ctypes.c_long, ctypes.POINTER(_Event)]
         x.XFlush.argtypes = [ctypes.c_void_p]
+        x.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        x.XSetErrorHandler.restype = _ERROR_HANDLER
+        x.XSetErrorHandler.argtypes = [_ERROR_HANDLER]
         self.handle = x.XOpenDisplay(name.encode())
         if not self.handle:
             raise OSError(f"can't open display {name!r}")
         _ours.add(self.handle)
-        _install_error_handler(x)
         self._atoms: dict[str, int] = {}
 
     def errors(self) -> int:
         """X errors met on this connection so far (each is taken by our handler, never fatal)."""
         return _errors.get(self.handle, 0)
+
+    def guarded(self, call):
+        """call(), with our error handler in place for it alone: every reply and error of it is read
+        (XSync) before the handler in place before goes back. (Calls inside one, on any connection,
+        share it: only the outermost puts the one before back.)"""
+        if _depth[0]:
+            _depth[0] += 1
+            try:
+                return call()
+            finally:
+                _depth[0] -= 1
+                self.x.XSync(self.handle, 0)
+        previous = self.x.XSetErrorHandler(_TAKE)
+        _handing_on[0] = previous
+        _depth[0] = 1
+        try:
+            return call()
+        finally:
+            try:
+                self.x.XSync(self.handle, 0)
+            finally:
+                _depth[0] = 0
+                self.x.XSetErrorHandler(previous)
+                _handing_on[0] = None
 
     def atom(self, name: str) -> int:
         if name not in self._atoms:
@@ -150,35 +174,36 @@ def _display(window) -> _Display | None:
     return _displays[name]
 
 
-def _managed(window) -> tuple[_Display, int, int] | None:
-    """The display, the window the window manager manages for `window`'s toplevel (Tk's wrapper)
-    and the root window; None when it isn't mapped (or there's no X to ask)."""
+def _asking(window, ask, otherwise):
+    """ask(display, wrapper, root) for `window`'s toplevel, with our error handler in place: the
+    wrapper is the window the window manager manages for it (Tk's), and root the root window.
+    `otherwise` when it isn't mapped or there's no X to ask."""
     top = window.winfo_toplevel()
     if not top.winfo_ismapped():
-        return None
+        return otherwise
     display = _display(top)
     if display is None:
-        return None
-    wrapper, root = display.parent_and_root(top.winfo_id())
-    if not wrapper or wrapper == root:
-        return None
-    return display, wrapper, root
+        return otherwise
+
+    def asked():
+        wrapper, root = display.parent_and_root(top.winfo_id())
+        if not wrapper or wrapper == root:
+            return otherwise
+        return ask(display, wrapper, root)
+    return display.guarded(asked)
 
 
-def minimised(window) -> bool:
-    """Is `window`'s toplevel minimised, though Tk still calls it mapped?"""
-    found = _managed(window)
-    if found is None:
-        return False
-    display, wrapper, _ = found
+def _hidden(display: _Display, wrapper: int, _root: int) -> bool:
     if display.longs(wrapper, "WM_STATE")[:1] == [_ICONIC]:
         return True
     return display.atom("_NET_WM_STATE_HIDDEN") in display.longs(wrapper, "_NET_WM_STATE")
 
 
+def minimised(window) -> bool:
+    """Is `window`'s toplevel minimised, though Tk still calls it mapped?"""
+    return _asking(window, _hidden, False)
+
+
 def restore(window) -> None:
     """Ask the window manager to bring `window`'s toplevel back from minimised and make it active."""
-    found = _managed(window)
-    if found is not None:
-        display, wrapper, root = found
-        display.activate(wrapper, root)
+    _asking(window, lambda display, wrapper, root: display.activate(wrapper, root), None)

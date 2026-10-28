@@ -226,6 +226,25 @@ def minimise(window) -> None:
     while time.monotonic() < deadline and winstate.on_screen(window):
         window.update()
         time.sleep(0.01)
+    if winstate.on_screen(window) and _no_window_manager(window):
+        pytest.skip("no window manager on this screen (a bare virtual one, as xvfb-run's): nothing minimises a window")
+
+
+def _no_window_manager(window) -> bool:
+    """An X11 screen that no window manager looks after (EWMH's _NET_SUPPORTING_WM_CHECK unset on the
+    root window): there, iconify has nothing to ask. Never so elsewhere."""
+    from ironbark import platforms, x11
+
+    if not platforms.IS_LINUX:
+        return False
+    display = x11._display(window)
+    if display is None:
+        return True
+
+    def ask() -> bool:
+        _parent, root = display.parent_and_root(window.winfo_toplevel().winfo_id())
+        return not root or not display.longs(root, "_NET_SUPPORTING_WM_CHECK")
+    return display.guarded(ask)
 
 
 def restore(window) -> None:

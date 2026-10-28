@@ -509,17 +509,25 @@ CARD_SCROLLBAR = "Pop.Slim.Vertical.TScrollbar"
 _scale: float | None = None
 
 
+def _measured(widget: tk.Misc) -> float:
+    """The display scaling `widget`'s screen is on. Tk keeps a screen's size in whole millimetres,
+    so its inch is a little off a whole dot count — 96.05 px at 100% on a 2560 px wide screen, 95.98
+    on a 1024 px one — and px() rounds down: 95.98 would make every size a pixel short (a 1 px line
+    none). Screens are set in whole dots per inch, so round to one."""
+    return round(widget.winfo_fpixels("1i")) / 96
+
+
 def scale(widget: tk.Misc | None = None) -> float:
     """Windows' display scaling as a factor: 1.0 at 100%, 1.5 at 150%. Measured once from the
     app's Tk window (every window of the app is on the same scaling)."""
     global _scale
     if widget is not None:
-        return widget.winfo_fpixels("1i") / 96
+        return _measured(widget)
     if _scale is None:
         root = tk._default_root  # the app's (or a test's) Tk root
         if root is None:
             return 1.0
-        _scale = root.winfo_fpixels("1i") / 96
+        _scale = _measured(root)
     return _scale
 
 
@@ -635,7 +643,7 @@ def _drawn_size(name: str, size: tuple[int, int]) -> tuple[int, int]:
 def apply(root: tk.Tk) -> None:
     """Style the app's ttk widgets with the current palette (run again after a palette change)."""
     global _scale, NUMBERS, SEMIBOLD
-    _scale = root.winfo_fpixels("1i") / 96
+    _scale = _measured(root)
     NUMBERS = FONT if tabular_digits(FONT, root) else MONO
     SEMIBOLD = semibold_family(root)
     root.configure(bg=BG)

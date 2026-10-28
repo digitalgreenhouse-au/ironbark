@@ -104,12 +104,16 @@ def test_a_servers_figures_are_saved_and_start_the_next_run_if_under_an_hour_old
     measured = first.hosts["fakehost"].speed.value()
     assert measured and first.hosts["fakehost"].speed.measured()
     first.shutdown()
+    # The class it stopped on is what's saved: excellent at the share's 3 MB/s, but a busy test machine
+    # (the Mac runner's) can sleep long enough between blocks to measure it good for a moment.
+    kept = first.hosts["fakehost"].score.current
+    assert kept in (EXCELLENT, GOOD)
 
     again = make_manager(tmp_path / "NetCache", FakeShare())
     managers.append(again)
     host = again.hosts["fakehost"]                            # (named by the copy kept from the first run)
     assert host.speed.value() == pytest.approx(measured) and not host.speed.measured()
-    assert host.score.current == EXCELLENT
+    assert host.score.current == kept
 
     rows = again.store.load_hosts()
     old = make_manager(tmp_path / "Other", FakeShare(), wall=lambda: time.time() + 2 * 3600)

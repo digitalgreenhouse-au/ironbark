@@ -4,6 +4,36 @@ Ironbark follows [semantic versioning](https://semver.org): MAJOR.MINOR.PATCH �
 something, a MINOR adds a feature; MAJOR stays 0 until version 1.0. The version is shown at the
 bottom of Settings. Dates are dd/mm/yyyy. Newest first.
 
+## 0.55.3 — 28/10/2026
+
+- Build only: the Linux build machine's test run now has a window manager (Openbox) on its virtual
+  screen, as every Linux desktop does. With none, the keyboard focus follows the mouse pointer, and
+  the window toolkit could keep a closed window on record as holding the keyboard; the next test that
+  gave a window the keyboard then crashed the run. The test change made in 0.55.2 for this is taken
+  back out.
+- Tests only: on the Mac, the About window test now compares its height limit with a window that is
+  on show (the Mac takes the title bar off the limit only then), and a test that counts the rows a
+  long list makes allows for a slow machine re-making the few rows on show.
+
+## 0.55.2 — 28/10/2026
+
+- Tests only: a first try at the Linux build machine's crash (the cause was found in 0.55.3). A Mac
+  test also expected more room than the Mac allows any window on a small screen.
+
+## 0.55.1 — 28/10/2026
+
+- Fixed: on a screen whose inch Tk measures a little under a whole number of pixels (a 1024 px wide
+  screen at 100%, say), every gap, border and button size in the player came out a pixel smaller
+  than designed, and a 1 px line could vanish. The display scaling is now taken to a whole dot per
+  inch.
+- Fixed: a prompt's title, message, detail or the note under its text box could have the end of its
+  longest line cut off at the box's edge (seen with the Mac's fonts). Each now wraps inside its room.
+- Fixed (Linux): the check for a minimised window left its own X error handler in place for the
+  rest of the run, so the X errors of the window toolkit itself went through it; on a screen with no
+  window manager the test run crashed after it. It is now in place only while its own checks run.
+- The tests now allow for build machines' smaller screens and their missing window manager, so a
+  release can be built with the full test run on Windows, Mac and Linux.
+
 ## 0.55.0 — 27/10/2026
 
 This release brings together everything since 0.52.5 (0.52.6 to 0.54.2, below) and adds:

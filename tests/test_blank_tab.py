@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from test_light_mini import _pump, _where, make_window  # noqa: F401  (make_window is a fixture)
+from test_light_mini import FITS_A_SMALL_SCREEN, _pump, _where, make_window  # noqa: F401  (make_window is a fixture)
 
 from ironbark import settings
 from ironbark.library import Track
@@ -12,7 +12,8 @@ from ironbark.ui import Tab, place_new_tab
 
 
 def test_the_player_opens_as_the_full_window_even_if_left_as_the_mini_strip(make_window):
-    window, root, player, errors = make_window(mini_mode=True, mini_geometry="600x130+200+90")
+    window, root, player, errors = make_window(geometry=FITS_A_SMALL_SCREEN, mini_mode=True,
+                                               mini_geometry="600x130+200+90")
     assert not window.mini_mode and window.bar.winfo_ismapped() and not window.mini.winfo_ismapped()
     assert _where(root)[2:] == (120, 120)                       # the full window's own place
     window.toggle_mini()                                         # the strip is still there for the asking…

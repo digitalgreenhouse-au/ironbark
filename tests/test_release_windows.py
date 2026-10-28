@@ -17,7 +17,7 @@ import soundfile as sf
 from test_library_songs import song_window, wait_for_songs
 from test_library_view import column, flac, music, root, wait_for_index  # noqa: F401 — shared fixtures
 
-from ironbark import help_window, keys, library_check, library_index, library_view, placement, theme
+from ironbark import help_window, keys, library_check, library_index, library_view, placement, platforms, theme
 from ironbark.indexer import Indexer
 from ironbark.library_db import LibraryDB
 from ironbark.library_view import LibraryView
@@ -245,6 +245,17 @@ def test_about_opens_no_taller_than_the_screen_and_every_part_can_be_read(root, 
             pytest.skip(f"the screen is too short for the whole About page here ({tall} px)")
         about.win.geometry(f"{theme.px(600)}x{tall}")
         settle(root, 0.4)
+        if about.win.winfo_height() < tall and platforms.IS_MAC:   # (macOS keeps a window inside the usable area)
+            # (Tk's own limit there is that area less the title bar, so a plain window on show has it too.)
+            plain = tk.Toplevel(root)
+            plain.geometry(f"{theme.px(600)}x{tall}")
+            settle(root, 0.4)
+            try:
+                assert about.win.maxsize()[1] >= plain.maxsize()[1]   # (not a cap of the window's own)
+            finally:
+                plain.destroy()
+            pytest.skip(f"the screen's usable area is too short for the whole About page here "
+                        f"({tall} px asked, {about.win.winfo_height()} given)")
     sizes = (f"window {about.win.winfo_height()}, panel {about.area.canvas.winfo_height()}, page "
              f"{about.area.inner.winfo_reqheight()}, licence text {about.text.winfo_height()}, line {line}, "
              f"scale {theme.scale():.2f}")
