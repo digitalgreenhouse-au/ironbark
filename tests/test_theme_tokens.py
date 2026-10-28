@@ -208,9 +208,19 @@ def root():
 
 
 def test_px_follows_display_scaling(root):
-    s = root.winfo_fpixels("1i") / 96
+    s = round(root.winfo_fpixels("1i")) / 96
     assert theme.scale() == pytest.approx(s)
     assert theme.px(10) == int(10 * s) and theme.pad(10, 4) == (int(10 * s), int(4 * s))
+
+
+@pytest.mark.parametrize("inch", (95.98, 96.05, 119.9, 144.07))
+def test_a_screens_inch_a_little_off_a_whole_dot_count_scales_as_the_whole_count(root, monkeypatch, inch):
+    # Tk keeps a screen's size in whole millimetres, so its inch is never quite whole: 95.98 px on a
+    # 1024 px wide screen at 100%. Cut down, that made every size a pixel short there (px(1) == 0).
+    monkeypatch.setattr(type(root), "winfo_fpixels", lambda self, n: inch if n == "1i" else 1.0)
+    assert theme.scale(root) == round(inch) / 96
+    monkeypatch.setattr(theme, "_scale", theme.scale(root))
+    assert theme.px(1) >= 1 and theme.px(10) == int(10 * round(inch) / 96)
 
 
 def test_palette_switch_recolours_widgets(root):

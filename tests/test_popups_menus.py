@@ -222,11 +222,28 @@ def test_a_warning_title_wraps_beside_its_sign(root):
     _pump(root, 0.1)
     wrap = prompt._width() - 2 * theme.px(theme.GAP_WIDE) - 2 * theme.px(popups.WARN_EDGE)
     sign = prompt.sign.winfo_reqwidth() + theme.px(theme.GAP_MEDIUM)
-    assert int(prompt.title_label.cget("wraplength")) == wrap - prompt.sign.winfo_reqwidth() - theme.px(theme.GAP_MEDIUM)
+    assert prompt.title_wrap == wrap - prompt.sign.winfo_reqwidth() - theme.px(theme.GAP_MEDIUM)   # the room beside it
+    assert int(prompt.title_label.cget("wraplength")) <= prompt.title_wrap
     head = prompt.title_label.master
     assert sign + prompt.title_label.winfo_reqwidth() <= head.winfo_width()            # nothing cut off
     assert prompt.title_label.winfo_x() + prompt.title_label.winfo_width() <= head.winfo_width()
     prompt.press_default()
+
+
+def test_a_prompts_texts_fit_their_room_whatever_their_lines_come_to(root):
+    # A wrapped line can come out within a character of the wrap (word by word, some length always
+    # does: the Mac's fonts met it with the warning above); the label's border and padding come on
+    # top, and wrapped at the full room its end was cut off.
+    for words in range(20, 60):
+        text = "Ab " * words
+        prompt = Prompt(root, text, text, detail=text, tone="warn", cover=True, buttons=(("OK", True),))
+        _pump(root, 0.05)
+        head = prompt.title_label.master
+        assert prompt.sign.winfo_reqwidth() + theme.px(theme.GAP_MEDIUM) + prompt.title_label.winfo_reqwidth() \
+            <= head.winfo_width(), words
+        for label in (prompt.message_label, prompt.detail_label):
+            assert label.winfo_reqwidth() <= label.master.winfo_width(), words
+        prompt.press_default()
 
 
 def test_the_tag_editor_and_test_signal_questions_are_in_app(root):

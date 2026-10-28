@@ -141,13 +141,19 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
       # The distribution's Python 3.12 and Tk (build.sh checks; named, as python3 can be another
       # Python installed beside it), Python's shared library for PyInstaller,
-      # PortAudio (bundled), and Xvfb for the tests and the self-check, which open windows.
+      # PortAudio (bundled), and Xvfb for the tests and the self-check, which open windows, with Openbox
+      # on it as its window manager.
       - name: The distribution's Python and Tk, PortAudio and a virtual screen
-        run: sudo apt-get update && sudo apt-get install -y python3-tk libpython3.12t64 libportaudio2 xvfb
+        run: sudo apt-get update && sudo apt-get install -y python3-tk libpython3.12t64 libportaudio2 xvfb openbox
       - name: Build (tests, package, self-check, tarball, checksums)
         run: |
-          if [ "${{ inputs.skip_tests }}" = "true" ]; then xvfb-run -a bash packaging/linux/build.sh --skip-tests --python /usr/bin/python3.12
-          else xvfb-run -a bash packaging/linux/build.sh --python /usr/bin/python3.12; fi
+          skip=""
+          if [ "${{ inputs.skip_tests }}" = "true" ]; then skip=--skip-tests; fi
+          # A window manager on the virtual screen, as on every Linux desktop. With none, X's keyboard focus
+          # follows the pointer, and Tk 8.6's record of the screen's focus window can be left on a window
+          # after it's destroyed (taken implicitly as the pointer came in, let go when it left): the next
+          # focus -force in the test run then read freed memory and crashed.
+          xvfb-run -a bash -c "openbox --sm-disable & sleep 2; bash packaging/linux/build.sh $skip --python /usr/bin/python3.12"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
         with:
           name: ironbark-linux

@@ -34,24 +34,27 @@ def test_the_cap_keeps_the_window_a_column():
 
 
 def test_the_full_window_keeps_to_its_width_band_and_any_height(make_window):
-    window, root, player, errors = make_window(geometry="420x640+40+40")
+    # (Heights a 1024 x 768 screen can show: macOS keeps a window inside the screen's usable area, so a
+    # taller one there measures the screen, not the cap.)
+    window, root, player, errors = make_window(geometry="420x480+40+40")
     _pump(root, 0.4)
     assert root.minsize() == (theme.px(FULL_MIN_SIZE[0]), theme.px(FULL_MIN_SIZE[1]))
     assert root.maxsize() == (theme.px(FULL_MAX_WIDTH), NO_LIMIT)
-    root.geometry("1400x640+0+0")          # dragged or snapped wider: it stops at the cap, still a column
+    root.geometry("1400x480+0+0")          # dragged or snapped wider: it stops at the cap, still a column
     _pump(root, 0.5)
     assert _about(root.winfo_width(), theme.px(FULL_MAX_WIDTH)) and _a_column(window)
-    root.geometry("420x900+0+0")           # taller is fine
+    tall = min(900, root.winfo_screenheight() - 150)   # taller is fine, as tall as the screen allows
+    root.geometry(f"420x{tall}+0+0")
     _pump(root, 0.5)
-    assert root.winfo_height() >= 850 and _about(root.winfo_width(), 420)
-    root.geometry("200x640+0+0")           # narrower stops at the minimum
+    assert root.winfo_height() >= tall - 50 > 480 and _about(root.winfo_width(), 420)
+    root.geometry("200x480+0+0")           # narrower stops at the minimum
     _pump(root, 0.5)
     assert _about(root.winfo_width(), theme.px(FULL_MIN_SIZE[0]))
     assert not errors
 
 
 def test_a_saved_size_wider_than_the_cap_opens_at_the_cap_in_the_column(make_window):
-    window, root, player, errors = make_window(geometry="1200x700+0+0")   # left wide by an older version
+    window, root, player, errors = make_window(geometry="1200x520+0+0")   # left wide by an older version
     _pump(root, 0.6)
     assert _about(root.winfo_width(), theme.px(FULL_MAX_WIDTH)) and _a_column(window)
     assert window.bar.winfo_ismapped() and window.playlist.frame.winfo_ismapped()
