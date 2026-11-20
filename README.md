@@ -25,7 +25,7 @@ Get the latest version from [Releases](https://github.com/digitalgreenhouse-au/i
 | **Windows 10 and 11** | `Ironbark-Setup-X.Y.Z.exe` (installer) or `Ironbark-X.Y.Z-windows-portable.zip` (no install). Not yet code-signed, so Windows SmartScreen warns about an unknown publisher: choose *More info* → *Run anyway*. Check the download against `SHA256SUMS.txt` if you like. |
 | **macOS** | `Ironbark-X.Y.Z-mac-arm64.zip`: unzip it and drag Ironbark to Applications. For Macs with Apple silicon; tested on macOS 26. Not yet signed, so the first time macOS says *"Ironbark" Not Opened*: choose **Done**, open **System Settings → Privacy & Security**, and next to *"Ironbark" was blocked* choose **Open Anyway**, confirm with your password or Touch ID, then **Open Anyway** again. Checksums: `SHA256SUMS-mac.txt`. |
 | **Linux** | `Ironbark-X.Y.Z-linux-x86_64.tar.gz`: unpack it anywhere and run `Ironbark/Ironbark`; `Ironbark/install.sh` adds it to your applications menu. Needs a 64-bit PC and a recent distribution (Ubuntu 24.04, Linux Mint 22, Debian 13, Fedora 39 or newer). Built and tested on Linux Mint 22.3 (Cinnamon, X11); Wayland not tested yet. For bit-perfect, choose the sound card's own output (a name ending in `(hw:…)`) under Output; the other outputs go through the system's mixer. |
-| **In a web browser** | [Ironbark for the web](https://www.digitalgreenhouse.com.au/labs/ironbark/): nothing to install, and your music never leaves your computer (see below). |
+| **In a web browser** | [Ironbark for the web](https://digitalgreenhouse.com.au/ironbark): nothing to install, and your music never leaves your computer (see below). |
 
 ## Why Ironbark
 
@@ -111,7 +111,7 @@ and *Check this file* (a FLAC file's MD5, proved by decoding it). Apple Lossless
 Chrome, Edge and Firefox too (they can't play it, so the page decodes it itself). A browser can't play bit-perfect
 or promise gapless playback, and the page says so. Plain HTML, CSS and JavaScript with no build
 step: see [web/README.md](web/README.md). Use it at
-<https://www.digitalgreenhouse.com.au/labs/ironbark/>, or run your own copy:
+<https://digitalgreenhouse.com.au/ironbark>, or run your own copy:
 `python -m http.server 8000 -d web`, then <http://localhost:8000>.
 
 ## Features

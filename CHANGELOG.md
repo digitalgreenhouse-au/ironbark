@@ -414,7 +414,7 @@ Fixes for macOS and Linux, ahead of their first downloads (nothing changes on Wi
 - **Check** reports a DTS stream (and whether it is a DTS music CD's 14-bit packing) next to HDCD,
   MQA and pre-emphasis.
 - **Downloads:** the README marks Ironbark as experimental and lists the downloads — Windows now,
-  macOS and Linux coming — and links [Ironbark for the web](https://www.digitalgreenhouse.com.au/labs/ironbark/).
+  macOS and Linux coming — and links [Ironbark for the web](https://digitalgreenhouse.com.au/ironbark).
 
 ## 0.48.0 — 13/10/2026
 
